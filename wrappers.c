@@ -27,7 +27,7 @@ int __wrap_open(const char *pathname, int flags) {
 
 int __real_read(int fd, char* buf, size_t count);
 
-int __fake_read(int fd, char* buf, size_t count) {
+int __wrap_read(int fd, char* buf, size_t count) {
 
   struct fake_fd* ffd;
   if(ffd = get_fake_fd(fd)) {
@@ -46,8 +46,9 @@ int __fake_read(int fd, char* buf, size_t count) {
 
 int __real_close(int fd);
 
-int __fake_close(int fd) {
+int __wrap_close(int fd) {
 
   delete_fake_fd(fd);
+  __real_close(fd);
 
 }

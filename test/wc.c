@@ -10,7 +10,7 @@
 
 int main(int argc, char** argv) {
 
-  int fd = open("/usr/share/emacs22/site-lisp/dictionaries-common/ispell.elc", O_RDONLY);
+  int fd = open("/usr/share/emacs/23.1/etc/compilation.txt", O_RDONLY);
   char buf[1024];
   int this_read;
   int newlines = 0;
