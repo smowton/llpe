@@ -10,11 +10,11 @@
 
 int main(int argc, char** argv) {
 
-  int fd = open("/tmp/chars", O_RDONLY);
+  FILE* fd = fopen("/tmp/chars", "r");
   char buf[4096];
   int this_read;
   int newlines = 0;
-  while((this_read = read(fd, buf, 4096)) > 0) {
+  while((this_read = fread(buf, 1, 4096, fd)) > 0) {
     for(int i = 0; i < this_read; i++)
       if(buf[i] == '\n')
 	newlines++;

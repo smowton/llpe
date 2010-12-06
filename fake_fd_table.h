@@ -9,7 +9,7 @@ struct fake_fd {
   int file_pos;
 };
 
-  struct fake_fd* new_fake_fd();
+  struct fake_fd* new_fake_fd(int* pfd);
 
   struct fake_fd* get_fake_fd(int);
 

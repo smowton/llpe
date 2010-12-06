@@ -1,24 +1,36 @@
 
+wc-stdio-test: wc-stdio.o ../fake_fd_table.o ../wrappers.o match.o data.o data.h
+	g++ -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.o match.o data.o wc-stdio.o -lpthread
+
+wc-stdio-plain: wc-stdio.o
+	gcc wc-stdio.o -o wc-stdio-plain
+
 wc-test: wc.o ../fake_fd_table.o ../wrappers.o match.o data.o data.h
-	g++ -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.o *.o -lpthread
+	g++ -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.o match.o data.o wc.o -lpthread
+
+wc-plain: wc.o
+	gcc wc.o -o wc-plain 
 
 match.o: match.c data.h
-	gcc -c match.c
+	gcc -c -g match.c
 
 data.o: data.c data.h
-	gcc -c data.c
+	gcc -c -g data.c
 
-data.h: /usr/share/emacs/23.1/etc/compilation.txt
-	../cstringify.py /usr/share/emacs/23.1/etc/compilation.txt
+data.h: /tmp/chars
+	../cstringify.py /tmp/chars
 
-match.c: /usr/share/emacs/23.1/etc/compilation.txt
-	../cstringify.py /usr/share/emacs/23.1/etc/compilation.txt
+match.c: /tmp/chars
+	../cstringify.py /tmp/chars
 
-data.c: /usr/share/emacs/23.1/etc/compilation.txt
-	../cstringify.py /usr/share/emacs/23.1/etc/compilation.txt
+data.c: /tmp/chars
+	../cstringify.py /tmp/chars
 
 wc.o: wc.c
-	gcc -c -std=c99 wc.c
+	gcc -c -g -std=c99 wc.c
+
+wc-stdio.o: wc-stdio.c
+	gcc -c -g -std=c99 wc-stdio.c
 
 clean:
 	rm *.o
