@@ -3,20 +3,26 @@ include ../Makefile.common
 
 all: wc-test wc-plain wc-stdio-plain wc-stdio-test
 
-wc-stdio-test: wc-stdio-test.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc
-	$(CXX) $(CXXFLAGS) -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.bc wc-stdio-test.bc -lpthread
+wc-stdio-test: wc-stdio-test-2.bc
+	$(CXX) $(CXXFLAGS) -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-stdio-test-2.bc -lpthread
 
-wc-stdio-test.bc: wc-stdio.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
-	llvm-ld -o wc-stdio-test.bc -link-as-library ../*.bc match.bc data.bc wc-stdio.bc
+wc-stdio-test-2.bc: wc-stdio-test-1.bc ../fake_fd_table.bc ../wrappers.bc
+	llvm-ld -o wc-stdio-test-2.bc -link-as-library -export-dynamic wc-stdio-test-1.bc ../fake_fd_table.bc ../wrappers.bc
+
+wc-stdio-test-1.bc: wc-stdio.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
+	llvm-ld -o wc-stdio-test-1.bc -link-as-library ../*.bc match.bc data.bc wc-stdio.bc
 
 wc-stdio-plain: wc-stdio.bc
 	$(CC) $(CFLAGS) wc-stdio.bc -o wc-stdio-plain
 
-wc-test: wc-test.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc
-	$(CXX) $(CXXFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.bc wc-test.bc -lpthread
+wc-test: wc-test-2.bc
+	$(CXX) $(CXXFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-test-2.bc -lpthread
 
-wc-test.bc: wc.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
-	llvm-ld -o wc-test.bc -link-as-library ../*.bc match.bc data.bc wc.bc
+wc-test-2.bc: wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc
+	llvm-ld -o wc-test-2.bc -link-as-library -export-dynamic wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc
+
+wc-test-1.bc: wc.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
+	llvm-ld -o wc-test-1.bc -link-as-library ../*.bc match.bc data.bc wc.bc
 
 wc-plain: wc.bc
 	$(CC) $(CFLAGS) wc.bc -o wc-plain 
