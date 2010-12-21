@@ -4,7 +4,7 @@ include ../Makefile.common
 all: wc-test wc-plain wc-stdio-plain wc-stdio-test
 
 wc-stdio-test: wc-stdio-test-2.bc
-	$(CXX) $(CXXFLAGS) -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-stdio-test-2.bc -lpthread
+	$(CC) $(CFLAGS) -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-stdio-test-2.bc -lpthread
 
 wc-stdio-test-2.bc: wc-stdio-test-1.bc ../fake_fd_table.bc ../wrappers.bc
 	llvm-ld -o wc-stdio-test-2.bc -link-as-library -export-dynamic wc-stdio-test-1.bc ../fake_fd_table.bc ../wrappers.bc
@@ -15,8 +15,11 @@ wc-stdio-test-1.bc: wc-stdio.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc m
 wc-stdio-plain: wc-stdio.bc
 	$(CC) $(CFLAGS) wc-stdio.bc -o wc-stdio-plain
 
-wc-test: wc-test-2.bc
-	$(CXX) $(CXXFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-test-2.bc -lpthread
+wc-test: wc-test-3.bc
+	$(CC) $(CFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-test-3.bc -lpthread
+
+wc-test-3.bc: wc-test-2.bc
+	opt wc-test-2.bc -o wc-test-3.bc -std-compile-opts
 
 wc-test-2.bc: wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc
 	llvm-ld -o wc-test-2.bc -link-as-library -export-dynamic wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc
