@@ -1,11 +1,16 @@
 
-all: fake_fd_table.o wrappers.o
+include Makefile.common
 
-wrappers.o: wrappers.c
-	gcc -g -std=c99 -c wrappers.c -o wrappers.o
+all: fake_fd_table.bc wrappers.bc alias.bc
 
-fake_fd_table.o: fake_fd_table.cpp
-	g++ -c -g fake_fd_table.cpp -o fake_fd_table.o
+alias.bc: alias.ll
+	llvm-as alias.ll
+
+wrappers.bc: wrappers.c
+	$(CC) $(CFLAGS) -g -std=c99 -c wrappers.c -o wrappers.bc
+
+fake_fd_table.bc: fake_fd_table.cpp
+	$(CXX) $(CXXFLAGS) -c -g fake_fd_table.cpp -o fake_fd_table.bc
 
 clean:
-	rm *.o
+	rm *.bc

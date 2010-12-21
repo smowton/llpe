@@ -5,10 +5,11 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdarg.h>
 
-int __real_open(const char* pathname, int flags);
+int __real_open(const char* pathname, int flags, ...);
 
-int __wrap_open(const char *pathname, int flags) {
+__attribute__((always_inline)) int __wrap_open(const char *pathname, int flags, ...) {
 
   char* file_chars;
   if((!flags & O_WRONLY) && (file_chars = get_chars_of_file(pathname))) {
@@ -20,14 +21,23 @@ int __wrap_open(const char *pathname, int flags) {
     return fd;
   }
   else {
-    return __real_open(pathname, flags);
+    if(flags & O_CREAT) {
+      va_list vargs;
+      va_start(vargs, flags);
+      mode_t mode = va_arg(vargs, mode_t);
+      va_end(vargs);
+      return __real_open(pathname, flags, mode);
+    }
+    else {
+      return __real_open(pathname, flags);
+    }
   }
 
 }
 
 int __real_read(int fd, char* buf, size_t count);
 
-int __wrap_read(int fd, char* buf, size_t count) {
+__attribute__((always_inline)) int __wrap_read(int fd, char* buf, size_t count) {
 
   struct fake_fd* ffd;
   if(ffd = get_fake_fd(fd)) {
@@ -46,9 +56,10 @@ int __wrap_read(int fd, char* buf, size_t count) {
 
 int __real_close(int fd);
 
-int __wrap_close(int fd) {
+__attribute__((always_inline)) int __wrap_close(int fd) {
 
   delete_fake_fd(fd);
   __real_close(fd);
 
 }
+

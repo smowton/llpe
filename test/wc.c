@@ -8,13 +8,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "bufsize.h"
+
 int main(int argc, char** argv) {
 
   int fd = open("/tmp/chars", O_RDONLY);
-  char buf[4096];
+  char buf[BUFSIZE];
   int this_read;
   int newlines = 0;
-  while((this_read = read(fd, buf, 4096)) > 0) {
+  while((this_read = read(fd, buf, BUFSIZE)) > 0) {
     for(int i = 0; i < this_read; i++)
       if(buf[i] == '\n')
 	newlines++;

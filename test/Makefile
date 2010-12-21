@@ -1,21 +1,31 @@
 
-wc-stdio-test: wc-stdio.o ../fake_fd_table.o ../wrappers.o match.o data.o data.h
-	g++ -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.o match.o data.o wc-stdio.o -lpthread
+include ../Makefile.common
 
-wc-stdio-plain: wc-stdio.o
-	gcc wc-stdio.o -o wc-stdio-plain
+all: wc-test wc-plain wc-stdio-plain wc-stdio-test
 
-wc-test: wc.o ../fake_fd_table.o ../wrappers.o match.o data.o data.h
-	g++ -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.o match.o data.o wc.o -lpthread
+wc-stdio-test: wc-stdio-test.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc
+	$(CXX) $(CXXFLAGS) -o wc-stdio-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.bc wc-stdio-test.bc -lpthread
 
-wc-plain: wc.o
-	gcc wc.o -o wc-plain 
+wc-stdio-test.bc: wc-stdio.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
+	llvm-ld -o wc-stdio-test.bc -link-as-library ../*.bc match.bc data.bc wc-stdio.bc
 
-match.o: match.c data.h
-	gcc -c -g match.c
+wc-stdio-plain: wc-stdio.bc
+	$(CC) $(CFLAGS) wc-stdio.bc -o wc-stdio-plain
 
-data.o: data.c data.h
-	gcc -c -g data.c
+wc-test: wc-test.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc
+	$(CXX) $(CXXFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close ../*.bc wc-test.bc -lpthread
+
+wc-test.bc: wc.bc ../fake_fd_table.bc ../wrappers.bc ../alias.bc match.bc data.bc
+	llvm-ld -o wc-test.bc -link-as-library ../*.bc match.bc data.bc wc.bc
+
+wc-plain: wc.bc
+	$(CC) $(CFLAGS) wc.bc -o wc-plain 
+
+match.bc: match.c data.h
+	$(CC) $(CFLAGS) -o match.bc -c -g match.c
+
+data.bc: data.c data.h
+	$(CC) $(CFLAGS) -o data.bc -c -g data.c
 
 data.h: /tmp/chars
 	../cstringify.py /tmp/chars
@@ -26,14 +36,19 @@ match.c: /tmp/chars
 data.c: /tmp/chars
 	../cstringify.py /tmp/chars
 
-wc.o: wc.c
-	gcc -c -g -std=c99 wc.c
+wc.bc: wc.c bufsize.h
+	$(CC) $(CFLAGS) -o wc.bc -c -g -std=c99 wc.c
 
-wc-stdio.o: wc-stdio.c
-	gcc -c -g -std=c99 wc-stdio.c
+wc-stdio.bc: wc-stdio.c
+	$(CC) $(CFLAGS) -o wc-stdio.bc -c -g -std=c99 wc-stdio.c
+
+cleanish:
+	rm *.bc
+	rm wc-plain wc-test wc-stdio-plain wc-stdio-test
 
 clean:
-	rm *.o
+	rm *.bc
 	rm data.h
 	rm data.c
 	rm match.c
+	rm wc-plain wc-test wc-stdio-plain wc-stdio-test

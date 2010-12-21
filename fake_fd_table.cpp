@@ -8,7 +8,7 @@ pthread_mutex_t fake_fd_mutex = PTHREAD_MUTEX_INITIALIZER;
 int last_fake_fd = 0x40000000;
 std::map<int, struct fake_fd> fake_fds;
 
-struct fake_fd* new_fake_fd(int* new_fd) {
+__attribute__((always_inline)) struct fake_fd* new_fake_fd(int* new_fd) {
 
   struct fake_fd* ret;
 
@@ -23,7 +23,7 @@ struct fake_fd* new_fake_fd(int* new_fd) {
 
 }
 
-struct fake_fd* get_fake_fd(int fd){ 
+__attribute__((always_inline)) struct fake_fd* get_fake_fd(int fd){ 
 
   struct fake_fd* ret;
 
@@ -41,7 +41,7 @@ struct fake_fd* get_fake_fd(int fd){
 
 }
 
-void delete_fake_fd(int fd) {
+__attribute__((always_inline)) void delete_fake_fd(int fd) {
 
   pthread_mutex_lock(&fake_fd_mutex);
 
