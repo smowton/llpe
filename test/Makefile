@@ -19,8 +19,8 @@ wc-test: wc-test-4.bc
 	$(CC) $(CFLAGS) -o wc-test -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=close wc-test-4.bc -lpthread
 
 wc-test-4.bc: wc-test-2.bc
-	opt wc-test-2.bc -o wc-test-3.bc -std-compile-opts
-	opt wc-test-3.bc -o wc-test-4.bc -std-compile-opts
+	opt $(LLFLAGS) wc-test-2.bc -o wc-test-3.bc -std-compile-opts
+	opt $(LLFLAGS) wc-test-3.bc -o wc-test-4.bc -std-compile-opts
 
 wc-test-2.bc: wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc
 	llvm-ld -o wc-test-2.bc -link-as-library -export-dynamic wc-test-1.bc ../fake_fd_table.bc ../wrappers.bc

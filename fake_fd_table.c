@@ -7,7 +7,6 @@
 #define FAKE_FD_OFFSET 0x40000000
 int last_fake_fd = 0x40000000;
 struct fake_fd fake_fd_array[1024];
-int fake_fd_taken[1024];
 
 __attribute__((always_inline)) struct fake_fd* new_fake_fd(int* new_fd) {
 
@@ -18,7 +17,6 @@ __attribute__((always_inline)) struct fake_fd* new_fake_fd(int* new_fd) {
   *new_fd = last_fake_fd++;
   int offset = (*new_fd) - FAKE_FD_OFFSET;
   ret = &fake_fd_array[offset];
-  fake_fd_taken[offset] = 1;
 
   //  pthread_mutex_unlock(&fake_fd_mutex);
 
@@ -32,11 +30,10 @@ __attribute__((always_inline)) struct fake_fd* get_fake_fd(int fd){
 
   //  pthread_mutex_lock(&fake_fd_mutex);
 
+  if(fd < FAKE_FD_OFFSET)
+    return 0;
   int offset = fd - FAKE_FD_OFFSET;
-  if(!fake_fd_taken[offset])
-    ret = 0;
-  else
-    ret = &(fake_fd_array[offset]);
+  ret = &(fake_fd_array[offset]);
 
   //  pthread_mutex_unlock(&fake_fd_mutex);
 
@@ -47,8 +44,6 @@ __attribute__((always_inline)) struct fake_fd* get_fake_fd(int fd){
 __attribute__((always_inline)) void delete_fake_fd(int fd) {
 
   //  pthread_mutex_lock(&fake_fd_mutex);
-
-  fake_fd_taken[fd - FAKE_FD_OFFSET] = 0;
 
   //  pthread_mutex_unlock(&fake_fd_mutex);
 

@@ -4,4 +4,5 @@ CXX=/local/scratch/cs448/llvm/llvm-gcc-install/bin/llvm-g++
 
 CFLAGS=-O4 -use-gold-plugin
 CXXFLAGS=-O4 -use-gold-plugin
+LLFLAGS=-debug -print-after-all
 
