@@ -119,13 +119,11 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
     PHINode* PN = cast<PHINode>(it);
     int idx = PN->getBasicBlockIndex(fromBlock);
     PN->setIncomingBlock(idx, newBlock);
-
     if(addPHIs) {
       PHINode* newPHI = PHINode::Create(PN->getType(), PN->getName() + ".lcssa", newBlock);
       newPHI->addIncoming(PN->getIncomingValue(idx), fromBlock);
       PN->setIncomingValue(idx, newPHI);
     }
-      
   }
   BranchInst::Create(toBlock, newBlock);
   fromInst->setSuccessor(splitOnTrue ? 0 : 1, newBlock);
@@ -312,7 +310,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
     if(!doPeel) {
       // If we know the trip count or a multiple of it, we can safely use an
       // unconditional branch for some iterations.
-      if ((It + 1) != BreakoutTrip && (TripMultiple == 0 || (It + 1) % TripMultiple != 0)) {
+      if (It != Count - 1 && (It + 1) != BreakoutTrip && (TripMultiple == 0 || (It + 1) % TripMultiple != 0)) {
 	thisLatchCouldBreak  = false;
       }
     }
@@ -505,6 +503,19 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
 	std::replace(Latches.begin(), Latches.end(), target, Fold);
 	std::replace(Headers.begin(), Headers.end(), target, Fold);
       }
+    }
+  }
+
+  // If we're doing loop peeling, do a name switcheroo such that the last unfolded iteration is named after the original first.
+  // This is purely to match the user's idea of preceding the loop with copies of its body.
+
+  if(doPeel) {
+    for(std::vector<BasicBlock*>::iterator it = LoopBlocks.begin(); it != LoopBlocks.end(); it++) {
+      BasicBlock* firstIterBlock = *it;
+      BasicBlock* lastIterBlock = cast<BasicBlock>(LastValueMap[firstIterBlock]);
+      std::string tmp = lastIterBlock->getNameStr();
+      lastIterBlock->takeName(firstIterBlock);
+      firstIterBlock->setName(tmp);
     }
   }
 
