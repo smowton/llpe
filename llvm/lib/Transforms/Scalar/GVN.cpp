@@ -1355,8 +1355,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
   // If we had to process more than one hundred blocks to find the
   // dependencies, this load isn't worth worrying about.  Optimizing
   // it will be too expensive.
-  if (Deps.size() > 100)
+  if (Deps.size() > 100) {
+    DEBUG(dbgs() << "PRE fail: won't investigate " << *LI << " with " << Deps.size() << " deps\n");
     return false;
+  }
 
   // If we had a phi translation failure, we'll have a single entry which is a
   // clobber in the current block.  Reject this early.
@@ -1381,6 +1383,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
   for (unsigned i = 0, e = Deps.size(); i != e; ++i) {
     BasicBlock *DepBB = Deps[i].getBB();
     MemDepResult DepInfo = Deps[i].getResult();
+
+    Instruction *DepInst = DepInfo.getInst();
+
+    DEBUG(dbgs() << "Load depends on " << *DepInst << "\n");
 
     if (DepInfo.isClobber()) {
       // The address being loaded in this non-local block may not be the same as
@@ -1425,8 +1431,6 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
       UnavailableBlocks.push_back(DepBB);
       continue;
     }
-
-    Instruction *DepInst = DepInfo.getInst();
 
     // Loading the allocation -> undef.
     if (isa<AllocaInst>(DepInst) || isMalloc(DepInst) ||
@@ -1481,7 +1485,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
 
   // If we have no predecessors that produce a known value for this load, exit
   // early.
-  if (ValuesPerBlock.empty()) return false;
+  if (ValuesPerBlock.empty()) {
+    DEBUG(dbgs() << "GVN fail: none of " << *LI << " deps produce a known value\n");
+    return false;
+  }
 
   // If all of the instructions we depend on produce a known value for this
   // load, then it is fully redundant and we can use PHI insertion to compute
@@ -1504,8 +1511,12 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
     return true;
   }
 
-  if (!EnablePRE || !EnableLoadPRE)
+  DEBUG(dbgs() << "GVN: " << *LI << " value unavailable on at least one path; considering PRE\n");
+
+  if (!EnablePRE || !EnableLoadPRE) {
+    DEBUG(dbgs() << "GVN fail: not removing " << *LI << " because PRE is disabled\n");
     return false;
+  }
 
   // Okay, we have *some* definitions of the value.  This means that the value
   // is available in some of our (transitive) predecessors.  Lets think about
@@ -1531,8 +1542,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
     TmpBB = TmpBB->getSinglePredecessor();
     if (TmpBB == LoadBB) // Infinite (unreachable) loop.
       return false;
-    if (Blockers.count(TmpBB))
+    if (Blockers.count(TmpBB)) {
+      DEBUG(dbgs() << "PRE fail: expression unavailable in " << *TmpBB << " which dominates the load\n");
       return false;
+    }
     if (TmpBB->getTerminator()->getNumSuccessors() != 1)
       allSingleSucc = false;
   }
@@ -1548,8 +1561,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
     if (ValuesPerBlock[i].isSimpleValue() &&
         ValuesPerBlock[i].getSimpleValue() == LI) {
       // Skip cases where LI is the only definition, even for EnableFullLoadPRE.
-      if (!EnableFullLoadPRE || e == 1)
+      if (!EnableFullLoadPRE || e == 1) {
+	DEBUG(dbgs() << "PRE fail: instruction depends on itself via some path\n");
         return false;
+      }
     }
   }
 
@@ -1571,8 +1586,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
 
     // We are interested only in "hot" instructions. We don't want to do any
     // mis-optimizations here.
-    if (!isHot)
+    if (!isHot) {
+      DEBUG(dbgs() << "PRE fail: instruction not hot\n");
       return false;
+    }
   }
 
   // Check to see how many predecessors have the loaded value fully
@@ -1617,8 +1634,10 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
     // FIXME: If we could restructure the CFG, we could make a common pred with
     // all the preds that don't have an available LI and insert a new load into
     // that one block.
-    if (NumUnavailablePreds != 1)
+    if (NumUnavailablePreds != 1) {
+      DEBUG(dbgs() << "PRE fail: load unavailable in multiple predecessors\n");
       return false;
+    }
   }
 
   // Check if the load can safely be moved to all the unavailable predecessors.
@@ -1667,6 +1686,7 @@ bool GVN::processNonLocalLoad(LoadInst *LI,
         !isSafeToLoadUnconditionally(LoadPtr,
                                      UnavailablePred->getTerminator(),
                                      LI->getAlignment(), TD)) {
+      DEBUG(dbgs() << "PRE fail: load cannot be pulled into " << UnavailablePred << "\n");
       CanDoPRE = false;
       break;
     }
@@ -1814,8 +1834,10 @@ bool GVN::processLoad(LoadInst *L, SmallVectorImpl<Instruction*> &toErase) {
       if ((TD = getAnalysisIfAvailable<TargetData>())) {
         StoredVal = CoerceAvailableValueToLoadType(StoredVal, L->getType(),
                                                    L, *TD);
-        if (StoredVal == 0)
+        if (StoredVal == 0) {
+	  DEBUG(dbgs() << "GVN fail: could not coerce " << *(DepSI->getOperand(0)) << " to " << *(L->getType()) << "\n");
           return false;
+	}
         
         DEBUG(dbgs() << "GVN COERCED STORE:\n" << *DepSI << '\n' << *StoredVal
                      << '\n' << *L << "\n\n\n");
@@ -1914,6 +1936,8 @@ bool GVN::processInstruction(Instruction *I,
   // Ignore dbg info intrinsics.
   if (isa<DbgInfoIntrinsic>(I))
     return false;
+
+  DEBUG(dbgs() << "GVN: processing " << *I << "\n");
 
   if (LoadInst *LI = dyn_cast<LoadInst>(I)) {
     bool Changed = processLoad(LI, toErase);
