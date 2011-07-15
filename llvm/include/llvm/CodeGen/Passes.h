@@ -205,6 +205,8 @@ namespace llvm {
   /// addressing.
   FunctionPass *createLocalStackSlotAllocationPass();
 
+  FunctionPass *createVFSIntrinsicLoweringPass();
+
 } // End llvm namespace
 
 #endif

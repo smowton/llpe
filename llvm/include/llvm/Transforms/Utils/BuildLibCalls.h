@@ -107,6 +107,10 @@ namespace llvm {
   void EmitFWrite(Value *Ptr, Value *Size, Value *File, IRBuilder<> &B,
                   const TargetData *TD);
 
+  Value* EmitOpenAt(Value* open_str, Value* mode, Value* pos, Value* uid, IRBuilder<> &B);
+
+  Value* EmitLSeek(Value* fd, Value* offset, Value* whence, IRBuilder<> &B);
+
   /// SimplifyFortifiedLibCalls - Helper class for folding checked library
   /// calls (e.g. __strcpy_chk) into their unchecked counterparts.
   class SimplifyFortifiedLibCalls {

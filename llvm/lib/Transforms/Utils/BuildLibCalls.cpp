@@ -395,6 +395,31 @@ void llvm::EmitFWrite(Value *Ptr, Value *Size, Value *File,
     CI->setCallingConv(Fn->getCallingConv());
 }
 
+Value* llvm::EmitOpenAt(Value* name_str, Value* mode, Value* position, Value* uid, IRBuilder<> &B) {
+  Module *M = B.GetInsertBlock()->getParent()->getParent();
+  Value *OpenAt = Intrinsic::getDeclaration(M, Intrinsic::openat);
+  return B.CreateCall4(OpenAt, CastToCStr(name_str, B), mode, position, uid);
+}
+
+Value* llvm::EmitLSeek(Value* fd, Value* offset, Value* whence, IRBuilder<> &B) {
+
+  Module *M = B.GetInsertBlock()->getParent()->getParent();
+  AttributeWithIndex AWI[1];
+  AWI[0] = AttributeWithIndex::get(~0u, Attribute::NoUnwind);
+  Constant *F = M->getOrInsertFunction("lseek64", AttrListPtr::get(AWI, 1),
+				       B.getInt64Ty(),
+				       B.getInt32Ty(),
+				       B.getInt64Ty(),
+				       B.getInt32Ty(), NULL);
+  CallInst *CI = B.CreateCall3(F, fd, offset, whence);
+
+  if(const Function *Fn = dyn_cast<Function>(F->stripPointerCasts()))
+    CI->setCallingConv(Fn->getCallingConv());
+
+  return CI;
+
+}
+
 SimplifyFortifiedLibCalls::~SimplifyFortifiedLibCalls() { }
 
 bool SimplifyFortifiedLibCalls::fold(CallInst *CI, const TargetData *TD) {

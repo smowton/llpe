@@ -1,5 +1,4 @@
 //===-- UnrollLoop.cpp - Loop unrolling utilities -------------------------===//
-//
 //                     The LLVM Compiler Infrastructure
 //
 // This file is distributed under the University of Illinois Open Source
@@ -41,12 +40,14 @@ STATISTIC(NumUnrolled,    "Number of loops unrolled (completely or otherwise)");
 /// current values into those specified by VMap.
 static inline void RemapInstruction(Instruction *I,
                                     ValueMap<const Value *, Value*> &VMap) {
+  DEBUG(dbgs() << "Apply remap: " << *I);
   for (unsigned op = 0, E = I->getNumOperands(); op != E; ++op) {
     Value *Op = I->getOperand(op);
     ValueMap<const Value *, Value*>::iterator It = VMap.find(Op);
     if (It != VMap.end())
       I->setOperand(op, It->second);
   }
+  DEBUG(dbgs() << " --> " << *I << "\n");
 }
 
 /// FoldBlockIntoPredecessor - Folds a basic block into its predecessor if it
@@ -95,6 +96,42 @@ static BasicBlock *FoldBlockIntoPredecessor(BasicBlock *BB, LoopInfo* LI) {
   return OnlyPred;
 }
 
+struct pendingPhiFixup { 
+  PHINode* node; BasicBlock* pred; Value* val;
+  pendingPhiFixup(PHINode* n, BasicBlock* p, Value* v) : node(n), pred(p), val(v) { }
+};
+
+Loop* cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap) {
+
+  DEBUG(dbgs() << "Cloning loop " << *oldLoop << "\n");
+  Loop* newLoop = new Loop();
+  oldToNewMap[oldLoop] = newLoop;
+  for(Loop::iterator it = oldLoop->begin(); it != oldLoop->end(); it++)
+    newLoop->addChildLoop(cloneLoop(*it, oldToNewMap));
+  return newLoop;
+
+}
+
+BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnTrue, BasicBlock* toBlock, Twine blockName, bool addPHIs) {
+  
+  BasicBlock *newBlock = BasicBlock::Create(fromBlock->getContext(), blockName, fromBlock->getParent(), toBlock);
+  for(BasicBlock::iterator it = toBlock->begin(); isa<PHINode>(*it) && it != toBlock->end(); it++) {
+    PHINode* PN = cast<PHINode>(it);
+    int idx = PN->getBasicBlockIndex(fromBlock);
+    PN->setIncomingBlock(idx, newBlock);
+    if(addPHIs) {
+      PHINode* newPHI = PHINode::Create(PN->getType(), PN->getName() + ".lcssa", newBlock);
+      newPHI->addIncoming(PN->getIncomingValue(idx), fromBlock);
+      PN->setIncomingValue(idx, newPHI);
+    }
+  }
+  BranchInst::Create(toBlock, newBlock);
+  fromInst->setSuccessor(splitOnTrue ? 0 : 1, newBlock);
+
+  return newBlock;
+  
+}
+
 /// Unroll the given loop by Count. The loop must be in LCSSA form. Returns true
 /// if unrolling was succesful, or false if the loop was unmodified. Unrolling
 /// can only fail when the loop's latch block is not terminated by a conditional
@@ -105,7 +142,11 @@ static BasicBlock *FoldBlockIntoPredecessor(BasicBlock *BB, LoopInfo* LI) {
 ///
 /// If a LoopPassManager is passed in, and the loop is fully removed, it will be
 /// removed from the LoopPassManager as well. LPM can also be NULL.
-bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM) {
+///
+/// If doPeel is true, the loop will be peeled rather than unrolled: it will be preceded
+/// by Count copies of its own body.
+
+bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel) {
   BasicBlock *Preheader = L->getLoopPreheader();
   if (!Preheader) {
     DEBUG(dbgs() << "  Can't unroll; loop preheader-insertion failed.\n");
@@ -124,7 +165,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM)
   if (!BI || BI->isUnconditional()) {
     // The loop-rotate pass can be helpful to avoid this in many cases.
     DEBUG(dbgs() <<
-             "  Can't unroll; loop not terminated by a conditional branch.\n");
+             "  Can't unroll/peel; loop not terminated by a conditional branch.\n");
     return false;
   }
 
@@ -133,56 +174,69 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM)
   if (ScalarEvolution *SE = LPM->getAnalysisIfAvailable<ScalarEvolution>())
     SE->forgetLoop(L);
 
-  // Find trip count
-  unsigned TripCount = L->getSmallConstantTripCount();
-  // Find trip multiple if count is not available
-  unsigned TripMultiple = 1;
-  if (TripCount == 0)
-    TripMultiple = L->getSmallConstantTripMultiple();
-
-  if (TripCount != 0)
-    DEBUG(dbgs() << "  Trip Count = " << TripCount << "\n");
-  if (TripMultiple != 1)
-    DEBUG(dbgs() << "  Trip Multiple = " << TripMultiple << "\n");
-
-  // Effectively "DCE" unrolled iterations that are beyond the tripcount
-  // and will never be executed.
-  if (TripCount != 0 && Count > TripCount)
-    Count = TripCount;
-
-  assert(Count > 0);
-  assert(TripMultiple > 0);
-  assert(TripCount == 0 || TripCount % TripMultiple == 0);
-
-  // Are we eliminating the loop control altogether?
-  bool CompletelyUnroll = Count == TripCount;
-
-  // If we know the trip count, we know the multiple...
+  bool CompletelyUnroll = false;
+  unsigned TripCount = 0;
+  unsigned TripMultiple = 0;
   unsigned BreakoutTrip = 0;
-  if (TripCount != 0) {
-    BreakoutTrip = TripCount % Count;
-    TripMultiple = 0;
-  } else {
-    // Figure out what multiple to use.
-    BreakoutTrip = TripMultiple =
-      (unsigned)GreatestCommonDivisor64(Count, TripMultiple);
-  }
 
-  if (CompletelyUnroll) {
-    DEBUG(dbgs() << "COMPLETELY UNROLLING loop %" << Header->getName()
-          << " with trip count " << TripCount << "!\n");
-  } else {
-    DEBUG(dbgs() << "UNROLLING loop %" << Header->getName()
-          << " by " << Count);
-    if (TripMultiple == 0 || BreakoutTrip != TripMultiple) {
-      DEBUG(dbgs() << " with a breakout at trip " << BreakoutTrip);
-    } else if (TripMultiple != 1) {
-      DEBUG(dbgs() << " with " << TripMultiple << " trips per branch");
+  if(!doPeel) {
+    // Find trip count
+    TripCount = L->getSmallConstantTripCount();
+    // Find trip multiple if count is not available
+    TripMultiple = 1;
+    if (TripCount == 0)
+      TripMultiple = L->getSmallConstantTripMultiple();
+
+    if (TripCount != 0)
+      DEBUG(dbgs() << "  Trip Count = " << TripCount << "\n");
+    if (TripMultiple != 1)
+      DEBUG(dbgs() << "  Trip Multiple = " << TripMultiple << "\n");
+
+    // Effectively "DCE" unrolled iterations that are beyond the tripcount
+    // and will never be executed.
+    if (TripCount != 0 && Count > TripCount)
+      Count = TripCount;
+
+    assert(Count > 0);
+    assert(TripMultiple > 0);
+    assert(TripCount == 0 || TripCount % TripMultiple == 0);
+
+    // Are we eliminating the loop control altogether?
+    CompletelyUnroll = Count == TripCount;
+
+    // If we know the trip count, we know the multiple...
+    BreakoutTrip = 0;
+    if (TripCount != 0) {
+      BreakoutTrip = TripCount % Count;
+      TripMultiple = 0;
+    } else {
+      // Figure out what multiple to use.
+      BreakoutTrip = TripMultiple =
+	(unsigned)GreatestCommonDivisor64(Count, TripMultiple);
     }
-    DEBUG(dbgs() << "!\n");
+
+    if (CompletelyUnroll) {
+      DEBUG(dbgs() << "COMPLETELY UNROLLING loop %" << Header->getName()
+	    << " with trip count " << TripCount << "!\n");
+    } else {
+      DEBUG(dbgs() << "UNROLLING loop %" << Header->getName()
+	    << " by " << Count);
+      if (TripMultiple == 0 || BreakoutTrip != TripMultiple) {
+	DEBUG(dbgs() << " with a breakout at trip " << BreakoutTrip);
+      } else if (TripMultiple != 1) {
+	DEBUG(dbgs() << " with " << TripMultiple << " trips per branch");
+      }
+      DEBUG(dbgs() << "!\n");
+    }
+
+  } // if(!doPeel)
+  else {
+    DEBUG(dbgs() << "PEELING loop %" << Header->getName() << " by " << Count << "\n");
   }
 
   std::vector<BasicBlock*> LoopBlocks = L->getBlocks();
+  SmallVector<BasicBlock*, 8> ExitingBlocks;
+  L->getExitingBlocks(ExitingBlocks);
 
   bool ContinueOnTrue = L->contains(BI->getSuccessor(0));
   BasicBlock *LoopExit = BI->getSuccessor(ContinueOnTrue);
@@ -206,173 +260,318 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM)
   Headers.push_back(Header);
   Latches.push_back(LatchBlock);
 
+  // Step 1: Clone loop structures such that nested loops are created to accomodate loop body duplication.
+  std::vector<std::map<Loop*, Loop*> > IterLoops;
+  {
+    std::vector<Loop*> NewLoops;
+    for (unsigned i = 1; i < Count; i++) {
+      DEBUG(dbgs() << "Cloning outer loop " << *L << "\n");
+      // Are the newly cloned blocks to be added to the loop?
+      bool newBlocksInLoop = (!CompletelyUnroll) && ((!doPeel) || i == Count - 1); 
+      IterLoops.push_back(std::map<Loop*, Loop*>());
+      std::map<Loop*, Loop*>& oldToNewLoops = IterLoops.back();
+      Loop* target = 0;
+      if(newBlocksInLoop)
+	target = L;
+      else
+	target = L->getParentLoop();
+      oldToNewLoops[L] = target;
+      // If no parent, then the new loops are top-level
+      for(Loop::iterator it = L->begin(); it != L->end(); it++) {
+	Loop* newLoop = cloneLoop(*it, oldToNewLoops);
+	if(target) {
+	  if(target == L) 
+	    // Can't add these now or they'll get caught in future clone operations
+	    NewLoops.push_back(newLoop);
+	  else
+	    target->addChildLoop(newLoop);
+	}
+	else
+	  LI->addTopLevelLoop(newLoop);
+      }
+    }
+    for(std::vector<Loop*>::iterator it = NewLoops.begin(); it != NewLoops.end(); it++) {
+      L->addChildLoop(*it);
+    }
+  }
+
   for (unsigned It = 1; It != Count; ++It) {
     std::vector<BasicBlock*> NewBlocks;
+    std::vector<pendingPhiFixup> pendingPhiFixups;
+    std::map<Loop*, Loop*>& oldToNewLoops = IterLoops[It-1];
+
+    // Decide the nature of the new block
+    // Should the new header keep its PHI nodes?
+    bool newHeaderHasMultiplePredecessors = false;
+    if(doPeel && It == Count - 1)
+      newHeaderHasMultiplePredecessors = true;
+    // Could we break before or after this iteration?
+    bool thisLatchCouldBreak = true;
+    if(!doPeel) {
+      // If we know the trip count or a multiple of it, we can safely use an
+      // unconditional branch for some iterations.
+      if (It != Count - 1 && (It + 1) != BreakoutTrip && (TripMultiple == 0 || (It + 1) % TripMultiple != 0)) {
+	thisLatchCouldBreak  = false;
+      }
+    }
     
     for (std::vector<BasicBlock*>::iterator BB = LoopBlocks.begin(),
          E = LoopBlocks.end(); BB != E; ++BB) {
       ValueToValueMapTy VMap;
+
+      // Clone the block
       BasicBlock *New = CloneBasicBlock(*BB, VMap, "." + Twine(It));
+      NewBlocks.push_back(New);
       Header->getParent()->getBasicBlockList().push_back(New);
 
-      // Loop over all of the PHI nodes in the block, changing them to use the
-      // incoming values from the previous block.
+      Loop* innermostLoop = LI->getLoopFor(*BB);
+      if(oldToNewLoops[innermostLoop]) {
+	DEBUG(dbgs() << "Added block " << *New << " to loop " << *(oldToNewLoops[innermostLoop]) << "\n");
+	oldToNewLoops[innermostLoop]->addBasicBlockToLoop(New, LI->getBase());
+	// Make this block a loop header if appropriate. It is the header of 0 or 1 loops, and if it
+	// is a header at all it is the header of the innermost loop. This is because we require
+	// LoopSimplify, which requires that loop headers have exactly 2 predecessors: the latch and the preheader.
+	// Thus it is not the header of two loops, or it would have two backedges and 3 predecessors.
+	if(innermostLoop != L && innermostLoop->getHeader() == *BB)
+	  oldToNewLoops[innermostLoop]->moveToHeader(New);
+      }
+      // Else the new block is not in a loop
+
+      // Wire the new header's PHIs to use previous iteration values if we'll have one predecessor
+      // or save the needed incoming value if we'll have many, to apply in the fixup stage later
       if (*BB == Header)
         for (unsigned i = 0, e = OrigPHINode.size(); i != e; ++i) {
-          PHINode *NewPHI = cast<PHINode>(VMap[OrigPHINode[i]]);
-          Value *InVal = NewPHI->getIncomingValueForBlock(LatchBlock);
-          if (Instruction *InValI = dyn_cast<Instruction>(InVal))
-            if (It > 1 && L->contains(InValI))
-              InVal = LastValueMap[InValI];
-          VMap[OrigPHINode[i]] = InVal;
-          New->getInstList().erase(NewPHI);
+	  PHINode *NewPHI = cast<PHINode>(VMap[OrigPHINode[i]]);
+	  Value *InVal = NewPHI->getIncomingValueForBlock(LatchBlock);
+	  if (Instruction *InValI = dyn_cast<Instruction>(InVal))
+	    if (It > 1 && L->contains(InValI))
+	      InVal = LastValueMap[InValI];
+	  if(!newHeaderHasMultiplePredecessors) {
+	    // This block now has one predecessor -- kill the PHI.
+	    VMap[OrigPHINode[i]] = InVal;
+	    New->getInstList().erase(NewPHI);
+	  }
+	  else {
+	    // This block has two predecessors: the previous iteration and its own latch block.
+	    // Record the predecessor now but apply it after renaming has taken place.
+	    pendingPhiFixups.push_back(pendingPhiFixup(NewPHI, Latches.back(), InVal));
+	  }
         }
 
       // Update our running map of newest clones
       LastValueMap[*BB] = New;
       for (ValueToValueMapTy::iterator VI = VMap.begin(), VE = VMap.end();
-           VI != VE; ++VI)
+           VI != VE; ++VI) {
+	DEBUG(dbgs() << "Remap " << *(VI->first) << " --> " << *(VI->second) << "\n");
         LastValueMap[VI->first] = VI->second;
-
-      L->addBasicBlockToLoop(New, LI->getBase());
-
-      // Add phi entries for newly created values to all exit blocks except
-      // the successor of the latch block.  The successor of the exit block will
-      // be updated specially after unrolling all the way.
-      if (*BB != LatchBlock)
-        for (Value::use_iterator UI = (*BB)->use_begin(), UE = (*BB)->use_end();
-             UI != UE;) {
-          Instruction *UseInst = cast<Instruction>(*UI);
-          ++UI;
-          if (isa<PHINode>(UseInst) && !L->contains(UseInst)) {
-            PHINode *phi = cast<PHINode>(UseInst);
-            Value *Incoming = phi->getIncomingValueForBlock(*BB);
-            phi->addIncoming(Incoming, New);
-          }
-        }
+      }
 
       // Keep track of new headers and latches as we create them, so that
       // we can insert the proper branches later.
       if (*BB == Header)
         Headers.push_back(New);
-      if (*BB == LatchBlock) {
+      if (*BB == LatchBlock)
         Latches.push_back(New);
 
-        // Also, clear out the new latch's back edge so that it doesn't look
-        // like a new loop, so that it's amenable to being merged with adjacent
-        // blocks later on.
-        TerminatorInst *Term = New->getTerminator();
-        assert(L->contains(Term->getSuccessor(!ContinueOnTrue)));
-        assert(Term->getSuccessor(ContinueOnTrue) == LoopExit);
-        Term->setSuccessor(!ContinueOnTrue, NULL);
-      }
-
-      NewBlocks.push_back(New);
     }
     
-    // Remap all instructions in the most recent iteration
+    // Remap all instructions in the most recent iteration,
+    // i.e. reassociate references to refer to the most recent iteration.
     for (unsigned i = 0; i < NewBlocks.size(); ++i)
       for (BasicBlock::iterator I = NewBlocks[i]->begin(),
            E = NewBlocks[i]->end(); I != E; ++I)
         RemapInstruction(I, LastValueMap);
+
+    for(std::vector<BasicBlock*>::iterator it = NewBlocks.begin(); it != NewBlocks.end(); it++) {
+      DEBUG(dbgs() << "New block after renaming: " << **it << "\n");
+    }
+
+    // Add to external PHIs to reflect the new loop iteration.
+    for(SmallVector<BasicBlock*, 8>::iterator it = ExitingBlocks.begin(); it != ExitingBlocks.end(); it++) {
+      if (*it != LatchBlock || thisLatchCouldBreak)
+        for (Value::use_iterator UI = (*it)->use_begin(), UE = (*it)->use_end();
+             UI != UE;) {
+          Instruction *UseInst = cast<Instruction>(*UI);
+          ++UI;
+          if (isa<PHINode>(UseInst) && !L->contains(UseInst) && std::find(NewBlocks.begin(), NewBlocks.end(), UseInst->getParent()) == NewBlocks.end()) {
+            PHINode *phi = cast<PHINode>(UseInst);
+	    DEBUG(dbgs() << "User " << *phi << " in basic block " << *(phi->getParent()) << " augmented: ");
+            Value *Incoming = phi->getIncomingValueForBlock(*it);
+	    if(Instruction* IncomingI = dyn_cast<Instruction>(Incoming))
+	      if(L->contains(IncomingI))
+		Incoming = LastValueMap[IncomingI];
+            phi->addIncoming(Incoming, cast<BasicBlock>(LastValueMap[*it]));
+	    DEBUG(dbgs() << "Yielded " << *phi << "\n");
+          }
+        }
+    }
+
+    // Apply any PHIs that needed to refer to the previous iteration
+    for(std::vector<pendingPhiFixup>::iterator it = pendingPhiFixups.begin(); it != pendingPhiFixups.end(); it++) {
+      DEBUG(dbgs() << "Fixing up PHI node "  << *(it->node) << "...");
+      it->node->removeIncomingValue(Preheader, false);
+      it->node->addIncoming(it->val, it->pred);
+      DEBUG(dbgs() << "Turned it into " << *(it->node) << "\n");
+    }
+
+    for(std::vector<BasicBlock*>::iterator it = NewBlocks.begin(); it != NewBlocks.end(); it++) {
+      DEBUG(dbgs() << "New block after fixups: " << **it << "\n");
+    }
+
   }
-  
-  // The latch block exits the loop.  If there are any PHI nodes in the
-  // successor blocks, update them to use the appropriate values computed as the
-  // last iteration of the loop.
-  if (Count != 1) {
-    SmallPtrSet<PHINode*, 8> Users;
-    for (Value::use_iterator UI = LatchBlock->use_begin(),
-         UE = LatchBlock->use_end(); UI != UE; ++UI)
-      if (PHINode *phi = dyn_cast<PHINode>(*UI))
-        Users.insert(phi);
-    
-    BasicBlock *LastIterationBB = cast<BasicBlock>(LastValueMap[LatchBlock]);
-    for (SmallPtrSet<PHINode*,8>::iterator SI = Users.begin(), SE = Users.end();
-         SI != SE; ++SI) {
-      PHINode *PN = *SI;
-      Value *InVal = PN->removeIncomingValue(LatchBlock, false);
-      // If this value was defined in the loop, take the value defined by the
-      // last iteration of the loop.
-      if (Instruction *InValI = dyn_cast<Instruction>(InVal)) {
-        if (L->contains(InValI))
-          InVal = LastValueMap[InVal];
-      }
-      PN->addIncoming(InVal, LastIterationBB);
+
+  // Fix the first (original) iteration:
+  // 1. Fix exit PHIs that draw from the first iteration's latch if we know it can't exit
+  bool firstIterationCanBreak = doPeel || BreakoutTrip == 1 || TripMultiple == 1;
+  if (!firstIterationCanBreak) {
+    for(BasicBlock::iterator I = LoopExit->begin(), IE = LoopExit->end(); I != IE && isa<PHINode>(*I); I++) {
+      PHINode* PN = cast<PHINode>(I);
+      PN->removeIncomingValue(LatchBlock, false);
     }
   }
 
-  // Now, if we're doing complete unrolling, loop over the PHI nodes in the
-  // original block, setting them to their incoming values.
-  if (CompletelyUnroll) {
-    BasicBlock *Preheader = L->getLoopPreheader();
-    for (unsigned i = 0, e = OrigPHINode.size(); i != e; ++i) {
-      PHINode *PN = OrigPHINode[i];
+  // 2. Fix first iteration's header PHIs if it's no longer a loop header,
+  //    or rewire them to use the last iteration's equivalent value otherwise.
+  for (unsigned i = 0, e = OrigPHINode.size(); i != e; ++i) {
+    PHINode *PN = OrigPHINode[i];
+    if (CompletelyUnroll || doPeel) {
       PN->replaceAllUsesWith(PN->getIncomingValueForBlock(Preheader));
       Header->getInstList().erase(PN);
     }
+    else {
+      Value* V = PN->removeIncomingValue(LatchBlock, false);
+      if(Instruction* I = dyn_cast<Instruction>(V))
+	if(L->contains(I))
+	  V = LastValueMap[I];
+      PN->addIncoming(V, Latches.back());
+    }
   }
 
-  // Now that all the basic blocks for the unrolled iterations are in place,
-  // set up the branches to connect them.
-  for (unsigned i = 0, e = Latches.size(); i != e; ++i) {
-    // The original branch was replicated in each unrolled iteration.
-    BranchInst *Term = cast<BranchInst>(Latches[i]->getTerminator());
+  // 3. Remove the first iteration from the Loop descriptor if it's no longer in the loop
+  // (reparent with the next loop out if necessary)
+  if(CompletelyUnroll || doPeel) {
+    for(std::vector<BasicBlock*>::iterator it = LoopBlocks.begin(); it != LoopBlocks.end(); it++) {
+      DEBUG(dbgs() << "Removed block " << **it << " from loop " << *L << "\n");
+      LI->removeBlock(*it);
+      if(Loop* parent = L->getParentLoop()) {
+	DEBUG(dbgs() << "Added block " << **it << " to loop " << *parent << "\n");
+	parent->addBasicBlockToLoop(*it, LI->getBase());
+      }
+    }
+    if(!CompletelyUnroll)
+      L->moveToHeader(Headers.back());
+    else
+      // Remove the loop from the LoopPassManager if it's completely removed.
+      if(LPM)
+	LPM->deleteLoopFromQueue(L);
+  }
 
-    // The branch destination.
-    unsigned j = (i + 1) % e;
-    BasicBlock *Dest = Headers[j];
-    bool NeedConditional = true;
+  // Rewire every iteration's exit branch to point to the next iteration:
+  for(unsigned i = 0; i < Latches.size(); i++) {
+    // Wire the previous iteration's jump to this block
+    BasicBlock* thisLatch = Latches[i];
+    BranchInst *Term = cast<BranchInst>(thisLatch->getTerminator());
+    bool thisLatchCouldBreak = true;
+    if ((!doPeel) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0))
+      thisLatchCouldBreak = false;
 
-    // For a complete unroll, make the last iteration end with a branch
-    // to the exit block.
-    if (CompletelyUnroll && j == 0) {
-      Dest = LoopExit;
-      NeedConditional = false;
+    BasicBlock* target = 0;
+    if(i == Latches.size() - 1) {
+      if(!doPeel) {
+	if(CompletelyUnroll)
+	  target = LoopExit;
+	else
+	  target = Header;
+      }
+      else {
+	// For peeling the final iteration should be left alone
+	continue;
+      }
+    }
+    else {
+      target = Headers[i+1];
     }
 
-    // If we know the trip count or a multiple of it, we can safely use an
-    // unconditional branch for some iterations.
-    if (j != BreakoutTrip && (TripMultiple == 0 || j % TripMultiple != 0)) {
-      NeedConditional = false;
-    }
-
-    if (NeedConditional) {
-      // Update the conditional branch's successor for the following
-      // iteration.
-      Term->setSuccessor(!ContinueOnTrue, Dest);
-    } else {
-      Term->setUnconditionalDest(Dest);
+    if(thisLatchCouldBreak)
+      Term->setSuccessor(!ContinueOnTrue, target);
+    else {
+      Term->setUnconditionalDest(target);
       // Merge adjacent basic blocks, if possible.
-      if (BasicBlock *Fold = FoldBlockIntoPredecessor(Dest, LI)) {
-        std::replace(Latches.begin(), Latches.end(), Dest, Fold);
-        std::replace(Headers.begin(), Headers.end(), Dest, Fold);
+      // Should this be here? Shouldn't another pass do this?
+      if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
+	DEBUG(dbgs() << "Folded BB\n");
+	std::replace(Latches.begin(), Latches.end(), target, Fold);
+	std::replace(Headers.begin(), Headers.end(), target, Fold);
       }
     }
   }
-  
-  // At this point, the code is well formed.  We now do a quick sweep over the
-  // inserted code, doing constant propagation and dead code elimination as we
-  // go.
-  const std::vector<BasicBlock*> &NewLoopBlocks = L->getBlocks();
-  for (std::vector<BasicBlock*>::const_iterator BB = NewLoopBlocks.begin(),
-       BBE = NewLoopBlocks.end(); BB != BBE; ++BB)
-    for (BasicBlock::iterator I = (*BB)->begin(), E = (*BB)->end(); I != E; ) {
-      Instruction *Inst = I++;
 
-      if (isInstructionTriviallyDead(Inst))
-        (*BB)->getInstList().erase(Inst);
-      else if (Constant *C = ConstantFoldInstruction(Inst)) {
-        Inst->replaceAllUsesWith(C);
-        (*BB)->getInstList().erase(Inst);
+  // If we're doing loop peeling, do a name switcheroo such that the last unfolded iteration is named after the original first.
+  // This is purely to match the user's idea of preceding the loop with copies of its body.
+
+  if(doPeel) {
+    for(std::vector<BasicBlock*>::iterator it = LoopBlocks.begin(); it != LoopBlocks.end(); it++) {
+      BasicBlock* firstIterBlock = *it;
+      BasicBlock* lastIterBlock = cast<BasicBlock>(LastValueMap[firstIterBlock]);
+      std::string tmp = lastIterBlock->getNameStr();
+      lastIterBlock->takeName(firstIterBlock);
+      firstIterBlock->setName(tmp);
+    }
+  }
+
+  // Finally, fix LoopSimplify: if we're peeling the loop, we've certainly added branches from outside the loop
+  // to the loop exit blocks, and we've broken the preheader by virtue of preceding the loop with the previous iteration's latch
+
+  {
+    std::vector<BasicBlock*> newBlocks;
+    if(doPeel) {
+      for(SmallVector<BasicBlock*, 8>::iterator it = ExitingBlocks.begin(); it != ExitingBlocks.end(); it++) {
+	BasicBlock* ExitingBlock = cast<BasicBlock>(LastValueMap[*it]);
+	BranchInst *ExitInst = cast<BranchInst>(ExitingBlock->getTerminator());
+	bool ExitOnTrue = !L->contains(ExitInst->getSuccessor(0));
+	BasicBlock* ExitBlock = ExitInst->getSuccessor(!ExitOnTrue);
+	newBlocks.push_back(splitEdge(ExitingBlock, ExitInst, ExitOnTrue, ExitBlock, ExitBlock->getName() + ".peelexit", true));
+      }
+      // ...and now insert a preheader between the last peel and the loop.
+      BasicBlock* LastPeeledLatch = Latches[Latches.size() - 2];
+      BranchInst* EnterInst = cast<BranchInst>(LastPeeledLatch->getTerminator());
+      BasicBlock* NewHeader = Headers.back();
+      newBlocks.push_back(splitEdge(LastPeeledLatch, EnterInst, ContinueOnTrue, NewHeader, NewHeader->getName() + ".peelpreheader", false));
+    }
+    for(std::vector<BasicBlock*>::iterator it = newBlocks.begin(); it != newBlocks.end(); it++) {
+      if(Loop* parent = L->getParentLoop()) {
+	parent->addBasicBlockToLoop(*it, LI->getBase());
       }
     }
+  }
+    
+  if(!CompletelyUnroll) {
+    DEBUG(dbgs() << "Operand loop after unrolling/peeling:\n" << *L << "\n");
+    DEBUG(dbgs() << "Function loops after unrolling/peeling:\n");
+    DEBUG(LI->print(dbgs()));
 
+    // At this point, the code is well formed.  We now do a quick sweep over the
+    // inserted code, doing constant propagation and dead code elimination as we
+    // go.
+    // Should this be here? Shouldn't IC do this?
+    const std::vector<BasicBlock*> &NewLoopBlocks = L->getBlocks();
+    for (std::vector<BasicBlock*>::const_iterator BB = NewLoopBlocks.begin(),
+	   BBE = NewLoopBlocks.end(); BB != BBE; ++BB) {
+      for (BasicBlock::iterator I = (*BB)->begin(), E = (*BB)->end(); I != E; ) {
+	Instruction *Inst = I++;
+	
+	if (isInstructionTriviallyDead(Inst))
+	  (*BB)->getInstList().erase(Inst);
+	else if (Constant *C = ConstantFoldInstruction(Inst)) {
+	  Inst->replaceAllUsesWith(C);
+	  (*BB)->getInstList().erase(Inst);
+	}
+      }
+    }
+  }
+    
   NumCompletelyUnrolled += CompletelyUnroll;
   ++NumUnrolled;
-  // Remove the loop from the LoopPassManager if it's completely removed.
-  if (CompletelyUnroll && LPM != NULL)
-    LPM->deleteLoopFromQueue(L);
-
+  
   return true;
 }

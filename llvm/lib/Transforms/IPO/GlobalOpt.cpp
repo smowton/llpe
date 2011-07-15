@@ -395,8 +395,10 @@ static bool IsUserOfGlobalSafeForSRA(User *U, GlobalValue *GV) {
   // The user of the global must be a GEP Inst or a ConstantExpr GEP.
   if (!isa<GetElementPtrInst>(U) && 
       (!isa<ConstantExpr>(U) || 
-       cast<ConstantExpr>(U)->getOpcode() != Instruction::GetElementPtr))
+       cast<ConstantExpr>(U)->getOpcode() != Instruction::GetElementPtr)) {
+    DEBUG(dbgs() << "Not SRAing " << *GV << " because of non-GEP user " << *U << "\n");
     return false;
+  }
   
   // Check to see if this ConstantExpr GEP is SRA'able.  In particular, we
   // don't like < 3 operand CE's, and we don't like non-constant integer
@@ -404,8 +406,10 @@ static bool IsUserOfGlobalSafeForSRA(User *U, GlobalValue *GV) {
   // value of C.
   if (U->getNumOperands() < 3 || !isa<Constant>(U->getOperand(1)) ||
       !cast<Constant>(U->getOperand(1))->isNullValue() ||
-      !isa<ConstantInt>(U->getOperand(2)))
+      !isa<ConstantInt>(U->getOperand(2))) {
+    DEBUG(dbgs() << "Not SRAing " << *GV << " because of non-constant access by " << *U << "\n");
     return false;
+  }
 
   gep_type_iterator GEPI = gep_type_begin(U), E = gep_type_end(U);
   ++GEPI;  // Skip over the pointer index.
@@ -1698,7 +1702,7 @@ bool GlobalOpt::ProcessInternalGlobal(GlobalVariable *GV,
   }
 
   if (!AnalyzeGlobal(GV, GS, PHIUsers)) {
-#if 0
+
     DEBUG(dbgs() << "Global: " << *GV);
     DEBUG(dbgs() << "  isLoaded = " << GS.isLoaded << "\n");
     DEBUG(dbgs() << "  StoredType = ");
@@ -1719,7 +1723,6 @@ bool GlobalOpt::ProcessInternalGlobal(GlobalVariable *GV,
     DEBUG(dbgs() << "  HasNonInstructionUser = " 
                  << GS.HasNonInstructionUser<<"\n");
     DEBUG(dbgs() << "\n");
-#endif
     
     // If this is a first class global and has only one accessing function
     // and this function is main (which we know is not recursive we can make

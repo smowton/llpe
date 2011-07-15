@@ -22,6 +22,12 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/Passes.h"
+#include "llvm/Support/Debug.h"
+
+#include <sys/types.h>
+#include <unistd.h>
+
 using namespace llvm;
 
 template <class ArgIt>
@@ -64,7 +70,7 @@ static void EnsureFPIntrinsicsExist(Module &M, Function *Fn,
 template <class ArgIt>
 static CallInst *ReplaceCallWith(const char *NewFn, CallInst *CI,
                                  ArgIt ArgBegin, ArgIt ArgEnd,
-                                 const Type *RetTy) {
+                                 const Type *RetTy, bool IsVarArgs=false) {
   // If we haven't already looked up this function, check to see if the
   // program already contains a function with this name.
   Module *M = CI->getParent()->getParent()->getParent();
@@ -73,7 +79,7 @@ static CallInst *ReplaceCallWith(const char *NewFn, CallInst *CI,
   for (ArgIt I = ArgBegin; I != ArgEnd; ++I)
     ParamTys.push_back((*I)->getType());
   Constant* FCache = M->getOrInsertFunction(NewFn,
-                                  FunctionType::get(RetTy, ParamTys, false));
+                                  FunctionType::get(RetTy, ParamTys, IsVarArgs));
 
   IRBuilder<> Builder(CI->getParent(), CI);
   SmallVector<Value *, 8> Args(ArgBegin, ArgEnd);
@@ -156,6 +162,14 @@ void IntrinsicLowering::AddPrototypes(Module &M) {
       case Intrinsic::exp2:
         EnsureFPIntrinsicsExist(M, I, "exp2f", "exp2", "exp2l");
         break;
+      case Intrinsic::openat:
+	std::vector<const Type*> openArgTypes;
+	openArgTypes.push_back(Type::getInt8PtrTy(Context));
+	openArgTypes.push_back(Type::getInt32Ty(Context));
+	FunctionType* OpenType = FunctionType::get(Type::getInt32Ty(Context), openArgTypes, true /* varargs */);
+	M.getOrInsertFunction("open", OpenType);
+	M.getOrInsertFunction("lseek64", Type::getInt64Ty(Context), Type::getInt32Ty(Context), Type::getInt64Ty(Context), Type::getInt32Ty(Context), (Type*)0);
+	break;
       }
 }
 
@@ -530,9 +544,114 @@ void IntrinsicLowering::LowerIntrinsicCall(CallInst *CI) {
   case Intrinsic::lifetime_end:
     // Discard region information.
     break;
+  case Intrinsic::openat:
+    Module *M = CI->getParent()->getParent()->getParent();
+    LLVMContext& MC = M->getContext();
+    Value* open_args[2];
+    open_args[0] = CI->getArgOperand(0);
+    open_args[1] = CI->getArgOperand(1);
+    CallInst* NewCI = ReplaceCallWith("open", CI, open_args, &(open_args[2]), Type::getInt32Ty(MC), true);
+    
+    std::vector<const Type *> ParamTys;
+    ParamTys.push_back(Type::getInt32Ty(MC));
+    ParamTys.push_back(Type::getInt64Ty(MC));
+    ParamTys.push_back(Type::getInt32Ty(MC));
+    Constant* FCache = M->getOrInsertFunction("lseek64", FunctionType::get(Type::getInt64Ty(MC), ParamTys, false));
+
+    BasicBlock::iterator BIt(NewCI);
+    BIt++;
+    IRBuilder<> Builder(NewCI->getParent(), BIt);
+    SmallVector<Value *, 8> Args;
+    Args.push_back(NewCI);
+    Args.push_back(CI->getArgOperand(2));
+    Args.push_back(ConstantInt::get(Type::getInt32Ty(MC), SEEK_SET));
+
+    Builder.CreateCall(FCache, Args.begin(), Args.end());
+    break;
   }
 
   assert(CI->use_empty() &&
          "Lowering should have eliminated any uses of the intrinsic call!");
   CI->eraseFromParent();
+}
+
+namespace {
+
+  // Rewrites VFS-related intrinsics into straightforward syscalls.
+
+  class LowerVFSIntrinsics : public FunctionPass {
+    
+    IntrinsicLowering* IL;
+
+  public:
+    static char ID;
+    
+    LowerVFSIntrinsics();
+    const char *getPassName() const;
+    void getAnalysisUsage(AnalysisUsage &AU) const;
+    
+    bool doInitialization(Module &M);
+    bool runOnFunction(Function &F);
+  };
+
+}
+
+FunctionPass *llvm::createVFSIntrinsicLoweringPass() {
+  return new LowerVFSIntrinsics();
+}
+
+LowerVFSIntrinsics::LowerVFSIntrinsics() : FunctionPass(ID), IL(0) { }
+
+char LowerVFSIntrinsics::ID = 0;
+
+const char* LowerVFSIntrinsics::getPassName() const {
+
+  return "Lower VFS-related intrinsics";
+
+}
+
+void LowerVFSIntrinsics::getAnalysisUsage(AnalysisUsage &AU) const {
+  FunctionPass::getAnalysisUsage(AU);
+}
+
+bool LowerVFSIntrinsics::doInitialization(Module &M) {
+  const TargetData* TD = getAnalysisIfAvailable<TargetData>();
+  if(!TD)
+    return false;
+  IL = new IntrinsicLowering(*TD);
+  IL->AddPrototypes(M);
+  return true;
+}
+
+bool LowerVFSIntrinsics::runOnFunction(Function &F) {
+
+  bool MadeChange = false;
+
+  if(!IL) {
+    DEBUG(dbgs() << "LowerVFS: No TargetData available!\n");
+    return false;
+  }
+
+  for (Function::iterator BB = F.begin(), E = F.end(); BB != E; ++BB) {
+    for (BasicBlock::iterator II = BB->begin(), E = BB->end(); II != E;) {
+      DEBUG(dbgs() << "LowerVFS: considering " << *II << "\n");
+      if (CallInst *CI = dyn_cast<CallInst>(II++)) {
+        if (Function *F = CI->getCalledFunction()) {
+	  DEBUG(dbgs() << "It's a call instruction (to " << *F << ")\n");
+	  DEBUG(dbgs() << "Intrinsic ID: " << F->getIntrinsicID() << "\n");
+          switch (F->getIntrinsicID()) {
+	  case Intrinsic::openat:
+	    DEBUG(dbgs() << "It's an openat call!\n");
+	    IL->LowerIntrinsicCall(CI);
+	    MadeChange = true;
+	  default:
+	    continue;
+	  }
+	}
+      }
+    }
+  }
+  
+  return MadeChange;
+
 }

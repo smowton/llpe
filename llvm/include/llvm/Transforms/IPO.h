@@ -211,6 +211,11 @@ ModulePass *createMergeFunctionsPass();
 ///
 ModulePass *createPartialInliningPass();
 
+//===----------------------------------------------------------------------===//
+/// createRaiseOpenCalls - This pass raises sys_open calls to llvm.openat and uniquely numbers them to prevent CSE
+///
+ModulePass *createRaiseOpenCallsPass();
+
 } // End llvm namespace
 
 #endif

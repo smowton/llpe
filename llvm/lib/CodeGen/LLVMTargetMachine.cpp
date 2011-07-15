@@ -258,6 +258,8 @@ bool LLVMTargetMachine::addCommonCodeGenPasses(PassManagerBase &PM,
   if (!DisableVerify)
     PM.add(createVerifierPass());
 
+  PM.add(createVFSIntrinsicLoweringPass());
+
   // Optionally, tun split-GEPs and no-load GVN.
   if (EnableSplitGEPGVN) {
     PM.add(createGEPSplitterPass());

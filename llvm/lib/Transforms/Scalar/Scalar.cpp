@@ -68,6 +68,10 @@ void LLVMAddLoopUnrollPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createLoopUnrollPass());
 }
 
+void LLVMAddLoopPeelPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createLoopPeelPass());
+}
+
 void LLVMAddLoopUnswitchPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createLoopUnswitchPass());
 }
@@ -115,4 +119,12 @@ void LLVMAddDemoteMemoryToRegisterPass(LLVMPassManagerRef PM) {
 
 void LLVMAddVerifierPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createVerifierPass());
+}
+
+void LLVMAddSimpleVFSEvalPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createSimpleVFSEvalPass());
+}
+
+void LLVMAddSimpleVFSGraphsPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createSimpleVFSGraphsPass());
 }

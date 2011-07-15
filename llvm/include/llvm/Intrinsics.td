@@ -476,6 +476,13 @@ def int_convertus  : Intrinsic<[llvm_anyint_ty],
 def int_convertuu  : Intrinsic<[llvm_anyint_ty],
                                [llvm_anyint_ty, llvm_i32_ty, llvm_i32_ty]>;
 
+
+//===----------------------------------------------------------------------===//
+// VFS intrinsics
+//===----------------------------------------------------------------------===//
+
+def int_openat : Intrinsic<[llvm_i32_ty], [llvm_ptr_ty, llvm_i32_ty, llvm_i64_ty, llvm_i64_ty], [IntrReadArgMem, NoCapture<0>]>;
+
 //===----------------------------------------------------------------------===//
 // Target-specific intrinsics
 //===----------------------------------------------------------------------===//

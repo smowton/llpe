@@ -105,8 +105,10 @@ bool LoopUnroll::runOnLoop(Loop *L, LPPassManager &LPM) {
     // completely unroll (subject to the threshold, checked below); otherwise
     // try to find greatest modulo of the trip count which is still under
     // threshold value.
-    if (TripCount == 0)
+    if (TripCount == 0) {
+      DEBUG(dbgs() << "Loop unroll count unknown; doing nothing\n");
       return false;
+    }
     Count = TripCount;
   }
 

@@ -26,6 +26,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InstIterator.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SCCIterator.h"
 #include <set>
@@ -200,7 +201,8 @@ void GlobalsModRef::AnalyzeGlobals(Module &M) {
     }
 
   for (Module::global_iterator I = M.global_begin(), E = M.global_end();
-       I != E; ++I)
+       I != E; ++I) {
+    DEBUG(dbgs() << "GlobalModRef analyzing global " << *I << "\n");
     if (I->hasLocalLinkage()) {
       if (!AnalyzeUsesOfPointer(I, Readers, Writers)) {
         // Remember that we are tracking this global, and the mod/ref fns
@@ -219,8 +221,15 @@ void GlobalsModRef::AnalyzeGlobals(Module &M) {
             AnalyzeIndirectGlobalMemory(I))
           ++NumIndirectGlobalVars;
       }
+      else {
+	DEBUG(dbgs() << "Global " << *I << " failed analysis\n");
+      }
       Readers.clear(); Writers.clear();
     }
+    else {
+      DEBUG(dbgs() << "Ignoring non-local global " << *I << "\n");
+    }
+  }
 }
 
 /// AnalyzeUsesOfPointer - Look at all of the users of the specified pointer.
@@ -536,18 +545,38 @@ GlobalsModRef::getModRefInfo(ImmutableCallSite CS,
                              const Value *P, unsigned Size) {
   unsigned Known = ModRef;
 
+  DEBUG(dbgs() << "ModRef query: does " << *(CS.getCalledFunction()) << " affect " << *P << "?\n");
+
   // If we are asking for mod/ref info of a direct call with a pointer to a
   // global we are tracking, return information if we have it.
-  if (const GlobalValue *GV = dyn_cast<GlobalValue>(P->getUnderlyingObject()))
-    if (GV->hasLocalLinkage())
-      if (const Function *F = CS.getCalledFunction())
-        if (NonAddressTakenGlobals.count(GV))
-          if (const FunctionRecord *FR = getFunctionInfo(F))
+  if (const GlobalValue *GV = dyn_cast<GlobalValue>(P->getUnderlyingObject())) {
+    DEBUG(dbgs() << "Is a GlobalValue...");
+    if (GV->hasLocalLinkage()) {
+      DEBUG(dbgs() << "is local...");
+      if (const Function *F = CS.getCalledFunction()) {
+	DEBUG(dbgs() << "callsite resolves...");
+        if (NonAddressTakenGlobals.count(GV)) {
+	  DEBUG(dbgs() << "is non-address-taken...");
+          if (const FunctionRecord *FR = getFunctionInfo(F)) {
+	    DEBUG(dbgs() << "got function record...");
             Known = FR->getInfoForGlobal(GV);
+	  }
+	}
+      }
+    }
+  }
 
-  if (Known == NoModRef)
+
+
+  if (Known == NoModRef) {
+    DEBUG(dbgs() << "\nAnswer: NoModRef\n");
     return NoModRef; // No need to query other mod/ref analyses
-  return ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, P, Size));
+  }
+  else {
+    AliasAnalysis::ModRefResult r = ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, P, Size));
+    DEBUG(dbgs() << "\nAnswer: not NoModRef\n");
+    return r;
+  }
 }
 
 

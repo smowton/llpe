@@ -61,6 +61,9 @@ void LLVMAddLoopRotatePass(LLVMPassManagerRef PM);
 /** See llvm::createLoopUnrollPass function. */
 void LLVMAddLoopUnrollPass(LLVMPassManagerRef PM);
 
+/** See llvm::createLoopPeelPass function. */
+void LLVMAddLoopPeelPass(LLVMPassManagerRef PM);
+
 /** See llvm::createLoopUnswitchPass function. */
 void LLVMAddLoopUnswitchPass(LLVMPassManagerRef PM);
 
@@ -97,6 +100,8 @@ void LLVMAddDemoteMemoryToRegisterPass(LLVMPassManagerRef PM);
 
 /** See llvm::createVerifierPass function. */
 void LLVMAddVerifierPass(LLVMPassManagerRef PM);
+
+void LLVMAddSimpleVFSEvalPass(LLVMPassManagerRef PM);
 
 #ifdef __cplusplus
 }

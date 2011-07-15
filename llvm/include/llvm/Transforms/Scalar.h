@@ -125,6 +125,12 @@ Pass *createLoopUnrollPass();
 
 //===----------------------------------------------------------------------===//
 //
+// LoopPeel - This pass is a simple loop peeling pass.
+//
+Pass *createLoopPeelPass();
+
+//===----------------------------------------------------------------------===//
+//
 // LoopRotate - This pass is a simple loop rotating pass.
 //
 Pass *createLoopRotatePass();
@@ -328,6 +334,14 @@ Pass *createLowerAtomicPass();
 // ValuePropagation - Propagate CFG-derived value information
 //
 Pass *createCorrelatedValuePropagationPass();
+
+//===----------------------------------------------------------------------===//
+//
+// SimpleVFSEval - Statically execute VFS-related syscalls and make graphs of them respectively
+//
+Pass *createSimpleVFSEvalPass();
+Pass *createSimpleVFSGraphsPass();
+Pass *createSimpleVFSLoopsPass();
 
 } // End llvm namespace
 
