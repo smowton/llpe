@@ -170,6 +170,8 @@ namespace llvm {
 
   // Print module-level debug info metadata in human-readable form.
   ModulePass *createModuleDebugInfoPrinterPass();
+
+  LoopPass *createLoopPeelHeuristicsPass();
 }
 
 #endif

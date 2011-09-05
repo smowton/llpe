@@ -152,6 +152,7 @@ namespace {
       (void) llvm::createSimpleVFSGraphsPass();
       (void) llvm::createRaiseOpenCallsPass();
       (void) llvm::createSimpleVFSLoopsPass();
+      (void) llvm::createLoopPeelHeuristicsPass();
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::FindUsedTypes();

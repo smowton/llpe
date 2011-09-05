@@ -17,19 +17,15 @@
 #include "llvm/Pass.h"
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
-#include "llvm/IntrinsicInst.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/LoopPass.h"
-#include "llvm/Support/VFSGraph.h"
-#include "llvm/Support/GraphWriter.h"
+#include "llvm/Analysis/Passes.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Utils/BuildLibCalls.h"
 
 #include <deque>
 #include <string>
@@ -41,435 +37,261 @@
 
 using namespace llvm;
 
-static cl::opt<std::string> GraphOutputDirectory("simplevfs-graphout", cl::init(""));
-
 namespace {
   
-  class SimpleVFSPass : public FunctionPass {
+  class LoopPeelHeuristicsPass : public LoopPass {
+
+    int loopBenefit;
 
   public:
-    explicit SimpleVFSPass(char& ID) : FunctionPass(ID) { }
-    bool runOnFunction(Function &F);
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const { }
-
-  protected:
-    virtual bool processOpenAt(CallInst* CI, VFSGraph*) = 0;
-
-  private:
-
-    VFSGraph* buildOpenAtGraph(CallInst* CI);
-
-  };
-
-  class SimpleVFSGraphs : public SimpleVFSPass {
-
-  public:
-
-    explicit SimpleVFSGraphs() : SimpleVFSPass(ID) { }
-
-    static char ID; // Pass identification, replacement for typeid
-    bool processOpenAt(CallInst* CI, VFSGraph*);
-
-  };
-
-  char SimpleVFSGraphs::ID = 0;
-
-  class SimpleVFSEval : public SimpleVFSPass {
-
-    bool getFileBytes(Value*, Value*, ConstantInt*, std::vector<Constant*>&, LLVMContext&, std::string&);
-
-  public:
-
-    explicit SimpleVFSEval() : SimpleVFSPass(ID) { }
-
-    static char ID; // Pass identification, replacement for typeid
-    bool processOpenAt(CallInst* CI, VFSGraph*);
-
-  };
-
-  char SimpleVFSEval::ID = 0;
-
-  class SimpleVFSLoops : public SimpleVFSPass {
-
-  public:
-
-    explicit SimpleVFSLoops() : SimpleVFSPass(ID) { }
-
-    virtual void getAnalysisUsage(AnalysisUsage &AU) const { 
-
-      AU.addRequired<LoopInfo>();
-      AU.setPreservesAll();
-      
-    }
 
     static char ID;
-    bool processOpenAt(CallInst* CI, VFSGraph*);
 
+    explicit LoopPeelHeuristicsPass() : LoopPass(ID) { }
+    bool runOnLoop(Loop *L, LPPassManager&);
     void print(raw_ostream &OS, const Module*) const;
+    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
 
-  private:
+      AU.setPreservesAll();
 
-    llvm::SmallVector<std::pair<std::string, bool>, 8> unrollHeaders;
+    }
 
   };
 
-  char SimpleVFSLoops::ID = 0;
+  char LoopPeelHeuristicsPass::ID = 0;
 
 }
 
-// createSimpleVFSEvalPass - The public interface to this file...
-Pass *llvm::createSimpleVFSEvalPass() {
-  return new SimpleVFSEval();
+LoopPass *llvm::createLoopPeelHeuristicsPass() {
+  return new LoopPeelHeuristicsPass();
 }
 
-Pass *llvm::createSimpleVFSGraphsPass() {
-  return new SimpleVFSGraphs();
-}
+INITIALIZE_PASS(LoopPeelHeuristicsPass, "peelheuristics", "Score loops for peeling benefit", false, false);
 
-Pass *llvm::createSimpleVFSLoopsPass() {
-  return new SimpleVFSLoops();
-}
+int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, DenseMap<Instruction*, Constant*>& constInstructions,
+			      DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds);
 
-INITIALIZE_PASS(SimpleVFSEval, "simplevfseval", "Simple VFS Evaluation", false, false);
-INITIALIZE_PASS(SimpleVFSGraphs, "simplevfsgraphs", "Simple VFS Graphs", false, false);
-INITIALIZE_PASS(SimpleVFSLoops, "simplevfsloops", "Determine loops to peel for VFS eval", false, false);
+int getConstantBenefit(Loop* L, Instruction* I, DenseMap<Instruction*, Constant*>& constInstructions, 
+		       DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds);
 
-VFSGraph* SimpleVFSPass::buildOpenAtGraph(CallInst* CI) {
-  
-  llvm::SmallSet<BasicBlock*, 10> interestingBlocks;
-  llvm::SmallSet<Instruction*, 10> interestingInstructions;
-  BasicBlock* startBlock = CI->getParent();
+// This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
+// we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
+// It might turn out to be a better idea to find out whether peeling is useful by just doing it and optimising! I'll see...
 
-  interestingBlocks.insert(startBlock);
-  interestingInstructions.insert(CI);
+int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, DenseMap<Instruction*, Constant*>& constInstructions,
+			      DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds) {
 
-  VFSGraph* retGraph = new VFSGraph(CI);
+  int benefit = 0;
 
-  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); UI != UE; UI++) {
-    Instruction* I = cast<Instruction>(*UI);
-    interestingBlocks.insert(I->getParent());
-    interestingInstructions.insert(I);
-    retGraph->nameNode(I);
+  if(!L->contains(BB))
+    return 0;
+
+  SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
+
+  thisBlockPreds.erase(BBPred);
+  if(thisBlockPreds.size() == 0) {
+    // This BB is dead! Remove it as a predecessor to all successor blocks and see if that helps anything.
+    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+      benefit += getRemoveBlockPredBenefit(L, *SI, BB, constInstructions, blockPreds);
+      return benefit;
+    }
   }
-  
-  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); UI != UE; UI++) {
-
-    Instruction* I = cast<Instruction>(*UI);
-    llvm::SmallSet<BasicBlock*, 10> visitedBlocks;
-    std::deque<BasicBlock*> toVisit;
-    bool firstTime = true;
-    
-    toVisit.push_back(I->getParent());
-    // But don't put it in visitedBlocks, so we'll inspect it again if the start block can loop back to itself
-
-    DEBUG(dbgs() << "Trying to find predecessors for " << *I << "\n");
-
-    while(!toVisit.empty()) {
-
-      BasicBlock* nextBlock = toVisit.front(); toVisit.pop_front();
-
-      DEBUG(dbgs() << "Searching block " << *nextBlock << "\n");
-      BasicBlock::iterator BI(nextBlock->end());
-      if(firstTime)
-	BI = BasicBlock::iterator(I);
-
-      bool foundDep = false;
-
-      while(BI != nextBlock->begin()) {
-	
-	Instruction* testInstruction = --BI;
-	DEBUG(dbgs() << "Considering instruction " << *testInstruction << "\n");
-	if(interestingInstructions.count(testInstruction)) {
-	  retGraph->addLink(testInstruction, I);
-	  DEBUG(dbgs() << "Hit!\n");
-	  foundDep = true;
-	  break;
-	}
-
+  else if(thisBlockPreds.size() == 1) {
+    BasicBlock* singlePredecessor = *(thisBlockPreds.begin());
+    // See if any of our PHI nodes are now effectively constant
+    for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(I); ++I) {
+      PHINode* PN = cast<PHINode>(I);
+      Value* predValue = PN->getIncomingValueForBlock(singlePredecessor);
+      Constant* constantPredValue;
+      if(predValue && (constantPredValue = dyn_cast<Constant>(predValue))) {
+	constInstructions[PN] = constantPredValue;
+	benefit += getConstantBenefit(L, PN, constInstructions, blockPreds);
       }
+    }
+  }
 
-      if(!foundDep) {
-	if(!((nextBlock == startBlock) && !firstTime)) {
-	  DEBUG(dbgs() << "No deps in this block, adding predecessors to search\n");
-	  for (pred_iterator PI = pred_begin(nextBlock), E = pred_end(nextBlock); PI != E; ++PI) {
-	    BasicBlock* visitBlock = cast<BasicBlock>(*PI);
-	    if(!visitedBlocks.count(visitBlock)) {
-	      toVisit.push_back(visitBlock);
-	      visitedBlocks.insert(visitBlock);
-	    }
+  return benefit;
+
+}
+
+int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Constant*>& constInstructions, 
+		       DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds) {
+
+  int benefit = 0;
+
+  if(!L->contains(ArgI)) // Instructions outside the loop are neither here nor there if we're unrolling the loop.
+    return 0;
+  
+  Constant* instVal = constInstructions[ArgI];
+  // A null value means we know the result will be constant, but we're not sure what.
+
+  for (Value::use_iterator UI = ArgI->use_begin(), E = ArgI->use_end(); UI != E;++UI){
+
+    Instruction* I;
+    if(!(I = dyn_cast<Instruction>(*UI)))
+      continue;
+
+    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(I);
+    if(it != constInstructions.end()) // Have we already rendered this instruction constant?
+      continue;
+
+    // These bonuses apply whether or not we manage to render all the instruction's arguments constant:
+
+    if (CallInst *CI = dyn_cast<CallInst>(I)) {
+      // Turning an indirect call into a direct call is a BIG win
+      if (CI->getCalledValue() == ArgI)
+	benefit += 500;
+    } else if (InvokeInst *II = dyn_cast<InvokeInst>(I)) {
+      // Turning an indirect call into a direct call is a BIG win
+      if (II->getCalledValue() == ArgI)
+	benefit += 500;
+    }
+    
+    if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
+      // Both Branches and Switches have one potentially non-const arg which we now know is constant.
+      // The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
+      // time instead, by searching for PHIs that will be made constant.
+      if(instVal) {
+	BasicBlock* target;
+	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
+	  // This ought to be a boolean.
+	  if((cast<ConstantInt>(instVal))->isZero())
+	    target = BI->getSuccessor(0);
+	  else
+	    target = BI->getSuccessor(1);
+	}
+	else {
+	  SwitchInst* SI = cast<SwitchInst>(I);
+	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(instVal));
+	  target = SI->getSuccessor(targetidx);
+	}
+	if(target) {
+	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
+	  TerminatorInst* TI = cast<TerminatorInst>(I);
+	  const unsigned NumSucc = TI->getNumSuccessors();
+	  for (unsigned I = 0; I != NumSucc; ++I) {
+	    BasicBlock* otherTarget = TI->getSuccessor(I);
+	    benefit += getRemoveBlockPredBenefit(L, otherTarget, TI->getParent(), constInstructions, blockPreds);
 	  }
 	}
-      }
-
-      firstTime = false;
-
-    }
-
-  }
-
-  return retGraph;
-
-}
-
-bool SimpleVFSGraphs::processOpenAt(CallInst* CI, VFSGraph* depGraph) {
-
-  // Check for a fixed filename
-  std::string Filename;
-  if (!GetConstantStringInfo(CI->getArgOperand(0), Filename))
-    return false;
-
-  std::string graphTitle;
-  raw_string_ostream graphStream(graphTitle);
-  graphStream << "VFS Graph for " << *CI;
-
-  if(GraphOutputDirectory.empty())
-    WriteGraph(depGraph, graphTitle);
-  else {
-    std::string error;
-    sys::Path graphPath(GraphOutputDirectory);
-    graphPath.makeUnique(false, &error);
-    if(!error.empty()) {
-      errs() << "Failed to create a unique path: " << error << "\n";
-      return false;
-    }
-    raw_fd_ostream os(graphPath.c_str(), error);
-    WriteGraph(os, depGraph, false, "", graphTitle);
-    if(!error.empty())
-      errs() << "Failure writiing to " << graphPath.str() << ": " << error << "\n";
-  }
-
-  return false;
-
-}
-
-bool SimpleVFSEval::getFileBytes(Value* fileName, Value* filePosition, ConstantInt* nBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
-
-  std::string strFileName;
-  if(!GetConstantStringInfo(fileName, strFileName)) {
-    errors = "Filename not a constant";
-    return false;
-  }
-
-  ConstantInt* filePosInt = cast<ConstantInt>(filePosition);
-  uint64_t realFilePos = filePosInt->getLimitedValue();
-
-  ConstantInt* bytesInt;
-  uint64_t realBytes;
-  if((bytesInt = dyn_cast<ConstantInt>(nBytes)))
-    realBytes = bytesInt->getLimitedValue();
-  else {
-    errors = "Read length not a constant";
-    return false;
-  }
-
-  FILE* fp = fopen(strFileName.c_str(), "r");
-  if(!fp) {
-    errors = "Couldn't open " + strFileName + ": " + strerror(errno);
-    return false;
-  }
-
-  int rc = fseek(fp, realFilePos, SEEK_SET);
-  if(rc == -1) {
-    errors = "Couldn't seek " + strFileName + ": " + strerror(errno);
-    return false;
-  }
-
-  uint64_t bytesRead = 0;
-  uint8_t buffer[4096];
-  const Type* charType = IntegerType::get(Context, 8);
-  while(bytesRead < realBytes) {
-    uint64_t toRead = realBytes - bytesRead;
-    toRead = std::min(toRead, (uint64_t)4096);
-    size_t reallyRead = fread(buffer, 1, (size_t)toRead, fp);
-    if(reallyRead == 0) {
-      if(feof(fp))
-	break;
-      else {
-	errors = "Error reading from " + strFileName + ": " + strerror(errno);
-	fclose(fp);
-	return false;
-      }
-    }
-    for(size_t i = 0; i < reallyRead; i++) {
-      Constant* byteAsConst = ConstantInt::get(charType, buffer[i]);
-      arrayBytes.push_back(byteAsConst);
-    }
-    bytesRead += reallyRead;
-  }
-
-  fclose(fp);
-
-  return true;
-
-}
-
-bool SimpleVFSEval::processOpenAt(CallInst* CI, VFSGraph* depGraph) {
-
-  VFSGraphNode* currentNode = &depGraph->instructionNodes[CI];
-  bool modified = false;
-  while(1) {
-
-    if(currentNode->succs.empty()) {
-      DEBUG(dbgs() << "Deleting unused open call " << *CI << ": fixed file descriptor leak??\n");
-      modified = true;
-      CI->removeFromParent();
-      break;
-    }
-    else if(currentNode->succs.size() != 1) {
-      DEBUG(dbgs() << "Can't process " << *CI << " further as it has multiple possible successors\n");
-      break;
-    }
-
-    VFSGraphNode* succNode = currentNode->succs[0];
-    Instruction* succ = succNode->I;
-    if(succNode->preds.size() != 1) {
-      DEBUG(dbgs() << "Can't optimize " << *CI << " further because its successor " << *succ << " has more than one possible predecessor\n");
-      break;
-    }
-    CallInst* Caller;
-    if((Caller = dyn_cast<CallInst>(succ))) {
-
-      LLVMContext& Context = CI->getParent()->getParent()->getContext();
-      IRBuilder<> Builder(Context);
-	
-      Function* Callee = Caller->getCalledFunction();
-      if (Callee == 0 || !Callee->isDeclaration() ||
-	  !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage())) {
-	DEBUG(dbgs() << "Can't optimize " << *CI << " further: call to non-external function\n");
-	break;
-      }
-      StringRef CalleeName = Callee->getName();
-      if(CalleeName == "read") {
-
-	const FunctionType *FT = Callee->getFunctionType();
-	if (FT->getNumParams() != 3 || !FT->getParamType(0)->isIntegerTy(32) ||
-	    !FT->getParamType(1)->isPointerTy() || !FT->getParamType(2)->isIntegerTy() ||
-	    !FT->getReturnType()->isIntegerTy()) {
-	  DEBUG(dbgs() << "Can't optimize " << *CI << " further: call to weird 'read' function\n");
-	  break;
+	else {
+	  // We couldn't be sure which block the branch will go to, but its target will be constant.
+	  // Give a static bonus to indicate that more advanced analysis might be able to eliminate the branch.
+	  benefit += 50;
 	}
-	Value* readBuffer = Caller->getArgOperand(1);
-	Value* readBytes = Caller->getArgOperand(2);
-
-	ConstantInt* intBytes = dyn_cast<ConstantInt>(readBytes);
-	if(!intBytes) {
-	  DEBUG(dbgs() << "Can't optimize " << *CI << " further: read amount uncertain\n");
-	  break;
-	}
-
-	std::string errors;
-	Value* fileName = CI->getArgOperand(0);
-	Value* filePosition = CI->getArgOperand(2);
-	std::vector<Constant*> arrayBytes;
-	if(!getFileBytes(fileName, filePosition, intBytes, arrayBytes, Context, errors)) {
-	  DEBUG(dbgs() << "Can't optimize " << *CI << " further: failed reading file: (" << errors << ")\n");
-	  break;
-	}
-
-	modified = true;
-
-	Builder.SetInsertPoint(Caller->getParent(), Caller);
-	int i;
-	std::vector<Constant*>::iterator I, E;
-	Instruction* lastInsert = Caller;
-	for(I = arrayBytes.begin(), E = arrayBytes.end(), i = 0; I != E; I++, i++) {
-	  lastInsert = cast<Instruction>(Builder.CreateConstInBoundsGEP1_32(readBuffer, i));
-	  lastInsert = cast<Instruction>(Builder.CreateStore(*I, lastInsert));
-	}
-	CI->removeFromParent();
-	CI->insertAfter(lastInsert);
-	uint64_t oldFilePosition = (cast<ConstantInt>(filePosition))->getLimitedValue();
-	ConstantInt* newFilePosition = ConstantInt::get(IntegerType::get(Context, 64), arrayBytes.size() + oldFilePosition, false);
-	CI->setArgOperand(2, newFilePosition);
-	ConstantInt* realLength = ConstantInt::get(IntegerType::get(Context, 64), arrayBytes.size(), true);
-	Caller->replaceAllUsesWith(realLength);
-	Caller->eraseFromParent();
-	    
-      }
-      else if(CalleeName == "close") {
-	const FunctionType *FT = Callee->getFunctionType();
-	if(FT->getNumParams() != 1 || !FT->getParamType(0)->isIntegerTy(32)) {
-	  DEBUG(dbgs() << "Can't optimize " << *CI << " further: call to weird 'close' function\n");
-	  break;
-	}
-
-	Caller->replaceAllUsesWith(ConstantInt::get(IntegerType::get(Context, 32), 0, true));
-	Caller->eraseFromParent();
-	CI->eraseFromParent();
-	modified = true;
-	break;
 
       }
       else {
-	DEBUG(dbgs() << "Can't optimize " << *CI << " further: call to unknown external function " << CalleeName << "\n");
-	break;
+	// We couldn't be sure where the branch will go because we only know the operand is constant, not its value.
+	// We usually don't know because this is the return value of a call, or the result of a load. Give a small bonus
+	// as the call might be inlined or similar.
+	benefit += 10;
       }
     }
     else {
-      DEBUG(dbgs() << "Can't optimize " << *CI << " further: non-call user\n");
-      break;
-    }
+      // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
+      // then count the benefits of that instruction becoming constant.
+      if (isa<CallInst>(I) || isa<InvokeInst>(I))
+	  benefit += 50;
 
-    currentNode = currentNode->succs[0];
+      // Try to calculate a constant value resulting from this instruction. Only possible if
+      // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
 
-  }
+      SmallVector<Constant*, 4> instOperands;
 
-  return modified;
-
-}
-
-bool SimpleVFSLoops::processOpenAt(CallInst* CI, VFSGraph* depGraph) {
-
-  VFSGraphNode* currentNode = &depGraph->instructionNodes[CI];
-  LoopInfo &LI = getAnalysis<LoopInfo>();
-  Loop* openLoop = LI.getLoopFor(CI->getParent());
-  bool couldEvalNow = false;
-  
-  while(1) {
-
-    if(currentNode->succs.empty()) {
-      DEBUG(dbgs() << "Ran out of successors for " << *CI << "\n");
-      return false;
-    }
-    else if(currentNode->succs.size() != 1) {
-      DEBUG(dbgs() << *CI << " is blocked because " << *(currentNode->I) << " has multiple possible successors\n");
-      break;
-    }
-
-    VFSGraphNode* succNode = currentNode->succs[0];
-    Instruction* succ = succNode->I;
-    if(succNode->preds.size() != 1) {
-
-      DEBUG(dbgs() << *CI << " is blocked by " << *succ << " which has more than one possible predecessor\n");
-      if(!isa<CallInst>(succ)) {
-	DEBUG(dbgs() << "Ignoring because it isn't a call instruction\n");
-	return false;
-      }
-
-      Loop* userLoop = LI.getLoopFor(succ->getParent());
-      if((!userLoop) || (openLoop == userLoop)) {
-	DEBUG(dbgs() << "Ignoring because it's in the same loop as the open call, or isn't in a loop at all\n");
-	return false;
-      }
-      
-      while(userLoop && (openLoop != userLoop)) {
-	Loop* parentLoop = userLoop->getParentLoop();
-	if((!parentLoop) || (parentLoop == openLoop)) {
-	  BasicBlock* Header = userLoop->getHeader();
-	  if(!Header)
-	    DEBUG(dbgs() << "Can't record loop " << *userLoop << " because it has no header!\n");
-	  else
-	    unrollHeaders.push_back(std::make_pair(Header->getName(), couldEvalNow));
-	  return false;
+      // This isn't as good as it could be, because the constant-folding library wants an array of constants,
+      // whereas we might have somethig like 1 && x, which could fold but x is not a Constant*. Could work around this,
+      // don't at the moment.
+      for(unsigned i = 0; i < I->getNumOperands(); i++) {
+	Value* op = I->getOperand(i);
+	Constant* C;
+	Instruction* OperandI;
+	if((C = dyn_cast<Constant>(op)))
+	  instOperands.push_back(C);
+	else if((OperandI = dyn_cast<Instruction>(op))) {
+	  DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(OperandI);
+	  if(it != constInstructions.end())
+	    instOperands.push_back(it->second);
+	  else {
+	    break;
+	  }
+	}
+	else {
+	  DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant user: " << (*op) << std::endl);
+	  break;
 	}
       }
 
-      // Unreachable
-      return false;
+      if(instOperands.size() == I->getNumOperands()) {
+	Constant* newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), 0);
+	// InlineCosts.cpp doesn't count side-effecting instructions or memory reads here.
+	// I count memory reads because having made their operand constant there's at least a
+	// chance we'll be able to store-to-load forward them out of existence.
+
+	// The following comment from InlineCosts.cpp, which I don't quite understand yet:
+	// FIXME: It would be nice to capture the fact that a load from a
+	// pointer-to-constant-global is actually a *really* good thing to zap.
+	// Unfortunately, we don't know the pointer that may get propagated here,
+	// so we can't make this decision.
+	if (!(I->mayHaveSideEffects() || isa<AllocaInst>(I))) // A particular side-effect
+	  benefit++; // Elimination of this instruction.
+	constInstructions[I] = newConst;
+	benefit += getConstantBenefit(L, I, constInstructions, blockPreds);
+      }
+
+    }
+  }
+
+  return benefit;
+
+}
+
+bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
+  
+  BasicBlock* loopHeader = L->getHeader();
+  BasicBlock* loopPreheader = L->getLoopPreheader();
+  if((!loopHeader) || (!loopPreheader)) {
+    DEBUG(dbgs() << "Can't evaluate loop " << L << " because it doesn't have a header or preheader" << std::endl);
+    return false;
+  }
+  DenseMap<Instruction*, Constant*> constInstructions;
+
+  for(BasicBlock::iterator I = loopHeader->begin(), E = loopHeader->end(); I != E && isa<PHINode>(*I); I++) {
+    PHINode* PI = cast<PHINode>(I);
+    Value* preheaderVal = PI->getIncomingValueForBlock(loopPreheader);
+    if(preheaderVal) {
+      if(Constant* C = dyn_cast<Constant>(preheaderVal)) {
+	constInstructions[PI] = C;
+      }
+    }
+  }
+
+  if(constInstructions.size() == 0)
+    return false;
+
+  // Proceed to push the frontier of instructions with all-constant operands! Count a score as we go,
+  // using some bonuses suggested from code in InlineCost.cpp attempting a similar game.
+
+  DenseMap<Instruction*, int> nonConstOperands;
+  DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> > blockPreds;
+
+  std::vector<BasicBlock*> loopBlocks = L->getBlocks();
+
+  for(std::vector<BasicBlock*>::iterator I = loopBlocks.begin(), E = loopBlocks.end(); I != E; ++I) {
+
+    BasicBlock* block = *I;
+
+    for(pred_iterator PI = pred_begin(block), E = pred_end(block); PI != E; ++PI) {
+      blockPreds[block].insert(*PI);
     }
 
-    couldEvalNow = true;
-    currentNode = currentNode->succs[0];
+  }
+
+  loopBenefit = 0;
+
+  for(DenseMap<Instruction*, Constant*>::iterator I = constInstructions.begin(), E = constInstructions.end(); I != E; ++I) {
+
+    loopBenefit += getConstantBenefit(L, I->first, constInstructions, blockPreds);
 
   }
 
@@ -477,50 +299,8 @@ bool SimpleVFSLoops::processOpenAt(CallInst* CI, VFSGraph* depGraph) {
 
 }
 
-void SimpleVFSLoops::print(raw_ostream &OS, const Module*) const {
+void LoopPeelHeuristicsPass::print(raw_ostream &OS, const Module*) const {
 
-  for(llvm::SmallVector<std::pair<std::string, bool>, 8>::const_iterator I = unrollHeaders.begin(), E = unrollHeaders.end(); I != E; I++) {
-    OS << (I->second ? "Could" : "Should") << " peel " << I->first << "\n";
-  }
+  OS << "Score: " << loopBenefit << "\n";
 
 }
-
-/// runOnFunction - This is the main transformation entry point for a function.
-bool SimpleVFSPass::runOnFunction(Function& F) {
-
-  std::vector<std::pair<CallInst*, VFSGraph*> > openAts;
-
-  for (Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ) {
-
-    BasicBlock& BB = *(FI++);
-
-    for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE;) {
-
-      Instruction* I = &*(BI++);
-      if (CallInst *CI = dyn_cast<CallInst>(I)) {
-	if (Function *F = CI->getCalledFunction()) {
-	  switch (F->getIntrinsicID()) {
-	  case Intrinsic::openat:
-	    {
-	      VFSGraph* graph = buildOpenAtGraph(CI);
-	      openAts.push_back(std::make_pair(CI, graph));
-	      break;
-	    }
-	  default:
-	    break;
-	  }
-	}
-      }
-    }
-  }
-
-  bool Changed = false;
-
-  for(std::vector<std::pair<CallInst*, VFSGraph*> >::iterator OI = openAts.begin(), OE = openAts.end(); OI != OE; OI++) {
-    Changed |= processOpenAt(OI->first, OI->second);
-    delete OI->second;
-  }
-
-  return Changed;
-}
-
