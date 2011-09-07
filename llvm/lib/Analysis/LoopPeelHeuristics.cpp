@@ -96,15 +96,31 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
       return benefit;
     }
   }
-  else if(thisBlockPreds.size() == 1) {
-    BasicBlock* singlePredecessor = *(thisBlockPreds.begin());
+  else {
     // See if any of our PHI nodes are now effectively constant
-    for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(I); ++I) {
+    for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
       PHINode* PN = cast<PHINode>(I);
-      Value* predValue = PN->getIncomingValueForBlock(singlePredecessor);
-      Constant* constantPredValue;
-      if(predValue && (constantPredValue = dyn_cast<Constant>(predValue))) {
-	constInstructions[PN] = constantPredValue;
+      DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(PN);
+      if(it != constInstructions.end()) // If this PHI node has already been rendered constant.
+	continue;
+      Constant* constValue = 0;
+      for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
+	Value* predValue = PN->getIncomingValueForBlock(*PI);
+	if(predValue && !constValue) {
+	  Constant* C;
+	  if((C = dyn_cast<Constant>(predValue)))
+	    constValue = C;
+	  else
+	    break;
+	}
+	else if((!predValue) || predValue != constValue) {
+	  constValue = 0;
+	  break;
+	}
+	// else this predecessor matches the others.
+      }
+      if(constValue) {
+	constInstructions[PN] = constValue;
 	benefit += getConstantBenefit(L, PN, constInstructions, blockPreds);
       }
     }
