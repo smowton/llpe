@@ -148,11 +148,7 @@ namespace {
       (void) llvm::createSinkingPass();
       (void) llvm::createLowerAtomicPass();
       (void) llvm::createCorrelatedValuePropagationPass();
-      (void) llvm::createSimpleVFSEvalPass();
-      (void) llvm::createSimpleVFSGraphsPass();
       (void) llvm::createRaiseOpenCallsPass();
-      (void) llvm::createSimpleVFSLoopsPass();
-      (void) llvm::createLoopPeelHeuristicsPass();
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::FindUsedTypes();
