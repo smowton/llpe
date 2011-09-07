@@ -83,26 +83,32 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
 
   int benefit = 0;
 
-  if(!L->contains(BB))
+  DEBUG(dbgs() << "--> Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << std::endl);
+
+  if(!L->contains(BB)) {
+    DEBUG(dbgs() << "No benefit because " << BB->getName() << " not in loop" << std::endl);
     return 0;
+  }
 
   SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
 
   thisBlockPreds.erase(BBPred);
   if(thisBlockPreds.size() == 0) {
     // This BB is dead! Remove it as a predecessor to all successor blocks and see if that helps anything.
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+    DEBUG(dbgs() << "Block is dead! Eliminating edges from successors..." << std::endl);
+    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI)
       benefit += getRemoveBlockPredBenefit(L, *SI, BB, constInstructions, blockPreds);
-      return benefit;
-    }
   }
   else {
     // See if any of our PHI nodes are now effectively constant
     for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
       PHINode* PN = cast<PHINode>(I);
+      DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << std::endl);
       DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(PN);
-      if(it != constInstructions.end()) // If this PHI node has already been rendered constant.
+      if(it != constInstructions.end()) { // If this PHI node has already been rendered constant.
+	DEBUG(dbgs() << "Already constant, ignoring" << std::endl);
 	continue;
+      }
       Constant* constValue = 0;
       for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
 	Value* predValue = PN->getIncomingValueForBlock(*PI);
@@ -120,11 +126,14 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
 	// else this predecessor matches the others.
       }
       if(constValue) {
+	DEBUG(dbgs() << "Constant at " << *constValue << std::endl);
 	constInstructions[PN] = constValue;
 	benefit += getConstantBenefit(L, PN, constInstructions, blockPreds);
       }
     }
   }
+
+  DEBUG(dbgs() << "<-- Total benefit due to " << BBPred->getName() << " -/-> " << BB->getName() << ": " << benefit << std::endl);
 
   return benefit;
 
@@ -141,26 +150,41 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
   Constant* instVal = constInstructions[ArgI];
   // A null value means we know the result will be constant, but we're not sure what.
 
+  if(instVal)
+    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *instVal << std::endl);
+  else
+    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << std::endl);
+
   for (Value::use_iterator UI = ArgI->use_begin(), E = ArgI->use_end(); UI != E;++UI){
 
     Instruction* I;
-    if(!(I = dyn_cast<Instruction>(*UI)))
+    if(!(I = dyn_cast<Instruction>(*UI))) {
+      DEBUG(dbgs() << "Instruction has a non-instruction user: " << *UI << std::endl);
       continue;
+    }
+
+    DEBUG(dbgs() << "Considering user instruction " << *I << std::endl);
 
     DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(I);
-    if(it != constInstructions.end()) // Have we already rendered this instruction constant?
+    if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
+      DEBUG(dbgs() << "User already rendered constant" << std::endl);
       continue;
+    }
 
     // These bonuses apply whether or not we manage to render all the instruction's arguments constant:
 
     if (CallInst *CI = dyn_cast<CallInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
-      if (CI->getCalledValue() == ArgI)
+      if (CI->getCalledValue() == ArgI) {
+	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << std::endl);
 	benefit += 500;
+      }
     } else if (InvokeInst *II = dyn_cast<InvokeInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
-      if (II->getCalledValue() == ArgI)
+      if (II->getCalledValue() == ArgI) {
+	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << std::endl);
 	benefit += 500;
+      }
     }
     
     if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
@@ -183,6 +207,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	}
 	if(target) {
 	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
+	  DEBUG(dbgs() << "Branch or switch instruction given known target: " << target->getName() << std::endl);
 	  TerminatorInst* TI = cast<TerminatorInst>(I);
 	  const unsigned NumSucc = TI->getNumSuccessors();
 	  for (unsigned I = 0; I != NumSucc; ++I) {
@@ -193,6 +218,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	else {
 	  // We couldn't be sure which block the branch will go to, but its target will be constant.
 	  // Give a static bonus to indicate that more advanced analysis might be able to eliminate the branch.
+	  DEBUG(dbgs() << "Awarded unconditional branch to unknown target bonus" << std::endl);
 	  benefit += 50;
 	}
 
@@ -201,14 +227,17 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	// We couldn't be sure where the branch will go because we only know the operand is constant, not its value.
 	// We usually don't know because this is the return value of a call, or the result of a load. Give a small bonus
 	// as the call might be inlined or similar.
+	DEBUG(dbgs() << "Awarded unknown constant in branch or switch bonus" << std::endl);
 	benefit += 10;
       }
     }
     else {
       // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
       // then count the benefits of that instruction becoming constant.
-      if (isa<CallInst>(I) || isa<InvokeInst>(I))
-	  benefit += 50;
+      if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
+	DEBUG(dbgs() << "Awarded constant call arguments bonus" << std::endl);
+	benefit += 50;
+      }
 
       // Try to calculate a constant value resulting from this instruction. Only possible if
       // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
@@ -229,6 +258,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	  if(it != constInstructions.end())
 	    instOperands.push_back(it->second);
 	  else {
+	    DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << std::endl);
 	    break;
 	  }
 	}
@@ -249,14 +279,25 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	// pointer-to-constant-global is actually a *really* good thing to zap.
 	// Unfortunately, we don't know the pointer that may get propagated here,
 	// so we can't make this decision.
+	if(newConst)
+	  DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << std::endl);
+	else
+	  DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << std::endl);
 	if (!(I->mayHaveSideEffects() || isa<AllocaInst>(I))) // A particular side-effect
 	  benefit++; // Elimination of this instruction.
+	else
+	  DEBUG(dbgs() << "Not eliminating instruction due to side-effects" << std::endl);
 	constInstructions[I] = newConst;
 	benefit += getConstantBenefit(L, I, constInstructions, blockPreds);
       }
 
     }
   }
+
+  if(instVal)
+    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to " << *instVal << ": " << benefit << std::endl);
+  else
+    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to an unknown constant: " << benefit << std::endl);
 
   return benefit;
 
