@@ -20,6 +20,8 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -82,11 +84,11 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
 			      DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds) {
 
   int benefit = 0;
-
-  DEBUG(dbgs() << "--> Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << std::endl);
+  
+  DEBUG(dbgs() << "--> Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
 
   if(!L->contains(BB)) {
-    DEBUG(dbgs() << "No benefit because " << BB->getName() << " not in loop" << std::endl);
+    DEBUG(dbgs() << "No benefit because " << BB->getName() << " not in loop" << "\n");
     return 0;
   }
 
@@ -95,7 +97,7 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
   thisBlockPreds.erase(BBPred);
   if(thisBlockPreds.size() == 0) {
     // This BB is dead! Remove it as a predecessor to all successor blocks and see if that helps anything.
-    DEBUG(dbgs() << "Block is dead! Eliminating edges from successors..." << std::endl);
+    DEBUG(dbgs() << "Block is dead! Eliminating edges from successors..." << "\n");
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI)
       benefit += getRemoveBlockPredBenefit(L, *SI, BB, constInstructions, blockPreds);
   }
@@ -103,10 +105,10 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
     // See if any of our PHI nodes are now effectively constant
     for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
       PHINode* PN = cast<PHINode>(I);
-      DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << std::endl);
+      DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << "\n");
       DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(PN);
       if(it != constInstructions.end()) { // If this PHI node has already been rendered constant.
-	DEBUG(dbgs() << "Already constant, ignoring" << std::endl);
+	DEBUG(dbgs() << "Already constant, ignoring" << "\n");
 	continue;
       }
       Constant* constValue = 0;
@@ -126,14 +128,14 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
 	// else this predecessor matches the others.
       }
       if(constValue) {
-	DEBUG(dbgs() << "Constant at " << *constValue << std::endl);
+	DEBUG(dbgs() << "Constant at " << *constValue << "\n");
 	constInstructions[PN] = constValue;
 	benefit += getConstantBenefit(L, PN, constInstructions, blockPreds);
       }
     }
   }
 
-  DEBUG(dbgs() << "<-- Total benefit due to " << BBPred->getName() << " -/-> " << BB->getName() << ": " << benefit << std::endl);
+  DEBUG(dbgs() << "<-- Total benefit due to " << BBPred->getName() << " -/-> " << BB->getName() << ": " << benefit << "\n");
 
   return benefit;
 
@@ -151,23 +153,23 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
   // A null value means we know the result will be constant, but we're not sure what.
 
   if(instVal)
-    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *instVal << std::endl);
+    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *instVal << "\n");
   else
-    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << std::endl);
+    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << "\n");
 
   for (Value::use_iterator UI = ArgI->use_begin(), E = ArgI->use_end(); UI != E;++UI){
 
     Instruction* I;
     if(!(I = dyn_cast<Instruction>(*UI))) {
-      DEBUG(dbgs() << "Instruction has a non-instruction user: " << *UI << std::endl);
+      DEBUG(dbgs() << "Instruction has a non-instruction user: " << *UI << "\n");
       continue;
     }
 
-    DEBUG(dbgs() << "Considering user instruction " << *I << std::endl);
+    DEBUG(dbgs() << "Considering user instruction " << *I << "\n");
 
     DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(I);
     if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
-      DEBUG(dbgs() << "User already rendered constant" << std::endl);
+      DEBUG(dbgs() << "User already rendered constant" << "\n");
       continue;
     }
 
@@ -176,13 +178,13 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
     if (CallInst *CI = dyn_cast<CallInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
       if (CI->getCalledValue() == ArgI) {
-	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << std::endl);
+	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << "\n");
 	benefit += 500;
       }
     } else if (InvokeInst *II = dyn_cast<InvokeInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
       if (II->getCalledValue() == ArgI) {
-	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << std::endl);
+	DEBUG(dbgs() << "Awarded indirect->direct call bonus" << "\n");
 	benefit += 500;
       }
     }
@@ -207,7 +209,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	}
 	if(target) {
 	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
-	  DEBUG(dbgs() << "Branch or switch instruction given known target: " << target->getName() << std::endl);
+	  DEBUG(dbgs() << "Branch or switch instruction given known target: " << target->getName() << "\n");
 	  TerminatorInst* TI = cast<TerminatorInst>(I);
 	  const unsigned NumSucc = TI->getNumSuccessors();
 	  for (unsigned I = 0; I != NumSucc; ++I) {
@@ -218,7 +220,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	else {
 	  // We couldn't be sure which block the branch will go to, but its target will be constant.
 	  // Give a static bonus to indicate that more advanced analysis might be able to eliminate the branch.
-	  DEBUG(dbgs() << "Awarded unconditional branch to unknown target bonus" << std::endl);
+	  DEBUG(dbgs() << "Awarded unconditional branch to unknown target bonus" << "\n");
 	  benefit += 50;
 	}
 
@@ -227,7 +229,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	// We couldn't be sure where the branch will go because we only know the operand is constant, not its value.
 	// We usually don't know because this is the return value of a call, or the result of a load. Give a small bonus
 	// as the call might be inlined or similar.
-	DEBUG(dbgs() << "Awarded unknown constant in branch or switch bonus" << std::endl);
+	DEBUG(dbgs() << "Awarded unknown constant in branch or switch bonus" << "\n");
 	benefit += 10;
       }
     }
@@ -235,7 +237,7 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
       // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
       // then count the benefits of that instruction becoming constant.
       if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
-	DEBUG(dbgs() << "Awarded constant call arguments bonus" << std::endl);
+	DEBUG(dbgs() << "Awarded constant call arguments bonus" << "\n");
 	benefit += 50;
       }
 
@@ -258,12 +260,12 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	  if(it != constInstructions.end())
 	    instOperands.push_back(it->second);
 	  else {
-	    DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << std::endl);
+	    DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << "\n");
 	    break;
 	  }
 	}
 	else {
-	  DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant user: " << (*op) << std::endl);
+	  DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant user: " << (*op) << "\n");
 	  break;
 	}
       }
@@ -280,13 +282,13 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	// Unfortunately, we don't know the pointer that may get propagated here,
 	// so we can't make this decision.
 	if(newConst)
-	  DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << std::endl);
+	  DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << "\n");
 	else
-	  DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << std::endl);
+	  DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	if (!(I->mayHaveSideEffects() || isa<AllocaInst>(I))) // A particular side-effect
 	  benefit++; // Elimination of this instruction.
 	else
-	  DEBUG(dbgs() << "Not eliminating instruction due to side-effects" << std::endl);
+	  DEBUG(dbgs() << "Not eliminating instruction due to side-effects" << "\n");
 	constInstructions[I] = newConst;
 	benefit += getConstantBenefit(L, I, constInstructions, blockPreds);
       }
@@ -295,9 +297,9 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
   }
 
   if(instVal)
-    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to " << *instVal << ": " << benefit << std::endl);
+    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to " << *instVal << ": " << benefit << "\n");
   else
-    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to an unknown constant: " << benefit << std::endl);
+    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to an unknown constant: " << benefit << "\n");
 
   return benefit;
 
@@ -308,7 +310,7 @@ bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
   BasicBlock* loopHeader = L->getHeader();
   BasicBlock* loopPreheader = L->getLoopPreheader();
   if((!loopHeader) || (!loopPreheader)) {
-    DEBUG(dbgs() << "Can't evaluate loop " << L << " because it doesn't have a header or preheader" << std::endl);
+    DEBUG(dbgs() << "Can't evaluate loop " << L << " because it doesn't have a header or preheader" << "\n");
     return false;
   }
   DenseMap<Instruction*, Constant*> constInstructions;
