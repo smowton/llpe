@@ -73,8 +73,10 @@ INITIALIZE_PASS(LoopPeelHeuristicsPass, "peelheuristics", "Score loops for peeli
 int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, DenseMap<Instruction*, Constant*>& constInstructions,
 			      DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds);
 
-int getConstantBenefit(Loop* L, Instruction* I, DenseMap<Instruction*, Constant*>& constInstructions, 
+int getConstantBenefit(Loop* L, Instruction* I, Constant* C, DenseMap<Instruction*, Constant*>& constInstructions, 
 		       DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds);
+
+int getPHINodeBenefit(Loop* L, PHINode* PN, DenseMap<Instruction*, Constant*>& constInstructions, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >&blockPreds);
 
 // This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
 // we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
@@ -88,8 +90,13 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
   DEBUG(dbgs() << "--> Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
 
   if(!L->contains(BB)) {
-    DEBUG(dbgs() << "No benefit because " << BB->getName() << " not in loop" << "\n");
-    return 0;
+    DEBUG(dbgs() << "<-- Returning constant bonus because " << BB->getName() << " not in loop" << "\n");
+    return 1;
+  }
+
+  if(BBPred == L->getLoopLatch()) {
+    DEBUG(dbgs() << "<-- Eliminated the latch branch! Returning large bonus");
+    return 1000;
   }
 
   SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
@@ -105,33 +112,7 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
     // See if any of our PHI nodes are now effectively constant
     for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
       PHINode* PN = cast<PHINode>(I);
-      DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << "\n");
-      DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(PN);
-      if(it != constInstructions.end()) { // If this PHI node has already been rendered constant.
-	DEBUG(dbgs() << "Already constant, ignoring" << "\n");
-	continue;
-      }
-      Constant* constValue = 0;
-      for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
-	Value* predValue = PN->getIncomingValueForBlock(*PI);
-	if(predValue && !constValue) {
-	  Constant* C;
-	  if((C = dyn_cast<Constant>(predValue)))
-	    constValue = C;
-	  else
-	    break;
-	}
-	else if((!predValue) || predValue != constValue) {
-	  constValue = 0;
-	  break;
-	}
-	// else this predecessor matches the others.
-      }
-      if(constValue) {
-	DEBUG(dbgs() << "Constant at " << *constValue << "\n");
-	constInstructions[PN] = constValue;
-	benefit += getConstantBenefit(L, PN, constInstructions, blockPreds);
-      }
+      benefit += getPHINodeBenefit(L, PN, constInstructions, blockPreds);
     }
   }
 
@@ -141,19 +122,67 @@ int getRemoveBlockPredBenefit(Loop* L, BasicBlock* BB, BasicBlock* BBPred, Dense
 
 }
 
-int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Constant*>& constInstructions, 
+int getPHINodeBenefit(Loop* L, PHINode* PN, DenseMap<Instruction*, Constant*>& constInstructions, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >&blockPreds) {
+
+  DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << "\n");
+
+  BasicBlock* BB = PN->getParent();
+  SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
+  Constant* constValue = 0;
+
+  if(BB == L->getHeader()) {
+    DEBUG(dbgs() << "Ignoring because in the loop header\n");
+    return 0;
+  }
+
+  for(SmallSet<BasicBlock*, 4>::iterator PI = thisBlockPreds.begin(), PE = thisBlockPreds.end(); PI != PE; PI++) {
+    Value* predValue = PN->getIncomingValueForBlock(*PI);
+    if(predValue && !constValue) {
+      Constant* C;
+      if((C = dyn_cast<Constant>(predValue)))
+	constValue = C;
+      else
+	break;
+    }
+    else if((!predValue) || predValue != constValue) {
+      constValue = 0;
+      break;
+    }
+    // else this predecessor matches the others.
+  }
+  if(constValue) {
+    DEBUG(dbgs() << "Constant at " << *constValue << "\n");
+    return getConstantBenefit(L, PN, constValue, constInstructions, blockPreds);
+  }
+  else {
+    DEBUG(dbgs() << "Not constant\n");
+    return 0;
+  }
+
+}
+
+int getConstantBenefit(Loop* L, Instruction* ArgI, Constant* ArgC, DenseMap<Instruction*, Constant*>& constInstructions, 
 		       DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& blockPreds) {
 
   int benefit = 0;
 
-  if(!L->contains(ArgI)) // Instructions outside the loop are neither here nor there if we're unrolling the loop.
+  if(!L->contains(ArgI)) { // Instructions outside the loop are neither here nor there if we're unrolling the loop.
+    DEBUG(dbgs() << *ArgI << " not in loop, no benefit\n");
     return 0;
-  
-  Constant* instVal = constInstructions[ArgI];
+  }
+
+  DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(ArgI);
+  if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
+    DEBUG(dbgs() << *ArgI << " already constant, no additional benefit\n");
+    return 0;
+  }
+  else
+    constInstructions[ArgI] = ArgC;
+
   // A null value means we know the result will be constant, but we're not sure what.
 
-  if(instVal)
-    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *instVal << "\n");
+  if(ArgC)
+    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *ArgC << "\n");
   else
     DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << "\n");
 
@@ -166,12 +195,6 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
     }
 
     DEBUG(dbgs() << "Considering user instruction " << *I << "\n");
-
-    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(I);
-    if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
-      DEBUG(dbgs() << "User already rendered constant" << "\n");
-      continue;
-    }
 
     // These bonuses apply whether or not we manage to render all the instruction's arguments constant:
 
@@ -193,18 +216,18 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
       // Both Branches and Switches have one potentially non-const arg which we now know is constant.
       // The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
       // time instead, by searching for PHIs that will be made constant.
-      if(instVal) {
+      if(ArgC) {
 	BasicBlock* target;
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  // This ought to be a boolean.
-	  if((cast<ConstantInt>(instVal))->isZero())
-	    target = BI->getSuccessor(0);
-	  else
+	  if((cast<ConstantInt>(ArgC))->isZero())
 	    target = BI->getSuccessor(1);
+	  else
+	    target = BI->getSuccessor(0);
 	}
 	else {
 	  SwitchInst* SI = cast<SwitchInst>(I);
-	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(instVal));
+	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(ArgC));
 	  target = SI->getSuccessor(targetidx);
 	}
 	if(target) {
@@ -214,7 +237,8 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
 	  const unsigned NumSucc = TI->getNumSuccessors();
 	  for (unsigned I = 0; I != NumSucc; ++I) {
 	    BasicBlock* otherTarget = TI->getSuccessor(I);
-	    benefit += getRemoveBlockPredBenefit(L, otherTarget, TI->getParent(), constInstructions, blockPreds);
+	    if(otherTarget != target)
+	      benefit += getRemoveBlockPredBenefit(L, otherTarget, TI->getParent(), constInstructions, blockPreds);
 	  }
 	}
 	else {
@@ -244,60 +268,72 @@ int getConstantBenefit(Loop* L, Instruction* ArgI, DenseMap<Instruction*, Consta
       // Try to calculate a constant value resulting from this instruction. Only possible if
       // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
 
-      SmallVector<Constant*, 4> instOperands;
+      PHINode* PN;
+      if((PN = dyn_cast<PHINode>(I))) {
+	// PHI nodes are special because of their BB arguments, and the special-case "constant folding" that affects them
+	benefit += getPHINodeBenefit(L, PN, constInstructions, blockPreds);
+      }
+      else {
 
-      // This isn't as good as it could be, because the constant-folding library wants an array of constants,
-      // whereas we might have somethig like 1 && x, which could fold but x is not a Constant*. Could work around this,
-      // don't at the moment.
-      for(unsigned i = 0; i < I->getNumOperands(); i++) {
-	Value* op = I->getOperand(i);
-	Constant* C;
-	Instruction* OperandI;
-	if((C = dyn_cast<Constant>(op)))
-	  instOperands.push_back(C);
-	else if((OperandI = dyn_cast<Instruction>(op))) {
-	  DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(OperandI);
-	  if(it != constInstructions.end())
-	    instOperands.push_back(it->second);
+	SmallVector<Constant*, 4> instOperands;
+
+	// This isn't as good as it could be, because the constant-folding library wants an array of constants,
+	// whereas we might have somethig like 1 && x, which could fold but x is not a Constant*. Could work around this,
+	// don't at the moment.
+	for(unsigned i = 0; i < I->getNumOperands(); i++) {
+	  Value* op = I->getOperand(i);
+	  Constant* C;
+	  Instruction* OperandI;
+	  if((C = dyn_cast<Constant>(op)))
+	    instOperands.push_back(C);
+	  else if((OperandI = dyn_cast<Instruction>(op))) {
+	    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(OperandI);
+	    if(it != constInstructions.end())
+	      instOperands.push_back(it->second);
+	    else {
+	      DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << "\n");
+	      break;
+	    }
+	  }
 	  else {
-	    DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << "\n");
+	    DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant argument: " << (*op) << "\n");
 	    break;
 	  }
 	}
-	else {
-	  DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant user: " << (*op) << "\n");
-	  break;
+
+	if(instOperands.size() == I->getNumOperands()) {
+	  Constant* newConst;
+	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], 0);
+	  else
+	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), 0);
+	  // InlineCosts.cpp doesn't count side-effecting instructions or memory reads here.
+	  // I count memory reads because having made their operand constant there's at least a
+	  // chance we'll be able to store-to-load forward them out of existence.
+
+	  // The following comment from InlineCosts.cpp, which I don't quite understand yet:
+	  // FIXME: It would be nice to capture the fact that a load from a
+	  // pointer-to-constant-global is actually a *really* good thing to zap.
+	  // Unfortunately, we don't know the pointer that may get propagated here,
+	  // so we can't make this decision.
+	  if(newConst)
+	    DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << "\n");
+	  else
+	    DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
+	  if (!(I->mayHaveSideEffects() || isa<AllocaInst>(I))) // A particular side-effect
+	    benefit++; // Elimination of this instruction.
+	  else
+	    DEBUG(dbgs() << "Not eliminating instruction due to side-effects" << "\n");
+	  benefit += getConstantBenefit(L, I, newConst, constInstructions, blockPreds);
 	}
-      }
 
-      if(instOperands.size() == I->getNumOperands()) {
-	Constant* newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), 0);
-	// InlineCosts.cpp doesn't count side-effecting instructions or memory reads here.
-	// I count memory reads because having made their operand constant there's at least a
-	// chance we'll be able to store-to-load forward them out of existence.
-
-	// The following comment from InlineCosts.cpp, which I don't quite understand yet:
-	// FIXME: It would be nice to capture the fact that a load from a
-	// pointer-to-constant-global is actually a *really* good thing to zap.
-	// Unfortunately, we don't know the pointer that may get propagated here,
-	// so we can't make this decision.
-	if(newConst)
-	  DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << "\n");
-	else
-	  DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
-	if (!(I->mayHaveSideEffects() || isa<AllocaInst>(I))) // A particular side-effect
-	  benefit++; // Elimination of this instruction.
-	else
-	  DEBUG(dbgs() << "Not eliminating instruction due to side-effects" << "\n");
-	constInstructions[I] = newConst;
-	benefit += getConstantBenefit(L, I, constInstructions, blockPreds);
       }
 
     }
   }
 
-  if(instVal)
-    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to " << *instVal << ": " << benefit << "\n");
+  if(ArgC)
+    DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to " << *ArgC << ": " << benefit << "\n");
   else
     DEBUG(dbgs() << "<-- Total benefit, setting " << *ArgI << " to an unknown constant: " << benefit << "\n");
 
@@ -313,25 +349,8 @@ bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
     DEBUG(dbgs() << "Can't evaluate loop " << L << " because it doesn't have a header or preheader" << "\n");
     return false;
   }
+
   DenseMap<Instruction*, Constant*> constInstructions;
-
-  for(BasicBlock::iterator I = loopHeader->begin(), E = loopHeader->end(); I != E && isa<PHINode>(*I); I++) {
-    PHINode* PI = cast<PHINode>(I);
-    Value* preheaderVal = PI->getIncomingValueForBlock(loopPreheader);
-    if(preheaderVal) {
-      if(Constant* C = dyn_cast<Constant>(preheaderVal)) {
-	constInstructions[PI] = C;
-      }
-    }
-  }
-
-  if(constInstructions.size() == 0)
-    return false;
-
-  // Proceed to push the frontier of instructions with all-constant operands! Count a score as we go,
-  // using some bonuses suggested from code in InlineCost.cpp attempting a similar game.
-
-  DenseMap<Instruction*, int> nonConstOperands;
   DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> > blockPreds;
 
   std::vector<BasicBlock*> loopBlocks = L->getBlocks();
@@ -347,10 +366,26 @@ bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
   }
 
   loopBenefit = 0;
+  // Proceed to push the frontier of instructions with all-constant operands! Count a score as we go,
+  // using some bonuses suggested from code in InlineCost.cpp attempting a similar game.
 
-  for(DenseMap<Instruction*, Constant*>::iterator I = constInstructions.begin(), E = constInstructions.end(); I != E; ++I) {
+  for(BasicBlock::iterator I = loopHeader->begin(), E = loopHeader->end(); I != E && isa<PHINode>(*I); I++) {
 
-    loopBenefit += getConstantBenefit(L, I->first, constInstructions, blockPreds);
+    PHINode* PI = cast<PHINode>(I);
+    Value* preheaderVal = PI->getIncomingValueForBlock(loopPreheader);
+    if(preheaderVal) {
+      if(Constant* C = dyn_cast<Constant>(preheaderVal)) {
+	DEBUG(dbgs() << "--> Top level setting constant PHI node\n");
+	loopBenefit += getConstantBenefit(L, I, C, constInstructions, blockPreds);
+	DEBUG(dbgs() << "<-- Top level setting constant PHI node\n");	
+      }
+      else {
+	DEBUG(dbgs() << "Top level: " << *PI << " not constant on edge from preheader\n");
+      }
+    }
+    else {
+      DEBUG(dbgs() << "Top level: " << *PI << ": no value on preheader incoming edge??\n");
+    }
 
   }
 
