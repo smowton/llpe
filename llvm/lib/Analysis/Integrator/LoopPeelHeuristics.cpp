@@ -44,6 +44,7 @@ namespace {
   class LoopPeelHeuristicsPass : public LoopPass {
 
     int loopBenefit;
+    std::string loopHeaderName;
 
   public:
 
@@ -137,14 +138,22 @@ int getPHINodeBenefit(Loop* L, PHINode* PN, DenseMap<Instruction*, Constant*>& c
 
   for(SmallSet<BasicBlock*, 4>::iterator PI = thisBlockPreds.begin(), PE = thisBlockPreds.end(); PI != PE; PI++) {
     Value* predValue = PN->getIncomingValueForBlock(*PI);
-    if(predValue && !constValue) {
-      Constant* C;
-      if((C = dyn_cast<Constant>(predValue)))
-	constValue = C;
-      else
-	break;
+    Constant* predConst = dyn_cast<Constant>(predValue);
+    Instruction* predInst;
+    if(!predConst) {
+      if((predInst = dyn_cast<Instruction>(predValue))) {
+	DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(predInst);
+	if(it != constInstructions.end())
+	  predConst = it->second;
+      }
     }
-    else if((!predValue) || predValue != constValue) {
+    if(!predConst) {
+      constValue = 0;
+      break;
+    }
+    if(!constValue)
+      constValue = predConst;
+    else if(predConst != constValue) {
       constValue = 0;
       break;
     }
@@ -345,6 +354,13 @@ bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
   
   BasicBlock* loopHeader = L->getHeader();
   BasicBlock* loopPreheader = L->getLoopPreheader();
+
+  loopBenefit = 0;
+  if(loopHeader)
+    loopHeaderName = loopHeader->getNameStr();
+  else
+    loopHeaderName = "Unknown";
+
   if((!loopHeader) || (!loopPreheader)) {
     DEBUG(dbgs() << "Can't evaluate loop " << L << " because it doesn't have a header or preheader" << "\n");
     return false;
@@ -395,6 +411,6 @@ bool LoopPeelHeuristicsPass::runOnLoop(Loop* L, LPPassManager& LPM) {
 
 void LoopPeelHeuristicsPass::print(raw_ostream &OS, const Module*) const {
 
-  OS << "Score: " << loopBenefit << "\n";
+  OS << "Loop " << loopHeaderName << " peel score: " << loopBenefit << "\n";
 
 }
