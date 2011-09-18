@@ -25,6 +25,7 @@
 #include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -74,6 +75,7 @@ namespace {
   class PeelHeuristicsLoopRun {
 
     LoopInfo* LI;
+    TargetData* TD;
 
     DenseMap<Loop*, PeelHeuristicsLoopRun> childLoops;
 
@@ -99,7 +101,7 @@ namespace {
 
     PeelHeuristicsLoopRun() : doConstProp(true) { }
 
-    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >&, PeelHeuristicsLoopRun* parent);
+    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >&, PeelHeuristicsLoopRun* parent, TargetData*);
     void getAllChildren(std::vector<PeelHeuristicsLoopRun*>&, bool topLevel);
     void doInitialStats(Loop*, LoopInfo*);
     void print(raw_ostream &OS, int indent) const;
@@ -473,9 +475,9 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	if(instOperands.size() == I->getNumOperands()) {
 	  Constant* newConst;
 	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], 0);
+	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
 	  else
-	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), 0);
+	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
 	  // InlineCosts.cpp doesn't count side-effecting instructions or memory reads here.
 	  // I count memory reads because having made their operand constant there's at least a
 	  // chance we'll be able to store-to-load forward them out of existence.
@@ -557,9 +559,10 @@ void PeelHeuristicsLoopRun::getAllChildren(std::vector<PeelHeuristicsLoopRun*>& 
 
 }
 
-bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& outerBlockPreds, PeelHeuristicsLoopRun* parentRun) {
+bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& outerBlockPreds, PeelHeuristicsLoopRun* parentRun, TargetData* TD) {
   
   // Deep copies to avoid work on this loop affecting our parent loops.
+  this->TD = TD;
   constInstructions = outerConsts;
   blockPreds = outerBlockPreds;
   statsBefore = stats;
@@ -654,7 +657,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator CI = childLoops.begin(), CE = childLoops.end(); CI != CE; CI++) {
 
     DEBUG(dbgs() << "--> Considering benefit of concurrently peeling child loop " << CI->first->getHeader()->getName() << "\n");
-    CI->second.doSimulatedPeel(constInstructions, blockPreds, this);
+    CI->second.doSimulatedPeel(constInstructions, blockPreds, this, TD);
     DEBUG(dbgs() << "<--\n");
 
   }
@@ -699,6 +702,7 @@ void PeelHeuristicsLoopRun::print(raw_ostream &OS, int indent) const {
 bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
   LoopInfo& LI = getAnalysis<LoopInfo>();
+  TargetData* TD = getAnalysisIfAvailable<TargetData>();
 
   // No initial constants at top level
   DenseMap<Instruction*, Constant*> initialConsts;
@@ -738,7 +742,7 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
   // Now finally simulate peeling on each top-level target. The targets will recursively peel their child loops if it seems warranted.
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator RI = topLevelLoops.begin(), RE = topLevelLoops.end(); RI != RE; RI++) {
    
-    RI->second.doSimulatedPeel(initialConsts, initialBlockPreds, 0);
+    RI->second.doSimulatedPeel(initialConsts, initialBlockPreds, 0, TD);
 
   }
 
