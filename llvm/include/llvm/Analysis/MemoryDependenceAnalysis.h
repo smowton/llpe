@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/SmallSet.h"
 
 namespace llvm {
   class Function;
@@ -112,7 +113,7 @@ namespace llvm {
     bool operator<(const MemDepResult &M) const { return Value < M.Value; }
     bool operator>(const MemDepResult &M) const { return Value > M.Value; }
   private:
-    friend class MemoryDependenceAnalysis;
+    friend class MemoryDependenceAnalyser;
     /// Dirty - Entries with this marker occur in a LocalDeps map or
     /// NonLocalDeps map when the instruction they previously referenced was
     /// removed from MemDep.  In either case, the entry may include an
@@ -202,14 +203,16 @@ namespace llvm {
   /// must-alias'd pointers instead of all pointers interacts well with the
   /// internal caching mechanism.
   ///
-  class MemoryDependenceAnalysis : public FunctionPass {
+  class MemoryDependenceAnalyser {
+
+  public:
+
     // A map from instructions to their dependency.
     typedef DenseMap<Instruction*, MemDepResult> LocalDepMapType;
     LocalDepMapType LocalDeps;
 
-  public:
     typedef std::vector<NonLocalDepEntry> NonLocalDepInfo;
-  private:
+
     /// ValueIsLoadPair - This is a pair<Value*, bool> where the bool is true if
     /// the dependence is a read only dependence, false if read/write.
     typedef PointerIntPair<Value*, 1, bool> ValueIsLoadPair;
@@ -256,7 +259,102 @@ namespace llvm {
     AliasAnalysis *AA;
     TargetData *TD;
     OwningPtr<PredIteratorCache> PredCache;
+
+    MemoryDependenceAnalyser();
+    ~MemoryDependenceAnalyser();
+
+    // Do init that might be illegal at construction time
+    void init(AliasAnalysis*);
+
+    /// Clean up memory in between runs
+    void releaseMemory();
+    
+    /// getDependency - Return the instruction on which a memory operation
+    /// depends.  See the class comment for more details.  It is illegal to call
+    /// this on non-memory instructions.
+    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>&);
+    MemDepResult getDependency(Instruction *QueryInst);
+
+    /// getNonLocalCallDependency - Perform a full dependency query for the
+    /// specified call, returning the set of blocks that the value is
+    /// potentially live across.  The returned set of results will include a
+    /// "NonLocal" result for all blocks where the value is live across.
+    ///
+    /// This method assumes the instruction returns a "NonLocal" dependency
+    /// within its own block.
+    ///
+    /// This returns a reference to an internal data structure that may be
+    /// invalidated on the next non-local query or when an instruction is
+    /// removed.  Clients must copy this data if they want it around longer than
+    /// that.
+    const NonLocalDepInfo &getNonLocalCallDependency(CallSite QueryCS);
+    
+    
+    /// getNonLocalPointerDependency - Perform a full dependency query for an
+    /// access to the specified (non-volatile) memory location, returning the
+    /// set of instructions that either define or clobber the value.
+    ///
+    /// This method assumes the pointer has a "NonLocal" dependency within BB.
+    void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
+                                      BasicBlock *BB,
+				      SmallVectorImpl<NonLocalDepResult> &Result,
+				      const DenseMap<Instruction*, Constant*>&,
+				      const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+    void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
+				      BasicBlock *BB,
+				      SmallVectorImpl<NonLocalDepResult> &Result);
+    
+    /// removeInstruction - Remove an instruction from the dependence analysis,
+    /// updating the dependence of instructions that previously depended on it.
+    void removeInstruction(Instruction *InstToRemove);
+    
+    /// invalidateCachedPointerInfo - This method is used to invalidate cached
+    /// information about the specified pointer, because it may be too
+    /// conservative in memdep.  This is an optional call that can be used when
+    /// the client detects an equivalence between the pointer and some other
+    /// value and replaces the other value with ptr. This can make Ptr available
+    /// in more places that cached info does not necessarily keep.
+    void invalidateCachedPointerInfo(Value *Ptr);
+
+    /// invalidateCachedPredecessors - Clear the PredIteratorCache info.
+    /// This needs to be done when the CFG changes, e.g., due to splitting
+    /// critical edges.
+    void invalidateCachedPredecessors();
+    
+    MemDepResult getPointerDependencyFrom(Value *Pointer, uint64_t MemSize,
+                                          bool isLoad, 
+                                          BasicBlock::iterator ScanIt,
+                                          BasicBlock *BB,
+					  const DenseMap<Instruction*, Constant*>&);
+    MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
+                                           BasicBlock::iterator ScanIt,
+                                           BasicBlock *BB);
+    bool getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t Size,
+                                     bool isLoad, BasicBlock *BB,
+                                     SmallVectorImpl<NonLocalDepResult> &Result,
+                                     DenseMap<BasicBlock*, Value*> &Visited,
+                                     bool SkipFirstBlock,
+				     const DenseMap<Instruction*, Constant*>&,
+				     const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+    MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
+                                         bool isLoad, BasicBlock *BB,
+                                         NonLocalDepInfo *Cache,
+                                         unsigned NumSortedEntries,
+					 const DenseMap<Instruction*, Constant*>&);
+
+    void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
+    
+    /// verifyRemoved - Verify that the specified instruction does not occur
+    /// in our internal data structures.
+    void verifyRemoved(Instruction *Inst) const;
+
+  };
+
+  class MemoryDependenceAnalysis : public FunctionPass {
+
   public:
+    typedef std::vector<NonLocalDepEntry> NonLocalDepInfo;
+
     MemoryDependenceAnalysis();
     ~MemoryDependenceAnalysis();
     static char ID;
@@ -317,30 +415,9 @@ namespace llvm {
     /// This needs to be done when the CFG changes, e.g., due to splitting
     /// critical edges.
     void invalidateCachedPredecessors();
-    
-  private:
-    MemDepResult getPointerDependencyFrom(Value *Pointer, uint64_t MemSize,
-                                          bool isLoad, 
-                                          BasicBlock::iterator ScanIt,
-                                          BasicBlock *BB);
-    MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
-                                           BasicBlock::iterator ScanIt,
-                                           BasicBlock *BB);
-    bool getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t Size,
-                                     bool isLoad, BasicBlock *BB,
-                                     SmallVectorImpl<NonLocalDepResult> &Result,
-                                     DenseMap<BasicBlock*, Value*> &Visited,
-                                     bool SkipFirstBlock = false);
-    MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
-                                         bool isLoad, BasicBlock *BB,
-                                         NonLocalDepInfo *Cache,
-                                         unsigned NumSortedEntries);
 
-    void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
-    
-    /// verifyRemoved - Verify that the specified instruction does not occur
-    /// in our internal data structures.
-    void verifyRemoved(Instruction *Inst) const;
+  private:
+    MemoryDependenceAnalyser defaultAnalyser;
     
   };
 
