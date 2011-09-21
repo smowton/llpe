@@ -80,7 +80,8 @@ namespace {
     DenseMap<Loop*, PeelHeuristicsLoopRun> childLoops;
 
     DenseMap<Instruction*, Constant*> constInstructions;
-    DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> > blockPreds;
+    // Edges considered removed for the purpose of estimating loop peel benefit
+    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreEdges;
 
     std::string loopHeaderName;
     bool doConstProp;
@@ -90,6 +91,7 @@ namespace {
     void getPHINodeBenefit(PHINode* PN);
     void accountElimInstruction(Instruction*);
     void doForAllLoops(void (*callback)(PeelHeuristicsLoopRun*), llvm::Instruction*);
+    bool blockIsDead(BasicBlock*);
 
   public:
 
@@ -101,7 +103,7 @@ namespace {
 
     PeelHeuristicsLoopRun() : doConstProp(true) { }
 
-    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >&, PeelHeuristicsLoopRun* parent, TargetData*);
+    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&, PeelHeuristicsLoopRun* parent, TargetData*);
     void getAllChildren(std::vector<PeelHeuristicsLoopRun*>&, bool topLevel);
     void doInitialStats(Loop*, LoopInfo*);
     void print(raw_ostream &OS, int indent) const;
@@ -231,10 +233,9 @@ void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock
     return;
   }
 
-  SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
+  ignoreEdges.insert(std::make_pair(BBPred, BB));
 
-  thisBlockPreds.erase(BBPred);
-  if(thisBlockPreds.size() == 0) {
+  if(blockIsDead(BB)) {
     // This BB is dead! Kill its instructions, then remove it as a predecessor to all successor blocks and see if that helps anything.
     DEBUG(dbgs() << "Block is dead!\n");
     doForAllLoops(&incBlocksElim, BB->begin());
@@ -271,7 +272,6 @@ void PeelHeuristicsLoopRun::getPHINodeBenefit(PHINode* PN) {
   DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << "\n");
 
   BasicBlock* BB = PN->getParent();
-  SmallSet<BasicBlock*, 4>& thisBlockPreds = blockPreds[BB];
   Constant* constValue = 0;
 
   if(BB == L->getHeader()) {
@@ -280,7 +280,11 @@ void PeelHeuristicsLoopRun::getPHINodeBenefit(PHINode* PN) {
     return;
   }
 
-  for(SmallSet<BasicBlock*, 4>::iterator PI = thisBlockPreds.begin(), PE = thisBlockPreds.end(); PI != PE; PI++) {
+  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+
+    if(ignoreEdges.count(std::make_pair(*PI, BB)))
+      continue;
+
     Value* predValue = PN->getIncomingValueForBlock(*PI);
     Constant* predConst = dyn_cast<Constant>(predValue);
     Instruction* predInst;
@@ -318,6 +322,19 @@ void PeelHeuristicsLoopRun::accountElimInstruction(Instruction* I) {
 
   if(instructionCounts(I))
     doForAllLoops(&incElimInstructions, I);
+
+}
+
+bool PeelHeuristicsLoopRun::blockIsDead(BasicBlock* BB) {
+
+  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
+      
+    if(!ignoreEdges.count(std::make_pair(*PI, BB)))
+      return false;
+
+  }
+
+  return true;
 
 }
 
@@ -359,8 +376,8 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
       continue;
     }
 
-    if(blockPreds[I->getParent()].size() == 0) {
-      DEBUG(dbgs() << "User instruction " << *I << " already eliminated\n");
+    if(blockIsDead(I->getParent())) {
+      DEBUG(dbgs() << "User instruction " << *I << " already eliminated (in dead block)\n");
       continue;
     }
 
@@ -559,12 +576,12 @@ void PeelHeuristicsLoopRun::getAllChildren(std::vector<PeelHeuristicsLoopRun*>& 
 
 }
 
-bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> >& outerBlockPreds, PeelHeuristicsLoopRun* parentRun, TargetData* TD) {
+bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges, PeelHeuristicsLoopRun* parentRun, TargetData* TD) {
   
   // Deep copies to avoid work on this loop affecting our parent loops.
   this->TD = TD;
   constInstructions = outerConsts;
-  blockPreds = outerBlockPreds;
+  ignoreEdges = outerIgnoreEdges;
   statsBefore = stats;
 
   this->parentRun = parentRun;
@@ -657,7 +674,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator CI = childLoops.begin(), CE = childLoops.end(); CI != CE; CI++) {
 
     DEBUG(dbgs() << "--> Considering benefit of concurrently peeling child loop " << CI->first->getHeader()->getName() << "\n");
-    CI->second.doSimulatedPeel(constInstructions, blockPreds, this, TD);
+    CI->second.doSimulatedPeel(constInstructions, ignoreEdges, this, TD);
     DEBUG(dbgs() << "<--\n");
 
   }
@@ -707,18 +724,8 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
   // No initial constants at top level
   DenseMap<Instruction*, Constant*> initialConsts;
 
-  // All basic block predecessors intact at top level
-  DenseMap<BasicBlock*, SmallSet<BasicBlock*, 4> > initialBlockPreds;
-
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
-
-    BasicBlock* block = cast<BasicBlock>(FI);
-
-    for(pred_iterator PI = pred_begin(block), E = pred_end(block); PI != E; ++PI) {
-      initialBlockPreds[block].insert(*PI);
-    }
-
-  }
+  // Ignore no edges at top level
+  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges;
 
   // Count blocks and instructions in all loops
   for(LoopInfo::iterator L = LI.begin(), LE = LI.end(); L != LE; L++) {
@@ -742,7 +749,7 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
   // Now finally simulate peeling on each top-level target. The targets will recursively peel their child loops if it seems warranted.
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator RI = topLevelLoops.begin(), RE = topLevelLoops.end(); RI != RE; RI++) {
    
-    RI->second.doSimulatedPeel(initialConsts, initialBlockPreds, 0, TD);
+    RI->second.doSimulatedPeel(initialConsts, initialIgnoreEdges, 0, TD);
 
   }
 
