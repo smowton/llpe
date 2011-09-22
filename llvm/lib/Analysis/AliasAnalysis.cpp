@@ -25,6 +25,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Pass.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Function.h"
@@ -47,6 +49,18 @@ AliasAnalysis::alias(const Value *V1, unsigned V1Size,
                      const Value *V2, unsigned V2Size) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   return AA->alias(V1, V1Size, V2, V2Size);
+}
+
+AliasAnalysis::AliasResult
+AliasAnalysis::aliasHypothetical(const Value *V1, unsigned V1Size,
+				 const Value *V2, unsigned V2Size,
+				 const DenseMap<Instruction*, Constant*>& replaceInsts,
+				 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+  assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
+  if((!replaceInsts.size()) && (!ignoreEdges.size()))
+    return alias(V1, V1Size, V2, V2Size);
+  else
+    return AA->aliasHypothetical(V1, V1Size, V2, V2Size, replaceInsts, ignoreEdges);
 }
 
 bool AliasAnalysis::pointsToConstantMemory(const Value *P) {

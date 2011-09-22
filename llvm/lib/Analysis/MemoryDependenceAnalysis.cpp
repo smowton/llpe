@@ -168,7 +168,8 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
 MemDepResult MemoryDependenceAnalyser::
 getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad, 
                          BasicBlock::iterator ScanIt, BasicBlock *BB, 
-			 const DenseMap<Instruction*, Constant*>& replaceInsts) {
+			 const DenseMap<Instruction*, Constant*>& replaceInsts,
+			 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
 
   Value *InvariantTag = 0;
 
@@ -229,7 +230,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 
       // If we found a pointer, check if it could be the same as our pointer.
       AliasAnalysis::AliasResult R =
-        AA->alias(Pointer, PointerSize, MemPtr, MemSize);
+        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, replaceInsts, ignoreEdges);
       if (R == AliasAnalysis::NoAlias)
         continue;
       
@@ -265,7 +266,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       
       // If we found a pointer, check if it could be the same as our pointer.
       AliasAnalysis::AliasResult R =
-        AA->alias(Pointer, PointerSize, MemPtr, MemSize);
+        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, replaceInsts, ignoreEdges);
       
       if (R == AliasAnalysis::NoAlias)
         continue;
@@ -287,7 +288,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       Value *AccessPtr = MemPtr->getUnderlyingObject();
       
       if (AccessPtr == Inst ||
-          AA->alias(Inst, 1, AccessPtr, 1) == AliasAnalysis::MustAlias)
+          AA->aliasHypothetical(Inst, 1, AccessPtr, 1, replaceInsts, ignoreEdges) == AliasAnalysis::MustAlias)
         return MemDepResult::getDef(Inst);
       continue;
     }
@@ -322,7 +323,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 
 /// getDependency - Return the instruction on which a memory operation
 /// depends.
-MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>& replaceInsts) {
+MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>& replaceInsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   Instruction *ScanPos = QueryInst;
   
   // Check for a cached result
@@ -412,7 +413,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, con
       isLoad |= II->getIntrinsicID() == Intrinsic::lifetime_end;
     }
     LocalCache = getPointerDependencyFrom(MemPtr, MemSize, isLoad, ScanPos,
-                                          QueryParent, replaceInsts);
+                                          QueryParent, replaceInsts, ignoreEdges);
   }
   
   // Remember the result!
@@ -425,7 +426,8 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, con
 MemDepResult MemoryDependenceAnalyser::getDependency(Instruction* I) {
 
   DenseMap<Instruction*, Constant*> noReplacements;
-  return getDependency(I, noReplacements);
+  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreNothing;
+  return getDependency(I, noReplacements, ignoreNothing);
 
 }
 
@@ -641,7 +643,8 @@ MemDepResult MemoryDependenceAnalyser::
 GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
                         bool isLoad, BasicBlock *BB,
                         NonLocalDepInfo *Cache, unsigned NumSortedEntries,
-			const DenseMap<Instruction*, Constant*>& replaceInsts) {
+			const DenseMap<Instruction*, Constant*>& replaceInsts,
+			const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   
   // Do a binary search to see if we already have an entry for this block in
   // the cache set.  If so, find it.
@@ -681,7 +684,7 @@ GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
   
   // Scan the block for the dependency.
   MemDepResult Dep = getPointerDependencyFrom(Pointer, PointeeSize, isLoad, 
-                                              ScanPos, BB, replaceInsts);
+                                              ScanPos, BB, replaceInsts, ignoreEdges);
   
   // If we had a dirty entry for the block, update it.  Otherwise, just add
   // a new entry.
@@ -837,7 +840,8 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
       MemDepResult Dep = GetNonLocalInfoForBlock(Pointer.getAddr(), PointeeSize,
                                                  isLoad, BB, Cache,
                                                  NumSortedEntries,
-						 replaceInsts);
+						 replaceInsts,
+						 ignoreEdges);
       
       // If we got a Def or Clobber, add this to the list of results.
       if (!Dep.isNonLocal()) {

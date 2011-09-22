@@ -30,6 +30,7 @@
 #include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include <algorithm>
@@ -151,6 +152,13 @@ namespace {
 
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size) {
+      return MayAlias;
+    }
+
+    virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
+					  const Value *V2, unsigned V2Size,
+					  const DenseMap<Instruction*, Constant*>& replaceInsts,
+					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
       return MayAlias;
     }
 
@@ -289,141 +297,6 @@ static Value *GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
   return V;
 }
 
-/// DecomposeGEPExpression - If V is a symbolic pointer expression, decompose it
-/// into a base pointer with a constant offset and a number of scaled symbolic
-/// offsets.
-///
-/// The scaled symbolic offsets (represented by pairs of a Value* and a scale in
-/// the VarIndices vector) are Value*'s that are known to be scaled by the
-/// specified amount, but which may have other unrepresented high bits. As such,
-/// the gep cannot necessarily be reconstructed from its decomposed form.
-///
-/// When TargetData is around, this function is capable of analyzing everything
-/// that Value::getUnderlyingObject() can look through.  When not, it just looks
-/// through pointer casts.
-///
-static const Value *
-DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
-                       SmallVectorImpl<VariableGEPIndex> &VarIndices,
-                       const TargetData *TD) {
-  // Limit recursion depth to limit compile time in crazy cases.
-  unsigned MaxLookup = 6;
-  
-  BaseOffs = 0;
-  do {
-    // See if this is a bitcast or GEP.
-    const Operator *Op = dyn_cast<Operator>(V);
-    if (Op == 0) {
-      // The only non-operator case we can handle are GlobalAliases.
-      if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
-        if (!GA->mayBeOverridden()) {
-          V = GA->getAliasee();
-          continue;
-        }
-      }
-      return V;
-    }
-    
-    if (Op->getOpcode() == Instruction::BitCast) {
-      V = Op->getOperand(0);
-      continue;
-    }
-    
-    const GEPOperator *GEPOp = dyn_cast<GEPOperator>(Op);
-    if (GEPOp == 0)
-      return V;
-    
-    // Don't attempt to analyze GEPs over unsized objects.
-    if (!cast<PointerType>(GEPOp->getOperand(0)->getType())
-        ->getElementType()->isSized())
-      return V;
-    
-    // If we are lacking TargetData information, we can't compute the offets of
-    // elements computed by GEPs.  However, we can handle bitcast equivalent
-    // GEPs.
-    if (TD == 0) {
-      if (!GEPOp->hasAllZeroIndices())
-        return V;
-      V = GEPOp->getOperand(0);
-      continue;
-    }
-    
-    // Walk the indices of the GEP, accumulating them into BaseOff/VarIndices.
-    gep_type_iterator GTI = gep_type_begin(GEPOp);
-    for (User::const_op_iterator I = GEPOp->op_begin()+1,
-         E = GEPOp->op_end(); I != E; ++I) {
-      Value *Index = *I;
-      // Compute the (potentially symbolic) offset in bytes for this index.
-      if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
-        // For a struct, add the member offset.
-        unsigned FieldNo = cast<ConstantInt>(Index)->getZExtValue();
-        if (FieldNo == 0) continue;
-        
-        BaseOffs += TD->getStructLayout(STy)->getElementOffset(FieldNo);
-        continue;
-      }
-      
-      // For an array/pointer, add the element offset, explicitly scaled.
-      if (ConstantInt *CIdx = dyn_cast<ConstantInt>(Index)) {
-        if (CIdx->isZero()) continue;
-        BaseOffs += TD->getTypeAllocSize(*GTI)*CIdx->getSExtValue();
-        continue;
-      }
-      
-      uint64_t Scale = TD->getTypeAllocSize(*GTI);
-      ExtensionKind Extension = EK_NotExtended;
-      
-      // If the integer type is smaller than the pointer size, it is implicitly
-      // sign extended to pointer size.
-      unsigned Width = cast<IntegerType>(Index->getType())->getBitWidth();
-      if (TD->getPointerSizeInBits() > Width)
-        Extension = EK_SignExt;
-      
-      // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
-      APInt IndexScale(Width, 0), IndexOffset(Width, 0);
-      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension,
-                                  *TD, 0);
-      
-      // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
-      // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
-      BaseOffs += IndexOffset.getZExtValue()*Scale;
-      Scale *= IndexScale.getZExtValue();
-      
-      
-      // If we already had an occurrance of this index variable, merge this
-      // scale into it.  For example, we want to handle:
-      //   A[x][x] -> x*16 + x*4 -> x*20
-      // This also ensures that 'x' only appears in the index list once.
-      for (unsigned i = 0, e = VarIndices.size(); i != e; ++i) {
-        if (VarIndices[i].V == Index &&
-            VarIndices[i].Extension == Extension) {
-          Scale += VarIndices[i].Scale;
-          VarIndices.erase(VarIndices.begin()+i);
-          break;
-        }
-      }
-      
-      // Make sure that we have a scale that makes sense for this target's
-      // pointer size.
-      if (unsigned ShiftBits = 64-TD->getPointerSizeInBits()) {
-        Scale <<= ShiftBits;
-        Scale >>= ShiftBits;
-      }
-      
-      if (Scale) {
-        VariableGEPIndex Entry = {Index, Extension, Scale};
-        VarIndices.push_back(Entry);
-      }
-    }
-    
-    // Analyze the base pointer next.
-    V = GEPOp->getOperand(0);
-  } while (--MaxLookup);
-  
-  // If the chain of expressions is too deep, just return early.
-  return V;
-}
-
 /// GetIndexDifference - Dest and Src are the variable indices from two
 /// decomposed GetElementPtr instructions GEP1 and GEP2 which have common base
 /// pointers.  Subtract the GEP2 indices from GEP1 to find the symbolic
@@ -494,12 +367,29 @@ namespace {
 
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size) {
+
+      DenseMap<Instruction*, Constant*> replaceNothing;
+      SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreNothing;
+      return aliasHypothetical(V1, V1Size, V2, V2Size, replaceNothing, ignoreNothing);
+
+    }
+
+    virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
+					  const Value *V2, unsigned V2Size,
+					  const DenseMap<Instruction*, Constant*>& replaceInsts,
+					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+      
       assert(Visited.empty() && "Visited must be cleared after use!");
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
+      this->replaceInsts = &replaceInsts;
+      this->ignoreEdges = &ignoreEdges;
       AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
       Visited.clear();
-      return Alias;
+      this->replaceInsts = 0;
+      this->ignoreEdges = 0;
+      return Alias;      
+
     }
 
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
@@ -536,6 +426,12 @@ namespace {
   private:
     // Visited - Track instructions visited by a aliasPHI, aliasSelect(), and aliasGEP().
     SmallPtrSet<const Value*, 16> Visited;
+    
+    // ReplaceInsts - instructions which, for the duration of an alias query, should be regarded as replaced by given constants.
+    const DenseMap<Instruction*, Constant*>* replaceInsts;
+
+    // IgnoreEdges - BB edges that should be ignored when considering PHI aliasing
+    const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>* ignoreEdges;
 
     // aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP
     // instruction against another.
@@ -554,6 +450,15 @@ namespace {
 
     AliasResult aliasCheck(const Value *V1, unsigned V1Size,
                            const Value *V2, unsigned V2Size);
+
+    const Value* DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
+				  SmallVectorImpl<VariableGEPIndex> &VarIndices,
+				  const TargetData *TD);
+
+    bool GEPHasAllZeroIndices(const GEPOperator*);
+
+    Value* getReplacement(const Value*);
+
   };
 }  // End of anonymous namespace
 
@@ -567,6 +472,170 @@ ImmutablePass *llvm::createBasicAliasAnalysisPass() {
   return new BasicAliasAnalysis();
 }
 
+bool BasicAliasAnalysis::GEPHasAllZeroIndices(const GEPOperator* GEP) {
+  for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
+    Value* V = getReplacement(GEP->getOperand(i));
+    if (ConstantInt *CI = dyn_cast<ConstantInt>(V)) {
+      if (!CI->isZero()) return false;
+    } 
+    else {
+      return false;
+    }
+  }
+  return true;
+}
+
+Value* BasicAliasAnalysis::getReplacement(const Value* VConst) {
+
+  Value* V = const_cast<Value*>(VConst);
+
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+    DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts->find(I);
+    if(it == replaceInsts->end())
+      return V;
+    else
+      return it->second;
+  }
+  return V;
+
+}
+
+/// DecomposeGEPExpression - If V is a symbolic pointer expression, decompose it
+/// into a base pointer with a constant offset and a number of scaled symbolic
+/// offsets.
+///
+/// The scaled symbolic offsets (represented by pairs of a Value* and a scale in
+/// the VarIndices vector) are Value*'s that are known to be scaled by the
+/// specified amount, but which may have other unrepresented high bits. As such,
+/// the gep cannot necessarily be reconstructed from its decomposed form.
+///
+/// When TargetData is around, this function is capable of analyzing everything
+/// that Value::getUnderlyingObject() can look through.  When not, it just looks
+/// through pointer casts.
+///
+const Value* BasicAliasAnalysis::DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
+							SmallVectorImpl<VariableGEPIndex> &VarIndices,
+							const TargetData *TD) {
+  // Limit recursion depth to limit compile time in crazy cases.
+  unsigned MaxLookup = 6;
+  
+  BaseOffs = 0;
+  do {
+    // See if this is a bitcast or GEP.
+    const Operator *Op = dyn_cast<Operator>(V);
+    if (Op == 0) {
+      // The only non-operator case we can handle are GlobalAliases.
+      if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
+        if (!GA->mayBeOverridden()) {
+          V = GA->getAliasee();
+          continue;
+        }
+      }
+      return V;
+    }
+    
+    if (Op->getOpcode() == Instruction::BitCast) {
+      V = Op->getOperand(0);
+      continue;
+    }
+    
+    const GEPOperator *GEPOp = dyn_cast<GEPOperator>(Op);
+    if (GEPOp == 0)
+      return V;
+    
+    // Don't attempt to analyze GEPs over unsized objects.
+    if (!cast<PointerType>(GEPOp->getOperand(0)->getType())
+        ->getElementType()->isSized())
+      return V;
+    
+    // If we are lacking TargetData information, we can't compute the offets of
+    // elements computed by GEPs.  However, we can handle bitcast equivalent
+    // GEPs.
+    if (TD == 0) {
+      if (!GEPHasAllZeroIndices(GEPOp))
+        return V;
+      V = GEPOp->getOperand(0);
+      continue;
+    }
+    
+    // Walk the indices of the GEP, accumulating them into BaseOff/VarIndices.
+    gep_type_iterator GTI = gep_type_begin(GEPOp);
+    for (User::const_op_iterator I = GEPOp->op_begin()+1,
+         E = GEPOp->op_end(); I != E; ++I) {
+      Value *Index = *I;
+      // Compute the (potentially symbolic) offset in bytes for this index.
+      if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
+        // For a struct, add the member offset.
+        unsigned FieldNo = cast<ConstantInt>(Index)->getZExtValue();
+        if (FieldNo == 0) continue;
+        
+        BaseOffs += TD->getStructLayout(STy)->getElementOffset(FieldNo);
+        continue;
+      }
+
+      Index = getReplacement(Index);
+      
+      // For an array/pointer, add the element offset, explicitly scaled.
+
+      if (ConstantInt* CIdx = dyn_cast<ConstantInt>(Index)) {
+        if (CIdx->isZero()) continue;
+        BaseOffs += TD->getTypeAllocSize(*GTI)*CIdx->getSExtValue();
+        continue;
+      }
+      
+      uint64_t Scale = TD->getTypeAllocSize(*GTI);
+      ExtensionKind Extension = EK_NotExtended;
+      
+      // If the integer type is smaller than the pointer size, it is implicitly
+      // sign extended to pointer size.
+      unsigned Width = cast<IntegerType>(Index->getType())->getBitWidth();
+      if (TD->getPointerSizeInBits() > Width)
+        Extension = EK_SignExt;
+      
+      // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
+      APInt IndexScale(Width, 0), IndexOffset(Width, 0);
+      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension,
+                                  *TD, 0);
+      
+      // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
+      // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
+      BaseOffs += IndexOffset.getZExtValue()*Scale;
+      Scale *= IndexScale.getZExtValue();
+      
+      
+      // If we already had an occurrance of this index variable, merge this
+      // scale into it.  For example, we want to handle:
+      //   A[x][x] -> x*16 + x*4 -> x*20
+      // This also ensures that 'x' only appears in the index list once.
+      for (unsigned i = 0, e = VarIndices.size(); i != e; ++i) {
+        if (VarIndices[i].V == Index &&
+            VarIndices[i].Extension == Extension) {
+          Scale += VarIndices[i].Scale;
+          VarIndices.erase(VarIndices.begin()+i);
+          break;
+        }
+      }
+      
+      // Make sure that we have a scale that makes sense for this target's
+      // pointer size.
+      if (unsigned ShiftBits = 64-TD->getPointerSizeInBits()) {
+        Scale <<= ShiftBits;
+        Scale >>= ShiftBits;
+      }
+      
+      if (Scale) {
+        VariableGEPIndex Entry = {Index, Extension, Scale};
+        VarIndices.push_back(Entry);
+      }
+    }
+    
+    // Analyze the base pointer next.
+    V = GEPOp->getOperand(0);
+  } while (--MaxLookup);
+  
+  // If the chain of expressions is too deep, just return early.
+  return V;
+}
 
 /// pointsToConstantMemory - Chase pointers until we find a (constant
 /// global) or not.
@@ -918,20 +987,26 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
   // If the values are PHIs in the same block, we can do a more precise
   // as well as efficient check: just check for aliases between the values
   // on corresponding edges.
+
+  const BasicBlock* PNParent = PN->getParent();
+
   if (const PHINode *PN2 = dyn_cast<PHINode>(V2))
-    if (PN2->getParent() == PN->getParent()) {
-      AliasResult Alias =
-        aliasCheck(PN->getIncomingValue(0), PNSize,
-                   PN2->getIncomingValueForBlock(PN->getIncomingBlock(0)),
-                   V2Size);
-      if (Alias == MayAlias)
-        return MayAlias;
-      for (unsigned i = 1, e = PN->getNumIncomingValues(); i != e; ++i) {
+    if (PN2->getParent() == PNParent) {
+      bool AliasValid = false;
+      AliasAnalysis::AliasResult Alias = MayAlias;
+      for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
+	BasicBlock* PredBB = PN->getIncomingBlock(i);
+	if(ignoreEdges->count(std::make_pair(PredBB, const_cast<BasicBlock*>(PNParent))))
+	  continue;
         AliasResult ThisAlias =
           aliasCheck(PN->getIncomingValue(i), PNSize,
                      PN2->getIncomingValueForBlock(PN->getIncomingBlock(i)),
                      V2Size);
-        if (ThisAlias != Alias)
+	if(!AliasValid) {
+	  AliasValid = true;
+	  Alias = ThisAlias;
+	}
+        else if (ThisAlias != Alias)
           return MayAlias;
       }
       return Alias;
@@ -986,6 +1061,9 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
   if (V1Size == 0 || V2Size == 0)
     return NoAlias;
 
+  V1 = getReplacement(V1);
+  V2 = getReplacement(V2);
+
   // Strip off any casts if they exist.
   V1 = V1->stripPointerCasts();
   V2 = V2->stripPointerCasts();
@@ -999,6 +1077,9 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
   // Figure out what objects these things are pointing to if we can.
   const Value *O1 = V1->getUnderlyingObject();
   const Value *O2 = V2->getUnderlyingObject();
+
+  // Don't looks these up for constanthood, because they're only relevant
+  // if they're malloc() or alloca() calls, which don't get constantified.
 
   // Null values in the default address space don't point to any object, so they
   // don't alias any other pointer.

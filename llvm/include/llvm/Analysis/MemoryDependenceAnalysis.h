@@ -272,7 +272,7 @@ namespace llvm {
     /// getDependency - Return the instruction on which a memory operation
     /// depends.  See the class comment for more details.  It is illegal to call
     /// this on non-memory instructions.
-    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>&);
+    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>&, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult getDependency(Instruction *QueryInst);
 
     /// getNonLocalCallDependency - Perform a full dependency query for the
@@ -325,7 +325,8 @@ namespace llvm {
                                           bool isLoad, 
                                           BasicBlock::iterator ScanIt,
                                           BasicBlock *BB,
-					  const DenseMap<Instruction*, Constant*>&);
+					  const DenseMap<Instruction*, Constant*>&,
+					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
                                            BasicBlock::iterator ScanIt,
                                            BasicBlock *BB);
@@ -340,7 +341,8 @@ namespace llvm {
                                          bool isLoad, BasicBlock *BB,
                                          NonLocalDepInfo *Cache,
                                          unsigned NumSortedEntries,
-					 const DenseMap<Instruction*, Constant*>&);
+					 const DenseMap<Instruction*, Constant*>&,
+					 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
 
     void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
     

@@ -29,6 +29,8 @@
 
 #include "llvm/Support/CallSite.h"
 #include "llvm/System/IncludeFile.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallSet.h"
 #include <vector>
 
 namespace llvm {
@@ -93,6 +95,13 @@ public:
   /// of these values.
   ///
   enum AliasResult { NoAlias = 0, MayAlias = 1, MustAlias = 2 };
+
+  // A version of alias that assumes instructions have been replaced by constants
+  // as specified.
+  virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
+					const Value *V2, unsigned V2Size,
+					const DenseMap<Instruction*, Constant*>&,
+					const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
 
   /// alias - The main low level interface to the alias analysis implementation.
   /// Returns a Result indicating whether the two pointers are aliased to each
