@@ -472,6 +472,8 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 
 	SmallVector<Constant*, 4> instOperands;
 
+	bool someArgumentUnknownConstant = false;
+
 	// This isn't as good as it could be, because the constant-folding library wants an array of constants,
 	// whereas we might have somethig like 1 && x, which could fold but x is not a Constant*. Could work around this,
 	// don't at the moment.
@@ -483,8 +485,11 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	    instOperands.push_back(C);
 	  else if((OperandI = dyn_cast<Instruction>(op))) {
 	    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(OperandI);
-	    if(it != constInstructions.end())
+	    if(it != constInstructions.end()) {
 	      instOperands.push_back(it->second);
+	      if(!it->second)
+		someArgumentUnknownConstant = true;
+	    }
 	    else {
 	      DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << "\n");
 	      break;
@@ -500,24 +505,31 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	}
 
 	if(instOperands.size() == I->getNumOperands()) {
-	  Constant* newConst;
-	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
-	  else
-	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
-	  // InlineCosts.cpp doesn't count side-effecting instructions or memory reads here.
-	  // I count memory reads because having made their operand constant there's at least a
-	  // chance we'll be able to store-to-load forward them out of existence.
+	  Constant* newConst = 0;
+	  if(!someArgumentUnknownConstant) {
+	    if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+	      newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+	    else if(isa<LoadInst>(I))
+	      newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+	    else
+	      newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
+	  }
 
-	  // The following comment from InlineCosts.cpp, which I don't quite understand yet:
-	  // FIXME: It would be nice to capture the fact that a load from a
-	  // pointer-to-constant-global is actually a *really* good thing to zap.
-	  // Unfortunately, we don't know the pointer that may get propagated here,
-	  // so we can't make this decision.
-	  if(newConst)
+	  if(newConst) {
 	    DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << "\n");
-	  else
-	    DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
+	  }
+	  else {
+	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
+	      DEBUG(dbgs() << "User " << *I << " may read or write global state; not propagating\n");
+	      continue;
+	    }
+	    else if(someArgumentUnknownConstant) {
+	      DEBUG(dbgs() << "User " << *I << " will have an unknown constant value too\n");
+	    } 
+	    else {
+	      DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
+	    }
+	  }
 	  getConstantBenefit(I, newConst);
 	}
 
@@ -768,18 +780,33 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 	      MD.getNonLocalPointerDependency(LPointer, true, BB, NLResults, constInstructions, ignoreEdges);
 
 	      assert(NLResults.size() > 0);
-	      if(NLResults.size() > 1) {
-		DEBUG(dbgs() << *LI << " depends on multiple instructions, ignoring\n");
-		continue;
+
+	      const MemDepResult* TheResult = 0;
+	      
+	      for(unsigned int i = 0; i < NLResults.size(); i++) {
+		
+		const MemDepResult& Res = NLResults[i].getResult();
+		if(Res.isNonLocal())
+		  continue;
+		else if(Res.isClobber()) {
+		  DEBUG(dbgs() << *LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
+		  break;
+		}
+		else {
+		  if(TheResult) {
+		    DEBUG(dbgs() << *LI << " depends on multiple instructions, ignoring\n");
+		    TheResult = 0;
+		    break;
+		  }
+		  else {
+		    TheResult = &Res;
+		  }
+		}
+		
 	      }
 
-	      const MemDepResult& Res = NLResults[0].getResult();
-	      if(Res.isClobber()) {
-		DEBUG(dbgs() << *LI << " is nonlocally clobbered by " << Res.getInst() << "\n");
-		continue;
-	      }
-
-	      anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
+	      if(TheResult)
+		anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
 
 	    }
 	    
@@ -787,13 +814,13 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
 	}
 
-	if(anyStoreForwardingBenefits) {
-	  DEBUG(dbgs() << "At least one load was made constant; trying again\n");
-	}
-	else {
-	  DEBUG(dbgs() << "No loads were made constant\n");
-	}
-	
+      }
+
+      if(anyStoreForwardingBenefits) {
+	DEBUG(dbgs() << "At least one load was made constant; trying again\n");
+      }
+      else {
+	DEBUG(dbgs() << "No loads were made constant\n");
       }
 
     }
