@@ -8,8 +8,11 @@
 //===----------------------------------------------------------------------===//
 //
 // This pass uses some heuristics to figure out loops that might be worth peeling.
-// Right now it's focussed on finding loops that access arrays with defined contents
-// for use with the SimpleVFSEval pass.
+// Basically this is simplistic SCCP plus some use of MemDep to find out how many instructions
+// from the loop body would likely get evaluated if we peeled an iterations.
+// We also consider the possibility of concurrently peeling a group of nested loops.
+// The hope is that the information provided is both more informative and quicker to obtain than just speculatively
+// peeling and throwing a round of -std-compile-opt at the result.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +28,8 @@
 #include "llvm/Analysis/ProfileInfo.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
@@ -92,6 +97,7 @@ namespace {
     void accountElimInstruction(Instruction*);
     void doForAllLoops(void (*callback)(PeelHeuristicsLoopRun*), llvm::Instruction*);
     bool blockIsDead(BasicBlock*);
+    bool tryForwardLoad(LoadInst* LI, const MemDepResult& Res);
 
   public:
 
@@ -103,7 +109,7 @@ namespace {
 
     PeelHeuristicsLoopRun() : doConstProp(true) { }
 
-    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&, PeelHeuristicsLoopRun* parent, TargetData*);
+    bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&, PeelHeuristicsLoopRun* parent, TargetData*, AliasAnalysis*);
     void getAllChildren(std::vector<PeelHeuristicsLoopRun*>&, bool topLevel);
     void doInitialStats(Loop*, LoopInfo*);
     void print(raw_ostream &OS, int indent) const;
@@ -128,6 +134,7 @@ namespace {
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
 
       AU.addRequired<LoopInfo>();
+      AU.addRequired<AliasAnalysis>();
       AU.setPreservesAll();
 
     }
@@ -485,6 +492,9 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	  }
 	  else {
 	    DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant argument: " << (*op) << "\n");
+	    if(isa<CastInst>(I) || isa<GetElementPtrInst>(I)) {
+	      
+	    }
 	    break;
 	  }
 	}
@@ -576,7 +586,41 @@ void PeelHeuristicsLoopRun::getAllChildren(std::vector<PeelHeuristicsLoopRun*>& 
 
 }
 
-bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges, PeelHeuristicsLoopRun* parentRun, TargetData* TD) {
+bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res) {
+
+  if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
+    if(Constant* SC = dyn_cast<Constant>(SI->getOperand(0))) {
+
+      DEBUG(dbgs() << *LI << " defined by " << *SI << "\n");
+      getConstantBenefit(LI, SC);
+      return true;
+
+    }
+    else {
+      DEBUG(dbgs() << *LI << " is defined by " << *SI << " with a non-constant operand\n");
+    }
+  }
+  else if(LoadInst* DefLI = dyn_cast<LoadInst>(Res.getInst())) {
+		
+    DenseMap<Instruction*, Constant*>::iterator DefLIIt = constInstructions.find(DefLI);
+    if(DefLIIt != constInstructions.end()) {
+		  
+      DEBUG(dbgs() << *LI << " defined by " << *(DefLIIt->second) << "\n");
+      getConstantBenefit(LI, DefLIIt->second);
+      return true;
+
+    }
+
+  }
+  else {
+    DEBUG(dbgs() << *LI << " is defined by " << *(Res.getInst()) << " which is not a simple store\n");
+  }
+
+  return false;
+
+}
+
+bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& outerConsts, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges, PeelHeuristicsLoopRun* parentRun, TargetData* TD, AliasAnalysis* AA) {
   
   // Deep copies to avoid work on this loop affecting our parent loops.
   this->TD = TD;
@@ -599,7 +643,10 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
     return false;
   }
 
-  // Proceed to push the frontier of instructions with all-constant operands!
+  // Is it worth doing constant prop here at all? We say it is if any PHI nodes are rendered constant by peeling
+  // which would not have been if it weren't for our parent. That is, peeling is especially effective if conducted
+  // in concert with our parent loop. If this loop would yield a constant regardless, we will find that out later
+  // as the pass considers all loops as a root at top level.
 
   if(parentRun) {
     
@@ -631,6 +678,8 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
     }
 
   }
+
+  // Proceed to push the frontier of instructions with all-constant operands!
 
   if(doConstProp) {
 
@@ -667,6 +716,88 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
     }
 
+    bool anyStoreForwardingBenefits = true;
+
+    while(anyStoreForwardingBenefits) {
+
+      DEBUG(dbgs() << "Considering store-to-load forwards...\n");
+      anyStoreForwardingBenefits = false;
+
+      MemoryDependenceAnalyser MD;
+      MD.init(AA);
+
+      for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; BI++) {
+
+	BasicBlock* BB = *BI;
+
+	if(blockIsDead(BB))
+	  continue;
+
+	for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; II++) {
+
+	  if(LoadInst* LI = dyn_cast<LoadInst>(II)) {
+
+	    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(LI);
+
+	    if(it != constInstructions.end()) {
+	      DEBUG(dbgs() << "Ignoring " << *LI << " because it's already constant\n");
+	      continue;
+	    }
+
+	    MemDepResult Res = MD.getDependency(LI, constInstructions, ignoreEdges);
+
+	    if(Res.isClobber()) {
+	      DEBUG(dbgs() << *LI << " is locally clobbered by " << Res.getInst() << "\n");
+	      continue;
+	    }
+	    else if(Res.isDef()) {
+	      anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
+	    }
+	    else { // Nonlocal
+	      
+	      Value* LPointer = LI->getOperand(0);
+
+	      if(Instruction* LPointerI = dyn_cast<Instruction>(LPointer)) {
+		DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(LPointerI);
+		if(it != constInstructions.end())
+		  LPointer = it->second;
+	      }
+
+	      SmallVector<NonLocalDepResult, 4> NLResults;
+
+	      MD.getNonLocalPointerDependency(LPointer, true, BB, NLResults, constInstructions, ignoreEdges);
+
+	      assert(NLResults.size() > 0);
+	      if(NLResults.size() > 1) {
+		DEBUG(dbgs() << *LI << " depends on multiple instructions, ignoring\n");
+		continue;
+	      }
+
+	      const MemDepResult& Res = NLResults[0].getResult();
+	      if(Res.isClobber()) {
+		DEBUG(dbgs() << *LI << " is nonlocally clobbered by " << Res.getInst() << "\n");
+		continue;
+	      }
+
+	      anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
+
+	    }
+	    
+	  }
+
+	}
+
+	if(anyStoreForwardingBenefits) {
+	  DEBUG(dbgs() << "At least one load was made constant; trying again\n");
+	}
+	else {
+	  DEBUG(dbgs() << "No loads were made constant\n");
+	}
+	
+      }
+
+    }
+
   }
 
   // Try concurrently peeling child loops
@@ -674,7 +805,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator CI = childLoops.begin(), CE = childLoops.end(); CI != CE; CI++) {
 
     DEBUG(dbgs() << "--> Considering benefit of concurrently peeling child loop " << CI->first->getHeader()->getName() << "\n");
-    CI->second.doSimulatedPeel(constInstructions, ignoreEdges, this, TD);
+    CI->second.doSimulatedPeel(constInstructions, ignoreEdges, this, TD, AA);
     DEBUG(dbgs() << "<--\n");
 
   }
@@ -746,10 +877,12 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
   }
 
+  AliasAnalysis* AA = &getAnalysis<AliasAnalysis>();
+
   // Now finally simulate peeling on each top-level target. The targets will recursively peel their child loops if it seems warranted.
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator RI = topLevelLoops.begin(), RE = topLevelLoops.end(); RI != RE; RI++) {
    
-    RI->second.doSimulatedPeel(initialConsts, initialIgnoreEdges, 0, TD);
+    RI->second.doSimulatedPeel(initialConsts, initialIgnoreEdges, 0, TD, AA);
 
   }
 

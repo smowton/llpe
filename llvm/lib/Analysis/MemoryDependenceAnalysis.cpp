@@ -408,6 +408,16 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, con
   
   // If we need to do a pointer scan, make it happen.
   if (MemPtr) {
+
+    // No worries about this when it comes to cacheing -- the user is obligated to amend our caches
+    // if they change their replaceInsts / ignoreEdges assumptions, and the reverse-cache entry below won't fire
+    // if we just replaced with a constant.
+    if(Instruction* MemI = dyn_cast<Instruction>(MemPtr)) {
+      DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts.find(MemI);
+      if(it != replaceInsts.end())
+	MemPtr = it->second;
+    }
+
     bool isLoad = !QueryInst->mayWriteToMemory();
     if (IntrinsicInst *II = dyn_cast<MemoryUseIntrinsic>(QueryInst)) {
       isLoad |= II->getIntrinsicID() == Intrinsic::lifetime_end;
