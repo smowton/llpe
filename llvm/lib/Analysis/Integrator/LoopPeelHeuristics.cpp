@@ -604,6 +604,7 @@ bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res
     if(Constant* SC = dyn_cast<Constant>(SI->getOperand(0))) {
 
       DEBUG(dbgs() << *LI << " defined by " << *SI << "\n");
+      accountElimInstruction(LI);
       getConstantBenefit(LI, SC);
       return true;
 
@@ -618,6 +619,7 @@ bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res
     if(DefLIIt != constInstructions.end()) {
 		  
       DEBUG(dbgs() << *LI << " defined by " << *(DefLIIt->second) << "\n");
+      accountElimInstruction(LI);
       getConstantBenefit(LI, DefLIIt->second);
       return true;
 
@@ -644,16 +646,19 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
   BasicBlock* loopHeader = L->getHeader();
   BasicBlock* loopPreheader = L->getLoopPreheader();
+  BasicBlock* loopLatch = L->getLoopLatch();
 
   if(loopHeader)
     loopHeaderName = loopHeader->getNameStr();
   else
     loopHeaderName = "Unknown";
 
-  if((!loopHeader) || (!loopPreheader)) {
-    DEBUG(dbgs() << "Can't evaluate loop " << *L << " because it doesn't have a header or preheader" << "\n");
+  if((!loopHeader) || (!loopPreheader) || (!loopLatch)) {
+    DEBUG(dbgs() << "Can't evaluate loop " << *L << " because it doesn't have a header, preheader or latch" << "\n");
     return false;
   }
+
+  ignoreEdges.insert(std::make_pair(loopLatch, loopHeader));
 
   // Is it worth doing constant prop here at all? We say it is if any PHI nodes are rendered constant by peeling
   // which would not have been if it weren't for our parent. That is, peeling is especially effective if conducted
@@ -806,7 +811,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 	      }
 
 	      if(TheResult)
-		anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
+		anyStoreForwardingBenefits |= tryForwardLoad(LI, *TheResult);
 
 	    }
 	    
