@@ -16,6 +16,7 @@
 
 #include "llvm/Instruction.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace llvm {
   class DominatorTree;
@@ -37,11 +38,13 @@ class PHITransAddr {
   
   /// TD - The target data we are playing with if known, otherwise null.
   const TargetData *TD;
+
+  const DenseMap<Instruction*, Constant*>* replaceInsts;
   
   /// InstInputs - The inputs for our symbolic address.
   SmallVector<Instruction*, 4> InstInputs;
 public:
-  PHITransAddr(Value *addr, const TargetData *td) : Addr(addr), TD(td) {
+  PHITransAddr(Value *addr, const TargetData *td, const DenseMap<Instruction*, Constant*>* replaceInsts = 0) : Addr(addr), TD(td), replaceInsts(replaceInsts) {
     // If the address is an instruction, the whole thing is considered an input.
     if (Instruction *I = dyn_cast<Instruction>(Addr))
       InstInputs.push_back(I);
@@ -89,6 +92,8 @@ public:
   /// structure is valid, it returns true.  If invalid, it prints errors and
   /// returns false.
   bool Verify() const;
+  bool VerifySubExpr(const Value *Expr, SmallVectorImpl<Instruction*> &InstInputs) const;
+
 private:
   Value *PHITranslateSubExpr(Value *V, BasicBlock *CurBB, BasicBlock *PredBB,
                              const DominatorTree *DT);
@@ -101,6 +106,22 @@ private:
   Value *InsertPHITranslatedSubExpr(Value *InVal, BasicBlock *CurBB,
                                     BasicBlock *PredBB, const DominatorTree &DT,
                                     SmallVectorImpl<Instruction*> &NewInsts);
+
+  Value* getReplacement(Value* arg) const {
+
+    if(!replaceInsts)
+      return arg;
+    Instruction* argI = dyn_cast<Instruction>(arg);
+    if(!argI)
+      return arg;
+    DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts->find(argI);
+    if(it == replaceInsts->end())
+      return arg;
+    return cast<Value>(const_cast<Constant*>(it->second));
+
+  }
+
+  bool CanPHITrans(const Instruction *Inst) const;
   
   /// AddAsInput - If the specified value is an instruction, add it as an input.
   Value *AddAsInput(Value *V) {

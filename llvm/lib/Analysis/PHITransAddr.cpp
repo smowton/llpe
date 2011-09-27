@@ -18,14 +18,14 @@
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
-static bool CanPHITrans(Instruction *Inst) {
+bool PHITransAddr::CanPHITrans(const Instruction *Inst) const {
   if (isa<PHINode>(Inst) ||
       isa<BitCastInst>(Inst) ||
       isa<GetElementPtrInst>(Inst))
     return true;
   
   if (Inst->getOpcode() == Instruction::Add &&
-      isa<ConstantInt>(Inst->getOperand(1)))
+      isa<ConstantInt>(getReplacement(Inst->getOperand(1))) )
     return true;
   
   //   cerr << "MEMDEP: Could not PHI translate: " << *Pointer;
@@ -45,10 +45,10 @@ void PHITransAddr::dump() const {
 }
 
 
-static bool VerifySubExpr(Value *Expr,
-                          SmallVectorImpl<Instruction*> &InstInputs) {
+bool PHITransAddr::VerifySubExpr(const Value* Expr,
+				 SmallVectorImpl<Instruction*> &InstInputs) const {
   // If this is a non-instruction value, there is nothing to do.
-  Instruction *I = dyn_cast<Instruction>(Expr);
+  const Instruction *I = dyn_cast<Instruction>(Expr);
   if (I == 0) return true;
   
   // If it's an instruction, it is either in Tmp or its operands recursively
@@ -71,7 +71,7 @@ static bool VerifySubExpr(Value *Expr,
   
   // Validate the operands of the instruction.
   for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i)
-    if (!VerifySubExpr(I->getOperand(i), InstInputs))
+    if (!VerifySubExpr(getReplacement(I->getOperand(i)), InstInputs))
       return false;
 
   return true;
@@ -158,8 +158,10 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     InstInputs.erase(std::find(InstInputs.begin(), InstInputs.end(), Inst));
     
     // If this is a PHI, go ahead and translate it.
-    if (PHINode *PN = dyn_cast<PHINode>(Inst))
-      return AddAsInput(PN->getIncomingValueForBlock(PredBB));
+    if (PHINode *PN = dyn_cast<PHINode>(Inst)) {
+      Value* V = getReplacement(PN->getIncomingValueForBlock(PredBB));
+      return AddAsInput(V);
+    }
     
     // If this is a non-phi value, and it is analyzable, we can incorporate it
     // into the expression by making all instruction operands be inputs.
@@ -169,7 +171,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     // All instruction operands are now inputs (and of course, they may also be
     // defined in this block, so they may need to be phi translated themselves.
     for (unsigned i = 0, e = Inst->getNumOperands(); i != e; ++i)
-      if (Instruction *Op = dyn_cast<Instruction>(Inst->getOperand(i)))
+      if (Instruction *Op = dyn_cast<Instruction>(getReplacement(Inst->getOperand(i))))
         InstInputs.push_back(Op);
   }
 
@@ -178,9 +180,10 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
   // operands need to be phi translated, and if so, reconstruct it.
   
   if (BitCastInst *BC = dyn_cast<BitCastInst>(Inst)) {
-    Value *PHIIn = PHITranslateSubExpr(BC->getOperand(0), CurBB, PredBB, DT);
+    Value *CastArg = getReplacement(BC->getOperand(0));
+    Value *PHIIn = PHITranslateSubExpr(CastArg, CurBB, PredBB, DT);
     if (PHIIn == 0) return 0;
-    if (PHIIn == BC->getOperand(0))
+    if (PHIIn == CastArg)
       return BC;
     
     // Find an available version of this cast.
@@ -206,7 +209,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     SmallVector<Value*, 8> GEPOps;
     bool AnyChanged = false;
     for (unsigned i = 0, e = GEP->getNumOperands(); i != e; ++i) {
-      Value *GEPOp = PHITranslateSubExpr(GEP->getOperand(i), CurBB, PredBB, DT);
+      Value *GEPOp = PHITranslateSubExpr(getReplacement(GEP->getOperand(i)), CurBB, PredBB, DT);
       if (GEPOp == 0) return 0;
       
       AnyChanged |= GEPOp != GEP->getOperand(i);
@@ -235,7 +238,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
             (!DT || DT->dominates(GEPI->getParent(), PredBB))) {
           bool Mismatch = false;
           for (unsigned i = 0, e = GEPOps.size(); i != e; ++i)
-            if (GEPI->getOperand(i) != GEPOps[i]) {
+            if (getReplacement(GEPI->getOperand(i)) != GEPOps[i]) {
               Mismatch = true;
               break;
             }
@@ -248,20 +251,20 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
   
   // Handle add with a constant RHS.
   if (Inst->getOpcode() == Instruction::Add &&
-      isa<ConstantInt>(Inst->getOperand(1))) {
+      isa<ConstantInt>(getReplacement(Inst->getOperand(1)))) {
     // PHI translate the LHS.
-    Constant *RHS = cast<ConstantInt>(Inst->getOperand(1));
+    Constant *RHS = cast<ConstantInt>(getReplacement(Inst->getOperand(1)));
     bool isNSW = cast<BinaryOperator>(Inst)->hasNoSignedWrap();
     bool isNUW = cast<BinaryOperator>(Inst)->hasNoUnsignedWrap();
     
-    Value *LHS = PHITranslateSubExpr(Inst->getOperand(0), CurBB, PredBB, DT);
+    Value *LHS = PHITranslateSubExpr(getReplacement(Inst->getOperand(0)), CurBB, PredBB, DT);
     if (LHS == 0) return 0;
     
     // If the PHI translated LHS is an add of a constant, fold the immediates.
     if (BinaryOperator *BOp = dyn_cast<BinaryOperator>(LHS))
       if (BOp->getOpcode() == Instruction::Add)
-        if (ConstantInt *CI = dyn_cast<ConstantInt>(BOp->getOperand(1))) {
-          LHS = BOp->getOperand(0);
+        if (ConstantInt *CI = dyn_cast<ConstantInt>(getReplacement(BOp->getOperand(1)))) {
+          LHS = getReplacement(BOp->getOperand(0));
           RHS = ConstantExpr::getAdd(RHS, CI);
           isNSW = isNUW = false;
           
@@ -281,7 +284,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     }
 
     // If we didn't modify the add, just return it.
-    if (LHS == Inst->getOperand(0) && RHS == Inst->getOperand(1))
+    if (LHS == getReplacement(Inst->getOperand(0)) && RHS == getReplacement(Inst->getOperand(1)))
       return Inst;
     
     // Otherwise, see if we have this add available somewhere.
@@ -289,7 +292,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
          UI != E; ++UI) {
       if (BinaryOperator *BO = dyn_cast<BinaryOperator>(*UI))
         if (BO->getOpcode() == Instruction::Add &&
-            BO->getOperand(0) == LHS && BO->getOperand(1) == RHS &&
+            getReplacement(BO->getOperand(0)) == LHS && getReplacement(BO->getOperand(1)) == RHS &&
             BO->getParent()->getParent() == CurBB->getParent() &&
             (!DT || DT->dominates(BO->getParent(), PredBB)))
           return BO;

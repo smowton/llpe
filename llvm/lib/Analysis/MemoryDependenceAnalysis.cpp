@@ -618,7 +618,7 @@ getNonLocalPointerDependency(Value *Pointer, bool isLoad, BasicBlock *FromBB,
   const Type *EltTy = cast<PointerType>(Pointer->getType())->getElementType();
   uint64_t PointeeSize = AA->getTypeStoreSize(EltTy);
   
-  PHITransAddr Address(Pointer, TD);
+  PHITransAddr Address(Pointer, TD, &replaceInsts);
   
   // This is the set of blocks we've inspected, and the pointer we consider in
   // each block.  Because of critical edges, we currently bail out if querying
