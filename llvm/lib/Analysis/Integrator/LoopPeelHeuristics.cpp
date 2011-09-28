@@ -37,6 +37,8 @@
 
 #include <string>
 
+#define LPDEBUG(x) DEBUG(dbgs() << dbgind() << x)
+
 using namespace llvm;
 
 namespace {
@@ -91,13 +93,19 @@ namespace {
     std::string loopHeaderName;
     bool doConstProp;
 
+    int debugIndent;
+
     void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
     void getConstantBenefit(Instruction* I, Constant* C);
+    void realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
+    void realGetConstantBenefit(Instruction* I, Constant* C);
     void getPHINodeBenefit(PHINode* PN);
     void accountElimInstruction(Instruction*);
     void doForAllLoops(void (*callback)(PeelHeuristicsLoopRun*), llvm::Instruction*);
     bool blockIsDead(BasicBlock*);
     bool tryForwardLoad(LoadInst* LI, const MemDepResult& Res);
+
+    std::string dbgind();
 
   public:
 
@@ -112,6 +120,7 @@ namespace {
     bool doSimulatedPeel(DenseMap<Instruction*, Constant*>&, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&, PeelHeuristicsLoopRun* parent, TargetData*, AliasAnalysis*);
     void getAllChildren(std::vector<PeelHeuristicsLoopRun*>&, bool topLevel);
     void doInitialStats(Loop*, LoopInfo*);
+    void setDebugIndent(int);
     void print(raw_ostream &OS, int indent) const;
 
   };
@@ -154,6 +163,16 @@ INITIALIZE_PASS(LoopPeelHeuristicsPass, "peelheuristics", "Score loops for peeli
 // This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
 // we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
 // It might turn out to be a better idea to find out whether peeling is useful by just doing it and optimising! I'll see...
+
+std::string ind(int i) {
+
+  char* arr = (char*)alloca(i+1);
+  for(int j = 0; j < i; j++)
+    arr[j] = ' ';
+  arr[i] = '\0';
+  return std::string(arr);
+
+}
 
 void incConstBranches(PeelHeuristicsLoopRun* run) {
 
@@ -199,6 +218,12 @@ bool instructionCounts(Instruction* I) {
 
 }
 
+std::string PeelHeuristicsLoopRun::dbgind() {
+
+  return ind(debugIndent);
+
+}
+
 void PeelHeuristicsLoopRun::doForAllLoops(void (*callback)(PeelHeuristicsLoopRun*), Instruction* I) {
 
   Loop* innermostLoop = LI->getLoopFor(I->getParent());
@@ -218,12 +243,12 @@ void PeelHeuristicsLoopRun::doForAllLoops(void (*callback)(PeelHeuristicsLoopRun
 
 }
 
-void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
+void PeelHeuristicsLoopRun::realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
 
-  DEBUG(dbgs() << "--> Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
+  LPDEBUG("Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
 
   if(!L->contains(BB)) {
-    DEBUG(dbgs() << "<-- Returning constant bonus because " << BB->getName() << " not in loop" << "\n");
+    LPDEBUG(BB->getName() << " not in loop" << "\n");
     // The following signifies that this branch exits not just this loop, but also some of our parents.
     Loop* outsideLimit = LI->getLoopFor(BB);
     PeelHeuristicsLoopRun* thisRun = this;
@@ -235,7 +260,7 @@ void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock
   }
 
   if(BBPred == L->getLoopLatch()) {
-    DEBUG(dbgs() << "<-- Eliminated the latch branch!");
+    LPDEBUG("Eliminated the latch branch!");
     stats.latchBranchEliminated = true;
     return;
   }
@@ -244,16 +269,16 @@ void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock
 
   if(blockIsDead(BB)) {
     // This BB is dead! Kill its instructions, then remove it as a predecessor to all successor blocks and see if that helps anything.
-    DEBUG(dbgs() << "Block is dead!\n");
+    LPDEBUG("Block is dead!\n");
     doForAllLoops(&incBlocksElim, BB->begin());
     for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
       if(!isa<PHINode>(BI)) {
 	DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(BI);
 	if(it != constInstructions.end()) {
-	  DEBUG(dbgs() << "Dead instruction " << *BI << " had already been constant folded\n");
+	  LPDEBUG("Dead instruction " << *BI << " had already been constant folded\n");
 	}
 	else {
-	  DEBUG(dbgs() << "Instruction " << *BI << " eliminated\n");
+	  LPDEBUG("Instruction " << *BI << " eliminated\n");
 	  accountElimInstruction(BI);
 	}
       }
@@ -270,20 +295,26 @@ void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock
     }
   }
 
-  DEBUG(dbgs() << "<--\n");
+}
+
+void PeelHeuristicsLoopRun::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
+
+  debugIndent += 2;
+  realGetRemoveBlockPredBenefit(BB, BBPred);
+  debugIndent -= 2;
 
 }
 
 void PeelHeuristicsLoopRun::getPHINodeBenefit(PHINode* PN) {
 
-  DEBUG(dbgs() << "Checking if PHI " << *PN << " is now constant" << "\n");
+  LPDEBUG("Checking if PHI " << *PN << " is now constant" << "\n");
 
   BasicBlock* BB = PN->getParent();
   Constant* constValue = 0;
 
   if(BB == L->getHeader()) {
     stats.headerPhisDefined++;
-    DEBUG(dbgs() << "Ignoring because in the loop header\n");
+    LPDEBUG("Ignoring because in the loop header\n");
     return;
   }
 
@@ -315,11 +346,11 @@ void PeelHeuristicsLoopRun::getPHINodeBenefit(PHINode* PN) {
     // else this predecessor matches the others.
   }
   if(constValue) {
-    DEBUG(dbgs() << "Constant at " << *constValue << "\n");
+    LPDEBUG("Constant at " << *constValue << "\n");
     getConstantBenefit(PN, constValue);
   }
   else {
-    DEBUG(dbgs() << "Not constant\n");
+    LPDEBUG("Not constant\n");
     return;
   }
 
@@ -345,16 +376,16 @@ bool PeelHeuristicsLoopRun::blockIsDead(BasicBlock* BB) {
 
 }
 
-void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC) {
+void PeelHeuristicsLoopRun::realGetConstantBenefit(Instruction* ArgI, Constant* ArgC) {
 
   if(!L->contains(ArgI)) { // Instructions outside the loop are neither here nor there if we're unrolling the loop.
-    DEBUG(dbgs() << *ArgI << " not in loop, ignoring\n");
+    LPDEBUG(*ArgI << " not in loop, ignoring\n");
     return;
   }
 
   DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(ArgI);
   if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
-    DEBUG(dbgs() << *ArgI << " already constant\n");
+    LPDEBUG(*ArgI << " already constant\n");
     return;
   }
 
@@ -364,44 +395,44 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
       accountElimInstruction(ArgI);
     }
     else {
-      DEBUG(dbgs() << "Not eliminating instruction due to side-effects\n");
+      LPDEBUG("Not eliminating instruction due to side-effects\n");
     }
   }
 
   // A null value means we know the result will be constant, but we're not sure what.
 
   if(ArgC)
-    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having constant value " << *ArgC << "\n");
+    LPDEBUG("Getting benefit due to instruction " << *ArgI << " having constant value " << *ArgC << "\n");
   else
-    DEBUG(dbgs() << "--> Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << "\n");
+    LPDEBUG("Getting benefit due to instruction " << *ArgI << " having an unknown constant value" << "\n");
 
   for (Value::use_iterator UI = ArgI->use_begin(), E = ArgI->use_end(); UI != E;++UI){
 
     Instruction* I;
     if(!(I = dyn_cast<Instruction>(*UI))) {
-      DEBUG(dbgs() << "Instruction has a non-instruction user: " << *UI << "\n");
+      LPDEBUG("Instruction has a non-instruction user: " << *UI << "\n");
       continue;
     }
 
     if(blockIsDead(I->getParent())) {
-      DEBUG(dbgs() << "User instruction " << *I << " already eliminated (in dead block)\n");
+      LPDEBUG("User instruction " << *I << " already eliminated (in dead block)\n");
       continue;
     }
 
-    DEBUG(dbgs() << "Considering user instruction " << *I << "\n");
+    LPDEBUG("Considering user instruction " << *I << "\n");
 
     // These bonuses apply whether or not we manage to render all the instruction's arguments constant:
 
     if (CallInst *CI = dyn_cast<CallInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
       if (CI->getCalledValue() == ArgI) {
-	DEBUG(dbgs() << "Found indirect->direct call promotion\n");
+	LPDEBUG("Found indirect->direct call promotion\n");
 	doForAllLoops(&incDirectCalls, CI);
       }
     } else if (InvokeInst *II = dyn_cast<InvokeInst>(I)) {
       // Turning an indirect call into a direct call is a BIG win
       if (II->getCalledValue() == ArgI) {
-	DEBUG(dbgs() << "Found indirect->direct call promotion\n");
+	LPDEBUG("Found indirect->direct call promotion\n");
 	doForAllLoops(&incDirectCalls, CI);
       }
     }
@@ -426,7 +457,7 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	}
 	if(target) {
 	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
-	  DEBUG(dbgs() << "Branch or switch instruction given known target: " << target->getName() << "\n");
+	  LPDEBUG("Branch or switch instruction given known target: " << target->getName() << "\n");
 	  TerminatorInst* TI = cast<TerminatorInst>(I);
 	  const unsigned NumSucc = TI->getNumSuccessors();
 	  for (unsigned I = 0; I != NumSucc; ++I) {
@@ -438,7 +469,7 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	else {
 	  // We couldn't be sure which block the branch will go to, but its target will be constant.
 	  // Give a static bonus to indicate that more advanced analysis might be able to eliminate the branch.
-	  DEBUG(dbgs() << "Promoted conditional to unconditional branch to unknown target\n");
+	  LPDEBUG("Promoted conditional to unconditional branch to unknown target\n");
 	  doForAllLoops(&incConstBranches, I);
 	}
 
@@ -447,7 +478,7 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	// We couldn't be sure where the branch will go because we only know the operand is constant, not its value.
 	// We usually don't know because this is the return value of a call, or the result of a load. Give a small bonus
 	// as the call might be inlined or similar.
-	DEBUG(dbgs() << "Unknown constant in branch or switch\n");
+	LPDEBUG("Unknown constant in branch or switch\n");
 	doForAllLoops(&incConstBranches, I);
       }
       accountElimInstruction(I);
@@ -456,7 +487,7 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
       // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
       // then count the benefits of that instruction becoming constant.
       if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
-	DEBUG(dbgs() << "Constant call argument\n");
+	LPDEBUG("Constant call argument\n");
 	doForAllLoops(incCallArgs, I);
       }
 
@@ -491,12 +522,12 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 		someArgumentUnknownConstant = true;
 	    }
 	    else {
-	      DEBUG(dbgs() << "Not constant folding yet due to non-constant argument " << *OperandI << "\n");
+	      LPDEBUG("Not constant folding yet due to non-constant argument " << *OperandI << "\n");
 	      break;
 	    }
 	  }
 	  else {
-	    DEBUG(dbgs() << (*ArgI) << " has a non-instruction, non-constant argument: " << (*op) << "\n");
+	    LPDEBUG((*ArgI) << " has a non-instruction, non-constant argument: " << (*op) << "\n");
 	    if(isa<CastInst>(I) || isa<GetElementPtrInst>(I)) {
 	      
 	    }
@@ -516,18 +547,18 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
 	  }
 
 	  if(newConst) {
-	    DEBUG(dbgs() << "User " << *I << " now constant at " << *newConst << "\n");
+	    LPDEBUG("User " << *I << " now constant at " << *newConst << "\n");
 	  }
 	  else {
 	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
-	      DEBUG(dbgs() << "User " << *I << " may read or write global state; not propagating\n");
+	      LPDEBUG("User " << *I << " may read or write global state; not propagating\n");
 	      continue;
 	    }
 	    else if(someArgumentUnknownConstant) {
-	      DEBUG(dbgs() << "User " << *I << " will have an unknown constant value too\n");
+	      LPDEBUG("User " << *I << " will have an unknown constant value too\n");
 	    } 
 	    else {
-	      DEBUG(dbgs() << "User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
+	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	    }
 	  }
 	  getConstantBenefit(I, newConst);
@@ -538,7 +569,13 @@ void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC
     }
   }
 
-  DEBUG(dbgs() << "<--\n");
+}
+
+void PeelHeuristicsLoopRun::getConstantBenefit(Instruction* ArgI, Constant* ArgC) {
+
+  debugIndent += 2;
+  realGetConstantBenefit(ArgI, ArgC);
+  debugIndent -= 2;
 
 }
 
@@ -603,14 +640,14 @@ bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
     if(Constant* SC = dyn_cast<Constant>(SI->getOperand(0))) {
 
-      DEBUG(dbgs() << *LI << " defined by " << *SI << "\n");
+      LPDEBUG(*LI << " defined by " << *SI << "\n");
       accountElimInstruction(LI);
       getConstantBenefit(LI, SC);
       return true;
 
     }
     else {
-      DEBUG(dbgs() << *LI << " is defined by " << *SI << " with a non-constant operand\n");
+      LPDEBUG(*LI << " is defined by " << *SI << " with a non-constant operand\n");
     }
   }
   else if(LoadInst* DefLI = dyn_cast<LoadInst>(Res.getInst())) {
@@ -618,7 +655,7 @@ bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res
     DenseMap<Instruction*, Constant*>::iterator DefLIIt = constInstructions.find(DefLI);
     if(DefLIIt != constInstructions.end()) {
 		  
-      DEBUG(dbgs() << *LI << " defined by " << *(DefLIIt->second) << "\n");
+      LPDEBUG(*LI << " defined by " << *(DefLIIt->second) << "\n");
       accountElimInstruction(LI);
       getConstantBenefit(LI, DefLIIt->second);
       return true;
@@ -627,7 +664,7 @@ bool PeelHeuristicsLoopRun::tryForwardLoad(LoadInst* LI, const MemDepResult& Res
 
   }
   else {
-    DEBUG(dbgs() << *LI << " is defined by " << *(Res.getInst()) << " which is not a simple store\n");
+    LPDEBUG(*LI << " is defined by " << *(Res.getInst()) << " which is not a simple store\n");
   }
 
   return false;
@@ -654,9 +691,11 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
     loopHeaderName = "Unknown";
 
   if((!loopHeader) || (!loopPreheader) || (!loopLatch)) {
-    DEBUG(dbgs() << "Can't evaluate loop " << *L << " because it doesn't have a header, preheader or latch" << "\n");
+    LPDEBUG("Can't evaluate loop " << *L << " because it doesn't have a header, preheader or latch" << "\n");
     return false;
   }
+
+  LPDEBUG("Peeling loop with header '" << loopHeader->getName() << "'\n");
 
   ignoreEdges.insert(std::make_pair(loopLatch, loopHeader));
 
@@ -689,7 +728,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
     if(!anyPhiImproved) {
 
-      DEBUG(dbgs() << "Not peeling loop with header " << L->getHeader()->getName() << " because none of its PHI nodes are improved by concurrent unrolling of its parents\n");
+      LPDEBUG("Not peeling loop with header " << L->getHeader()->getName() << " because none of its PHI nodes are improved by concurrent unrolling of its parents\n");
       doConstProp = false;
 
     }
@@ -709,7 +748,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
       Value* preheaderVal = PI->getIncomingValueForBlock(loopPreheader);
       if(!preheaderVal) {
 	stats.allPhisConstantFromPreheader = false;
-	DEBUG(dbgs() << "Top level: " << *PI << ": no value on preheader incoming edge??\n");
+	LPDEBUG("Top level: " << *PI << ": no value on preheader incoming edge??\n");
 	continue;
       }
 
@@ -722,13 +761,12 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
       }
 
       if(preheaderConst) {
-	DEBUG(dbgs() << "--> Top level setting constant PHI node\n");
+	LPDEBUG("Top level setting constant PHI node\n");
 	getConstantBenefit(I, preheaderConst);
-	DEBUG(dbgs() << "<-- Top level setting constant PHI node\n");	
       }
       else {
 	stats.allPhisConstantFromPreheader = false;
-	DEBUG(dbgs() << "Top level: " << *PI << " not constant on edge from preheader\n");
+	LPDEBUG("Top level: " << *PI << " not constant on edge from preheader\n");
       }
 
     }
@@ -737,7 +775,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
     while(anyStoreForwardingBenefits) {
 
-      DEBUG(dbgs() << "Considering store-to-load forwards...\n");
+      LPDEBUG("Considering store-to-load forwards...\n");
       anyStoreForwardingBenefits = false;
 
       MemoryDependenceAnalyser MD;
@@ -757,14 +795,14 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 	    DenseMap<Instruction*, Constant*>::iterator it = constInstructions.find(LI);
 
 	    if(it != constInstructions.end()) {
-	      DEBUG(dbgs() << "Ignoring " << *LI << " because it's already constant\n");
+	      LPDEBUG("Ignoring " << *LI << " because it's already constant\n");
 	      continue;
 	    }
 
 	    MemDepResult Res = MD.getDependency(LI, constInstructions, ignoreEdges);
 
 	    if(Res.isClobber()) {
-	      DEBUG(dbgs() << *LI << " is locally clobbered by " << Res.getInst() << "\n");
+	      LPDEBUG(*LI << " is locally clobbered by " << Res.getInst() << "\n");
 	      continue;
 	    }
 	    else if(Res.isDef()) {
@@ -794,12 +832,12 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 		if(Res.isNonLocal())
 		  continue;
 		else if(Res.isClobber()) {
-		  DEBUG(dbgs() << *LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
+		  LPDEBUG(*LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
 		  break;
 		}
 		else {
 		  if(TheResult) {
-		    DEBUG(dbgs() << *LI << " depends on multiple instructions, ignoring\n");
+		    LPDEBUG(*LI << " depends on multiple instructions, ignoring\n");
 		    TheResult = 0;
 		    break;
 		  }
@@ -822,10 +860,10 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
       }
 
       if(anyStoreForwardingBenefits) {
-	DEBUG(dbgs() << "At least one load was made constant; trying again\n");
+	LPDEBUG("At least one load was made constant; trying again\n");
       }
       else {
-	DEBUG(dbgs() << "No loads were made constant\n");
+	LPDEBUG("No loads were made constant\n");
       }
 
     }
@@ -836,9 +874,9 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator CI = childLoops.begin(), CE = childLoops.end(); CI != CE; CI++) {
 
-    DEBUG(dbgs() << "--> Considering benefit of concurrently peeling child loop " << CI->first->getHeader()->getName() << "\n");
+    LPDEBUG("======>\n");
     CI->second.doSimulatedPeel(constInstructions, ignoreEdges, this, TD, AA);
-    DEBUG(dbgs() << "<--\n");
+    LPDEBUG("<======\n");
 
   }
 
@@ -846,13 +884,14 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Instruction*, Constant*>& o
 
 }
 
-std::string ind(int i) {
+void PeelHeuristicsLoopRun::setDebugIndent(int x) {
 
-  char* arr = (char*)alloca(i+1);
-  for(int j = 0; j < i; j++)
-    arr[j] = ' ';
-  arr[i] = '\0';
-  return std::string(arr);
+  debugIndent = x;
+  for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator CI = childLoops.begin(), CE = childLoops.end(); CI != CE; CI++) {
+
+    CI->second.setDebugIndent(x+2);
+
+  }
 
 }
 
@@ -914,6 +953,7 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
   // Now finally simulate peeling on each top-level target. The targets will recursively peel their child loops if it seems warranted.
   for(DenseMap<Loop*, PeelHeuristicsLoopRun>::iterator RI = topLevelLoops.begin(), RE = topLevelLoops.end(); RI != RE; RI++) {
    
+    RI->second.setDebugIndent(0);
     RI->second.doSimulatedPeel(initialConsts, initialIgnoreEdges, 0, TD, AA);
 
   }
