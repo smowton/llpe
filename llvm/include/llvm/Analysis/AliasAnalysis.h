@@ -100,7 +100,7 @@ public:
   // as specified.
   virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					const Value *V2, unsigned V2Size,
-					const DenseMap<Instruction*, Constant*>&,
+					const DenseMap<Value*, Constant*>&,
 					const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
 
   /// alias - The main low level interface to the alias analysis implementation.

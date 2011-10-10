@@ -54,7 +54,7 @@ AliasAnalysis::alias(const Value *V1, unsigned V1Size,
 AliasAnalysis::AliasResult
 AliasAnalysis::aliasHypothetical(const Value *V1, unsigned V1Size,
 				 const Value *V2, unsigned V2Size,
-				 const DenseMap<Instruction*, Constant*>& replaceInsts,
+				 const DenseMap<Value*, Constant*>& replaceInsts,
 				 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   if((!replaceInsts.size()) && (!ignoreEdges.size()))

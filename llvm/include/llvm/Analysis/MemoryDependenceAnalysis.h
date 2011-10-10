@@ -272,7 +272,7 @@ namespace llvm {
     /// getDependency - Return the instruction on which a memory operation
     /// depends.  See the class comment for more details.  It is illegal to call
     /// this on non-memory instructions.
-    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>&, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Value*, Constant*>&, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult getDependency(Instruction *QueryInst);
 
     /// getNonLocalCallDependency - Perform a full dependency query for the
@@ -298,7 +298,7 @@ namespace llvm {
     void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
                                       BasicBlock *BB,
 				      SmallVectorImpl<NonLocalDepResult> &Result,
-				      const DenseMap<Instruction*, Constant*>&,
+				      const DenseMap<Value*, Constant*>&,
 				      const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
 				      BasicBlock *BB,
@@ -325,7 +325,7 @@ namespace llvm {
                                           bool isLoad, 
                                           BasicBlock::iterator ScanIt,
                                           BasicBlock *BB,
-					  const DenseMap<Instruction*, Constant*>&,
+					  const DenseMap<Value*, Constant*>&,
 					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
                                            BasicBlock::iterator ScanIt,
@@ -335,13 +335,13 @@ namespace llvm {
                                      SmallVectorImpl<NonLocalDepResult> &Result,
                                      DenseMap<BasicBlock*, Value*> &Visited,
                                      bool SkipFirstBlock,
-				     const DenseMap<Instruction*, Constant*>&,
+				     const DenseMap<Value*, Constant*>&,
 				     const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
                                          bool isLoad, BasicBlock *BB,
                                          NonLocalDepInfo *Cache,
                                          unsigned NumSortedEntries,
-					 const DenseMap<Instruction*, Constant*>&,
+					 const DenseMap<Value*, Constant*>&,
 					 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
 
     void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);

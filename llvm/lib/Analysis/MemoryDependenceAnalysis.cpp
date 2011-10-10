@@ -168,7 +168,7 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
 MemDepResult MemoryDependenceAnalyser::
 getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad, 
                          BasicBlock::iterator ScanIt, BasicBlock *BB, 
-			 const DenseMap<Instruction*, Constant*>& replaceInsts,
+			 const DenseMap<Value*, Constant*>& replaceInsts,
 			 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
 
   Value *InvariantTag = 0;
@@ -223,7 +223,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       uint64_t PointerSize = AA->getTypeStoreSize(LI->getType());
       
       if(Instruction* I = dyn_cast<Instruction>(Pointer)) {
-	DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts.find(I);
+	DenseMap<Value*, Constant*>::const_iterator it = replaceInsts.find(I);
 	if(it != replaceInsts.end())
 	  Pointer = it->second;
       }
@@ -259,7 +259,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       uint64_t PointerSize = AA->getTypeStoreSize(SI->getOperand(0)->getType());
 
       if(Instruction* I = dyn_cast<Instruction>(Pointer)) {
-	DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts.find(I);
+	DenseMap<Value*, Constant*>::const_iterator it = replaceInsts.find(I);
 	if(it != replaceInsts.end())
 	  Pointer = it->second;
       }
@@ -323,7 +323,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 
 /// getDependency - Return the instruction on which a memory operation
 /// depends.
-MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, const DenseMap<Instruction*, Constant*>& replaceInsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, const DenseMap<Value*, Constant*>& replaceInsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   Instruction *ScanPos = QueryInst;
   
   // Check for a cached result
@@ -413,7 +413,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, con
     // if they change their replaceInsts / ignoreEdges assumptions, and the reverse-cache entry below won't fire
     // if we just replaced with a constant.
     if(Instruction* MemI = dyn_cast<Instruction>(MemPtr)) {
-      DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts.find(MemI);
+      DenseMap<Value*, Constant*>::const_iterator it = replaceInsts.find(MemI);
       if(it != replaceInsts.end())
 	MemPtr = it->second;
     }
@@ -435,7 +435,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst, con
 
 MemDepResult MemoryDependenceAnalyser::getDependency(Instruction* I) {
 
-  DenseMap<Instruction*, Constant*> noReplacements;
+  DenseMap<Value*, Constant*> noReplacements;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreNothing;
   return getDependency(I, noReplacements, ignoreNothing);
 
@@ -607,7 +607,7 @@ MemoryDependenceAnalyser::getNonLocalCallDependency(CallSite QueryCS) {
 void MemoryDependenceAnalyser::
 getNonLocalPointerDependency(Value *Pointer, bool isLoad, BasicBlock *FromBB,
                              SmallVectorImpl<NonLocalDepResult> &Result,
-			     const DenseMap<Instruction*, Constant*>& replaceInsts,
+			     const DenseMap<Value*, Constant*>& replaceInsts,
 			     const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   assert(Pointer->getType()->isPointerTy() &&
          "Can't get pointer deps of a non-pointer!");
@@ -638,7 +638,7 @@ void MemoryDependenceAnalyser::
 getNonLocalPointerDependency(Value* Pointer, bool isLoad, BasicBlock* FromBB,
 			     SmallVectorImpl<NonLocalDepResult> &Result) {
 
-  DenseMap<Instruction*, Constant*> replaceNothing;
+  DenseMap<Value*, Constant*> replaceNothing;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreNothing;
 
   getNonLocalPointerDependency(Pointer, isLoad, FromBB, Result, replaceNothing, ignoreNothing);
@@ -653,7 +653,7 @@ MemDepResult MemoryDependenceAnalyser::
 GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
                         bool isLoad, BasicBlock *BB,
                         NonLocalDepInfo *Cache, unsigned NumSortedEntries,
-			const DenseMap<Instruction*, Constant*>& replaceInsts,
+			const DenseMap<Value*, Constant*>& replaceInsts,
 			const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   
   // Do a binary search to see if we already have an entry for this block in
@@ -772,7 +772,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
                             SmallVectorImpl<NonLocalDepResult> &Result,
                             DenseMap<BasicBlock*, Value*> &Visited,
                             bool SkipFirstBlock,
-			    const DenseMap<Instruction*, Constant*>& replaceInsts,
+			    const DenseMap<Value*, Constant*>& replaceInsts,
 			    const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
   
   // Look up the cached info for Pointer.

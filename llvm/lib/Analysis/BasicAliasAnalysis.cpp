@@ -157,7 +157,7 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  const DenseMap<Instruction*, Constant*>& replaceInsts,
+					  const DenseMap<Value*, Constant*>& replaceInsts,
 					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
       return MayAlias;
     }
@@ -368,7 +368,7 @@ namespace {
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size) {
 
-      DenseMap<Instruction*, Constant*> replaceNothing;
+      DenseMap<Value*, Constant*> replaceNothing;
       SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> ignoreNothing;
       return aliasHypothetical(V1, V1Size, V2, V2Size, replaceNothing, ignoreNothing);
 
@@ -376,7 +376,7 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  const DenseMap<Instruction*, Constant*>& replaceInsts,
+					  const DenseMap<Value*, Constant*>& replaceInsts,
 					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
       
       assert(Visited.empty() && "Visited must be cleared after use!");
@@ -428,7 +428,7 @@ namespace {
     SmallPtrSet<const Value*, 16> Visited;
     
     // ReplaceInsts - instructions which, for the duration of an alias query, should be regarded as replaced by given constants.
-    const DenseMap<Instruction*, Constant*>* replaceInsts;
+    const DenseMap<Value*, Constant*>* replaceInsts;
 
     // IgnoreEdges - BB edges that should be ignored when considering PHI aliasing
     const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>* ignoreEdges;
@@ -490,7 +490,7 @@ Value* BasicAliasAnalysis::getReplacement(const Value* VConst) {
   Value* V = const_cast<Value*>(VConst);
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
-    DenseMap<Instruction*, Constant*>::const_iterator it = replaceInsts->find(I);
+    DenseMap<Value*, Constant*>::const_iterator it = replaceInsts->find(I);
     if(it == replaceInsts->end())
       return V;
     else
