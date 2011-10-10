@@ -15,26 +15,18 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Pass.h"
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
-#include "llvm/IntrinsicInst.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/ProfileInfo.h"
-#include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <string>
-#include <algorithm>
 
 #define LPDEBUG(x) DEBUG(dbgs() << dbgind() << x)
 
