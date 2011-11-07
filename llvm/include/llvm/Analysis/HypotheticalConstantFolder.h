@@ -31,8 +31,8 @@ class HypotheticalConstantFolder {
   SmallVector<Instruction*, 16>& eliminatedInstructions;
   SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& eliminatedEdges;
 
-  TargetData* TD;
   AliasAnalysis* AA;
+  TargetData* TD;
 
   int debugIndent;
 
@@ -52,10 +52,10 @@ class HypotheticalConstantFolder {
 			    SmallSet<BasicBlock*, 4> oobBlocks, 
 			    SmallVector<Instruction*, 16>& elimResult, 
 			    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& edgeResult,
-			    AliasAnalysis* AA,
+			    AliasAnalysis* _AA,
 			    TargetData* _TD) : 
   F(FIn), constInstructions(insts), ignoreEdges(edges), outBlocks(oobBlocks), 
-    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), TD(_TD), debugIndent(0) { }
+    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), AA(_AA), TD(_TD), debugIndent(0) { }
 
   void getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots);
 
