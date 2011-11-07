@@ -172,6 +172,8 @@ namespace llvm {
   ModulePass *createModuleDebugInfoPrinterPass();
 
   FunctionPass *createLoopPeelHeuristicsPass();
+
+  ModulePass *createInlineHeuristicsPass();
 }
 
 #endif

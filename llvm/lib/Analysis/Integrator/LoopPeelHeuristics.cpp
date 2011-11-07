@@ -20,6 +20,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
+#include "llvm/Module.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -135,6 +136,34 @@ namespace {
 
   char LoopPeelHeuristicsPass::ID = 0;
 
+  class InlineHeuristicsPass : public ModulePass {
+
+    DenseMap<CallInst*, std::pair<int, int> > results;
+
+  public:
+
+    static char ID;
+
+    explicit InlineHeuristicsPass() : ModulePass(ID) { }
+    bool runOnModule(Module& M);
+
+    void print(raw_ostream &OS, const Module* M) const {
+      for(DenseMap<CallInst*, std::pair<int, int> >::const_iterator CII = results.begin(), CIE = results.end(); CII != CIE; CII++) {
+	OS << *(CII->first) << ": eliminated " << CII->second.first << " instruction / " << CII->second.second << " blocks\n";
+      }
+    }
+
+    virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+
+      AU.addRequired<AliasAnalysis>();
+      AU.setPreservesAll();
+
+    }
+
+  };
+  
+  char InlineHeuristicsPass::ID = 0;
+
 }
 
 FunctionPass *llvm::createLoopPeelHeuristicsPass() {
@@ -142,6 +171,12 @@ FunctionPass *llvm::createLoopPeelHeuristicsPass() {
 }
 
 INITIALIZE_PASS(LoopPeelHeuristicsPass, "peelheuristics", "Score loops for peeling benefit", false, false);
+
+ModulePass *llvm::createInlineHeuristicsPass() {
+  return new InlineHeuristicsPass();
+}
+
+INITIALIZE_PASS(InlineHeuristicsPass, "inlineheuristics", "Score call sites for inlining benefit", false, false);
 
 // This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
 // we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
@@ -339,7 +374,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Value*, Constant*>& outerCo
   if(doConstProp) {
 
     stats.allPhisConstantFromPreheader = true;
-    SmallVector<Value*, 4> rootInstructions;
+    SmallVector<std::pair<Value*, Constant*>, 4> rootInstructions;
 
     SmallSet<Instruction*, 4> headerLatchInputs;
 
@@ -369,8 +404,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Value*, Constant*>& outerCo
 
       if(preheaderConst) {
 	LPDEBUG("Top level setting constant PHI node\n");
-	rootInstructions.push_back(PI);
-	constInstructions[PI] = preheaderConst;
+	rootInstructions.push_back(std::make_pair(PI, preheaderConst));
       }
       else {
 	stats.allPhisConstantFromPreheader = false;
@@ -405,7 +439,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Value*, Constant*>& outerCo
 
     for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = eliminatedEdges.begin(), EE = eliminatedEdges.end(); EI != EE; EI++) {
 
-      if(blockIsDead(EI->second, ignoreEdges))
+      if(HypotheticalConstantFolder::blockIsDead(EI->second, ignoreEdges))
 	blocksKilled.push_back(EI->second);
 
       if(!L->contains(EI->second)) {
@@ -515,6 +549,77 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
    
     RI->second.setDebugIndent(0);
     RI->second.doSimulatedPeel(initialConsts, initialIgnoreEdges, 0, TD, AA);
+
+  }
+
+  return false;
+
+}
+
+bool InlineHeuristicsPass::runOnModule(Module& M) {
+
+  TargetData* TD = getAnalysisIfAvailable<TargetData>();
+  AliasAnalysis* AA = &getAnalysis<AliasAnalysis>();
+
+  for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
+
+    Function& F = *MI;
+    for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+
+      BasicBlock& BB = *FI;
+      for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE; BI++) {
+
+	if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	  
+	  if(Function* F = CI->getCalledFunction()) {
+
+	    if((!F->isDeclaration()) && (!F->isVarArg())) {
+	    
+	      SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
+
+	      for(Function::arg_iterator AI = F->arg_begin(), AE = F->arg_end(); AI != AE; AI++) {
+		Argument* A = AI;
+		if(Constant* C = dyn_cast<Constant>(CI->getArgOperand(A->getArgNo()))) {
+		  rootValues.push_back(std::make_pair(A, C));
+		}
+	      }
+
+	      if(rootValues.size()) {
+		DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
+		SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
+		SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
+
+		SmallVector<Instruction*, 16> eliminatedInstructions;
+		SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
+
+		HypotheticalConstantFolder H(F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
+
+		DEBUG(dbgs() << "Considering inlining " << *CI << "\n");
+		for(DenseMap<Value*, Constant*>::iterator VI = initialConsts.begin(), VE = initialConsts.end(); VI != VE; VI++) {
+		  DEBUG(dbgs() << "  " << *(VI->first) << " -> " << *(VI->second) << "\n");
+		}
+		
+		H.getBenefit(rootValues);
+
+		DEBUG(dbgs() << "Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
+		results[CI] = std::make_pair(eliminatedInstructions.size(), eliminatedEdges.size());
+	      }
+	      else {
+		DEBUG(dbgs() << "Ignored " << *CI << " because none of its args are constant\n");
+	      }
+	    }
+	    else {
+	      DEBUG(dbgs() << "Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
+	    }
+	  }
+	  else {
+	    DEBUG(dbgs() << "Ignored " << *CI << " because it's an uncertain indirect call\n");
+	  }
+	}
+
+      }
+
+    }
 
   }
 

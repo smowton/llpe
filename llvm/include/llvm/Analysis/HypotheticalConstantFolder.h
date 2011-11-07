@@ -28,8 +28,8 @@ class HypotheticalConstantFolder {
   // Edges considered removed for the purpose of estimating constant prop benefit
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges;
   SmallSet<BasicBlock*, 4>& outBlocks;
-  SmallVector<Instruction*, 16> eliminatedInstructions;
-  SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
+  SmallVector<Instruction*, 16>& eliminatedInstructions;
+  SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& eliminatedEdges;
 
   TargetData* TD;
   AliasAnalysis* AA;
@@ -55,13 +55,13 @@ class HypotheticalConstantFolder {
 			    AliasAnalysis* AA,
 			    TargetData* _TD) : 
   F(FIn), constInstructions(insts), ignoreEdges(edges), outBlocks(oobBlocks), 
-    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), TD(_TD) { }
+    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), TD(_TD), debugIndent(0) { }
 
-  void getBenefit(const SmallVector<Value*, 4>& roots);
+  void getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots);
+
+  static bool blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges);
 
 };
-
-bool blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges);
 
 } // Namespace LLVM
 

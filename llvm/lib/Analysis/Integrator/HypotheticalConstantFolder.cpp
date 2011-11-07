@@ -32,19 +32,6 @@
 
 using namespace llvm;
 
-bool blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
-
-  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
-      
-    if(!ignoreEdges.count(std::make_pair(*PI, BB)))
-      return false;
-
-  }
-
-  return true;
-
-}
-
 static std::string ind(int i) {
 
   char* arr = (char*)alloca(i+1);
@@ -58,6 +45,22 @@ static std::string ind(int i) {
 std::string HypotheticalConstantFolder::dbgind() {
 
   return ind(debugIndent);
+
+}
+
+bool HypotheticalConstantFolder::blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+
+  if(&(BB->getParent()->getEntryBlock()) == BB)
+    return false;
+
+  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
+      
+    if(!ignoreEdges.count(std::make_pair(*PI, BB)))
+      return false;
+
+  }
+
+  return true;
 
 }
 
@@ -279,27 +282,19 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
 	for(unsigned i = 0; i < I->getNumOperands(); i++) {
 	  Value* op = I->getOperand(i);
 	  Constant* C;
-	  Instruction* OperandI;
 	  if((C = dyn_cast<Constant>(op)))
 	    instOperands.push_back(C);
-	  else if((OperandI = dyn_cast<Instruction>(op))) {
-	    DenseMap<Value*, Constant*>::iterator it = constInstructions.find(OperandI);
+	  else {
+	    DenseMap<Value*, Constant*>::iterator it = constInstructions.find(op);
 	    if(it != constInstructions.end()) {
 	      instOperands.push_back(it->second);
 	      if(!it->second)
 		someArgumentUnknownConstant = true;
 	    }
 	    else {
-	      LPDEBUG("Not constant folding yet due to non-constant argument " << *OperandI << "\n");
+	      LPDEBUG("Not constant folding yet due to non-constant argument " << *op << "\n");
 	      break;
 	    }
-	  }
-	  else {
-	    LPDEBUG((*ArgV) << " has a non-instruction, non-constant argument: " << (*op) << "\n");
-	    if(isa<CastInst>(I) || isa<GetElementPtrInst>(I)) {
-	      
-	    }
-	    break;
 	  }
 	}
 
@@ -383,11 +378,11 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
 
 }
 
-void HypotheticalConstantFolder::getBenefit(const SmallVector<Value*, 4>& roots) {
+void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots) {
 
-  for(SmallVector<Value*, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
+  for(SmallVector<std::pair<Value*, Constant*>, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
 
-    getConstantBenefit(*RI, constInstructions[*RI]);
+    getConstantBenefit(RI->first, RI->second);
 
   }
 
