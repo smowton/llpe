@@ -138,6 +138,9 @@ namespace {
 
   class InlineHeuristicsPass : public ModulePass {
 
+    TargetData* TD;
+    AliasAnalysis* AA;
+
     DenseMap<CallInst*, std::pair<int, int> > results;
 
   public:
@@ -146,6 +149,7 @@ namespace {
 
     explicit InlineHeuristicsPass() : ModulePass(ID) { }
     bool runOnModule(Module& M);
+    void considerCallInst(CallInst* CI, int nested_calls, const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges);
 
     void print(raw_ostream &OS, const Module* M) const {
       for(DenseMap<CallInst*, std::pair<int, int> >::const_iterator CII = results.begin(), CIE = results.end(); CII != CIE; CII++) {
@@ -424,6 +428,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Value*, Constant*>& outerCo
     SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
 
     HypotheticalConstantFolder H(F, constInstructions, ignoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
+    H.setDebugIndent(debugIndent);
     H.getBenefit(rootInstructions);
 
     for(SmallVector<Instruction*, 16>::iterator II = eliminatedInstructions.begin(), IE = eliminatedInstructions.end(); II != IE; II++) {
@@ -556,10 +561,86 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
 }
 
+#define MAX_NESTING 20
+
+void InlineHeuristicsPass::considerCallInst(CallInst* CI, int nested_calls, const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges) {
+
+  if(Function* F = CI->getCalledFunction()) {
+
+    if((!F->isDeclaration()) && (!F->isVarArg())) {
+	    
+      SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
+
+      bool improved = false;
+
+      for(Function::arg_iterator AI = F->arg_begin(), AE = F->arg_end(); AI != AE; AI++) {
+	Argument* A = AI;
+	Value* AVal = CI->getArgOperand(A->getArgNo());
+	Constant* C = dyn_cast<Constant>(AVal);
+	if(!C) {
+	  DenseMap<Value*, Constant*>::const_iterator it = outerConsts.find(AVal);
+	  if(it != outerConsts.end()) {
+	    improved = true;
+	    C = it->second;
+	  }
+	}
+	if(C)
+	  rootValues.push_back(std::make_pair(A, C));
+      }
+
+      if(rootValues.size() && (improved || !nested_calls)) {
+	DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
+	SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
+	SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
+
+	SmallVector<Instruction*, 16> eliminatedInstructions;
+	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
+
+	HypotheticalConstantFolder H(F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
+
+	DEBUG(dbgs() << "Considering inlining " << *CI << "\n");
+	for(DenseMap<Value*, Constant*>::iterator VI = initialConsts.begin(), VE = initialConsts.end(); VI != VE; VI++) {
+	  DEBUG(dbgs() << "  " << *(VI->first) << " -> " << *(VI->second) << "\n");
+	}
+	
+	H.setDebugIndent(nested_calls * 2);
+	H.getBenefit(rootValues);
+
+	DEBUG(dbgs() << "Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
+	results[CI] = std::make_pair(eliminatedInstructions.size(), eliminatedEdges.size());
+
+	if(nested_calls < MAX_NESTING) {
+	  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
+	    if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
+	      continue;
+	    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+	      if(CallInst* CI = dyn_cast<CallInst>(BI))
+		considerCallInst(CI, nested_calls + 1, initialConsts, initialIgnoreEdges);
+	    }
+	  }
+	}
+      }
+      else {
+	DEBUG(dbgs() << "Ignored " << *CI << " because none of its args are constant\n");
+      }
+    }
+    else {
+      DEBUG(dbgs() << "Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
+    }
+  }
+  else {
+    DEBUG(dbgs() << "Ignored " << *CI << " because it's an uncertain indirect call\n");
+  }
+
+}
+
 bool InlineHeuristicsPass::runOnModule(Module& M) {
 
-  TargetData* TD = getAnalysisIfAvailable<TargetData>();
-  AliasAnalysis* AA = &getAnalysis<AliasAnalysis>();
+  TD = getAnalysisIfAvailable<TargetData>();
+  AA = &getAnalysis<AliasAnalysis>();
+
+  DenseMap<Value*, Constant*> noOuterConsts;
+  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> noEliminatedEdges;
 
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
@@ -570,51 +651,7 @@ bool InlineHeuristicsPass::runOnModule(Module& M) {
       for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE; BI++) {
 
 	if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	  
-	  if(Function* F = CI->getCalledFunction()) {
-
-	    if((!F->isDeclaration()) && (!F->isVarArg())) {
-	    
-	      SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
-
-	      for(Function::arg_iterator AI = F->arg_begin(), AE = F->arg_end(); AI != AE; AI++) {
-		Argument* A = AI;
-		if(Constant* C = dyn_cast<Constant>(CI->getArgOperand(A->getArgNo()))) {
-		  rootValues.push_back(std::make_pair(A, C));
-		}
-	      }
-
-	      if(rootValues.size()) {
-		DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
-		SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
-		SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
-
-		SmallVector<Instruction*, 16> eliminatedInstructions;
-		SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
-
-		HypotheticalConstantFolder H(F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
-
-		DEBUG(dbgs() << "Considering inlining " << *CI << "\n");
-		for(DenseMap<Value*, Constant*>::iterator VI = initialConsts.begin(), VE = initialConsts.end(); VI != VE; VI++) {
-		  DEBUG(dbgs() << "  " << *(VI->first) << " -> " << *(VI->second) << "\n");
-		}
-		
-		H.getBenefit(rootValues);
-
-		DEBUG(dbgs() << "Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
-		results[CI] = std::make_pair(eliminatedInstructions.size(), eliminatedEdges.size());
-	      }
-	      else {
-		DEBUG(dbgs() << "Ignored " << *CI << " because none of its args are constant\n");
-	      }
-	    }
-	    else {
-	      DEBUG(dbgs() << "Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
-	    }
-	  }
-	  else {
-	    DEBUG(dbgs() << "Ignored " << *CI << " because it's an uncertain indirect call\n");
-	  }
+	  considerCallInst(CI, 0, noOuterConsts, noEliminatedEdges);
 	}
 
       }

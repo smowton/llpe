@@ -59,6 +59,8 @@ class HypotheticalConstantFolder {
 
   void getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots);
 
+  void setDebugIndent(int d) { debugIndent = d; }
+
   static bool blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges);
 
 };
