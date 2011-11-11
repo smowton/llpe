@@ -136,12 +136,48 @@ namespace {
 
   char LoopPeelHeuristicsPass::ID = 0;
 
+  class InlineAttempt { 
+
+    TargetData* TD;
+    AliasAnalysis* AA;
+
+    CallInst* CI;
+    int nested_calls;
+
+    SmallVector<InlineAttempt*, 4> subAttempts;
+    
+    int debugIndent;
+
+    int totalInstructions;
+    int instructionsEliminated;
+    int totalBlocks;
+    int blocksEliminated;
+
+  public:
+
+    InlineAttempt() : TD(0), AA(0), debugIndent(0) { }
+    InlineAttempt(TargetData* _TD, AliasAnalysis* _AA, CallInst* _CI, int ncalls, int indent) : TD(_TD), AA(_AA), CI(_CI), nested_calls(ncalls), debugIndent(indent),
+												totalInstructions(0), instructionsEliminated(0), totalBlocks(0), blocksEliminated(0) { }
+
+    ~InlineAttempt() {
+      for(SmallVector<InlineAttempt*, 4>::iterator II = subAttempts.begin(), IE = subAttempts.end(); II != IE; II++)
+	delete ((InlineAttempt*)II);
+    }
+
+    void considerCallInst(const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges);
+
+    std::string dbgind() const;
+
+    void print(raw_ostream &OS) const;
+
+  };
+
   class InlineHeuristicsPass : public ModulePass {
 
     TargetData* TD;
     AliasAnalysis* AA;
 
-    DenseMap<CallInst*, std::pair<int, int> > results;
+    SmallVector<InlineAttempt, 4> rootAttempts;
 
   public:
 
@@ -149,12 +185,10 @@ namespace {
 
     explicit InlineHeuristicsPass() : ModulePass(ID) { }
     bool runOnModule(Module& M);
-    void considerCallInst(CallInst* CI, int nested_calls, const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges);
 
     void print(raw_ostream &OS, const Module* M) const {
-      for(DenseMap<CallInst*, std::pair<int, int> >::const_iterator CII = results.begin(), CIE = results.end(); CII != CIE; CII++) {
-	OS << *(CII->first) << ": eliminated " << CII->second.first << " instruction / " << CII->second.second << " blocks\n";
-      }
+      for(SmallVector<InlineAttempt, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
+	II->print(OS);
     }
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
@@ -563,7 +597,7 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
 #define MAX_NESTING 20
 
-void InlineHeuristicsPass::considerCallInst(CallInst* CI, int nested_calls, const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges) {
+void InlineAttempt::considerCallInst(const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges) {
 
   if(Function* F = CI->getCalledFunction()) {
 
@@ -598,39 +632,73 @@ void InlineHeuristicsPass::considerCallInst(CallInst* CI, int nested_calls, cons
 
 	HypotheticalConstantFolder H(F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
 
-	DEBUG(dbgs() << "Considering inlining " << *CI << "\n");
+	LPDEBUG("Considering inlining " << *CI << "\n");
 	for(DenseMap<Value*, Constant*>::iterator VI = initialConsts.begin(), VE = initialConsts.end(); VI != VE; VI++) {
-	  DEBUG(dbgs() << "  " << *(VI->first) << " -> " << *(VI->second) << "\n");
+	  LPDEBUG("  " << *(VI->first) << " -> " << *(VI->second) << "\n");
 	}
 	
 	H.setDebugIndent(nested_calls * 2);
 	H.getBenefit(rootValues);
 
-	DEBUG(dbgs() << "Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
-	results[CI] = std::make_pair(eliminatedInstructions.size(), eliminatedEdges.size());
+	SmallVector<BasicBlock*, 4> eliminatedBlocks;
+
+	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = eliminatedEdges.begin(), EE = eliminatedEdges.end(); EI != EE; EI++) {
+	  if(HypotheticalConstantFolder::blockIsDead(EI->second, initialIgnoreEdges))
+	    eliminatedBlocks.push_back(EI->second);
+	}
+	
+	std::sort(eliminatedBlocks.begin(), eliminatedBlocks.end());
+	std::unique(eliminatedBlocks.begin(), eliminatedBlocks.end());
+
+	LPDEBUG("Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
+	this->instructionsEliminated = eliminatedInstructions.size();
+	this->blocksEliminated = eliminatedBlocks.size();
+
+	LPDEBUG("Considering inlining sub-calls:\n");
 
 	if(nested_calls < MAX_NESTING) {
 	  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
+	    totalBlocks++;
+	    totalInstructions += FI->size();
 	    if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
 	      continue;
 	    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
-	      if(CallInst* CI = dyn_cast<CallInst>(BI))
-		considerCallInst(CI, nested_calls + 1, initialConsts, initialIgnoreEdges);
+	      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+        	InlineAttempt* subAttempt = new InlineAttempt(this->TD, this->AA, CI, this->nested_calls + 1, this->debugIndent + 2);
+		subAttempts.push_back(subAttempt);
+		subAttempt->considerCallInst(initialConsts, initialIgnoreEdges);
+	      }
 	    }
 	  }
 	}
       }
       else {
-	DEBUG(dbgs() << "Ignored " << *CI << " because none of its args are constant\n");
+	LPDEBUG("Ignored " << *CI << " because none of its args are constant\n");
       }
     }
     else {
-      DEBUG(dbgs() << "Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
+      LPDEBUG("Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
     }
   }
   else {
-    DEBUG(dbgs() << "Ignored " << *CI << " because it's an uncertain indirect call\n");
+    LPDEBUG("Ignored " << *CI << " because it's an uncertain indirect call\n");
   }
+
+}
+
+void InlineAttempt::print(raw_ostream& OS) const {
+
+  OS << dbgind() << *CI << ": eliminated " << instructionsEliminated << "/" << totalInstructions << " instructions, " << blocksEliminated << "/" << totalBlocks << " blocks\n";
+
+  for(SmallVector<InlineAttempt*, 4>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
+    (*CII)->print(OS);
+  }
+
+}
+
+std::string InlineAttempt::dbgind() const {
+
+  return ind(debugIndent);
 
 }
 
@@ -651,7 +719,8 @@ bool InlineHeuristicsPass::runOnModule(Module& M) {
       for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE; BI++) {
 
 	if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	  considerCallInst(CI, 0, noOuterConsts, noEliminatedEdges);
+	  rootAttempts.push_back(InlineAttempt(TD, AA, CI, 0, 0));
+	  rootAttempts.back().considerCallInst(noOuterConsts, noEliminatedEdges);
 	}
 
       }
