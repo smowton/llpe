@@ -42,6 +42,8 @@
 
 using namespace llvm;
 
+bool instructionCounts(Instruction* I);
+
 namespace {
   
   class PeelHeuristicsLoopRunStats {
@@ -141,30 +143,77 @@ namespace {
     TargetData* TD;
     AliasAnalysis* AA;
 
-    CallInst* CI;
+    Function& F;
+
     int nested_calls;
 
-    SmallVector<InlineAttempt*, 4> subAttempts;
+    DenseMap<CallInst*, InlineAttempt*> subAttempts;
     
     int debugIndent;
 
     int totalInstructions;
     int instructionsEliminated;
-    int totalBlocks;
-    int blocksEliminated;
+    int residualCalls;
+
+    DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
+    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
+    SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
+    
+    SmallVector<Instruction*, 16> eliminatedInstructions;
+    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
+
+    HypotheticalConstantFolder H;
 
   public:
 
-    InlineAttempt() : TD(0), AA(0), debugIndent(0) { }
-    InlineAttempt(TargetData* _TD, AliasAnalysis* _AA, CallInst* _CI, int ncalls, int indent) : TD(_TD), AA(_AA), CI(_CI), nested_calls(ncalls), debugIndent(indent),
-												totalInstructions(0), instructionsEliminated(0), totalBlocks(0), blocksEliminated(0) { }
+    SmallVector<bool, 4> argsAlreadyKnown;
+    bool returnValueAlreadyKnown;
+    Constant* returnVal;
 
-    ~InlineAttempt() {
-      for(SmallVector<InlineAttempt*, 4>::iterator II = subAttempts.begin(), IE = subAttempts.end(); II != IE; II++)
-	delete ((InlineAttempt*)II);
+    InlineAttempt(TargetData* _TD, AliasAnalysis* _AA, Function& _F, 
+		  int ncalls, int indent) : TD(_TD), 
+					    AA(_AA), 
+					    F(_F), 
+					    nested_calls(ncalls), 
+					    debugIndent(indent), 
+					    totalInstructions(0), 
+					    residualCalls(0),
+					    initialConsts(), 
+					    initialIgnoreEdges(), 
+					    outerBlocks(), 
+					    eliminatedInstructions(),
+					    eliminatedEdges(), 
+					    H(&_F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, _AA, _TD),
+					    argsAlreadyKnown(), 
+					    returnValueAlreadyKnown(false), 
+					    returnVal(0)
+    {
+
+      H.setDebugIndent(ncalls * 2);
+      for(unsigned i = 0; i < F.arg_size(); i++) {
+	argsAlreadyKnown.push_back(false);
+      }
+
+      for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+	for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+	  if(instructionCounts(BI))
+	    totalInstructions++;
+	}
+      }
+
     }
 
-    void considerCallInst(const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges);
+    ~InlineAttempt() {
+      for(DenseMap<CallInst*, InlineAttempt*>::iterator II = subAttempts.begin(), IE = subAttempts.end(); II != IE; II++)
+	delete (II->second);
+    }
+
+    void considerSubAttempt(CallInst* CI, Function* FCalled, bool force);
+    void localFoldConstants(SmallVector<std::pair<Value*, Constant*>, 4>& args);
+    void foldArguments(SmallVector<std::pair<Value*, Constant*>, 4>& args);
+    void countResidualCalls();
+    void considerCalls(bool force);
+    void considerCallInst(CallInst* CI, bool force);
 
     std::string dbgind() const;
 
@@ -597,84 +646,102 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
 #define MAX_NESTING 20
 
-void InlineAttempt::considerCallInst(const DenseMap<Value*, Constant*>& outerConsts, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& outerIgnoreEdges) {
+void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool force) {
 
-  if(Function* F = CI->getCalledFunction()) {
+  InlineAttempt* IA = 0;
+  SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
 
-    if((!F->isDeclaration()) && (!F->isVarArg())) {
-	    
-      SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
+  DenseMap<CallInst*, InlineAttempt*>::iterator it = subAttempts.find(CI);
+  if(it == subAttempts.end()) {
 
-      bool improved = false;
+    // This call hasn't been explored before. Consider it if we've anything to offer above what the function gave before we did any local folding:
 
-      for(Function::arg_iterator AI = F->arg_begin(), AE = F->arg_end(); AI != AE; AI++) {
-	Argument* A = AI;
+    bool improved = false;
+
+    for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
+      Argument* A = AI;
+      Value* AVal = CI->getArgOperand(A->getArgNo());
+      Constant* C = dyn_cast<Constant>(AVal);
+      if(!C) {
+	DenseMap<Value*, Constant*>::const_iterator it = initialConsts.find(AVal);
+	if(it != initialConsts.end()) {
+	  improved = true;
+	  C = it->second;
+	}
+      }
+      if(C)
+	rootValues.push_back(std::make_pair(A, C));
+    }
+
+    // If we can do better inlining CI in our context of nested inlining, as compared to considering CI a root itself
+    // Or, if this is the root context currently considered, which sets force = true the first time around.
+    if(improved || (rootValues.size() > 0 && force)) {
+
+      IA = new InlineAttempt(this->TD, this->AA, *FCalled, this->nested_calls + 1, this->debugIndent + 2);
+      subAttempts[CI] = IA;
+
+    }
+
+  }
+  else {
+
+    // This call has been explored before -- give it any constant arguments it hasn't seen before.
+
+    IA = it->second;
+    bool improved = false;
+
+    for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
+      Argument* A = AI;
+      if(!IA->argsAlreadyKnown[A->getArgNo()]) {
 	Value* AVal = CI->getArgOperand(A->getArgNo());
-	Constant* C = dyn_cast<Constant>(AVal);
-	if(!C) {
-	  DenseMap<Value*, Constant*>::const_iterator it = outerConsts.find(AVal);
-	  if(it != outerConsts.end()) {
-	    improved = true;
-	    C = it->second;
-	  }
-	}
-	if(C)
-	  rootValues.push_back(std::make_pair(A, C));
-      }
-
-      if(rootValues.size() && (improved || !nested_calls)) {
-	DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
-	SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
-	SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
-
-	SmallVector<Instruction*, 16> eliminatedInstructions;
-	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
-
-	HypotheticalConstantFolder H(F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
-
-	LPDEBUG("Considering inlining " << *CI << "\n");
-	for(DenseMap<Value*, Constant*>::iterator VI = initialConsts.begin(), VE = initialConsts.end(); VI != VE; VI++) {
-	  LPDEBUG("  " << *(VI->first) << " -> " << *(VI->second) << "\n");
-	}
-	
-	H.setDebugIndent(nested_calls * 2);
-	H.getBenefit(rootValues);
-
-	SmallVector<BasicBlock*, 4> eliminatedBlocks;
-
-	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = eliminatedEdges.begin(), EE = eliminatedEdges.end(); EI != EE; EI++) {
-	  if(HypotheticalConstantFolder::blockIsDead(EI->second, initialIgnoreEdges))
-	    eliminatedBlocks.push_back(EI->second);
-	}
-	
-	std::sort(eliminatedBlocks.begin(), eliminatedBlocks.end());
-	std::unique(eliminatedBlocks.begin(), eliminatedBlocks.end());
-
-	LPDEBUG("Eliminated " << eliminatedInstructions.size() << " instructions and " << eliminatedEdges.size() << " edges\n");
-	this->instructionsEliminated = eliminatedInstructions.size();
-	this->blocksEliminated = eliminatedBlocks.size();
-
-	LPDEBUG("Considering inlining sub-calls:\n");
-
-	if(nested_calls < MAX_NESTING) {
-	  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
-	    totalBlocks++;
-	    totalInstructions += FI->size();
-	    if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
-	      continue;
-	    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
-	      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-        	InlineAttempt* subAttempt = new InlineAttempt(this->TD, this->AA, CI, this->nested_calls + 1, this->debugIndent + 2);
-		subAttempts.push_back(subAttempt);
-		subAttempt->considerCallInst(initialConsts, initialIgnoreEdges);
-	      }
-	    }
-	  }
+	DenseMap<Value*, Constant*>::const_iterator it = initialConsts.find(AVal);
+	if(it != initialConsts.end()) {
+	  improved = true;
+	  rootValues.push_back(std::make_pair(A, it->second));
 	}
       }
-      else {
-	LPDEBUG("Ignored " << *CI << " because none of its args are constant\n");
+    }
+    
+    if(!improved) {
+      IA = 0; // Don't do anything.
+    }
+
+  }
+
+  if(IA) {
+
+    LPDEBUG("Considering improving call " << *CI << "\n");
+
+    for(SmallVector<std::pair<Value*, Constant*>, 4>::iterator VI = rootValues.begin(), VE = rootValues.end(); VI != VE; VI++) {
+      LPDEBUG("  " << *(VI->first) << " -> " << *(VI->second) << "\n");
+      Argument* A = cast<Argument>(VI->first);      
+      IA->argsAlreadyKnown[A->getArgNo()] = true;
+    }
+
+    IA->foldArguments(rootValues);
+
+    if(!IA->returnValueAlreadyKnown) {
+      if(IA->returnVal) {
+	IA->returnValueAlreadyKnown = true;
+	SmallVector<std::pair<Value*, Constant*>, 4> newLocalRoots;
+	newLocalRoots.push_back(std::make_pair(CI, IA->returnVal));
+	LPDEBUG("Integrating call's return value locally");
+	localFoldConstants(newLocalRoots);
       }
+    }
+  }
+  else {
+    LPDEBUG("Couldn't improve " << *CI << "\n");
+  }
+
+}
+
+void InlineAttempt::considerCallInst(CallInst* CI, bool force) {
+
+  if(Function* FCalled = CI->getCalledFunction()) {
+
+    if((!FCalled->isDeclaration()) && (!FCalled->isVarArg())) {
+      considerSubAttempt(CI, FCalled, force);
     }
     else {
       LPDEBUG("Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
@@ -686,12 +753,111 @@ void InlineAttempt::considerCallInst(const DenseMap<Value*, Constant*>& outerCon
 
 }
 
+void InlineAttempt::considerCalls(bool force = false) {
+
+  LPDEBUG("Considering if any calls are improved\n");
+
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+
+    if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
+      continue;
+
+    BasicBlock& BB = *FI;
+    
+    for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE; BI++) {
+
+      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	considerCallInst(CI, force);
+      }
+
+    }
+
+  }
+
+}
+
+void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, Constant*>, 4>& args) {
+
+  H.getBenefit(args);
+
+  considerCalls();
+
+  // Let's have a go at supplying a return value to our caller. Simple measure: we know the value if all the 'ret' instructions except one are dead,
+  // and we know that instruction's operand.
+
+  if((!returnVal) && (!F.getReturnType()->isVoidTy())) {
+    bool foundReturnInst = false;
+    for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+      if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
+	continue;
+      for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+	if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
+	  if(foundReturnInst) {
+	    LPDEBUG("Can't determine return value: more than one 'ret' is live\n");
+	    returnVal = 0;
+	    break;
+	  }
+	  else
+	    foundReturnInst = true;
+	  Constant* C = dyn_cast<Constant>(RI->getReturnValue());
+	  if(!C) {
+	    DenseMap<Value*, Constant*>::iterator CI;
+	    if((CI = initialConsts.find(RI->getReturnValue())) != initialConsts.end())
+	      C = CI->second;
+	  }
+	  if(C)
+	    returnVal = C;
+	  else {
+	    LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-constant value " << RI->getReturnValue() << "\n");
+	    break;
+	  }
+	}
+      }
+    }
+    
+    if(returnVal) {
+      LPDEBUG("Found return value: " << *returnVal << "\n");
+    }
+  }
+
+}
+
+void InlineAttempt::foldArguments(SmallVector<std::pair<Value*, Constant*>, 4>& args) {
+
+  localFoldConstants(args);
+
+}
+
+void InlineAttempt::countResidualCalls() {
+
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+    
+    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+      
+      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	DenseMap<CallInst*, InlineAttempt*>::iterator II = subAttempts.find(CI);
+	if(II == subAttempts.end()) {
+	  residualCalls++;
+	}
+	else {
+	  II->second->countResidualCalls();
+	}
+      }
+
+    }
+
+  }
+
+}
+
 void InlineAttempt::print(raw_ostream& OS) const {
 
-  OS << dbgind() << *CI << ": eliminated " << instructionsEliminated << "/" << totalInstructions << " instructions, " << blocksEliminated << "/" << totalBlocks << " blocks\n";
+  LPDEBUG("Eliminated " << eliminatedInstructions.size() << " instructions\n");
 
-  for(SmallVector<InlineAttempt*, 4>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
-    (*CII)->print(OS);
+  OS << dbgind() << F.getName() << ": eliminated " << eliminatedInstructions.size() << "/" << totalInstructions << " instructions, " << residualCalls << " residual uninlined calls\n";
+
+  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
+    CII->second->print(OS);
   }
 
 }
@@ -707,25 +873,14 @@ bool InlineHeuristicsPass::runOnModule(Module& M) {
   TD = getAnalysisIfAvailable<TargetData>();
   AA = &getAnalysis<AliasAnalysis>();
 
-  DenseMap<Value*, Constant*> noOuterConsts;
-  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> noEliminatedEdges;
-
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
     Function& F = *MI;
-    for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
 
-      BasicBlock& BB = *FI;
-      for(BasicBlock::iterator BI = BB.begin(), BE = BB.end(); BI != BE; BI++) {
-
-	if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	  rootAttempts.push_back(InlineAttempt(TD, AA, CI, 0, 0));
-	  rootAttempts.back().considerCallInst(noOuterConsts, noEliminatedEdges);
-	}
-
-      }
-
-    }
+    DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
+    rootAttempts.push_back(InlineAttempt(TD, AA, F, 0, 2));
+    rootAttempts.back().considerCalls(true);
+    rootAttempts.back().countResidualCalls();
 
   }
 

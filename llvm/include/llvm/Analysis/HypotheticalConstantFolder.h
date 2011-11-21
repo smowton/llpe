@@ -49,13 +49,15 @@ class HypotheticalConstantFolder {
  HypotheticalConstantFolder(Function* FIn,
 			    DenseMap<Value*, Constant*>& insts, 
 			    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& edges, 
-			    SmallSet<BasicBlock*, 4> oobBlocks, 
+			    SmallSet<BasicBlock*, 4>& oobBlocks, 
 			    SmallVector<Instruction*, 16>& elimResult, 
 			    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& edgeResult,
 			    AliasAnalysis* _AA,
 			    TargetData* _TD) : 
   F(FIn), constInstructions(insts), ignoreEdges(edges), outBlocks(oobBlocks), 
-    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), AA(_AA), TD(_TD), debugIndent(0) { }
+    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), AA(_AA), TD(_TD), debugIndent(0) { 
+
+  }
 
   void getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots);
 
