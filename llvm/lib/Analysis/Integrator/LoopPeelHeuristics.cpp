@@ -152,7 +152,6 @@ namespace {
     int debugIndent;
 
     int totalInstructions;
-    int instructionsEliminated;
     int residualCalls;
 
     DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
@@ -204,8 +203,9 @@ namespace {
     }
 
     ~InlineAttempt() {
-      for(DenseMap<CallInst*, InlineAttempt*>::iterator II = subAttempts.begin(), IE = subAttempts.end(); II != IE; II++)
+      for(DenseMap<CallInst*, InlineAttempt*>::iterator II = subAttempts.begin(), IE = subAttempts.end(); II != IE; II++) {
 	delete (II->second);
+      }
     }
 
     void considerSubAttempt(CallInst* CI, Function* FCalled, bool force);
@@ -226,7 +226,7 @@ namespace {
     TargetData* TD;
     AliasAnalysis* AA;
 
-    SmallVector<InlineAttempt, 4> rootAttempts;
+    SmallVector<InlineAttempt*, 4> rootAttempts;
 
   public:
 
@@ -236,8 +236,13 @@ namespace {
     bool runOnModule(Module& M);
 
     void print(raw_ostream &OS, const Module* M) const {
-      for(SmallVector<InlineAttempt, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
-	II->print(OS);
+      for(SmallVector<InlineAttempt*, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
+	(*II)->print(OS);
+    }
+
+    void releaseMemory(void) {
+      for(SmallVector<InlineAttempt*, 4>::iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
+	delete *II;
     }
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
@@ -725,7 +730,7 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
 	IA->returnValueAlreadyKnown = true;
 	SmallVector<std::pair<Value*, Constant*>, 4> newLocalRoots;
 	newLocalRoots.push_back(std::make_pair(CI, IA->returnVal));
-	LPDEBUG("Integrating call's return value locally");
+	LPDEBUG("Integrating call's return value locally\n");
 	localFoldConstants(newLocalRoots);
       }
     }
@@ -808,7 +813,7 @@ void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, Constant*>,
 	  if(C)
 	    returnVal = C;
 	  else {
-	    LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-constant value " << RI->getReturnValue() << "\n");
+	    LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-constant value " << *(RI->getReturnValue()) << "\n");
 	    break;
 	  }
 	}
@@ -852,8 +857,6 @@ void InlineAttempt::countResidualCalls() {
 
 void InlineAttempt::print(raw_ostream& OS) const {
 
-  LPDEBUG("Eliminated " << eliminatedInstructions.size() << " instructions\n");
-
   OS << dbgind() << F.getName() << ": eliminated " << eliminatedInstructions.size() << "/" << totalInstructions << " instructions, " << residualCalls << " residual uninlined calls\n";
 
   for(DenseMap<CallInst*, InlineAttempt*>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
@@ -878,9 +881,9 @@ bool InlineHeuristicsPass::runOnModule(Module& M) {
     Function& F = *MI;
 
     DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
-    rootAttempts.push_back(InlineAttempt(TD, AA, F, 0, 2));
-    rootAttempts.back().considerCalls(true);
-    rootAttempts.back().countResidualCalls();
+    rootAttempts.push_back(new InlineAttempt(TD, AA, F, 0, 2));
+    rootAttempts.back()->considerCalls(true);
+    rootAttempts.back()->countResidualCalls();
 
   }
 
