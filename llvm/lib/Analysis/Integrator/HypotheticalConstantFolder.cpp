@@ -378,6 +378,123 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
 
 }
 
+class SymExpr { };
+
+class SymThunk : SymExpr {
+
+public:
+  Value* RealVal;
+
+  SymThunk(Value* R) : RealVal(R) { }
+
+};
+
+class SymOuter : SymExpr { };
+
+class SymGEP : SymExpr {
+
+public:
+  SmallVector<ConstantInt*, 4> Offsets;
+
+  SymGEP(SmallVector<ConstantInt*, 4> Offs) : Offsets(Offs) { }
+
+};
+
+class SymCast : SymExpr {
+
+public:
+  Type* ToType;
+
+  SymCast(Type* T) : ToType(T) { }
+
+};
+
+bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
+
+  // Precondition: LI is clobbered in exactly one place: the entry instruction to its parent function.
+  // This might mean that instruction actually clobbers it, or it's defined by instructions outside this function.
+  // If there's a chance it's the latter, ask our parent to see if it knows anything about out parent
+  // That is, if our parent is InlineHeuristics.
+  
+  Value* Ptr = LI->getPointerOperand();
+
+  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
+  // and construct a symbolic expression to pass to our parent as we go.
+
+  SmallVector<Value*, 4> Expr;
+
+  while(1) {
+
+    if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
+      SmallVector<ConstantInt*, 4> idxs;
+      for(GetElementPtrInst::op_iterator OI = GEP->idx_begin(), OE = GEP->idx_end(); OI != OE; OI++) {
+	Value* idx = OI;
+	DenseMap<Value*, Constant*> it;
+	if(ConstantInt* CI = dyn_cast<ConstantInt>(idx)) {
+	  idxs.push_back(CI);
+	}
+	else if((it = constInstructions.find(idx)) != constInstructions.end()) {
+	  idxs.push_back(cast<ConstantInt>(it->second));
+	}
+	else {
+	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
+	  return false;
+	}
+      }
+      Expr.push_back(SymGEP(idxs));
+      Ptr = GEP->getPointerOperand();
+    }
+    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr)) {
+      Expr.push_back(SymCast(C->getType()));
+      Ptr = C->getOperand(0);
+    }
+    else if(Argument* A = dyn_cast<Argument>(Ptr)) {
+      Expr.push_back(SymThunk(A));
+      break;
+    }
+    else if(PHINode* PI = dyn_cast<PHINode>(Ptr)) {
+      Value* uniquePred = 0;
+      unsigned livePreds = 0;
+      for(unsigned i = 0; i < PI->getNumIncomingValues() && livePreds < 2; i++) {
+	if(!blockIsDead(PI->getIncomingBlock(i))) {
+	  livePreds++;
+	  uniquePred = PI->getIncomingValue(i);
+	}
+      }
+      if(livePreds == 0) {
+	LPDEBUG("Anomaly! In trying to forward load from parent for " << *LI << " found a PHINode " << *PI << " with no live preds!\n");
+      }
+      else if(livePreds == 1) {
+	Ptr = uniquePred;
+      }
+      else {
+	LPDEBUG("Won't investigate load from parent function due to ambiguous PHI " << *PI << "\n");
+	return false;
+      }
+    }
+    else if(SelectInst* SI = dyn_cast<SelectInst>(Ptr)) {
+      Value* Cond = SI->getCondition();
+      DenseMap<Instruction*, Constant*>::iterator it;
+      if((it = constInstructions.find(Cond)) != constInstructions.end()) {
+	ConstantInt* CCond = cast<ConstantInt>(Cond);
+	if(CCond->isZero())
+	  Ptr = SI->getFalseValue();
+	else
+	  Ptr = SI->getTrueValue();
+      }
+      else {
+	LPDEBUG("Won't investigate load from parent function due to unresolved Select " << *SI << "\n");
+	return false;
+      }
+    }
+    
+  }
+
+  // If we make it here, we have a series of friendly cast and GEP ops that end up at an argument.
+  // Ask our parent to figure out what's going on!
+
+}
+
 void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots) {
 
   for(SmallVector<std::pair<Value*, Constant*>, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
@@ -421,7 +538,12 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 
 	  if(Res.isClobber()) {
 	    LPDEBUG(*LI << " is locally clobbered by " << Res.getInst() << "\n");
-	    continue;
+	    if(BB == &F->getEntryBlock()) {
+	      BasicBlock::iterator TestII(Res.getInst());
+	      if(TestII == BB->begin()) {
+		anyStoreForwardingBenefits |= tryForwardLoadFromParent(LI);
+	      }
+	    }
 	  }
 	  else if(Res.isDef()) {
 	    anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
@@ -443,6 +565,8 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 	    assert(NLResults.size() > 0);
 
 	    const MemDepResult* TheResult = 0;
+	    const NonLocalDepResult* TheClobber = 0;
+	    bool seenClobber = false;
 	      
 	    for(unsigned int i = 0; i < NLResults.size(); i++) {
 		
@@ -451,7 +575,13 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 		continue;
 	      else if(Res.isClobber()) {
 		LPDEBUG(*LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
-		break;
+		if(!seenClobber) {
+		  TheClobber = &NLResults[i];
+		}
+		else {
+		  TheClobber = 0;
+		}
+		seenClobber = true;
 	      }
 	      else {
 		if(TheResult) {
@@ -466,8 +596,17 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 		
 	    }
 
-	    if(TheResult)
+	    if((!seenClobber) && TheResult)
 	      anyStoreForwardingBenefits |= tryForwardLoad(LI, *TheResult);
+	    else if(TheClobber) {
+	      BasicBlock* clobberBlock = TheClobber->getBB();
+	      if(&clobberBlock->getParent()->getEntryBlock() == clobberBlock) {
+		BasicBlock::iterator TestBBI(TheClobber->getResult().getInst());
+		if(TestBBI == clobberBlock->begin()) {
+		  anyStoreForwardingBenefits |= tryForwardLoadFromParent(LI);
+		}
+	      }
+	    }
 
 	  }
 	    
