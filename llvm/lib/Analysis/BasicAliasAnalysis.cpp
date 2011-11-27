@@ -563,6 +563,9 @@ const Value* BasicAliasAnalysis::DecomposeGEPExpression(const Value *V, int64_t 
     for (User::const_op_iterator I = GEPOp->op_begin()+1,
          E = GEPOp->op_end(); I != E; ++I) {
       Value *Index = *I;
+
+      Index = getReplacement(Index);
+      
       // Compute the (potentially symbolic) offset in bytes for this index.
       if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
         // For a struct, add the member offset.
@@ -573,8 +576,6 @@ const Value* BasicAliasAnalysis::DecomposeGEPExpression(const Value *V, int64_t 
         continue;
       }
 
-      Index = getReplacement(Index);
-      
       // For an array/pointer, add the element offset, explicitly scaled.
 
       if (ConstantInt* CIdx = dyn_cast<ConstantInt>(Index)) {
@@ -938,6 +939,14 @@ BasicAliasAnalysis::aliasSelect(const SelectInst *SI, unsigned SISize,
   // could still be a cycle without PHIs in unreachable code.
   if (!Visited.insert(SI))
     return MayAlias;
+
+  Value* SICond = getReplacement(SI->getCondition());
+  if(ConstantInt* ConstSICond = dyn_cast<ConstantInt>(SICond)) {
+    if(ConstSICond == ConstantInt::getTrue(SI->getContext()))
+      return aliasCheck(SI->getTrueValue(), SISize, V2, V2Size);
+    else
+      return aliasCheck(SI->getFalseValue(), SISize, V2, V2Size);
+  }
 
   // If the values are Selects with the same condition, we can do a more precise
   // check: just check for aliases between the values on corresponding arms.
