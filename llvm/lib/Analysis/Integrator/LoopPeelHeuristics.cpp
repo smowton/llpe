@@ -76,7 +76,7 @@ namespace {
 
   };
 
-  class PeelHeuristicsLoopRun {
+  class PeelHeuristicsLoopRun : public HCFParentCallbacks {
 
     LoopInfo* LI;
     TargetData* TD;
@@ -92,6 +92,13 @@ namespace {
     void doForAllLoops(void (*callback)(PeelHeuristicsLoopRun*), llvm::Instruction*);
 
     std::string dbgind();
+
+    void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) { 
+
+      LPDEBUG("Loop peeler doesn't support parent resolution yet\n");
+      return;
+
+    }
 
   public:
 
@@ -138,7 +145,9 @@ namespace {
 
   char LoopPeelHeuristicsPass::ID = 0;
 
-  class InlineAttempt { 
+  class InlineAttempt : public HCFParentCallbacks { 
+
+    InlineAttempt* parent;
 
     TargetData* TD;
     AliasAnalysis* AA;
@@ -148,6 +157,7 @@ namespace {
     int nested_calls;
 
     DenseMap<CallInst*, InlineAttempt*> subAttempts;
+    DenseMap<InlineAttempt*, CallInst*> revSubAttempts;
     
     int debugIndent;
 
@@ -169,23 +179,19 @@ namespace {
     bool returnValueAlreadyKnown;
     Constant* returnVal;
 
-    InlineAttempt(TargetData* _TD, AliasAnalysis* _AA, Function& _F, 
-		  int ncalls, int indent) : TD(_TD), 
-					    AA(_AA), 
-					    F(_F), 
-					    nested_calls(ncalls), 
-					    debugIndent(indent), 
-					    totalInstructions(0), 
-					    residualCalls(0),
-					    initialConsts(), 
-					    initialIgnoreEdges(), 
-					    outerBlocks(), 
-					    eliminatedInstructions(),
-					    eliminatedEdges(), 
-					    H(&_F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, _AA, _TD),
-					    argsAlreadyKnown(), 
-					    returnValueAlreadyKnown(false), 
-					    returnVal(0)
+    InlineAttempt(InlineAttempt* P, TargetData* _TD, AliasAnalysis* _AA, Function& _F, 
+		  int ncalls, int indent) : 
+      parent(P),
+      TD(_TD), 
+      AA(_AA), 
+      F(_F), 
+      nested_calls(ncalls), 
+      debugIndent(indent), 
+      totalInstructions(0), 
+      residualCalls(0),
+      H(&_F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, _AA, _TD, *this),
+      returnValueAlreadyKnown(false), 
+      returnVal(0)
     {
 
       H.setDebugIndent(ncalls * 2);
@@ -214,6 +220,8 @@ namespace {
     void countResidualCalls();
     void considerCalls(bool force);
     void considerCallInst(CallInst* CI, bool force);
+    void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out);
+    void tryResolveLoadAtChildSite(InlineAttempt* child, SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out);
 
     std::string dbgind() const;
 
@@ -682,8 +690,9 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
     // Or, if this is the root context currently considered, which sets force = true the first time around.
     if(improved || (rootValues.size() > 0 && force)) {
 
-      IA = new InlineAttempt(this->TD, this->AA, *FCalled, this->nested_calls + 1, this->debugIndent + 2);
+      IA = new InlineAttempt(this, this->TD, this->AA, *FCalled, this->nested_calls + 1, this->debugIndent + 2);
       subAttempts[CI] = IA;
+      revSubAttempts[IA] = CI;
 
     }
 
@@ -833,6 +842,135 @@ void InlineAttempt::foldArguments(SmallVector<std::pair<Value*, Constant*>, 4>& 
 
 }
 
+void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) {
+
+  CallInst* CS = revSubAttempts[Child];
+  assert(CS && "No such child attempt!");
+
+  // Insert temporary instructions to represent our query
+  SmallVector<Instruction*, 4> tempInstructions;
+
+  // Build it backwards: the in chain should end in either an Argument or an Outer value
+  // representing something in my scope. Start with that, then wrap it incrementally in operators.
+  
+  SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
+  
+  Instruction* lastPtr;
+  
+  SI--;
+  
+  // Use C++ primitives here because I'm not sure how LLVM's magic RTTI is supposed to work with my own classes
+  SymThunk* th = static_cast<SymThunk*>(*SI);
+  SI--;
+
+  int n_outers = 0;
+  while(dynamic_cast<SymOuter*>(*SI) != 0) {
+    n_outers++;
+    SI--;
+  }
+
+  if(n_outers == 0) {
+    Argument* A = cast<Argument>(th->RealVal);
+    lastPtr = CS->getArgument(A->getArgumentNo());
+  }
+  else if(n_outers == 1) {
+    lastPtr = th->RealVal;
+  }
+  else {
+    LPDEBUG("Won't investigate load further: queries across more than one activation frame not supported yet\n");
+    return;
+  }
+
+  LLVMContext& ctx = CS->getParent()->getParent()->getContext();
+  BasicBlock::iterator BI(CS);
+  BI--;
+  IRBuilder<> Builder(Context);
+  Builder.setInsertPoint(CS->getParent(), *BI);
+
+  while(SI != SE) {
+    SI--;
+    Value* newInst;
+    if(SymGEP* GEP = dynamic_cast<SymGEP*>(*SI)) {
+      newInst = Builder.CreateGEP(lastPtr, GEP->Offs.begin(), GEP->Offs.end());
+    }
+    else if(SymCast* Cast = dynamic_cast<SymCast*>(*SI)) {
+      newInst = Builder.CreateBitCast(lastPtr, Cast->ToType);
+    }
+    else {
+      assert(0 && "Investigated expression should only contain GEPs and Casts except at the end\n");
+    }
+    tempInstructions.push_back(cast<Instruction>(newInst));
+  }
+
+  // OK, now make a memdep query against the value so constructed
+  MemoryDependenceAnalyser MD;
+  MD.init(AA);
+  
+  MemDepResult res = MD.getDependency(tempInstructions.back(), initialConsts, initialIgnoreEdges);
+  Instruction* Definer = 0;
+  if(res.isDef()) {
+    Instruction* Definer = res.getInst();
+  }
+  else if(res.isNonLocal()) {
+    SmallVector<NonLocalDepResult, 4> NLResults;
+
+    MD.getNonLocalPointerDependency(tempInstruction.back(), true, CS->getParent(), NLResults, initialConsts, initialIgnoreEdges);
+
+    assert(NLResults.size() > 0);
+
+    for(unsigned int i = 0; i < NLResults.size(); i++) {
+		
+      const MemDepResult& Res = NLResults[i].getResult();
+      if(Res.isNonLocal())
+	continue;
+      else if(Res.isClobber()) {
+	LPDEBUG(*LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
+	Definer = 0;
+	break;
+      }
+      else {
+	if(Definer) {
+	  LPDEBUG(*LI << " depends on multiple instructions, ignoring\n");
+	  Definer = 0;
+	  break;
+	}
+	else {
+	  Definer = Res.getInst();
+	}
+      }
+    }
+  }
+
+  Value* Defn = 0;
+  if(StoreInst* SI = dyn_cast<StoreInst>(Definer))
+    Defn = SI->getValueOperand();
+
+  if(Defn) {
+    if(dyn_cast<Constant>(Defn)) {
+      out.push_back(new SymThunk(Defn));
+    }
+    else if(isIdentifiedObject(Defn)) {
+      out.push_back(new SymOuter());
+      out.push_back(new SymThunk(Defn));
+    }
+    else {
+      LPDEBUG("Outer search resolved to " << *Defn << " which is not sufficiently concrete\n");
+    }
+  }
+
+}
+
+void InlineAttempt::tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) {
+
+  if(!parent) {
+    LPDEBUG("Can't investigate load further; parent is not under consideration\n");
+    return;
+  }
+  else
+    parent->tryResolveLoadAtChildSite(this, in, out);
+
+}
+
 void InlineAttempt::countResidualCalls() {
 
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
@@ -881,7 +1019,7 @@ bool InlineHeuristicsPass::runOnModule(Module& M) {
     Function& F = *MI;
 
     DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
-    rootAttempts.push_back(new InlineAttempt(TD, AA, F, 0, 2));
+    rootAttempts.push_back(new InlineAttempt(0, TD, AA, F, 0, 2));
     rootAttempts.back()->considerCalls(true);
     rootAttempts.back()->countResidualCalls();
 

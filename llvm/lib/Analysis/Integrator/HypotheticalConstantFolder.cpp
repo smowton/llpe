@@ -378,37 +378,6 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
 
 }
 
-class SymExpr { };
-
-class SymThunk : SymExpr {
-
-public:
-  Value* RealVal;
-
-  SymThunk(Value* R) : RealVal(R) { }
-
-};
-
-class SymOuter : SymExpr { };
-
-class SymGEP : SymExpr {
-
-public:
-  SmallVector<ConstantInt*, 4> Offsets;
-
-  SymGEP(SmallVector<ConstantInt*, 4> Offs) : Offsets(Offs) { }
-
-};
-
-class SymCast : SymExpr {
-
-public:
-  Type* ToType;
-
-  SymCast(Type* T) : ToType(T) { }
-
-};
-
 bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
 
   // Precondition: LI is clobbered in exactly one place: the entry instruction to its parent function.
@@ -417,19 +386,20 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
   // That is, if our parent is InlineHeuristics.
   
   Value* Ptr = LI->getPointerOperand();
+  LPDEBUG("Trying to resolve load from " << *LI << " by exploring callers\n");
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
   // and construct a symbolic expression to pass to our parent as we go.
 
-  SmallVector<Value*, 4> Expr;
+  SmallVector<SymExpr*, 4> Expr;
 
   while(1) {
 
     if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
       SmallVector<ConstantInt*, 4> idxs;
-      for(GetElementPtrInst::op_iterator OI = GEP->idx_begin(), OE = GEP->idx_end(); OI != OE; OI++) {
-	Value* idx = OI;
-	DenseMap<Value*, Constant*> it;
+      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
+	Value* idx = GEP->getOperand(i);
+	DenseMap<Value*, Constant*>::iterator it;
 	if(ConstantInt* CI = dyn_cast<ConstantInt>(idx)) {
 	  idxs.push_back(CI);
 	}
@@ -441,22 +411,22 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
 	  return false;
 	}
       }
-      Expr.push_back(SymGEP(idxs));
+      Expr.push_back(new SymGEP(idxs));
       Ptr = GEP->getPointerOperand();
     }
     else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr)) {
-      Expr.push_back(SymCast(C->getType()));
+      Expr.push_back(new SymCast(C->getType()));
       Ptr = C->getOperand(0);
     }
     else if(Argument* A = dyn_cast<Argument>(Ptr)) {
-      Expr.push_back(SymThunk(A));
+      Expr.push_back(new SymThunk(A));
       break;
     }
     else if(PHINode* PI = dyn_cast<PHINode>(Ptr)) {
       Value* uniquePred = 0;
       unsigned livePreds = 0;
       for(unsigned i = 0; i < PI->getNumIncomingValues() && livePreds < 2; i++) {
-	if(!blockIsDead(PI->getIncomingBlock(i))) {
+	if(!blockIsDead(PI->getIncomingBlock(i), ignoreEdges)) {
 	  livePreds++;
 	  uniquePred = PI->getIncomingValue(i);
 	}
@@ -474,7 +444,7 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
     }
     else if(SelectInst* SI = dyn_cast<SelectInst>(Ptr)) {
       Value* Cond = SI->getCondition();
-      DenseMap<Instruction*, Constant*>::iterator it;
+      DenseMap<Value*, Constant*>::iterator it;
       if((it = constInstructions.find(Cond)) != constInstructions.end()) {
 	ConstantInt* CCond = cast<ConstantInt>(Cond);
 	if(CCond->isZero())
@@ -487,11 +457,33 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
 	return false;
       }
     }
+    else {
+      LPDEBUG("Won't investigate load from parent function due to unhandled instruction " << *Ptr << "\n");
+      return false;
+    }
     
   }
 
   // If we make it here, we have a series of friendly cast and GEP ops that end up at an argument.
   // Ask our parent to figure out what's going on!
+
+  LPDEBUG("Will resolve ");
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    if(it != Expr.begin())
+      DEBUG(dbgs() << " of ");
+    DEBUG((*it)->describe(dbgs()));
+  }
+
+  DEBUG(dbgs() << "\n");
+
+  
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    delete (*it);
+  }
+
+  return false;
 
 }
 
