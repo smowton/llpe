@@ -34,6 +34,7 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/IRBuilder.h"
 
 #include <string>
 #include <algorithm>
@@ -523,7 +524,7 @@ bool PeelHeuristicsLoopRun::doSimulatedPeel(DenseMap<Value*, Constant*>& outerCo
     SmallVector<Instruction*, 16> eliminatedInstructions;
     SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
 
-    HypotheticalConstantFolder H(F, constInstructions, ignoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD);
+    HypotheticalConstantFolder H(F, constInstructions, ignoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, AA, TD, *this);
     H.setDebugIndent(debugIndent);
     H.getBenefit(rootInstructions);
 
@@ -855,23 +856,20 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
   
   SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
   
-  Instruction* lastPtr;
+  Value* lastPtr;
   
   SI--;
-  
-  // Use C++ primitives here because I'm not sure how LLVM's magic RTTI is supposed to work with my own classes
-  SymThunk* th = static_cast<SymThunk*>(*SI);
-  SI--;
+  SymThunk* th = cast<SymThunk>(*SI);
 
   int n_outers = 0;
-  while(dynamic_cast<SymOuter*>(*SI) != 0) {
+  while(dyn_cast<SymOuter>(*SI) != 0) {
     n_outers++;
     SI--;
   }
 
   if(n_outers == 0) {
     Argument* A = cast<Argument>(th->RealVal);
-    lastPtr = CS->getArgument(A->getArgumentNo());
+    lastPtr = CS->getArgOperand(A->getArgNo());
   }
   else if(n_outers == 1) {
     lastPtr = th->RealVal;
@@ -883,38 +881,45 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
 
   LLVMContext& ctx = CS->getParent()->getParent()->getContext();
   BasicBlock::iterator BI(CS);
-  BI--;
-  IRBuilder<> Builder(Context);
-  Builder.setInsertPoint(CS->getParent(), *BI);
+  IRBuilder<> Builder(ctx);
+  Builder.SetInsertPoint(CS->getParent(), *BI);
 
   while(SI != SE) {
     SI--;
-    Value* newInst;
-    if(SymGEP* GEP = dynamic_cast<SymGEP*>(*SI)) {
-      newInst = Builder.CreateGEP(lastPtr, GEP->Offs.begin(), GEP->Offs.end());
+    if(SymGEP* GEP = dyn_cast<SymGEP>(*SI)) {
+      lastPtr = Builder.CreateGEP(lastPtr, GEP->Offsets.begin(), GEP->Offsets.end());
     }
-    else if(SymCast* Cast = dynamic_cast<SymCast*>(*SI)) {
-      newInst = Builder.CreateBitCast(lastPtr, Cast->ToType);
+    else if(SymCast* Cast = dyn_cast<SymCast>(*SI)) {
+      lastPtr = Builder.CreateBitCast(lastPtr, Cast->ToType);
     }
     else {
       assert(0 && "Investigated expression should only contain GEPs and Casts except at the end\n");
     }
-    tempInstructions.push_back(cast<Instruction>(newInst));
+    //LPDEBUG("Created temporary instruction: " << *lastPtr << "\n");
+    tempInstructions.push_back(cast<Instruction>(lastPtr));
   }
+
+  // Make up a fake load, since MD wants an accessor.
+  tempInstructions.push_back(cast<Instruction>((lastPtr = Builder.CreateLoad(lastPtr))));
+
+  //LPDEBUG("Temporarily augmented parent block:\n");
+  //DEBUG(dbgs() << *CS->getParent());
 
   // OK, now make a memdep query against the value so constructed
   MemoryDependenceAnalyser MD;
   MD.init(AA);
   
-  MemDepResult res = MD.getDependency(tempInstructions.back(), initialConsts, initialIgnoreEdges);
+  Value* Query = tempInstructions.back();
+  MemDepResult res = MD.getDependency(cast<Instruction>(Query), initialConsts, initialIgnoreEdges);
   Instruction* Definer = 0;
   if(res.isDef()) {
-    Instruction* Definer = res.getInst();
+    Definer = res.getInst();
+    LPDEBUG("Found local definer: " << *Definer << "\n");
   }
   else if(res.isNonLocal()) {
     SmallVector<NonLocalDepResult, 4> NLResults;
 
-    MD.getNonLocalPointerDependency(tempInstruction.back(), true, CS->getParent(), NLResults, initialConsts, initialIgnoreEdges);
+    MD.getNonLocalPointerDependency(Query, true, CS->getParent(), NLResults, initialConsts, initialIgnoreEdges);
 
     assert(NLResults.size() > 0);
 
@@ -924,13 +929,13 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
       if(Res.isNonLocal())
 	continue;
       else if(Res.isClobber()) {
-	LPDEBUG(*LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
+	LPDEBUG(*Query << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
 	Definer = 0;
 	break;
       }
       else {
 	if(Definer) {
-	  LPDEBUG(*LI << " depends on multiple instructions, ignoring\n");
+	  LPDEBUG(*Query << " depends on multiple instructions, ignoring\n");
 	  Definer = 0;
 	  break;
 	}
@@ -940,10 +945,14 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
       }
     }
   }
+  else {
+    LPDEBUG(*Query << " locally clobbered by " << *res.getInst() << "\n");
+  }
 
   Value* Defn = 0;
-  if(StoreInst* SI = dyn_cast<StoreInst>(Definer))
-    Defn = SI->getValueOperand();
+  if(Definer)
+    if(StoreInst* SI = dyn_cast<StoreInst>(Definer))
+      Defn = SI->getValueOperand();
 
   if(Defn) {
     if(dyn_cast<Constant>(Defn)) {
@@ -955,7 +964,13 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
     }
     else {
       LPDEBUG("Outer search resolved to " << *Defn << " which is not sufficiently concrete\n");
+      return;
     }
+  }
+
+  for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
+    Instruction* I = *(--II);
+    I->eraseFromParent();
   }
 
 }

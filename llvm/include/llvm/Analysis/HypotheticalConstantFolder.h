@@ -20,63 +20,76 @@ class AliasAnalysis;
 class PHINode;
 class MemDepResult;
 class LoadInst;
+class raw_ostream;
+class ConstantInt;
+class Type;
+
+enum SymSubclasses {
+
+  SThunk,
+  SOuter,
+  SGEP,
+  SCast
+
+};
 
 class SymExpr { 
 
 public:
+  static inline bool classof(const SymExpr*) { return true; }
   virtual void describe(raw_ostream& OS) = 0;
+  virtual int getSymType() const = 0;
 
 };
 
 class SymThunk : public SymExpr {
 
 public:
+  static inline bool classof(const SymExpr* S) { return S->getSymType() == SThunk; }
+  static inline bool classof(const SymThunk*) { return true; }
   Value* RealVal;
 
   SymThunk(Value* R) : RealVal(R) { }
-  void describe(raw_ostream& OS) {
-    OS << *RealVal;
-  }
+  void describe(raw_ostream& OS);
+  int getSymType() const { return SThunk; }
 
 };
 
 class SymOuter : public SymExpr { 
 
-  void describe(raw_ostream& OS) {
-    OS << "Outer expression";
-  }
+ public:
+  static inline bool classof(const SymExpr* S) { return S->getSymType() == SOuter; }
+  static inline bool classof(const SymOuter*) { return true; }
+  void describe(raw_ostream& OS);
+  int getSymType() const { return SOuter; }
 
 };
 
 class SymGEP : public SymExpr {
 
 public:
-  SmallVector<ConstantInt*, 4> Offsets;
+  static inline bool classof(const SymExpr* S) { return S->getSymType() == SGEP; }
+  static inline bool classof(const SymGEP*) { return true; }
+  SmallVector<Value*, 4> Offsets; // Really all ConstantInts
 
-  SymGEP(SmallVector<ConstantInt*, 4> Offs) : Offsets(Offs) { }
+  SymGEP(SmallVector<Value*, 4> Offs) : Offsets(Offs) { }
 
-  void describe(raw_ostream& OS) {
-    OS << "GEP(";
-    for(SmallVector<ConstantInt*, 4>::iterator OI = Offsets.begin(), OE = Offsets.end(); OI != OE; OI++) {
-      if(OI != Offsets.begin())
-	OS << ", ";
-      OS << **OI;
-    }
-    OS << ")";
-  }
+  void describe(raw_ostream& OS);
+  int getSymType() const { return SGEP; }
 
 };
 
 class SymCast : public SymExpr {
 
 public:
+  static inline bool classof(const SymExpr* S) { return S->getSymType() == SCast; }
+  static inline bool classof(const SymCast*) { return true; }
   const Type* ToType;
 
   SymCast(const Type* T) : ToType(T) { }
 
-  void describe(raw_ostream& OS) {
-    OS << "Cast(" << *ToType << ")";
-  }
+  void describe(raw_ostream& OS);
+  int getSymType() const { return SCast; }
 
 };
 
@@ -84,7 +97,7 @@ class HCFParentCallbacks {
 
  public:
 
-  void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out);
+  virtual void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) = 0;
 
 };
 
@@ -97,6 +110,7 @@ class HypotheticalConstantFolder {
   SmallSet<BasicBlock*, 4>& outBlocks;
   SmallVector<Instruction*, 16>& eliminatedInstructions;
   SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& eliminatedEdges;
+  DenseMap<Instruction*, SmallVector<SymExpr*, 4> > outerValues;
 
   AliasAnalysis* AA;
   TargetData* TD;

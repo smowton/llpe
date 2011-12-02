@@ -386,6 +386,7 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
   // That is, if our parent is InlineHeuristics.
   
   Value* Ptr = LI->getPointerOperand();
+
   LPDEBUG("Trying to resolve load from " << *LI << " by exploring callers\n");
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
@@ -396,7 +397,7 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
   while(1) {
 
     if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
-      SmallVector<ConstantInt*, 4> idxs;
+      SmallVector<Value*, 4> idxs;
       for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
 	Value* idx = GEP->getOperand(i);
 	DenseMap<Value*, Constant*>::iterator it;
@@ -476,14 +477,32 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
   }
 
   DEBUG(dbgs() << "\n");
-
   
+  SmallVector<SymExpr*, 4> resultExpr;
+  parent.tryResolveInParentContext(Expr, resultExpr);
+
+  if(resultExpr.size()) {
+    LPDEBUG("Resolved to ");
+    for(SmallVector<SymExpr*, 4>::iterator it = resultExpr.begin(), it2 = resultExpr.end(); it != it2; it++) {
+      if(it != resultExpr.begin())
+	DEBUG(dbgs() << " of ");
+      DEBUG((*it)->describe(dbgs()));      
+    }
+    DEBUG(dbgs() << "\n");
+    if(isa<SymOuter>(resultExpr[0]))
+      outerValues[LI] = resultExpr;
+    else {
+      assert(resultExpr.size() == 1);
+      Constant* C = cast<Constant>(cast<SymThunk>(resultExpr[0])->RealVal);
+      getConstantBenefit(LI, C);
+    }
+  }
 
   for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
     delete (*it);
   }
 
-  return false;
+  return (resultExpr.size() != 0);
 
 }
 
@@ -523,6 +542,11 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 
 	  if(it != constInstructions.end()) {
 	    LPDEBUG("Ignoring " << *LI << " because it's already constant\n");
+	    continue;
+	  }
+
+	  if(outerValues.find(LI) != outerValues.end()) {
+	    LPDEBUG(*LI << " result already resolved to an outer value\n");
 	    continue;
 	  }
 
@@ -619,3 +643,24 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
   
 }
 
+void SymThunk::describe(raw_ostream& OS) {
+  OS << *RealVal;
+}
+
+void SymOuter::describe(raw_ostream& OS) {
+  OS << "Outer expression";
+}
+
+void SymGEP::describe(raw_ostream& OS) {
+  OS << "GEP(";
+  for(SmallVector<Value*, 4>::iterator OI = Offsets.begin(), OE = Offsets.end(); OI != OE; OI++) {
+    if(OI != Offsets.begin())
+      OS << ", ";
+    OS << **OI;
+  }
+  OS << ")";
+}
+
+void SymCast::describe(raw_ostream& OS) {
+  OS << "Cast(" << *ToType << ")";
+}
