@@ -48,6 +48,25 @@ std::string HypotheticalConstantFolder::dbgind() {
 
 }
 
+Value* HypotheticalConstantFolder::getReplacement(const Value* V) {
+
+  DenseMap<Value*, Value*>::iterator it = improvedValues.find(V);
+  if(it != improvedValues.end())
+    return it->second;
+  else
+    return V;
+
+}
+
+Constant* HypotheticalConstantFolder::getConstReplacement(const Value* V) {
+
+  if(Constant* C = dyn_cast<Constant>(V))
+    return C;
+  else
+    return dyn_cast<Constant>(getReplacement(V));
+
+}
+
 bool HypotheticalConstantFolder::blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
 
   if(&(BB->getParent()->getEntryBlock()) == BB)
@@ -82,8 +101,7 @@ void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, B
     LPDEBUG("Block is dead!\n");
     for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
       if(!isa<PHINode>(BI)) {
-	DenseMap<Value*, Constant*>::iterator it = constInstructions.find(BI);
-	if(it != constInstructions.end()) {
+	if(getConstReplacement(BI)) {
 	  LPDEBUG("Dead instruction " << *BI << " had already been constant folded\n");
 	}
 	else {
@@ -116,55 +134,47 @@ void HypotheticalConstantFolder::getRemoveBlockPredBenefit(BasicBlock* BB, Basic
 
 void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
 
-  LPDEBUG("Checking if PHI " << *PN << " is now constant" << "\n");
-
-  if(constInstructions.find(PN) != constInstructions.end()) {
-    LPDEBUG("Already constant");
-    return;
-  }
+  LPDEBUG("Checking if PHI " << *PN << " is improved" << "\n");
 
   BasicBlock* BB = PN->getParent();
-  Constant* constValue = 0;
+  Value* onlyValue = 0;
+  bool improved = false;
 
   for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
 
     if(ignoreEdges.count(std::make_pair(*PI, BB)))
       continue;
 
-    Value* predValue = PN->getIncomingValueForBlock(*PI);
-    Constant* predConst = dyn_cast<Constant>(predValue);
-    Instruction* predInst;
-    if(!predConst) {
-      if((predInst = dyn_cast<Instruction>(predValue))) {
-	DenseMap<Value*, Constant*>::iterator it = constInstructions.find(predInst);
-	if(it != constInstructions.end())
-	  predConst = it->second;
-      }
-    }
-    if(!predConst) {
-      constValue = 0;
+    Value* oldValue = PN->getIncomingValueForBlock(*PI);
+    Value* predValue = getReplacement(oldValue);
+    if(oldValue != predValue)
+      improved = true;
+    if(!onlyValue)
+      onlyValue = predValue;
+    else if(onlyValue != predValue) {
+      onlyValue = 0;
       break;
     }
-    if(!constValue)
-      constValue = predConst;
-    else if(predConst != constValue) {
-      constValue = 0;
-      break;
-    }
-    // else this predecessor matches the others.
+
   }
-  if(constValue) {
-    LPDEBUG("Constant at " << *constValue << "\n");
-    getConstantBenefit(PN, constValue);
+  if(onlyValue) {
+    if(getReplacement(PN) == onlyValue) {
+      LPDEBUG("Already improved");
+      return;
+    }
+    else {
+      LPDEBUG("Improved to " << *onlyValue << "\n");
+      getImprovementBenefit(PN, onlyValue, true);
+    }
   }
   else {
-    LPDEBUG("Not constant\n");
+    LPDEBUG("Not improved\n");
     return;
   }
 
 }
 
-void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* ArgC) {
+void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* ArgC, bool force = false) {
 
   Instruction* ArgI = dyn_cast<Instruction>(ArgV);
 
@@ -173,14 +183,15 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
     return;
   }
 
-  DenseMap<Value*, Constant*>::iterator it = constInstructions.find(ArgV);
-  if(it != constInstructions.end()) { // Have we already rendered this instruction constant?
-    LPDEBUG(*ArgV << " already constant\n");
-    return;
+  if(!force) {
+    if(getReplacement(ArgV) != ArgV) {
+      LPDEBUG(*ArgV << " already constant\n");
+      return;
+    }
   }
  
-  constInstructions[ArgV] = ArgC;
-  if(ArgI && !isa<PHINode>(ArgI)) {
+  improvedValues[ArgV] = ArgC;
+  if(ArgI && isa<Constant>(ArgC) && !isa<PHINode>(ArgI)) {
     if (!(ArgI->mayHaveSideEffects() || isa<AllocaInst>(ArgI))) { // A particular side-effect
       eliminatedInstructions.push_back(ArgI);
     }
@@ -192,7 +203,7 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
   // A null value means we know the result will be constant, but we're not sure what.
 
   if(ArgC)
-    LPDEBUG("Getting benefit due to value " << *ArgV << " having constant value " << *ArgC << "\n");
+    LPDEBUG("Getting benefit due to value " << *ArgV << " having improved value " << *ArgC << "\n");
   else
     LPDEBUG("Getting benefit due to value " << *ArgV << " having an unknown constant value" << "\n");
 
@@ -212,10 +223,11 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
     LPDEBUG("Considering user instruction " << *I << "\n");
 
     if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
-      // Both Branches and Switches have one potentially non-const arg which we now know is constant.
-      // The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
-      // time instead, by searching for PHIs that will be made constant.
-      if(ArgC) {
+      Constant* C = dyn_cast<Constant>(ArgC);
+      if(C) {
+	// Both Branches and Switches have one potentially non-const arg which we now know is constant.
+	// The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
+	// time instead, by searching for PHIs that will be made constant.
 	BasicBlock* target;
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  // This ought to be a boolean.
@@ -240,35 +252,35 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
 	      getRemoveBlockPredBenefit(otherTarget, TI->getParent());
 	  }
 	}
-	else {
-	  // We couldn't be sure which block the branch will go to, but its target will be constant.
-	  // Give a static bonus to indicate that more advanced analysis might be able to eliminate the branch.
-	  LPDEBUG("Promoted conditional to unconditional branch to unknown target\n");
-	}
-
+	eliminatedInstructions.push_back(I);
       }
-      else {
-	// We couldn't be sure where the branch will go because we only know the operand is constant, not its value.
-	// We usually don't know because this is the return value of a call, or the result of a load. Give a small bonus
-	// as the call might be inlined or similar.
-	LPDEBUG("Unknown constant in branch or switch\n");
-      }
-      eliminatedInstructions.push_back(I);
     }
     else {
       // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
       // then count the benefits of that instruction becoming constant.
       if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
-	LPDEBUG("Constant call argument\n");
+	LPDEBUG("Improved call argument\n");
       }
 
       // Try to calculate a constant value resulting from this instruction. Only possible if
       // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
 
-      PHINode* PN;
-      if((PN = dyn_cast<PHINode>(I))) {
+      if((PHINode* PN = dyn_cast<PHINode>(I))) {
 	// PHI nodes are special because of their BB arguments, and the special-case "constant folding" that affects them
 	getPHINodeBenefit(PN);
+      }
+      else if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
+        Constant* Cond = getConstReplacement(SI->getCondition());
+	if(Cond) {
+	  eliminatedInstructions.push_back(SI);
+	  Value* newVal;
+	  if(cast<ConstantInt>(Cond)->isZero())
+	    newVal = SI->getFalseValue();
+	  else
+	    newVal = SI->getTrueValue();
+	  if(getReplacement(SI) != newVal)
+	    getImprovementBenefit(SI, newVal);
+	}
       }
       else {
 
@@ -281,33 +293,22 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
 	// don't at the moment.
 	for(unsigned i = 0; i < I->getNumOperands(); i++) {
 	  Value* op = I->getOperand(i);
-	  Constant* C;
-	  if((C = dyn_cast<Constant>(op)))
+	  if(Constant* C = getConstReplacement(op))
 	    instOperands.push_back(C);
 	  else {
-	    DenseMap<Value*, Constant*>::iterator it = constInstructions.find(op);
-	    if(it != constInstructions.end()) {
-	      instOperands.push_back(it->second);
-	      if(!it->second)
-		someArgumentUnknownConstant = true;
-	    }
-	    else {
-	      LPDEBUG("Not constant folding yet due to non-constant argument " << *op << "\n");
-	      break;
-	    }
+	    LPDEBUG("Not constant folding yet due to non-constant argument " << *op << "\n");
+	    break;
 	  }
 	}
 
 	if(instOperands.size() == I->getNumOperands()) {
 	  Constant* newConst = 0;
-	  if(!someArgumentUnknownConstant) {
-	    if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	      newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
-	    else if(isa<LoadInst>(I))
-	      newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
-	    else
-	      newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
-	  }
+	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+	  else if(isa<LoadInst>(I))
+	    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+	  else
+	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
 
 	  if(newConst) {
 	    LPDEBUG("User " << *I << " now constant at " << *newConst << "\n");
@@ -317,14 +318,11 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
 	      LPDEBUG("User " << *I << " may read or write global state; not propagating\n");
 	      continue;
 	    }
-	    else if(someArgumentUnknownConstant) {
-	      LPDEBUG("User " << *I << " will have an unknown constant value too\n");
-	    } 
 	    else {
 	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	    }
 	  }
-	  getConstantBenefit(I, newConst);
+	  getImprovementBenefit(I, newConst);
 	}
 
       }
@@ -334,22 +332,44 @@ void HypotheticalConstantFolder::realGetConstantBenefit(Value* ArgV, Constant* A
 
 }
 
-void HypotheticalConstantFolder::getConstantBenefit(Value* ArgV, Constant* ArgC) {
+void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, Value* ArgC) {
 
   debugIndent += 2;
-  realGetConstantBenefit(ArgV, ArgC);
+  realGetImprovementBenefit(ArgV, ArgC);
   debugIndent -= 2;
+
+}
+
+// Returns true if V is a useful value to forward from a store to a load.
+// Useful values are:
+// 1) Constants
+// 2) Pointers to a known object
+
+bool shouldForwardValue(Value* V) {
+
+  if(isa<Constant>(V))
+    return true;
+
+  if(V->getType()->isPointerTy()) {
+    
+    Value* O = V->getUnderlyingObject();
+    if(isIdentifiedObject(O))
+      return true;
+
+  }
+
+  return false;
 
 }
 
 bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult& Res) {
 
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
-    if(Constant* SC = dyn_cast<Constant>(SI->getOperand(0))) {
+    if(shouldForwardValue(SI->getOperand(0))) {
 
       LPDEBUG(*LI << " defined by " << *SI << "\n");
       eliminatedInstructions.push_back(LI);
-      getConstantBenefit(LI, SC);
+      getImprovementBenefit(LI, SC);
       return true;
 
     }
@@ -359,19 +379,17 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
   }
   else if(LoadInst* DefLI = dyn_cast<LoadInst>(Res.getInst())) {
 		
-    DenseMap<Value*, Constant*>::iterator DefLIIt = constInstructions.find(DefLI);
-    if(DefLIIt != constInstructions.end()) {
-		  
+    Value* improvedLoad = getReplacement(DefLI);
+    if(improvedLoad != DefLI) {
       LPDEBUG(*LI << " defined by " << *(DefLIIt->second) << "\n");
       eliminatedInstructions.push_back(LI);
-      getConstantBenefit(LI, DefLIIt->second);
+      getImprovementBenefit(LI, improvedLoad);
       return true;
-
     }
 
   }
   else {
-    LPDEBUG(*LI << " is defined by " << *(Res.getInst()) << " which is not a simple store\n");
+    LPDEBUG(*LI << " is defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
   }
 
   return false;
@@ -400,11 +418,11 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
       SmallVector<Value*, 4> idxs;
       for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
 	Value* idx = GEP->getOperand(i);
-	DenseMap<Value*, Constant*>::iterator it;
+	DenseMap<Value*, Value*>::iterator it;
 	if(ConstantInt* CI = dyn_cast<ConstantInt>(idx)) {
 	  idxs.push_back(CI);
 	}
-	else if((it = constInstructions.find(idx)) != constInstructions.end()) {
+	else if((it = improvedValues.find(idx)) != improvedValues.end()) {
 	  idxs.push_back(cast<ConstantInt>(it->second));
 	}
 	else {
@@ -445,8 +463,8 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
     }
     else if(SelectInst* SI = dyn_cast<SelectInst>(Ptr)) {
       Value* Cond = SI->getCondition();
-      DenseMap<Value*, Constant*>::iterator it;
-      if((it = constInstructions.find(Cond)) != constInstructions.end()) {
+      DenseMap<Value*, Value*>::iterator it;
+      if((it = improvedValues.find(Cond)) != improvedValues.end()) {
 	ConstantInt* CCond = cast<ConstantInt>(Cond);
 	if(CCond->isZero())
 	  Ptr = SI->getFalseValue();
@@ -506,9 +524,9 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
 
 }
 
-void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots) {
+void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, Value*>, 4>& roots) {
 
-  for(SmallVector<std::pair<Value*, Constant*>, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
+  for(SmallVector<std::pair<Value*, Value*>, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
 
     getConstantBenefit(RI->first, RI->second);
 
@@ -538,9 +556,9 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 
 	if(LoadInst* LI = dyn_cast<LoadInst>(II)) {
 
-	  DenseMap<Value*, Constant*>::iterator it = constInstructions.find(LI);
+	  DenseMap<Value*, Value*>::iterator it = improvedValues.find(LI);
 
-	  if(it != constInstructions.end()) {
+	  if(it != improvedValues.end()) {
 	    LPDEBUG("Ignoring " << *LI << " because it's already constant\n");
 	    continue;
 	  }
@@ -550,7 +568,7 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 	    continue;
 	  }
 
-	  MemDepResult Res = MD.getDependency(LI, constInstructions, ignoreEdges);
+	  MemDepResult Res = MD.getDependency(LI, improvedValues, ignoreEdges);
 
 	  if(Res.isClobber()) {
 	    LPDEBUG(*LI << " is locally clobbered by " << Res.getInst() << "\n");
@@ -569,14 +587,14 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 	    Value* LPointer = LI->getOperand(0);
 
 	    if(Instruction* LPointerI = dyn_cast<Instruction>(LPointer)) {
-	      DenseMap<Value*, Constant*>::iterator it = constInstructions.find(LPointerI);
-	      if(it != constInstructions.end())
+	      DenseMap<Value*, Value*>::iterator it = improvedValues.find(LPointerI);
+	      if(it != improvedValues.end())
 		LPointer = it->second;
 	    }
 
 	    SmallVector<NonLocalDepResult, 4> NLResults;
 
-	    MD.getNonLocalPointerDependency(LPointer, true, BB, NLResults, constInstructions, ignoreEdges);
+	    MD.getNonLocalPointerDependency(LPointer, true, BB, NLResults, improvedValues, ignoreEdges);
 
 	    assert(NLResults.size() > 0);
 
