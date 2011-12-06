@@ -98,20 +98,17 @@ class HCFParentCallbacks {
  public:
 
   virtual void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) = 0;
+  virtual std::pair<Value*, int> getReplacement(Value*, int frameIndex = 0) = 0;
+  virtual void setReplacement(Value*, std::pair<Value*, int>) = 0;
+  virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
+  virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
+  virtual bool shouldIgnoreBlock(BasicBlock*) = 0;
 
 };
 
 class HypotheticalConstantFolder {
 
   Function* F;
-  DenseMap<Value*, Constant*>& constInstructions;
-  // Edges considered removed for the purpose of estimating constant prop benefit
-  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges;
-  SmallSet<BasicBlock*, 4>& outBlocks;
-  SmallVector<Instruction*, 16>& eliminatedInstructions;
-  SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& eliminatedEdges;
-  DenseMap<Instruction*, SmallVector<SymExpr*, 4> > outerValues;
-
   AliasAnalysis* AA;
   TargetData* TD;
 
@@ -131,16 +128,10 @@ class HypotheticalConstantFolder {
  public:
 
  HypotheticalConstantFolder(Function* FIn,
-			    DenseMap<Value*, Constant*>& insts, 
-			    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& edges, 
-			    SmallSet<BasicBlock*, 4>& oobBlocks, 
-			    SmallVector<Instruction*, 16>& elimResult, 
-			    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>& edgeResult,
 			    AliasAnalysis* _AA,
 			    TargetData* _TD,
 			    HCFParentCallbacks& P) : 
-  F(FIn), constInstructions(insts), ignoreEdges(edges), outBlocks(oobBlocks), 
-    eliminatedInstructions(elimResult), eliminatedEdges(edgeResult), AA(_AA), TD(_TD), debugIndent(0), parent(P) { 
+  F(FIn), AA(_AA), TD(_TD), debugIndent(0), parent(P) { 
 
   }
 

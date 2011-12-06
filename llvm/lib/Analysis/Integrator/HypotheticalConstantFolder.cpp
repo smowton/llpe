@@ -48,13 +48,9 @@ std::string HypotheticalConstantFolder::dbgind() {
 
 }
 
-Value* HypotheticalConstantFolder::getReplacement(const Value* V) {
+std::pair<Value*, int> HypotheticalConstantFolder::getReplacement(const Value* V) {
 
-  DenseMap<Value*, Value*>::iterator it = improvedValues.find(V);
-  if(it != improvedValues.end())
-    return it->second;
-  else
-    return V;
+  return parent.getReplacement(std::make_pair(V, 0));
 
 }
 
@@ -63,18 +59,18 @@ Constant* HypotheticalConstantFolder::getConstReplacement(const Value* V) {
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
   else
-    return dyn_cast<Constant>(getReplacement(V));
+    return dyn_cast<Constant>(getReplacement(V).first);
 
 }
 
-bool HypotheticalConstantFolder::blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+bool HypotheticalConstantFolder::blockIsDead(BasicBlock* BB) {
 
   if(&(BB->getParent()->getEntryBlock()) == BB)
     return false;
 
   for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
       
-    if(!ignoreEdges.count(std::make_pair(*PI, BB)))
+    if(!parent.edgeIsDead(*PI, BB))
       return false;
 
   }
@@ -87,35 +83,22 @@ void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, B
 
   LPDEBUG("Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
 
-  eliminatedEdges.push_back(std::make_pair(BBPred, BB));
+  parent.setEdgeDead(BBPred, BB);
 
-  if(outBlocks.count(BB)) {
+  if(parent.shouldIgnoreBlock(BB)) {
     LPDEBUG(BB->getName() << " not under consideration" << "\n");
     return;
   }
 
-  ignoreEdges.insert(std::make_pair(BBPred, BB));
-
   if(blockIsDead(BB, ignoreEdges)) {
     // This BB is dead! Kill its instructions, then remove it as a predecessor to all successor blocks and see if that helps anything.
-    LPDEBUG("Block is dead!\n");
-    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
-      if(!isa<PHINode>(BI)) {
-	if(getConstReplacement(BI)) {
-	  LPDEBUG("Dead instruction " << *BI << " had already been constant folded\n");
-	}
-	else {
-	  LPDEBUG("Instruction " << *BI << " eliminated\n");
-	  eliminatedInstructions.push_back(BI);
-	}
-      }
-    }
+    LPDEBUG("Block is dead; killing successor edges\n");
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
       getRemoveBlockPredBenefit(*SI, BB);
     }
   }
   else {
-    // See if any of our PHI nodes are now effectively constant
+    // See if any of our PHI nodes are now defined
     for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
       PHINode* PN = cast<PHINode>(I);
       getPHINodeBenefit(PN);
@@ -137,16 +120,16 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
   LPDEBUG("Checking if PHI " << *PN << " is improved" << "\n");
 
   BasicBlock* BB = PN->getParent();
-  Value* onlyValue = 0;
+  std::pair<Value*, int> onlyValue = 0;
   bool improved = false;
 
   for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
 
-    if(ignoreEdges.count(std::make_pair(*PI, BB)))
+    if(parent.edgeIsDead(*PI, BB))
       continue;
 
-    Value* oldValue = PN->getIncomingValueForBlock(*PI);
-    Value* predValue = getReplacement(oldValue);
+    std::pair<Value*, int> oldValue = std::make_pair(PN->getIncomingValueForBlock(*PI), 0);
+    std::pair<Value*, int> predValue = getReplacement(oldValue);
     if(oldValue != predValue)
       improved = true;
     if(!onlyValue)
@@ -174,38 +157,25 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
 
 }
 
-void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* ArgC, bool force = false) {
+void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local */, std::pair<Value*, int> Replacement, bool force) {
 
   Instruction* ArgI = dyn_cast<Instruction>(ArgV);
 
-  if(ArgI && outBlocks.count(ArgI->getParent())) { 
+  if(ArgI && parent.shouldIgnoreBlock(ArgI->getParent())) { 
     LPDEBUG(*ArgI << " not under consideration, ignoring\n");
     return;
   }
 
   if(!force) {
-    if(getReplacement(ArgV) != ArgV) {
+    if(getReplacement(ArgV) != std::make_pair(ArgV, 0)) {
       LPDEBUG(*ArgV << " already constant\n");
       return;
     }
   }
- 
-  improvedValues[ArgV] = ArgC;
-  if(ArgI && isa<Constant>(ArgC) && !isa<PHINode>(ArgI)) {
-    if (!(ArgI->mayHaveSideEffects() || isa<AllocaInst>(ArgI))) { // A particular side-effect
-      eliminatedInstructions.push_back(ArgI);
-    }
-    else {
-      LPDEBUG("Not eliminating instruction due to side-effects\n");
-    }
-  }
 
-  // A null value means we know the result will be constant, but we're not sure what.
+  parent.setReplacement(ArgV, Replacement);
 
-  if(ArgC)
-    LPDEBUG("Getting benefit due to value " << *ArgV << " having improved value " << *ArgC << "\n");
-  else
-    LPDEBUG("Getting benefit due to value " << *ArgV << " having an unknown constant value" << "\n");
+  LPDEBUG("Getting benefit due to value " << *ArgV << " having improved value " << Replacement << "\n");
 
   for (Value::use_iterator UI = ArgV->use_begin(), E = ArgV->use_end(); UI != E;++UI){
 
@@ -215,7 +185,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
       continue;
     }
 
-    if(blockIsDead(I->getParent(), ignoreEdges)) {
+    if(blockIsDead(I->getParent())) {
       LPDEBUG("User instruction " << *I << " already eliminated (in dead block)\n");
       continue;
     }
@@ -223,22 +193,21 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
     LPDEBUG("Considering user instruction " << *I << "\n");
 
     if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
-      Constant* C = dyn_cast<Constant>(ArgC);
-      if(C) {
+      if(Constant* C = dyn_cast<Constant>(Replacement.first)) {
 	// Both Branches and Switches have one potentially non-const arg which we now know is constant.
 	// The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
 	// time instead, by searching for PHIs that will be made constant.
 	BasicBlock* target;
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  // This ought to be a boolean.
-	  if((cast<ConstantInt>(ArgC))->isZero())
+	  if((cast<ConstantInt>(C))->isZero())
 	    target = BI->getSuccessor(1);
 	  else
 	    target = BI->getSuccessor(0);
 	}
 	else {
 	  SwitchInst* SI = cast<SwitchInst>(I);
-	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(ArgC));
+	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(C));
 	  target = SI->getSuccessor(targetidx);
 	}
 	if(target) {
@@ -252,7 +221,6 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
 	      getRemoveBlockPredBenefit(otherTarget, TI->getParent());
 	  }
 	}
-	eliminatedInstructions.push_back(I);
       }
     }
     else {
@@ -272,12 +240,11 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
       else if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
         Constant* Cond = getConstReplacement(SI->getCondition());
 	if(Cond) {
-	  eliminatedInstructions.push_back(SI);
-	  Value* newVal;
+	  std::pair<Value*, int> newVal;
 	  if(cast<ConstantInt>(Cond)->isZero())
-	    newVal = SI->getFalseValue();
+	    newVal = std::make_pair(SI->getFalseValue(), 0);
 	  else
-	    newVal = SI->getTrueValue();
+	    newVal = std::make_pair(SI->getTrueValue(), 0);
 	  if(getReplacement(SI) != newVal)
 	    getImprovementBenefit(SI, newVal);
 	}
@@ -322,7 +289,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
 	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	    }
 	  }
-	  getImprovementBenefit(I, newConst);
+	  getImprovementBenefit(I, std::make_pair(newConst, 0));
 	}
 
       }
@@ -332,10 +299,10 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV, Value* A
 
 }
 
-void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, Value* ArgC) {
+void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, std::pair<Value*, int> ArgC, bool force = false) {
 
   debugIndent += 2;
-  realGetImprovementBenefit(ArgV, ArgC);
+  realGetImprovementBenefit(ArgV, ArgC, force);
   debugIndent -= 2;
 
 }
@@ -352,9 +319,19 @@ bool shouldForwardValue(Value* V) {
 
   if(V->getType()->isPointerTy()) {
     
-    Value* O = V->getUnderlyingObject();
-    if(isIdentifiedObject(O))
-      return true;
+    int frame = 0;
+    while(1) {
+      Value* O = V->getUnderlyingObject();
+      if(isIdentifiedObject(O) || isa<Constant>(O))
+	return true;
+      std::pair<Value*, int> NewV = parent.getReplacement(O, frame);
+      if(NewV.first == V && NewV.second == frame)
+	break;
+      frame = NewV.second;
+      V = NewV.first;
+    }
+
+    return false;
 
   }
 
@@ -368,7 +345,6 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
     if(shouldForwardValue(SI->getOperand(0))) {
 
       LPDEBUG(*LI << " defined by " << *SI << "\n");
-      eliminatedInstructions.push_back(LI);
       getImprovementBenefit(LI, SC);
       return true;
 
@@ -382,7 +358,6 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
     Value* improvedLoad = getReplacement(DefLI);
     if(improvedLoad != DefLI) {
       LPDEBUG(*LI << " defined by " << *(DefLIIt->second) << "\n");
-      eliminatedInstructions.push_back(LI);
       getImprovementBenefit(LI, improvedLoad);
       return true;
     }
@@ -540,13 +515,13 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
     anyStoreForwardingBenefits = false;
 
     MemoryDependenceAnalyser MD;
-    MD.init(AA);
+    MD.init(AA, &this.parent);
 
     for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
 
       BasicBlock* BB = FI;
 
-      if(outBlocks.count(BB))
+      if(parent.shouldIgnoreBlock(BB))
 	continue;
 
       if(blockIsDead(BB, ignoreEdges))
