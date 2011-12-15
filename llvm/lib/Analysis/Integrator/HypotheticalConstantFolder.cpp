@@ -177,7 +177,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 
   LPDEBUG("Getting benefit due to value " << *ArgV << " having improved value " << Replacement << "\n");
 
-  for (Value::use_iterator UI = ArgV->use_begin(), E = ArgV->use_end(); UI != E;++UI){
+  for (Value::use_iterator UI = ArgV->use_begin(), E = ArgV->use_end(); UI != E;++UI) {
 
     Instruction* I;
     if(!(I = dyn_cast<Instruction>(*UI))) {
@@ -339,13 +339,13 @@ bool shouldForwardValue(Value* V) {
 
 }
 
-bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult& Res) {
+bool HypotheticalConstantFolder::considerForwardingLoad(LoadInst* LI, const MemDepResult& Res) {
 
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
     if(shouldForwardValue(SI->getOperand(0))) {
 
       LPDEBUG(*LI << " defined by " << *SI << "\n");
-      getImprovementBenefit(LI, SC);
+      getImprovementBenefit(LI, std::make_pair(SI->getOperand(0), 0));
       return true;
 
     }
@@ -358,7 +358,7 @@ bool HypotheticalConstantFolder::tryForwardLoad(LoadInst* LI, const MemDepResult
     Value* improvedLoad = getReplacement(DefLI);
     if(improvedLoad != DefLI) {
       LPDEBUG(*LI << " defined by " << *(DefLIIt->second) << "\n");
-      getImprovementBenefit(LI, improvedLoad);
+      getImprovementBenefit(LI, std::make_pair(improvedLoad, 0));
       return true;
     }
 
@@ -393,13 +393,9 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
       SmallVector<Value*, 4> idxs;
       for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
 	Value* idx = GEP->getOperand(i);
-	DenseMap<Value*, Value*>::iterator it;
-	if(ConstantInt* CI = dyn_cast<ConstantInt>(idx)) {
-	  idxs.push_back(CI);
-	}
-	else if((it = improvedValues.find(idx)) != improvedValues.end()) {
-	  idxs.push_back(cast<ConstantInt>(it->second));
-	}
+	Constant* Cidx = getConstReplacement(idx);
+	if(Cidx)
+	  idxs.push_back(Cidx);
 	else {
 	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
 	  return false;
@@ -412,53 +408,24 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
       Expr.push_back(new SymCast(C->getType()));
       Ptr = C->getOperand(0);
     }
-    else if(Argument* A = dyn_cast<Argument>(Ptr)) {
-      Expr.push_back(new SymThunk(A));
-      break;
-    }
-    else if(PHINode* PI = dyn_cast<PHINode>(Ptr)) {
-      Value* uniquePred = 0;
-      unsigned livePreds = 0;
-      for(unsigned i = 0; i < PI->getNumIncomingValues() && livePreds < 2; i++) {
-	if(!blockIsDead(PI->getIncomingBlock(i), ignoreEdges)) {
-	  livePreds++;
-	  uniquePred = PI->getIncomingValue(i);
-	}
-      }
-      if(livePreds == 0) {
-	LPDEBUG("Anomaly! In trying to forward load from parent for " << *LI << " found a PHINode " << *PI << " with no live preds!\n");
-      }
-      else if(livePreds == 1) {
-	Ptr = uniquePred;
-      }
-      else {
-	LPDEBUG("Won't investigate load from parent function due to ambiguous PHI " << *PI << "\n");
-	return false;
-      }
-    }
-    else if(SelectInst* SI = dyn_cast<SelectInst>(Ptr)) {
-      Value* Cond = SI->getCondition();
-      DenseMap<Value*, Value*>::iterator it;
-      if((it = improvedValues.find(Cond)) != improvedValues.end()) {
-	ConstantInt* CCond = cast<ConstantInt>(Cond);
-	if(CCond->isZero())
-	  Ptr = SI->getFalseValue();
-	else
-	  Ptr = SI->getTrueValue();
-      }
-      else {
-	LPDEBUG("Won't investigate load from parent function due to unresolved Select " << *SI << "\n");
-	return false;
-      }
-    }
     else {
-      LPDEBUG("Won't investigate load from parent function due to unhandled instruction " << *Ptr << "\n");
-      return false;
+      std::pair<Value*, int> Repl = getReplacement(Ptr);
+      if(Repl.first == Ptr && Repl.second == 0) {
+	LPDEBUG("Won't investigate load from parent function due to unresolved pointer " << *Ptr << "\n");
+	return false;
+      }
+      else if(Repl.second > 0) {
+	Expr.push_back(new SymThunk(Repl));
+	break;
+      }
+      else {
+	Ptr = Repl.first; // Must continue resolving!
+      }
     }
     
   }
 
-  // If we make it here, we have a series of friendly cast and GEP ops that end up at an argument.
+  // If we make it here, we have a series of friendly cast and GEP ops that end up at an outer value!
   // Ask our parent to figure out what's going on!
 
   LPDEBUG("Will resolve ");
@@ -471,31 +438,16 @@ bool HypotheticalConstantFolder::tryForwardLoadFromParent(LoadInst* LI) {
 
   DEBUG(dbgs() << "\n");
   
-  SmallVector<SymExpr*, 4> resultExpr;
-  parent.tryResolveInParentContext(Expr, resultExpr);
+  std::pair<Value*, int> Result = parent.tryResolveLoad(Expr);
 
-  if(resultExpr.size()) {
-    LPDEBUG("Resolved to ");
-    for(SmallVector<SymExpr*, 4>::iterator it = resultExpr.begin(), it2 = resultExpr.end(); it != it2; it++) {
-      if(it != resultExpr.begin())
-	DEBUG(dbgs() << " of ");
-      DEBUG((*it)->describe(dbgs()));      
-    }
-    DEBUG(dbgs() << "\n");
-    if(isa<SymOuter>(resultExpr[0]))
-      outerValues[LI] = resultExpr;
-    else {
-      assert(resultExpr.size() == 1);
-      Constant* C = cast<Constant>(cast<SymThunk>(resultExpr[0])->RealVal);
-      getConstantBenefit(LI, C);
-    }
-  }
+  if(Result.first)
+    getImprovementBenefit(LI, Result);
 
   for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
     delete (*it);
   }
 
-  return (resultExpr.size() != 0);
+  return (Result.first != 0);
 
 }
 
@@ -514,9 +466,6 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
     LPDEBUG("Considering store-to-load forwards...\n");
     anyStoreForwardingBenefits = false;
 
-    MemoryDependenceAnalyser MD;
-    MD.init(AA, &this.parent);
-
     for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
 
       BasicBlock* BB = FI;
@@ -531,94 +480,22 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 
 	if(LoadInst* LI = dyn_cast<LoadInst>(II)) {
 
-	  DenseMap<Value*, Value*>::iterator it = improvedValues.find(LI);
+	  std::pair<Value*, int> Repl = getReplacement(LI);
 
-	  if(it != improvedValues.end()) {
-	    LPDEBUG("Ignoring " << *LI << " because it's already constant\n");
+	  if(Repl.first != LI || Repl.second > 0) {
+	    LPDEBUG("Ignoring " << *LI << " because it's already improved\n");
 	    continue;
 	  }
-
-	  if(outerValues.find(LI) != outerValues.end()) {
-	    LPDEBUG(*LI << " result already resolved to an outer value\n");
-	    continue;
-	  }
-
-	  MemDepResult Res = MD.getDependency(LI, improvedValues, ignoreEdges);
-
-	  if(Res.isClobber()) {
-	    LPDEBUG(*LI << " is locally clobbered by " << Res.getInst() << "\n");
-	    if(BB == &F->getEntryBlock()) {
-	      BasicBlock::iterator TestII(Res.getInst());
-	      if(TestII == BB->begin()) {
-		anyStoreForwardingBenefits |= tryForwardLoadFromParent(LI);
+	  else {
+	    std::pair<Value*, int> Result = parent.tryForwardLoad(LI);
+	    if(Result.first) {
+	      if(shouldForwardValue(Result.first)) {
+		getImprovementBenefit(LI, Result);
+		anyStoreForwardingBenefits = true;
 	      }
 	    }
 	  }
-	  else if(Res.isDef()) {
-	    anyStoreForwardingBenefits |= tryForwardLoad(LI, Res);
-	  }
-	  else { // Nonlocal
-	      
-	    Value* LPointer = LI->getOperand(0);
 
-	    if(Instruction* LPointerI = dyn_cast<Instruction>(LPointer)) {
-	      DenseMap<Value*, Value*>::iterator it = improvedValues.find(LPointerI);
-	      if(it != improvedValues.end())
-		LPointer = it->second;
-	    }
-
-	    SmallVector<NonLocalDepResult, 4> NLResults;
-
-	    MD.getNonLocalPointerDependency(LPointer, true, BB, NLResults, improvedValues, ignoreEdges);
-
-	    assert(NLResults.size() > 0);
-
-	    const MemDepResult* TheResult = 0;
-	    const NonLocalDepResult* TheClobber = 0;
-	    bool seenClobber = false;
-	      
-	    for(unsigned int i = 0; i < NLResults.size(); i++) {
-		
-	      const MemDepResult& Res = NLResults[i].getResult();
-	      if(Res.isNonLocal())
-		continue;
-	      else if(Res.isClobber()) {
-		LPDEBUG(*LI << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
-		if(!seenClobber) {
-		  TheClobber = &NLResults[i];
-		}
-		else {
-		  TheClobber = 0;
-		}
-		seenClobber = true;
-	      }
-	      else {
-		if(TheResult) {
-		  LPDEBUG(*LI << " depends on multiple instructions, ignoring\n");
-		  TheResult = 0;
-		  break;
-		}
-		else {
-		  TheResult = &Res;
-		}
-	      }
-		
-	    }
-
-	    if((!seenClobber) && TheResult)
-	      anyStoreForwardingBenefits |= tryForwardLoad(LI, *TheResult);
-	    else if(TheClobber) {
-	      BasicBlock* clobberBlock = TheClobber->getBB();
-	      if(&clobberBlock->getParent()->getEntryBlock() == clobberBlock) {
-		BasicBlock::iterator TestBBI(TheClobber->getResult().getInst());
-		if(TestBBI == clobberBlock->begin()) {
-		  anyStoreForwardingBenefits |= tryForwardLoadFromParent(LI);
-		}
-	      }
-	    }
-
-	  }
-	    
 	}
 
       }
@@ -626,7 +503,7 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
     }
 
     if(anyStoreForwardingBenefits) {
-      LPDEBUG("At least one load was made constant; trying again\n");
+      LPDEBUG("At least one load was improved; trying again\n");
     }
     else {
       LPDEBUG("No loads were made constant\n");
@@ -637,11 +514,8 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 }
 
 void SymThunk::describe(raw_ostream& OS) {
-  OS << *RealVal;
-}
-
-void SymOuter::describe(raw_ostream& OS) {
-  OS << "Outer expression";
+  
+  OS << *Val.first << "@" << Val.second;
 }
 
 void SymGEP::describe(raw_ostream& OS) {

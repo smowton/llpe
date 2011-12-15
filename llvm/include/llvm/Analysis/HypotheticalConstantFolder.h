@@ -27,7 +27,6 @@ class Type;
 enum SymSubclasses {
 
   SThunk,
-  SOuter,
   SGEP,
   SCast
 
@@ -52,16 +51,6 @@ public:
   SymThunk(Value* R) : RealVal(R) { }
   void describe(raw_ostream& OS);
   int getSymType() const { return SThunk; }
-
-};
-
-class SymOuter : public SymExpr { 
-
- public:
-  static inline bool classof(const SymExpr* S) { return S->getSymType() == SOuter; }
-  static inline bool classof(const SymOuter*) { return true; }
-  void describe(raw_ostream& OS);
-  int getSymType() const { return SOuter; }
 
 };
 
@@ -97,7 +86,7 @@ class HCFParentCallbacks {
 
  public:
 
-  virtual void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) = 0;
+  virtual std::pair<Value*, int> tryForwardLoad(LoadInst*) = 0;
   virtual std::pair<Value*, int> getReplacement(Value*, int frameIndex = 0) = 0;
   virtual void setReplacement(Value*, std::pair<Value*, int>) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;

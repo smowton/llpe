@@ -165,12 +165,8 @@ namespace {
     int totalInstructions;
     int residualCalls;
 
-    DenseMap<Value*, Constant*> initialConsts; // No initial constants except the root values
-    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> initialIgnoreEdges; // All edges considered to exist
-    SmallSet<BasicBlock*, 4> outerBlocks; // All blocks are of interest
-    
-    SmallVector<Instruction*, 16> eliminatedInstructions;
-    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> eliminatedEdges;
+    DenseMap<Value*, std::pair<Value*, int> > improvedValues;
+    SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
 
     HypotheticalConstantFolder H;
 
@@ -190,7 +186,7 @@ namespace {
       debugIndent(indent), 
       totalInstructions(0), 
       residualCalls(0),
-      H(&_F, initialConsts, initialIgnoreEdges, outerBlocks, eliminatedInstructions, eliminatedEdges, _AA, _TD, *this),
+      H(&_F, _AA, _TD, *this),
       returnValueAlreadyKnown(false), 
       returnVal(0)
     {
@@ -658,6 +654,58 @@ bool LoopPeelHeuristicsPass::runOnFunction(Function& F) {
 
 }
 
+// Implement HCFParentCallbacks, except for tryForwardLoad which comes later
+
+std::pair<Value*, int> InlineAttempt::getReplacement(Value* V, int frameIndex) {
+
+  if(!frameIndex) {
+    DenseMap<Value*, std::pair<Value*, int> >::iterator it = improvedValues.find(V);
+    if(it == improvedValues.end())
+      return std::make_pair(V, 0);
+    else
+      return it->second;
+  }
+  else {
+    if(parent) {
+      std::pair<Value*, int> Result =  parent->getReplacement(V, frameIndex - 1);
+      return std::make_pair(Result.first, Result.second + 1);
+    }
+    else {
+      return std::make_pair(V, 0);
+    }
+  }
+
+}
+
+Constant* InlineAttempt::getConstReplacement(Value* V, int frameIndex) {
+
+  if(Constant* C = dyn_cast<Constant>(V))
+    return C;
+  std::pair<Value*, int> Replacement = getReplacement(V, frameIndex);
+  if(Constant* C = dyn_cast<Constant>(Replacement.first))
+    return C;
+  return 0;
+
+}
+
+void InlineAttempt::setReplacement(Value* V, std::pair<Value*, int> R) {
+
+  improvedValues[V] = R;
+
+}
+
+bool InlineAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
+
+  return deadEdges.count(std::make_pair(B1, B2));
+
+}
+
+void InlineAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
+
+  deadEdges.insert(std::make_pair(B1, B2));
+
+}
+
 #define MAX_NESTING 20
 
 void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool force) {
@@ -677,8 +725,8 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
       Value* AVal = CI->getArgOperand(A->getArgNo());
       Constant* C = dyn_cast<Constant>(AVal);
       if(!C) {
-	DenseMap<Value*, Constant*>::const_iterator it = initialConsts.find(AVal);
-	if(it != initialConsts.end()) {
+	std::pair<Value*, int> Replacement = getReplacement(AVal);
+	if(Replacement.first != AVal || Replacement.second > 0) {
 	  improved = true;
 	  C = it->second;
 	}
@@ -709,8 +757,8 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
       Argument* A = AI;
       if(!IA->argsAlreadyKnown[A->getArgNo()]) {
 	Value* AVal = CI->getArgOperand(A->getArgNo());
-	DenseMap<Value*, Constant*>::const_iterator it = initialConsts.find(AVal);
-	if(it != initialConsts.end()) {
+	std::pair<Value*, int> Replacement = getReplacement(AVal);
+	if(Replacement.first != AVal || Replacement.second > 0) {
 	  improved = true;
 	  rootValues.push_back(std::make_pair(A, it->second));
 	}
@@ -774,7 +822,7 @@ void InlineAttempt::considerCalls(bool force = false) {
 
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
 
-    if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
+    if(HypotheticalConstantFolder::blockIsDead(FI, deadEdges))
       continue;
 
     BasicBlock& BB = *FI;
@@ -803,7 +851,7 @@ void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, Constant*>,
   if((!returnVal) && (!F.getReturnType()->isVoidTy())) {
     bool foundReturnInst = false;
     for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
-      if(HypotheticalConstantFolder::blockIsDead(FI, initialIgnoreEdges))
+      if(HypotheticalConstantFolder::blockIsDead(FI, deadEdges))
 	continue;
       for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
 	if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
@@ -814,12 +862,8 @@ void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, Constant*>,
 	  }
 	  else
 	    foundReturnInst = true;
-	  Constant* C = dyn_cast<Constant>(RI->getReturnValue());
-	  if(!C) {
-	    DenseMap<Value*, Constant*>::iterator CI;
-	    if((CI = initialConsts.find(RI->getReturnValue())) != initialConsts.end())
-	      C = CI->second;
-	  }
+	  Value* ThisRet = RI->getReturnValue();
+	  Constant* C = getConstReplacement(ThisRet);
 	  if(C)
 	    returnVal = C;
 	  else {
@@ -843,7 +887,169 @@ void InlineAttempt::foldArguments(SmallVector<std::pair<Value*, Constant*>, 4>& 
 
 }
 
-void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) {
+std::pair<Value*, int> InlineAttempt::getDefn(const MemDepResult& Res) {
+
+  if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
+    return getReplacement(SI->getOperand(0));
+  }
+  else if(LoadInst* DefLI= dyn_cast<LoadInst>(Res.getInst())) {
+    std::pair<Value*, int> improvedLoad = getReplacement(DefLI);
+    if(improvedLoad.first != DefLI || improvedLoad.second > 0) {
+      LPDEBUG(*LI << " defined by " << *(improvedLoad.first) << "\n");
+      return improvedLoad;
+    }
+  }
+  else {
+    LPDEBUG(*LI << " is defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
+  }
+
+  return std::make_pair(0, 0);
+
+}
+
+std::pair<Value*, int> InlineAttempt::tryForwardLoadFromParent(LoadInst* LI) {
+
+  // Precondition: LI is clobbered in exactly one place: the entry instruction to its parent function.
+  // This might mean that instruction actually clobbers it, or it's defined by instructions outside this function.
+  
+  if(!parent)
+    return std::make_pair(0, 0);
+
+  Value* Ptr = LI->getPointerOperand();
+
+  LPDEBUG("Trying to resolve load from " << *LI << " by exploring callers\n");
+
+  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
+  // and construct a symbolic expression to pass to our parent as we go.
+
+  SmallVector<SymExpr*, 4> Expr;
+
+  while(1) {
+
+    if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
+      SmallVector<Value*, 4> idxs;
+      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
+	Value* idx = GEP->getOperand(i);
+	Constant* Cidx = getConstReplacement(idx);
+	if(Cidx)
+	  idxs.push_back(Cidx);
+	else {
+	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
+	  return false;
+	}
+      }
+      Expr.push_back(new SymGEP(idxs));
+      Ptr = GEP->getPointerOperand();
+    }
+    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr)) {
+      Expr.push_back(new SymCast(C->getType()));
+      Ptr = C->getOperand(0);
+    }
+    else {
+      std::pair<Value*, int> Repl = getReplacement(Ptr);
+      if(Repl.first == Ptr && Repl.second == 0) {
+	LPDEBUG("Won't investigate load from parent function due to unresolved pointer " << *Ptr << "\n");
+	return false;
+      }
+      else if(Repl.second > 0) {
+	Expr.push_back(new SymThunk(Repl));
+	break;
+      }
+      else {
+	Ptr = Repl.first; // Must continue resolving!
+      }
+    }
+    
+  }
+
+  // If we make it here, we have a series of friendly cast and GEP ops that end up at an outer value!
+  // Ask our parent to figure out what's going on!
+
+  LPDEBUG("Will resolve ");
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    if(it != Expr.begin())
+      DEBUG(dbgs() << " of ");
+    DEBUG((*it)->describe(dbgs()));
+  }
+
+  DEBUG(dbgs() << "\n");
+  
+  std::pair<Value*, int> Result = parent.tryResolveLoadAtChildSite(this, Expr);
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    delete (*it);
+  }
+
+  if(Result.first)
+    return Result;
+
+}
+
+
+MemDepResult InlineAttempt::getUniqueDependency(LoadInst* LI) {
+
+  MemoryDependenceAnalyser MD;
+  MD.init(AA, &this.parent);
+
+  MemDepResult Seen;
+
+  Seen = MD.getDependency(LI);
+
+  if(Seen.isNonLocal()) {
+
+    Seen = MemDepResult();
+    Value* LPointer = LI->getOperand(0);
+    std::pair<Value*, int> Repl = getReplacement(LPointer);
+
+    SmallVector<NonLocalDepResult, 4> NLResults;
+
+    MD.getNonLocalPointerDependency(Repl, true, BB, NLResults);
+    assert(NLResults.size() > 0);
+
+    for(unsigned int i = 0; i < NLResults.size(); i++) {
+		
+      const MemDepResult& Res = NLResults[i].getResult();
+      if(Res.isNonLocal())
+	continue;
+      else if(Res == Seen)
+	continue;
+      else if(Seen == MemDepResult()) // Nothing seen yet
+	Seen = Res;
+      else {
+	LPDEBUG(*LI << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
+	return MemDepResult();
+      }
+
+    }
+
+  }
+
+  return Seen;
+
+}
+
+std::pair<Value*, int> InlineAttempt::tryForwardLoad(LoadInst* LI) {
+
+  MemDepResult Res = getUniqueDependency(LI);
+
+  if(Res.isClobber()) {
+    LPDEBUG(*LI << " is clobbered by " << Res.getInst() << "\n");
+    if(BB == &F->getEntryBlock()) {
+      BasicBlock::iterator TestII(Res.getInst());
+      if(TestII == BB->begin()) {
+	return tryForwardLoadFromParent(LI);
+      }
+    }
+    return std::make_pair(0, 0);
+  }
+  else if(Res.isDef()) {
+    return getDefn(Res);
+  }
+
+}
+
+std::pair<Value*, int> InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<SymExpr*, 4>& in) {
 
   CallInst* CS = revSubAttempts[Child];
   assert(CS && "No such child attempt!");
@@ -861,23 +1067,7 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
   SI--;
   SymThunk* th = cast<SymThunk>(*SI);
 
-  int n_outers = 0;
-  while(dyn_cast<SymOuter>(*SI) != 0) {
-    n_outers++;
-    SI--;
-  }
-
-  if(n_outers == 0) {
-    Argument* A = cast<Argument>(th->RealVal);
-    lastPtr = CS->getArgOperand(A->getArgNo());
-  }
-  else if(n_outers == 1) {
-    lastPtr = th->RealVal;
-  }
-  else {
-    LPDEBUG("Won't investigate load further: queries across more than one activation frame not supported yet\n");
-    return;
-  }
+  lastPtr = th->RealVal;
 
   LLVMContext& ctx = CS->getParent()->getParent()->getContext();
   BasicBlock::iterator BI(CS);
@@ -900,89 +1090,20 @@ void InlineAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<
   }
 
   // Make up a fake load, since MD wants an accessor.
-  tempInstructions.push_back(cast<Instruction>((lastPtr = Builder.CreateLoad(lastPtr))));
+  LoadInst* Accessor = Builder.CreateLoad(lastPtr);
+  tempInstructions.push_back(Accessor);
 
   //LPDEBUG("Temporarily augmented parent block:\n");
   //DEBUG(dbgs() << *CS->getParent());
 
-  // OK, now make a memdep query against the value so constructed
-  MemoryDependenceAnalyser MD;
-  MD.init(AA);
+  std::pair<Value*, int> Result = tryForwardLoad(Accessor);
   
-  Value* Query = tempInstructions.back();
-  MemDepResult res = MD.getDependency(cast<Instruction>(Query), initialConsts, initialIgnoreEdges);
-  Instruction* Definer = 0;
-  if(res.isDef()) {
-    Definer = res.getInst();
-    LPDEBUG("Found local definer: " << *Definer << "\n");
-  }
-  else if(res.isNonLocal()) {
-    SmallVector<NonLocalDepResult, 4> NLResults;
-
-    MD.getNonLocalPointerDependency(Query, true, CS->getParent(), NLResults, initialConsts, initialIgnoreEdges);
-
-    assert(NLResults.size() > 0);
-
-    for(unsigned int i = 0; i < NLResults.size(); i++) {
-		
-      const MemDepResult& Res = NLResults[i].getResult();
-      if(Res.isNonLocal())
-	continue;
-      else if(Res.isClobber()) {
-	LPDEBUG(*Query << " is nonlocally clobbered by " << *(Res.getInst()) << "\n");
-	Definer = 0;
-	break;
-      }
-      else {
-	if(Definer) {
-	  LPDEBUG(*Query << " depends on multiple instructions, ignoring\n");
-	  Definer = 0;
-	  break;
-	}
-	else {
-	  Definer = Res.getInst();
-	}
-      }
-    }
-  }
-  else {
-    LPDEBUG(*Query << " locally clobbered by " << *res.getInst() << "\n");
-  }
-
-  Value* Defn = 0;
-  if(Definer)
-    if(StoreInst* SI = dyn_cast<StoreInst>(Definer))
-      Defn = SI->getValueOperand();
-
-  if(Defn) {
-    if(dyn_cast<Constant>(Defn)) {
-      out.push_back(new SymThunk(Defn));
-    }
-    else if(isIdentifiedObject(Defn)) {
-      out.push_back(new SymOuter());
-      out.push_back(new SymThunk(Defn));
-    }
-    else {
-      LPDEBUG("Outer search resolved to " << *Defn << " which is not sufficiently concrete\n");
-      return;
-    }
-  }
-
   for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
     Instruction* I = *(--II);
     I->eraseFromParent();
   }
 
-}
-
-void InlineAttempt::tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out) {
-
-  if(!parent) {
-    LPDEBUG("Can't investigate load further; parent is not under consideration\n");
-    return;
-  }
-  else
-    parent->tryResolveLoadAtChildSite(this, in, out);
+  return std::make_pair(Result.first, Result.second + 1);
 
 }
 
