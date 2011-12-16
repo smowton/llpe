@@ -46,9 +46,9 @@ class SymThunk : public SymExpr {
 public:
   static inline bool classof(const SymExpr* S) { return S->getSymType() == SThunk; }
   static inline bool classof(const SymThunk*) { return true; }
-  Value* RealVal;
+  std::pair<Value*, int> RealVal;
 
-  SymThunk(Value* R) : RealVal(R) { }
+  SymThunk(std::pair<Value*, int> R) : RealVal(R) { }
   void describe(raw_ostream& OS);
   int getSymType() const { return SThunk; }
 
@@ -105,13 +105,11 @@ class HypotheticalConstantFolder {
 
   HCFParentCallbacks& parent;
 
-  void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void getConstantBenefit(Value* V, Constant* C);
   void realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void realGetConstantBenefit(Value* V, Constant* C);
+  void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
+  void realGetImprovementBenefit(Value* V, std::pair<Value*, int>);
+  void getImprovementBenefit(Value* V, std::pair<Value*, int>);
   void getPHINodeBenefit(PHINode* PN);
-  bool tryForwardLoad(LoadInst* LI, const MemDepResult& Res);
-  bool tryForwardLoadFromParent(LoadInst*);
   std::string dbgind();
 
  public:
@@ -128,7 +126,7 @@ class HypotheticalConstantFolder {
 
   void setDebugIndent(int d) { debugIndent = d; }
 
-  static bool blockIsDead(BasicBlock* BB, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges);
+  bool blockIsDead(BasicBlock* BB);
 
 };
 

@@ -217,8 +217,11 @@ namespace {
     void countResidualCalls();
     void considerCalls(bool force);
     void considerCallInst(CallInst* CI, bool force);
-    void tryResolveInParentContext(SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out);
-    void tryResolveLoadAtChildSite(InlineAttempt* child, SmallVector<SymExpr*, 4>& in, SmallVector<SymExpr*, 4>& out);
+    Constant* getConstReplacement(Value* V, int frameIndex);
+    std::pair<Value*, int> tryForwardLoadFromParent(LoadInst* LI);
+    std::pair<Value*, int> getDefn(const MemDepResult& Res);
+    MemDepResult getUniqueDependency(LoadInst* LI);
+    std::pair<Value*, int> tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<SymExpr*, 4>& in);
 
     std::string dbgind() const;
 
@@ -711,7 +714,7 @@ void InlineAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool force) {
 
   InlineAttempt* IA = 0;
-  SmallVector<std::pair<Value*, Constant*>, 4> rootValues;
+  SmallVector<std::pair<Value*, std::pair<Value*, int> >, 4> rootValues;
 
   DenseMap<CallInst*, InlineAttempt*>::iterator it = subAttempts.find(CI);
   if(it == subAttempts.end()) {
@@ -723,16 +726,15 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
     for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
       Argument* A = AI;
       Value* AVal = CI->getArgOperand(A->getArgNo());
-      Constant* C = dyn_cast<Constant>(AVal);
+      if(shouldForwardValue(AVal))
+	rootValues.push_back(std::make_pair(A, std::make_pair(AVal, 0)));
       if(!C) {
 	std::pair<Value*, int> Replacement = getReplacement(AVal);
 	if(Replacement.first != AVal || Replacement.second > 0) {
 	  improved = true;
-	  C = it->second;
+	  rootValues.push_back(std::make_pair(A, std::make_pair(Replacement.first, Replacement.second + 1)));
 	}
       }
-      if(C)
-	rootValues.push_back(std::make_pair(A, C));
     }
 
     // If we can do better inlining CI in our context of nested inlining, as compared to considering CI a root itself
@@ -748,7 +750,7 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
   }
   else {
 
-    // This call has been explored before -- give it any constant arguments it hasn't seen before.
+    // This call has been explored before -- give it any improved arguments it hasn't seen before.
 
     IA = it->second;
     bool improved = false;
@@ -760,7 +762,7 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
 	std::pair<Value*, int> Replacement = getReplacement(AVal);
 	if(Replacement.first != AVal || Replacement.second > 0) {
 	  improved = true;
-	  rootValues.push_back(std::make_pair(A, it->second));
+	  rootValues.push_back(std::make_pair(A, std::make_pair(Replacement.first, Replacement.second + 1)));
 	}
       }
     }
@@ -775,9 +777,9 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
 
     LPDEBUG("Considering improving call " << *CI << "\n");
 
-    for(SmallVector<std::pair<Value*, Constant*>, 4>::iterator VI = rootValues.begin(), VE = rootValues.end(); VI != VE; VI++) {
-      LPDEBUG("  " << *(VI->first) << " -> " << *(VI->second) << "\n");
-      Argument* A = cast<Argument>(VI->first);      
+    for(SmallVector<std::pair<Value*, std::pair<Value*, int> >, 4>::iterator VI = rootValues.begin(), VE = rootValues.end(); VI != VE; VI++) {
+      LPDEBUG("  " << *(VI->first) << " -> " << *(VI->second.first) << "@" << VI->second.second << "\n");
+      Argument* A = cast<Argument>(VI->first);
       IA->argsAlreadyKnown[A->getArgNo()] = true;
     }
 
@@ -786,8 +788,8 @@ void InlineAttempt::considerSubAttempt(CallInst* CI, Function* FCalled, bool for
     if(!IA->returnValueAlreadyKnown) {
       if(IA->returnVal) {
 	IA->returnValueAlreadyKnown = true;
-	SmallVector<std::pair<Value*, Constant*>, 4> newLocalRoots;
-	newLocalRoots.push_back(std::make_pair(CI, IA->returnVal));
+	SmallVector<std::pair<Value*, std::pair<Value*, int> >, 4> newLocalRoots;
+	newLocalRoots.push_back(std::make_pair(CI, std::make_pair(IA->returnVal, 0)));
 	LPDEBUG("Integrating call's return value locally\n");
 	localFoldConstants(newLocalRoots);
       }
@@ -839,9 +841,9 @@ void InlineAttempt::considerCalls(bool force = false) {
 
 }
 
-void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, Constant*>, 4>& args) {
+void InlineAttempt::localFoldConstants(SmallVector<std::pair<Value*, std::pair<Value*, int> >, 4>& Improvements) {
 
-  H.getBenefit(args);
+  H.getBenefit(Improvements);
 
   considerCalls();
 
