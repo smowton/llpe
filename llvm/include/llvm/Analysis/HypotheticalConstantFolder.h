@@ -24,6 +24,19 @@ class raw_ostream;
 class ConstantInt;
 class Type;
 
+typedef std::pair<Value*, int> ValCtx;
+
+raw_ostream &operator<<(raw_ostream&, const ValCtx&);
+raw_ostream &operator<<(raw_ostream&, const MemDepResult&);
+
+inline ValCtx make_vc(Value* V, int F) {
+
+  return std::make_pair(V, F);
+
+}
+
+#define VCNull (make_vc(0, 0))
+
 enum SymSubclasses {
 
   SThunk,
@@ -46,9 +59,9 @@ class SymThunk : public SymExpr {
 public:
   static inline bool classof(const SymExpr* S) { return S->getSymType() == SThunk; }
   static inline bool classof(const SymThunk*) { return true; }
-  std::pair<Value*, int> RealVal;
+  ValCtx RealVal;
 
-  SymThunk(std::pair<Value*, int> R) : RealVal(R) { }
+  SymThunk(ValCtx R) : RealVal(R) { }
   void describe(raw_ostream& OS);
   int getSymType() const { return SThunk; }
 
@@ -86,13 +99,14 @@ class HCFParentCallbacks {
 
  public:
 
-  virtual std::pair<Value*, int> tryForwardLoad(LoadInst*) = 0;
-  virtual std::pair<Value*, int> getReplacement(Value*, int frameIndex = 0) = 0;
-  virtual void setReplacement(Value*, std::pair<Value*, int>) = 0;
+  virtual ValCtx tryForwardLoad(LoadInst*) = 0;
+  virtual ValCtx getReplacement(Value*, int frameIndex = 0) = 0;
+  virtual void setReplacement(Value*, ValCtx) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
   virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
   virtual bool shouldIgnoreBlock(BasicBlock*) = 0;
   virtual bool shouldIgnoreInstruction(Instruction*) = 0;
+  virtual bool blockIsDead(BasicBlock*) = 0;
 
 };
 
@@ -106,11 +120,16 @@ class HypotheticalConstantFolder {
 
   HCFParentCallbacks& parent;
 
+  ValCtx getReplacement(Value*);
+  Constant* getConstReplacement(Value*);
+  bool blockIsDead(BasicBlock*);
+
   void realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
   void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void realGetImprovementBenefit(Value* V, std::pair<Value*, int>);
-  void getImprovementBenefit(Value* V, std::pair<Value*, int>);
+  void realGetImprovementBenefit(Value* V, ValCtx, bool force);
+  void getImprovementBenefit(Value* V, ValCtx, bool force = false);
   void getPHINodeBenefit(PHINode* PN);
+  bool shouldForwardValue(Value*);
   std::string dbgind();
 
  public:
@@ -123,11 +142,10 @@ class HypotheticalConstantFolder {
 
   }
 
-  void getBenefit(const SmallVector<std::pair<Value*, Constant*>, 4>& roots);
+  void getBenefit(Value*, ValCtx);
+  void killEdge(BasicBlock* B1, BasicBlock* B2);
 
   void setDebugIndent(int d) { debugIndent = d; }
-
-  bool blockIsDead(BasicBlock* BB);
 
 };
 
