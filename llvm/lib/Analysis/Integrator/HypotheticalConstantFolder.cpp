@@ -162,7 +162,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
   Instruction* ArgI = dyn_cast<Instruction>(ArgV);
 
   if(ArgI && parent.shouldIgnoreBlock(ArgI->getParent())) { 
-    LPDEBUG(*ArgI << " not under consideration, ignoring\n");
+    LPDEBUG(*ArgI << " block not under consideration, ignoring\n");
     return;
   }
 
@@ -188,6 +188,11 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
     if(blockIsDead(I->getParent())) {
       LPDEBUG("User instruction " << *I << " already eliminated (in dead block)\n");
       continue;
+    }
+
+    if(parent.shouldIgnoreInstruction(I)) {
+      LPDEBUG(*I << " instruction not under consideration, ignoring\n");
+      return;
     }
 
     LPDEBUG("Considering user instruction " << *I << "\n");
@@ -339,13 +344,9 @@ bool shouldForwardValue(Value* V) {
 
 }
 
-void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, Value*>, 4>& roots) {
+void HypotheticalConstantFolder::getBenefit(Value* V, std::pair<Value*, int> Replacement) {
 
-  for(SmallVector<std::pair<Value*, Value*>, 4>::const_iterator RI = roots.begin(), RE = roots.end(); RI != RE; RI++) {
-
-    getConstantBenefit(RI->first, RI->second);
-
-  }
+  getImprovementBenefit(V, Replacement);
 
   bool anyStoreForwardingBenefits = true;
 
@@ -399,6 +400,12 @@ void HypotheticalConstantFolder::getBenefit(const SmallVector<std::pair<Value*, 
 
   }
   
+}
+
+void HypotheticalConstantFolder::killEdge(BasicBlock* B1, BasicBlock* B2) {
+
+  getRemoveBlockPredBenefit(B2, B1);
+
 }
 
 void SymThunk::describe(raw_ostream& OS) {

@@ -92,6 +92,7 @@ class HCFParentCallbacks {
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
   virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
   virtual bool shouldIgnoreBlock(BasicBlock*) = 0;
+  virtual bool shouldIgnoreInstruction(Instruction*) = 0;
 
 };
 

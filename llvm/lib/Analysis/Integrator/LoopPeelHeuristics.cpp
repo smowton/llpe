@@ -62,8 +62,10 @@ namespace {
     int debugIndent;
     
     DenseMap<Value*, std::pair<Value*, int> > improvedValues;
+    SmallVector<Value*, 8> newLocalImprovedValues;
+    SmallVector<std::pair<Value*, Constant*>, 1> newNonLocalImprovedValues;
+
     SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
-    SmallVector<Value*, 8> newlyImprovedValues;
     SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> newlyDeadEdges;
 
     HypotheticalConstantFolder H;
@@ -76,13 +78,12 @@ namespace {
       LI(_LI),
       TD(_TD), 
       AA(_AA), 
-      F(_F), 
       nesting_depth(depth), 
       debugIndent(indent), 
       H(&_F, _AA, _TD, *this),
     {
 
-      H.setDebugIndent(ncalls * 2);
+      H.setDebugIndent(indent);
 
     }
 
@@ -95,17 +96,26 @@ namespace {
       }
     }
 
+    void setNonLocalReplacement(Value* V, Constant* C);
+    void setNonLocalEdgeDead(BasicBlock* B1, BasicBlock* B2);
     Constant* getConstReplacement(Value* V, int frameIndex);
+    virtual Loop* getLoopContext();
+    virtual Instruction* getEntryInstruction() = 0;
+    virtual BasicBlock* getEntryBlock() = 0;
     void tryImproveChildren(Value* Improved);
     virtual void tryImproveParent();
     void localImprove(Value* From, std::pair<Value*, int> To);
     virtual void considerInlineOrPeel(Value* Improved, std::pair<Value*, int> ImprovedTo, Instruction* I);
     InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool force = false);
     PeelAttempt* getOrCreatePeelAttempt(Loop*);
-    std::pair<Value*, int> tryForwardLoadFromParent(LoadInst* LI);
+
+    bool buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
+    void realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& in, Instruction* Where, SmallVector<Instruction*, 4>& tempInstructions);
+    virtual std::pair<Value*, int> tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
+    bool forwardLoadIsNonLocal(LoadInst* LoadI, std::pair<Value*, int>& Result);
     std::pair<Value*, int> getDefn(const MemDepResult& Res);
     MemDepResult getUniqueDependency(LoadInst* LI);
-    std::pair<Value*, int> tryResolveLoadAtChildSite(IntegrationAttempt* Child, SmallVector<SymExpr*, 4>& in);
+    std::pair<Value*, int> tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
     void print(raw_ostream &OS) const;
 
   };
@@ -158,6 +168,7 @@ namespace {
       LI(_LI),
       TD(_TD),
       AA(_AA),
+      L(_L),
       nesting_depth(depth),
       debugIndent(dbind)
     {
@@ -175,22 +186,21 @@ namespace {
 
   };
 
-  char IntegrationHeuristicsPass::ID = 0;
-
   class InlineAttempt : public HCFParentCallbacks { 
 
     Function& F;
 
     int totalInstructions;
     int residualCalls;
+    Constant* returnVal;
 
   public:
 
-    Constant* returnVal;
-    void print(raw_ostream &OS) const;
     void foldArgument(Argument* A, std::pair<Value*, int> V);
 
   };
+
+  char IntegrationHeuristicsPass::ID = 0;
 
   class IntegrationHeuristicsPass : public ModulePass {
 
@@ -337,8 +347,14 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V, int frameIndex) {
 
 void IntegrationAttempt::setReplacement(Value* V, std::pair<Value*, int> R) {
 
-  newlyImprovedValues.insert(V);
+  newLocalImprovedValues.push_back(V);
   improvedValues[V] = R;
+
+}
+
+void IntegrationAttempt::setNonLocalReplacement(Value* V, Constant* C) {
+
+  newNonLocalImprovedValues.push_back(std::make_pair(V, C));
 
 }
 
@@ -351,20 +367,38 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 void IntegrationAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 
   std::pair<BasicBlock*, BasicBlock*> Edge = std::make_pair(B1, B2);
-  newlyDeadEdges.Insert(Edge);
   deadEdges.insert(Edge);
+
+}
+
+void IntegrationAttempt::setNonLocalEdgeDead(BasicBlock* B1, BasicBlock* B2) {
+  
+  std::pair<BasicBlock*, BasicBlock*> Edge = std::make_pair(B1, B2);
+  newlyDeadEdges.Insert(Edge);
 
 }
 
 bool IntegrationAttempt::shouldIgnoreBlock(BasicBlock* BB) {
 
-  return false;
+  return LI->getLoopFor(BB) != 0;
 
 }
 
 bool PeelIteration::shouldIgnoreBlock(BasicBlock* BB) {
 
-  return !L->contains(BB);
+  return LI->getLoopFor(BB) != L;
+
+}
+
+bool IntegrationAttempt::shouldIgnoreInstruction(Instruction* I) { 
+
+  return false;
+
+}
+
+bool PeelIteration::shouldIgnoreInstruction(Instruction* I) {
+
+  return (I->getParent() == L->getHeader() && isa<PHINode>(I));
 
 }
 
@@ -387,7 +421,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool f
 	Argument* A = AI;
 	Value* AVal = CI->getArgOperand(A->getArgNo());
 	if(shouldForwardValue(AVal))
-	  IA->foldArgument(A, std::make_pair(AVal, 0));
+	  IA->foldArgument(A, std::make_pair(AVal, 1));
       }
 
       return IA;
@@ -412,7 +446,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(int iter) {
     return Iterations[iter];
   else {
     assert(iter == Iterations.size());
-    PeelIteration* NewIter = new PeelIteration(this, this->TD, this->AA, this->L, iter, this->debugIndent);
+    PeelIteration* NewIter = new PeelIteration(this, TD, AA, LI, L, iter, nesting_depth, debugIndent);
     Iterations.push_back(NewIter);
     
     // Feed the new iteration any loop-invariant constants we know. 
@@ -436,7 +470,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(int iter) {
 
 PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
-  return parentPA->getOrCreateIteration(this->iterationCount);
+  return parentPA->getOrCreateIteration(this->iterationCount + 1);
 
 }
 
@@ -500,11 +534,24 @@ void PeelIteration::considerInlineOrPeel(Value* Improved, std::pair<Value*, int>
 
 }
 
+Loop* InlineAttempt::getLoopContext() {
+
+  return 0;
+
+}
+
+Loop* PeelIteraton::getLoopContext() {
+
+  return L;
+
+}
+
 void IntegrationAttempt::considerInlineOrPeel(Value* Improved, std::pair<Value*, int> ImprovedTo, Instruction* I) {
 
   Loop* L = LI->getLoopFor(I);
+  Loop* MyL = getLoopContext();
 
-  if(L == getLoopContext()) {
+  if(L == MyL) {
   
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
@@ -525,11 +572,10 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, std::pair<Value*,
     }
 
   }
-
   else {
 
     Loop* outermostChildLoop = L;
-    while(outermostChildLoop->getParent() != getLoopContext())
+    while(outermostChildLoop->getParent() != MyL)
       outermostChildLoop = outermostChildLoop->getParentLoop();
 
     LoopPeelAttempt* LPA = getOrCreatePeelAttempt(L);
@@ -564,10 +610,19 @@ void IntegrationAttempt::localImprove(Value* From, std::pair<Value*, int> To) {
 
   H.getBenefit(From, To);
 
-  while(newlyImprovedValues.count() || newlyDeadEdges.count()) {
+  while(newLocalImprovedValues.count() || newNonLocalImprovedValues.count() || newlyDeadEdges.count()) {
 
-    SmallVector<Value*, 4> newVals = newlyImprovedValues;
-    newlyImprovedValues.clear();
+    SmallVector<std::pair<Value*, Constant*>, 1> newNLVals = newNonLocalImprovedValues;
+    newNonLocalImprovedValues.clear();
+    
+    for(SmallVector<Value*, 1>::iterator it = newNLVals.begin(), it2 = newNLVals.end(); it != it2; it++) {
+
+      H.getBenefit(it->first, std::make_pair(it->second, 0));
+
+    }
+
+    SmallVector<Value*, 8> newVals = newLocalImprovedValues;
+    newLocalImprovedValues.clear();
 
     for(SmallVector<Value*, 4>::iterator it = newVals.begin(), it2 = newVals.end(); it != it2; it++) {
 
@@ -625,7 +680,7 @@ void InlineAttempt::tryImproveParent() {
     
     if(returnVal) {
       LPDEBUG("Found return value: " << *returnVal << "\n");
-      parent->setReplacement(this->CI, std::make_pair(returnVal, 0));
+      parent->setNonLocalReplacement(this->CI, returnVal);
     }
   }
 
@@ -643,9 +698,9 @@ void PeelIteration::tryImproveParent() {
 
       for(DenseMap<Value*, std::pair<Value*, int> >::iterator VI = improvedValues.begin(), VE = improvedValues.end(); VI != VE; VI++) {
 
-	if(isa<Constant>(VI->second.first)) {
+	if(Constant* C = dyn_cast<Constant>(VI->second.first)) {
 	  
-	  parent->setReplacement(VI->first, std::make_pair(VI->second.first, 0));
+	  parent->setNonLocalReplacement(VI->first, C);
 	  
 	}
 
@@ -674,6 +729,33 @@ void InlineAttempt::foldArgument(Argument* A, std::pair<Value*, int> V) {
 
 }
 
+// Store->Load forwarding helpers:
+
+BasicBlock* InlineAttempt::getEntryBlock() {
+
+  return &F->getEntryBlock();
+
+}
+
+BasicBlock* PeelIteration::getEntryBlock() {
+  
+  return L->getHeader();
+
+}
+
+Instruction* InlineAttempt::getEntryInstruction() {
+
+  return CI;
+
+}
+
+Instruction* PeelIteration::getEntryInstruction() {
+
+  return L->getPreheaderBlock()->getTerminator();
+
+}
+
+// Given a MemDep Def, get the value loaded or stored.
 std::pair<Value*, int> IntegrationAttempt::getDefn(const MemDepResult& Res) {
 
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
@@ -682,34 +764,77 @@ std::pair<Value*, int> IntegrationAttempt::getDefn(const MemDepResult& Res) {
   else if(LoadInst* DefLI= dyn_cast<LoadInst>(Res.getInst())) {
     std::pair<Value*, int> improvedLoad = getReplacement(DefLI);
     if(improvedLoad.first != DefLI || improvedLoad.second > 0) {
-      LPDEBUG(*LI << " defined by " << *(improvedLoad.first) << "\n");
+      LPDEBUG("Defined by " << *(improvedLoad.first) << "\n");
       return improvedLoad;
     }
   }
   else {
-    LPDEBUG(*LI << " is defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
+    LPDEBUG("Defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
   }
 
   return std::make_pair(0, 0);
 
 }
 
-std::pair<Value*, int> IntegrationAttempt::tryForwardLoadFromParent(LoadInst* LI) {
+// Find the unique definer or clobberer for a given Load.
+MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
 
-  // Precondition: LI is clobbered in exactly one place: the entry instruction to its parent function.
+  MemoryDependenceAnalyser MD;
+  MD.init(AA, &this.parent);
+
+  MemDepResult Seen;
+
+  Seen = MD.getDependency(LoadI);
+
+  if(Seen.isNonLocal()) {
+
+    Seen = MemDepResult();
+    Value* LPointer = LoadI->getOperand(0);
+    std::pair<Value*, int> Repl = getReplacement(LPointer);
+
+    SmallVector<NonLocalDepResult, 4> NLResults;
+
+    MD.getNonLocalPointerDependency(Repl, true, BB, NLResults);
+    assert(NLResults.size() > 0);
+
+    for(unsigned int i = 0; i < NLResults.size(); i++) {
+		
+      const MemDepResult& Res = NLResults[i].getResult();
+      if(Res.isNonLocal())
+	continue;
+      else if(Res == Seen)
+	continue;
+      else if(Seen == MemDepResult()) // Nothing seen yet
+	Seen = Res;
+      else {
+	LPDEBUG(*LoadI << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
+	return MemDepResult();
+      }
+
+    }
+
+  }
+
+  return Seen;
+
+}
+
+// Make a symbolic expression for a given load instruction if it depends solely on one pointer
+// with many constant offsets.
+bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+
+  // Precondition: LoadI is clobbered in exactly one place: the entry instruction to the enclosing context.
   // This might mean that instruction actually clobbers it, or it's defined by instructions outside this function.
   
   if(!parent)
-    return std::make_pair(0, 0);
+    return false;
 
-  Value* Ptr = LI->getPointerOperand();
+  Value* Ptr = LoadI->getPointerOperand();
 
-  LPDEBUG("Trying to resolve load from " << *LI << " by exploring callers\n");
+  LPDEBUG("Trying to resolve load from " << *LoadI << " by exploring parent contexts\n");
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
   // and construct a symbolic expression to pass to our parent as we go.
-
-  SmallVector<SymExpr*, 4> Expr;
 
   while(1) {
 
@@ -749,103 +874,16 @@ std::pair<Value*, int> IntegrationAttempt::tryForwardLoadFromParent(LoadInst* LI
     
   }
 
-  // If we make it here, we have a series of friendly cast and GEP ops that end up at an outer value!
-  // Ask our parent to figure out what's going on!
-
-  LPDEBUG("Will resolve ");
-
-  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
-    if(it != Expr.begin())
-      DEBUG(dbgs() << " of ");
-    DEBUG((*it)->describe(dbgs()));
-  }
-
-  DEBUG(dbgs() << "\n");
-  
-  std::pair<Value*, int> Result = parent.tryResolveLoadAtChildSite(this, Expr);
-
-  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
-    delete (*it);
-  }
-
-  if(Result.first)
-    return Result;
+  return true;
 
 }
 
+// Realise a symbolic expression at a given location. 
+// Temporary instructions are created and recorded for later deletion.
+void IntegrationAttempt::realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& in, Instruction* Where, SmallVector<Instruction*, 4>& tempInstructions) {
 
-MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LI) {
-
-  MemoryDependenceAnalyser MD;
-  MD.init(AA, &this.parent);
-
-  MemDepResult Seen;
-
-  Seen = MD.getDependency(LI);
-
-  if(Seen.isNonLocal()) {
-
-    Seen = MemDepResult();
-    Value* LPointer = LI->getOperand(0);
-    std::pair<Value*, int> Repl = getReplacement(LPointer);
-
-    SmallVector<NonLocalDepResult, 4> NLResults;
-
-    MD.getNonLocalPointerDependency(Repl, true, BB, NLResults);
-    assert(NLResults.size() > 0);
-
-    for(unsigned int i = 0; i < NLResults.size(); i++) {
-		
-      const MemDepResult& Res = NLResults[i].getResult();
-      if(Res.isNonLocal())
-	continue;
-      else if(Res == Seen)
-	continue;
-      else if(Seen == MemDepResult()) // Nothing seen yet
-	Seen = Res;
-      else {
-	LPDEBUG(*LI << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
-	return MemDepResult();
-      }
-
-    }
-
-  }
-
-  return Seen;
-
-}
-
-std::pair<Value*, int> IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
-
-  MemDepResult Res = getUniqueDependency(LI);
-
-  if(Res.isClobber()) {
-    LPDEBUG(*LI << " is clobbered by " << Res.getInst() << "\n");
-    if(BB == &F->getEntryBlock()) {
-      BasicBlock::iterator TestII(Res.getInst());
-      if(TestII == BB->begin()) {
-	return tryForwardLoadFromParent(LI);
-      }
-    }
-    return std::make_pair(0, 0);
-  }
-  else if(Res.isDef()) {
-    return getDefn(Res);
-  }
-
-}
-
-std::pair<Value*, int> IntegrationAttempt::tryResolveLoadAtChildSite(InlineAttempt* Child, SmallVector<SymExpr*, 4>& in) {
-
-  CallInst* CS = Child->CI;
-  assert(CS && "No such child attempt!");
-
-  // Insert temporary instructions to represent our query
-  SmallVector<Instruction*, 4> tempInstructions;
-
-  // Build it backwards: the in chain should end in either an Argument or an Outer value
-  // representing something in my scope. Start with that, then wrap it incrementally in operators.
+  // Build it backwards: the in chain should end in a defined object, in or outside our scope.
+  // Start with that, then wrap it incrementally in operators.
   
   SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
   
@@ -854,12 +892,23 @@ std::pair<Value*, int> IntegrationAttempt::tryResolveLoadAtChildSite(InlineAttem
   SI--;
   SymThunk* th = cast<SymThunk>(*SI);
 
-  lastPtr = th->RealVal;
-
   LLVMContext& ctx = CS->getParent()->getParent()->getContext();
-  BasicBlock::iterator BI(CS);
+  BasicBlock::iterator BI(Where);
   IRBuilder<> Builder(ctx);
-  Builder.SetInsertPoint(CS->getParent(), *BI);
+  Builder.SetInsertPoint(Where->getParent(), *BI);
+
+  if(!th->frame) {
+    // Access against a local value
+    lastPtr = th->RealVal;
+  }
+  else {
+    // Access against a nonlocal value: make up an 'ambiguous' load and temporarily map it.
+    // This is just a trick so that MemDep will try to resolve the pointer and find its true target.
+    Instruction* FakeLoc = Builder.CreateAlloca(th->RealVal->getType());
+    lastPtr = Builder.CreateLoad(FakeLoc);
+    tempInstructions.push_back(lastPtr);
+    tempInstructions.push_back(FakeLoc);
+  }
 
   while(SI != SE) {
     SI--;
@@ -883,14 +932,146 @@ std::pair<Value*, int> IntegrationAttempt::tryResolveLoadAtChildSite(InlineAttem
   //LPDEBUG("Temporarily augmented parent block:\n");
   //DEBUG(dbgs() << *CS->getParent());
 
-  std::pair<Value*, int> Result = tryForwardLoad(Accessor);
-  
+}
+
+// Main load forwarding entry point, called by the hypothetical constant folder:
+// Try to forward the load locally (within this loop or function), or otherwise build a symbolic expression
+// and ask our parent to continue resolving the load.
+std::pair<Value*, int> IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
+
+  std::pair<Value*, int> Result;
+  if(forwardLoadIsNonLocal(LoadI, Result)) {
+    SmallVector<std::auto_ptr<SymExpr>, 4> Expr;
+    if(!buildSymExpr(LI, Expr))
+      return std::make_pair(0, 0); 
+
+    LPDEBUG("Will resolve ");
+
+    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+      if(it != Expr.begin())
+	DEBUG(dbgs() << " of ");
+      DEBUG((*it)->describe(dbgs()));
+    }
+
+    DEBUG(dbgs() << "\n");
+
+    return tryForwardExprFromParent(Expr);
+  }
+  else
+    return Result;
+
+}
+
+// Pursue a load further. Current context is a function body; ask our caller to pursue further.
+std::pair<Value*, int> InlineAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+
+  SymThunk* Th = cast<SymThunk>(Expr.back());
+  Th->frame--;
+  std::pair<Value*, int> Result = parent->tryResolveLoadAtChildSite(this, Expr);
+  if(Result.first)
+    return std::make_pair(Result.first, Result.second + 1);
+  else
+    return std::make_pair(0, 0);
+
+}
+
+// Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
+// then ask our enclosing loop or function body to look further.
+std::pair<Value*, int> PeelAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr, int originIter) {
+
+  // First of all, try winding backwards through our sibling iterations. We can use a single realisation
+  // of Expr for all of these checks, since the instructions are always the same.
+
+  SmallVector<Instruction*, 4> tempInstructions;
+  realiseSymExpr(Expr, L->getLatchBlock()->getTerminator(), tempInstructions);
+  LoadInst* testLoad = cast<LoadInst>(tempInstructions.back());
+  SymThunk* Th = cast<SymThunk>(Expr.back());
+
+  std::pair<Value*, int> Result;
+
+  for(int iter = originIter - 1; iter >= 0; iter--) {
+
+    if((originIter - iter) > Th->frame) {
+      LPDEBUG("Can't pursue this expression further, as it resolves to a value out of scope\n");
+      return std::make_pair(0, 0);
+    }
+    improvedValues[testLoad] = std::make_pair(Th->RealVal, Th->frame - (originIter - iter));
+    if(!Iterations[iter].forwardLoadIsNonLocal(testLoad, Result)) {
+      if(Result.first)
+	return std::make_pair(Result.first, Result.second + (originIter - iter));
+      else
+	return std::make_pair(0, 0);
+    }
+
+  }
+
+  improvedValues.erase(testLoad);
+
   for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
     Instruction* I = *(--II);
     I->eraseFromParent();
   }
 
-  return std::make_pair(Result.first, Result.second + 1);
+  Th->frame -= originIter;
+  return parent->tryResolveLoadAtChildSite(Iterations[0], Expr);
+
+}
+
+// Helper: loop iterations defer the resolution process to the abstract loop.
+std::pair<Value*, int> PeelIteration::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+
+  return parentPA->tryForwardExprFromParent(Expr, this->iterationCount);
+
+}
+
+// Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
+// Result is set to the resolution result.
+bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, std::pair<Value*, int>& Result) {
+
+  MemDepResult Res = getUniqueDependency(LoadI);
+
+  if(Res.isClobber()) {
+    LPDEBUG(*LoadI << " is clobbered by " << Res.getInst() << "\n");
+    if(BB == getEntryBlock()) {
+      BasicBlock::iterator TestII(Res.getInst());
+      if(TestII == BB->begin()) {
+	return true;
+      }
+    }
+    Result = std::make_pair(0, 0);
+  }
+  else if(Res.isDef()) {
+    Result = getDefn(Res);
+  }
+
+  retun false;
+
+}
+
+// Entry point for a child loop or function that wishes us to continue pursuing a load.
+// Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
+// expression, and try ordinary load forwarding from there.
+std::pair<Value*, int> IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+
+  SmallVector<Instruction*, 4> tempInstructions;
+  realiseSymExpr(Expr, IA->getEntryInstruction(), tempInstructions);
+  
+  SymThunk* Th = cast<SymThunk>(Expr.back());
+  improvedValues[*tempInstructions.begin()] = std::make_pair(Th->RealVal, Th->frame);
+  std::pair<Value*, int> Result;
+  bool shouldPursueFurther = fowardLoadIsNonLocal(Expr.back());
+
+  improvedValues.erase(*tempInstructions.begin());
+
+  for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
+    Instruction* I = *(--II);
+    I->eraseFromParent();
+  }
+
+  if(shouldPursueFurther)
+    return tryForwardExprFromParent(Expr);
+  else
+    return Result;
 
 }
 
