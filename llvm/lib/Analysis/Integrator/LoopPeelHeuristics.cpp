@@ -109,16 +109,22 @@ namespace {
     virtual void tryImproveParent();
     void localImprove(Value* From, ValCtx To);
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
-    InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool force = false);
+    InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
     PeelAttempt* getOrCreatePeelAttempt(Loop*);
 
-    bool buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
-    void realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& in, Instruction* Where, SmallVector<Instruction*, 4>& tempInstructions);
-    virtual ValCtx tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
+    bool buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>& Expr);
+    void realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions);
+    void destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions);
+
+    virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
     bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result);
     ValCtx getDefn(const MemDepResult& Res);
     MemDepResult getUniqueDependency(LoadInst* LI);
-    ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr);
+    ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr);
+    bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result);
+    bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset = 0);
+    void forceExploreChildren();
+
     void print(raw_ostream &OS) const;
 
     // Overrides:
@@ -130,6 +136,7 @@ namespace {
     virtual bool shouldIgnoreBlock(BasicBlock*);
     virtual bool shouldIgnoreInstruction(Instruction*);
     virtual bool blockIsDead(BasicBlock*);
+    virtual ValCtx tryForwardLoad(LoadInst*);
 
   };
 
@@ -175,6 +182,7 @@ namespace {
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
+    virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
 
   };
 
@@ -218,6 +226,7 @@ namespace {
     PeelIteration* getOrCreateIteration(unsigned iter);
     ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
     void foldValue(Value* Improved, ValCtx ImprovedTo);
+    ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter);
 
   };
 
@@ -242,6 +251,7 @@ namespace {
     virtual ValCtx tryForwardLoad(LoadInst* LoadI);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
+    virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
 
   };
 
@@ -359,7 +369,7 @@ ValCtx PeelIteration::getReplacement(Value* V, int frameIndex) {
   // *their* innermost loop iteration.
 
   Instruction* I;
-  if((I = dyn_cast<Instruction>(V)) && !L->contains(V)) {
+  if((I = dyn_cast<Instruction>(V)) && !L->contains(I->getParent())) {
     return parent->getReplacement(I, frameIndex);
   }
   else if(!frameIndex) {
@@ -472,7 +482,7 @@ bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool force) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
   DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
   if(it != inlineChildren.end())
@@ -841,6 +851,34 @@ Instruction* PeelIteration::getEntryInstruction() {
 
 }
 
+void IntegrationAttempt::forceExploreChildren() {
+
+  for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it) {
+
+    if(!blockIsDead((*it)->getHeader()))
+      getOrCreatePeelAttempt(*it);
+
+  }
+
+  for(Function::iterator it = F.begin(), it2 = F.end(); it != it2; it++) {
+
+    if(blockIsDead(it))
+      continue;
+
+    for(BasicBlock::iterator II = it->begin(), IE = it->end(); II != IE; ++II) {
+
+      if(CallInst* CI = dyn_cast<CallInst>(II)) {
+
+	getOrCreateInlineAttempt(CI);
+
+      }
+
+    }
+
+  }
+
+}
+
 // Given a MemDep Def, get the value loaded or stored.
 ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 
@@ -906,7 +944,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
 
 // Make a symbolic expression for a given load instruction if it depends solely on one pointer
 // with many constant offsets.
-bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>& Expr) {
 
   // Precondition: LoadI is clobbered in exactly one place: the entry instruction to the enclosing context.
   // This might mean that instruction actually clobbers it, or it's defined by instructions outside this function.
@@ -920,6 +958,8 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
   // and construct a symbolic expression to pass to our parent as we go.
+ 
+  bool success = true;
 
   while(1) {
 
@@ -932,24 +972,24 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr
 	  idxs.push_back(Cidx);
 	else {
 	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
-	  return false;
+	  success = false; break;
 	}
       }
-      Expr.push_back(std::auto_ptr<SymExpr>(new SymGEP(idxs)));
+      Expr.push_back((new SymGEP(idxs)));
       Ptr = GEP->getPointerOperand();
     }
     else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr)) {
-      Expr.push_back(std::auto_ptr<SymExpr>(new SymCast(C->getType())));
+      Expr.push_back((new SymCast(C->getType())));
       Ptr = C->getOperand(0);
     }
     else {
       ValCtx Repl = getReplacement(Ptr);
       if(Repl.first == Ptr && Repl.second == 0) {
 	LPDEBUG("Won't investigate load from parent function due to unresolved pointer " << *Ptr << "\n");
-	return false;
+	success = false; break;
       }
       else if(Repl.second > 0) {
-	Expr.push_back(std::auto_ptr<SymExpr>(new SymThunk(Repl)));
+	Expr.push_back((new SymThunk(Repl)));
 	break;
       }
       else {
@@ -959,18 +999,26 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<std::auto_ptr
     
   }
 
-  return true;
+
+  if(!success) {
+    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+      delete (*it);
+    }
+    Expr.clear();
+  }
+
+  return success;
 
 }
 
 // Realise a symbolic expression at a given location. 
 // Temporary instructions are created and recorded for later deletion.
-void IntegrationAttempt::realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& in, Instruction* Where, SmallVector<Instruction*, 4>& tempInstructions) {
+void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions) {
 
   // Build it backwards: the in chain should end in a defined object, in or outside our scope.
   // Start with that, then wrap it incrementally in operators.
   
-  SmallVector<std::auto_ptr<SymExpr>, 4>::iterator SI = in.end(), SE = in.begin();
+  SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
   
   Value* lastPtr;
   
@@ -982,18 +1030,22 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& 
   IRBuilder<> Builder(ctx);
   Builder.SetInsertPoint(Where->getParent(), *BI);
 
-  if(!th->RealVal.second) {
-    // Access against a local value
-    lastPtr = th->RealVal.first;
-  }
-  else {
-    // Access against a nonlocal value: make up an 'ambiguous' load and temporarily map it.
-    // This is just a trick so that MemDep will try to resolve the pointer and find its true target.
-    Instruction* FakeLoc = Builder.CreateAlloca(th->RealVal->getType());
-    lastPtr = Builder.CreateLoad(FakeLoc);
-    tempInstructions.push_back(lastPtr);
-    tempInstructions.push_back(FakeLoc);
-  }
+  // I make up a fake location that we're supposedly accessing. The structure is
+  // %pointless = alloca()
+  // %junk = load %pointless
+  // %expr_0 = gep(%junk, ...)
+  // %expr_1 = bitcast(%expr_0)
+  // ...
+  // %expr_n = gep(%expr_n_1, ...)
+  // %accessor = load %expr_n
+  // Then our caller should set his local improvedValues so that junk resolves to
+  // the base pointer he wishes to query (i.e. the base pointer from the SymExpr),
+  // and then issue a MemDep query against accessor.
+
+  Instruction* FakeLoc = Builder.CreateAlloca(th->RealVal.first->getType());
+  tempInstructions.push_back(FakeLoc);
+  lastPtr = FakeBaseObject = Builder.CreateLoad(FakeLoc);
+  tempInstructions.push_back(FakeBaseObject);
 
   while(SI != SE) {
     SI--;
@@ -1011,7 +1063,7 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<std::auto_ptr<SymExpr>, 4>& 
   }
 
   // Make up a fake load, since MD wants an accessor.
-  LoadInst* Accessor = Builder.CreateLoad(lastPtr);
+  Accessor = Builder.CreateLoad(lastPtr);
   tempInstructions.push_back(Accessor);
 
   //LPDEBUG("Temporarily augmented parent block:\n");
@@ -1026,8 +1078,8 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   ValCtx Result;
   if(forwardLoadIsNonLocal(LoadI, Result)) {
-    SmallVector<std::auto_ptr<SymExpr>, 4> Expr;
-    if(!buildSymExpr(LI, Expr))
+    SmallVector<SymExpr*, 4> Expr;
+    if(!buildSymExpr(LoadI, Expr))
       return VCNull; 
 
     LPDEBUG("Will resolve ");
@@ -1040,7 +1092,13 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
     DEBUG(dbgs() << "\n");
 
-    return tryForwardExprFromParent(Expr);
+    ValCtx SubcallResult = tryForwardExprFromParent(Expr);
+   
+    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+      delete (*it);
+    }
+
+    return SubcallResult;
   }
   else
     return Result;
@@ -1048,10 +1106,10 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 }
 
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
-ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr) {
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
-  Th->frame--;
+  Th->RealVal = std::make_pair(Th->RealVal.first, Th->RealVal.second - 1);
   ValCtx Result = parent->tryResolveLoadAtChildSite(this, Expr);
   if(Result.first)
     return make_vc(Result.first, Result.second + 1);
@@ -1062,26 +1120,27 @@ ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr
 
 // Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
 // then ask our enclosing loop or function body to look further.
-ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr, int originIter) {
+ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of Expr for all of these checks, since the instructions are always the same.
 
   SmallVector<Instruction*, 4> tempInstructions;
-  realiseSymExpr(Expr, L->getLoopLatch()->getTerminator(), tempInstructions);
-  LoadInst* testLoad = cast<LoadInst>(tempInstructions.back());
+  Instruction* FakeBase;
+  LoadInst* Accessor;
+  Iterations[0]->realiseSymExpr(Expr, L->getLoopLatch()->getTerminator(), FakeBase, Accessor, tempInstructions);
+  
   SymThunk* Th = cast<SymThunk>(Expr.back());
-
   ValCtx Result;
 
   for(int iter = originIter - 1; iter >= 0; iter--) {
 
-    if((originIter - iter) > Th->frame) {
-      LPDEBUG("Can't pursue this expression further, as it resolves to a value out of scope\n");
+    if((originIter - iter) > Th->RealVal.second) {
+      //LPDEBUG("Can't pursue this expression further, as it resolves to a value out of scope\n");
       return VCNull;
     }
-    improvedValues[testLoad] = make_vc(Th->RealVal, Th->frame - (originIter - iter));
-    if(!Iterations[iter].forwardLoadIsNonLocal(testLoad, Result)) {
+
+    if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, originIter - iter)) {
       if(Result.first)
 	return make_vc(Result.first, Result.second + (originIter - iter));
       else
@@ -1090,20 +1149,15 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>,
 
   }
 
-  improvedValues.erase(testLoad);
+  Iterations[0]->destroySymExpr(tempInstructions);
 
-  for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
-    Instruction* I = *(--II);
-    I->eraseFromParent();
-  }
-
-  Th->frame -= originIter;
+  Th->RealVal = make_vc(Th->RealVal.first, Th->RealVal.second - originIter);
   return parent->tryResolveLoadAtChildSite(Iterations[0], Expr);
 
 }
 
 // Helper: loop iterations defer the resolution process to the abstract loop.
-ValCtx PeelIteration::tryForwardExprFromParent(SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
+ValCtx PeelIteration::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr) {
 
   return parentPA->tryForwardExprFromParent(Expr, this->iterationCount);
 
@@ -1117,9 +1171,9 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
 
   if(Res.isClobber()) {
     LPDEBUG(*LoadI << " is clobbered by " << Res.getInst() << "\n");
-    if(BB == getEntryBlock()) {
+    if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
-      if(TestII == BB->begin()) {
+      if(TestII == getEntryBlock()->begin()) {
 	return true;
       }
     }
@@ -1129,38 +1183,61 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
     Result = getDefn(Res);
   }
 
-  retun false;
+  return false;
 
 }
 
-// Entry point for a child loop or function that wishes us to continue pursuing a load.
-// Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
-// expression, and try ordinary load forwarding from there.
-ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<std::auto_ptr<SymExpr>, 4>& Expr) {
-
-  SmallVector<Instruction*, 4> tempInstructions;
-  realiseSymExpr(Expr, IA->getEntryInstruction(), tempInstructions);
-  
-  SymThunk* Th = cast<SymThunk>(Expr.back());
-  improvedValues[*tempInstructions.begin()] = make_vc(Th->RealVal, Th->frame);
-  ValCtx Result;
-  bool shouldPursueFurther = fowardLoadIsNonLocal(Expr.back());
-
-  improvedValues.erase(*tempInstructions.begin());
+void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions) {
 
   for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
     Instruction* I = *(--II);
     I->eraseFromParent();
   }
 
-  if(shouldPursueFurther)
+}
+
+ bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset) {
+
+  SymThunk* Th = cast<SymThunk>(Expr.back());
+
+  improvedValues[FakeBase] = make_vc(Th->RealVal.first, Th->RealVal.second - offset);
+  bool shouldPursueFurther = forwardLoadIsNonLocal(Accessor, Result);
+  improvedValues.erase(FakeBase);
+
+  return shouldPursueFurther;
+
+}
+
+bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result) {
+
+  Instruction* FakeBase;
+  LoadInst* Accessor;
+  SmallVector<Instruction*, 4> tempInstructions;
+  realiseSymExpr(Expr, Where, FakeBase, Accessor, tempInstructions);
+  
+  bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result);
+
+  destroySymExpr(tempInstructions);
+
+  return shouldPursueFurther;
+
+}
+
+// Entry point for a child loop or function that wishes us to continue pursuing a load.
+// Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
+// expression, and try ordinary load forwarding from there.
+ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr) {
+
+  ValCtx Result;
+
+  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result))
     return tryForwardExprFromParent(Expr);
   else
     return Result;
 
 }
 
-void IntegrationAttempt::countResidualCalls() {
+/*void IntegrationAttempt::countResidualCalls() {
 
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
     
@@ -1180,15 +1257,15 @@ void IntegrationAttempt::countResidualCalls() {
 
   }
 
-}
+  }*/
 
 void IntegrationAttempt::print(raw_ostream& OS) const {
 
-  OS << dbgind() << F.getName() << ": eliminated " << eliminatedInstructions.size() << "/" << totalInstructions << " instructions, " << residualCalls << " residual uninlined calls\n";
+  //  OS << dbgind() << F.getName() << ": eliminated " << eliminatedInstructions.size() << "/" << totalInstructions << " instructions, " << residualCalls << " residual uninlined calls\n";
 
-  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
+  /* for(DenseMap<CallInst*, InlineAttempt*>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
     CII->second->print(OS);
-  }
+    }*/
 
 }
 
@@ -1209,9 +1286,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     Function& F = *MI;
 
     DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
-    rootAttempts.push_back(new InlineAttempt(0, TD, AA, F, 0, 2));
-    rootAttempts.back()->considerCalls(true);
-    rootAttempts.back()->countResidualCalls();
+    rootAttempts.push_back(new InlineAttempt(0, F, LI, TD, AA, 0, 0, 2));
+    rootAttempts.back()->forceExploreChildren();
+    //    rootAttempts.back()->considerCalls(true);
+    //    rootAttempts.back()->countResidualCalls();
 
   }
 
