@@ -292,38 +292,6 @@ void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC,
 
 }
 
-// Returns true if V is a useful value to forward from a store to a load.
-// Useful values are:
-// 1) Constants
-// 2) Pointers to a known object
-
-bool HypotheticalConstantFolder::shouldForwardValue(Value* V) {
-
-  if(isa<Constant>(V))
-    return true;
-
-  if(V->getType()->isPointerTy()) {
-    
-    int frame = 0;
-    while(1) {
-      Value* O = V->getUnderlyingObject();
-      if(isIdentifiedObject(O) || isa<Constant>(O))
-	return true;
-      ValCtx NewV = parent.getReplacement(O, frame);
-      if(NewV.first == V && NewV.second == frame)
-	break;
-      frame = NewV.second;
-      V = NewV.first;
-    }
-
-    return false;
-
-  }
-
-  return false;
-
-}
-
 void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
 
   getImprovementBenefit(V, Replacement);
@@ -358,10 +326,8 @@ void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
 	  else {
 	    ValCtx Result = parent.tryForwardLoad(LI);
 	    if(Result.first) {
-	      if(shouldForwardValue(Result.first)) {
-		getImprovementBenefit(LI, Result);
-		anyStoreForwardingBenefits = true;
-	      }
+	      getImprovementBenefit(LI, Result);
+	      anyStoreForwardingBenefits = true;
 	    }
 	  }
 

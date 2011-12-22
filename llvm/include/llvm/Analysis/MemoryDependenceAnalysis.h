@@ -258,13 +258,14 @@ namespace llvm {
     /// Current AA implementation, just a cache.
     AliasAnalysis *AA;
     TargetData *TD;
+    HCFParentCallbacks* parent;
     OwningPtr<PredIteratorCache> PredCache;
 
     MemoryDependenceAnalyser();
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*);
+    void init(AliasAnalysis*, HCFParentCallbacks* parent);
 
     /// Clean up memory in between runs
     void releaseMemory();

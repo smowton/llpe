@@ -124,6 +124,7 @@ namespace {
     bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result);
     bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset = 0);
     void forceExploreChildren();
+    bool shouldForwardValue(Value*);
 
     void print(raw_ostream &OS) const;
 
@@ -580,6 +581,19 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(Loop* NewL) {
 
     PeelAttempt* LPA = new PeelAttempt(this, F, LI, TD, AA, NewL, nesting_depth + 1, debugIndent + 2);
     peelChildren[NewL] = LPA;
+
+    BasicBlock* Header = NewL->getHeader();
+    BasicBlock* PreHeader = NewL->getLoopPreheader();
+
+    for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+
+      PHINode* PN = cast<PHINode>(BI);
+      Value* Incoming = PN->getIncomingValueForBlock(PreHeader);
+      if(shouldForwardValue(Incoming))
+	LPA->foldValue(PN, make_vc(Incoming, 0));
+
+    }
+
     return LPA;
 
   }
@@ -882,21 +896,22 @@ void IntegrationAttempt::forceExploreChildren() {
 // Given a MemDep Def, get the value loaded or stored.
 ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 
+  ValCtx improved = VCNull;
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
-    return getReplacement(SI->getOperand(0));
+    improved = getReplacement(SI->getOperand(0));
   }
   else if(LoadInst* DefLI= dyn_cast<LoadInst>(Res.getInst())) {
-    ValCtx improvedLoad = getReplacement(DefLI);
-    if(improvedLoad.first != DefLI || improvedLoad.second > 0) {
-      LPDEBUG("Defined by " << *(improvedLoad.first) << "\n");
-      return improvedLoad;
-    }
+    improved = getReplacement(DefLI);
   }
   else {
     LPDEBUG("Defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
+    return VCNull;
   }
 
-  return VCNull;
+  if(improved.first != Res.getInst() || improved.second > 0)
+    return improved;
+  else
+    return VCNull;
 
 }
 
@@ -904,7 +919,7 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, &this->parent);
+  MD.init(AA, this);
 
   MemDepResult Seen;
 
@@ -1181,6 +1196,23 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
+  }
+
+  return false;
+
+}
+
+bool IntegrationAttempt::shouldForwardValue(Value* V) {
+
+  if(isa<Constant>(V))
+    return true;
+
+  if(V->getType()->isPointerTy()) {
+    
+    Value* O = V->getUnderlyingObject();
+    if(isIdentifiedObject(O))
+      return true;
+
   }
 
   return false;

@@ -129,7 +129,6 @@ class HypotheticalConstantFolder {
   void realGetImprovementBenefit(Value* V, ValCtx, bool force);
   void getImprovementBenefit(Value* V, ValCtx, bool force = false);
   void getPHINodeBenefit(PHINode* PN);
-  bool shouldForwardValue(Value*);
   std::string dbgind();
 
  public:

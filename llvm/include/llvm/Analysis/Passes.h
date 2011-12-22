@@ -171,9 +171,7 @@ namespace llvm {
   // Print module-level debug info metadata in human-readable form.
   ModulePass *createModuleDebugInfoPrinterPass();
 
-  FunctionPass *createLoopPeelHeuristicsPass();
-
-  ModulePass *createInlineHeuristicsPass();
+  ModulePass *createIntegrationHeuristicsPass();
 }
 
 #endif
