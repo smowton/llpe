@@ -868,7 +868,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
 
       // Get the PHI translated pointer in this predecessor.  This can fail if
       // not translatable, in which case the getAddr() returns null.
-      PHITransAddr PredPointer(Pointer);
+      PHITransAddr PredPointer(Pointer); // Copy construct
       PredPointer.PHITranslateValue(BB, Pred, 0);
 
       Value *PredPtrVal = PredPointer.getAddr();

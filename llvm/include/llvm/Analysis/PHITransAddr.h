@@ -17,6 +17,7 @@
 #include "llvm/Instruction.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 namespace llvm {
   class DominatorTree;
@@ -39,12 +40,12 @@ class PHITransAddr {
   /// TD - The target data we are playing with if known, otherwise null.
   const TargetData *TD;
 
-  const DenseMap<Value*, Constant*>* replaceInsts;
+  HCFParentCallbacks* parent;
   
   /// InstInputs - The inputs for our symbolic address.
   SmallVector<Instruction*, 4> InstInputs;
 public:
-  PHITransAddr(Value *addr, const TargetData *td, const DenseMap<Value*, Constant*>* replaceInsts = 0) : Addr(addr), TD(td), replaceInsts(replaceInsts) {
+  PHITransAddr(Value *addr, const TargetData *td, HCFParentCallbacks* P = 0) : Addr(addr), TD(td), parent(p) {
     // If the address is an instruction, the whole thing is considered an input.
     if (Instruction *I = dyn_cast<Instruction>(Addr))
       InstInputs.push_back(I);
@@ -106,20 +107,6 @@ private:
   Value *InsertPHITranslatedSubExpr(Value *InVal, BasicBlock *CurBB,
                                     BasicBlock *PredBB, const DominatorTree &DT,
                                     SmallVectorImpl<Instruction*> &NewInsts);
-
-  Value* getReplacement(Value* arg) const {
-
-    if(!replaceInsts)
-      return arg;
-    Instruction* argI = dyn_cast<Instruction>(arg);
-    if(!argI)
-      return arg;
-    DenseMap<Value*, Constant*>::const_iterator it = replaceInsts->find(argI);
-    if(it == replaceInsts->end())
-      return arg;
-    return cast<Value>(const_cast<Constant*>(it->second));
-
-  }
 
   bool CanPHITrans(const Instruction *Inst) const;
   
