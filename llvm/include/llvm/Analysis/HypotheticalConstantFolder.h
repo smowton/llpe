@@ -107,6 +107,7 @@ class HCFParentCallbacks {
   virtual bool shouldIgnoreBlock(BasicBlock*) = 0;
   virtual bool shouldIgnoreInstruction(Instruction*) = 0;
   virtual bool blockIsDead(BasicBlock*) = 0;
+  virtual BasicBlock* getEntryBlock() = 0;
 
 };
 

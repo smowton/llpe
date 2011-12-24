@@ -25,7 +25,7 @@ bool PHITransAddr::CanPHITrans(const Instruction *Inst) const {
     return true;
   
   if (Inst->getOpcode() == Instruction::Add &&
-      (isa<ConstantInt>(Inst->getOperand(1)) || parent->getConstReplacement(Inst->getOperand(1))))
+      (isa<ConstantInt>(Inst->getOperand(1)) || getConstReplacement(Inst->getOperand(1))))
     return true;
   
   //   cerr << "MEMDEP: Could not PHI translate: " << *Pointer;
@@ -71,7 +71,7 @@ bool PHITransAddr::VerifySubExpr(const Value* Expr,
   
   // Validate the operands of the instruction.
   for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i)
-    if (!VerifySubExpr(getReplacement(I->getOperand(i)), InstInputs))
+    if (!VerifySubExpr(I->getOperand(i), InstInputs))
       return false;
 
   return true;
@@ -191,7 +191,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     // All instruction operands are now inputs (and of course, they may also be
     // defined in this block, so they may need to be phi translated themselves.
     for (unsigned i = 0, e = Inst->getNumOperands(); i != e; ++i)
-      if (Instruction *Op = dyn_cast<Instruction>(getReplacement(Inst->getOperand(i))))
+      if (Instruction *Op = dyn_cast<Instruction>(Inst->getOperand(i)))
         InstInputs.push_back(Op);
   }
 
@@ -270,9 +270,9 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
   }
   
   // Handle add with a constant RHS.
-  Constant* RHS = dyn_cast<ConstantInst>(Inst->getOperand(1));
+  Constant* RHS = dyn_cast<ConstantInt>(Inst->getOperand(1));
   if(!RHS && parent)
-    RHS = parent->getConstReplacement(Inst->getOperand(1));
+    RHS = getConstReplacement(Inst->getOperand(1));
   if (Inst->getOpcode() == Instruction::Add && RHS) {
 
     // PHI translate the LHS.
@@ -287,7 +287,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
       if (BOp->getOpcode() == Instruction::Add) {
 	ConstantInt* CI = dyn_cast<ConstantInt>(BOp->getOperand(1));
 	if(parent && !CI)
-	  CI = dyn_cast_or_null<ConstantInst>(parent->getConstReplacement(BOp->getOperand(1)));
+	  CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(BOp->getOperand(1)));
         if (CI) {
           LHS = BOp->getOperand(0);
           RHS = ConstantExpr::getAdd(RHS, CI);

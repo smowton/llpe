@@ -214,7 +214,7 @@ namespace {
   };
   
   struct VariableGEPIndex {
-    const ValCtx VC;
+    ValCtx VC;
     ExtensionKind Extension;
     int64_t Scale;
   };
@@ -303,7 +303,7 @@ namespace {
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
       this->parent = parent;
-      AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
+      AliasResult Alias = aliasCheck(make_vc(const_cast<Value*>(V1), 0), V1Size, make_vc(const_cast<Value*>(V2), 0), V2Size);
       Visited.clear();
       this->parent = 0;
       return Alias;      
@@ -349,29 +349,29 @@ namespace {
 
     // aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP
     // instruction against another.
-    AliasResult aliasGEP(const GEPOperator *V1, unsigned V1Size,
-                         const Value *V2, unsigned V2Size,
+    AliasResult aliasGEP(const ValCtx V1, unsigned V1Size,
+                         const ValCtx V2, unsigned V2Size,
                          const ValCtx UnderlyingV1, const ValCtx UnderlyingV2);
 
     // aliasPHI - Provide a bunch of ad-hoc rules to disambiguate a PHI
     // instruction against another.
-    AliasResult aliasPHI(const PHINode *PN, unsigned PNSize,
-                         const Value *V2, unsigned V2Size);
+    AliasResult aliasPHI(const ValCtx PN, unsigned PNSize,
+                         const ValCtx V2, unsigned V2Size);
 
     /// aliasSelect - Disambiguate a Select instruction against another value.
-    AliasResult aliasSelect(const SelectInst *SI, unsigned SISize,
-                            const Value *V2, unsigned V2Size);
+    AliasResult aliasSelect(const ValCtx SI, unsigned SISize,
+                            const ValCtx V2, unsigned V2Size);
 
-    AliasResult aliasCheck(const Value *V1, unsigned V1Size,
-                           const Value *V2, unsigned V2Size);
+    AliasResult aliasCheck(ValCtx V1, unsigned V1Size,
+                           ValCtx V2, unsigned V2Size);
 
-    const ValCtx DecomposeGEPExpression(const Value *V, int64_t &BaseOffs,
+    const ValCtx DecomposeGEPExpression(const ValCtx V, int64_t &BaseOffs,
 					SmallVectorImpl<VariableGEPIndex> &VarIndices,
 					const TargetData *TD);
 
     bool GEPHasAllZeroIndices(const GEPOperator*);
 
-    ValCtx getUltimateUnderlyingObject(Value* V);
+    ValCtx getUltimateUnderlyingObject(ValCtx);
 
     ValCtx getReplacement(const Value*, int frame = 0);
     Constant* getConstReplacement(const Value*, int frame = 0);
@@ -524,7 +524,7 @@ Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Of
 /// that Value::getUnderlyingObject() can look through.  When not, it just looks
 /// through pointer casts.
 ///
-const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const Value *FirstV, int64_t &BaseOffs,
+const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int64_t &BaseOffs,
 							SmallVectorImpl<VariableGEPIndex> &VarIndices,
 							const TargetData *TD) {
   // Limit recursion depth to limit compile time in crazy cases.
@@ -532,16 +532,16 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const Value *FirstV, int
   if(parent)
     MaxLookup = 12;
   
-  ValCtx V = make_vc(FirstV, 0)
+  ValCtx V = FirstV;
   BaseOffs = 0;
   do {
     // See if this is a bitcast or GEP.
-    const Operator *Op = dyn_cast<Operator>(V);
+    const Operator *Op = dyn_cast<Operator>(V.first);
     if (Op == 0) {
       // The only non-operator case we can handle are GlobalAliases.
-      if (const GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
+      if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V.first)) {
         if (!GA->mayBeOverridden()) {
-          V = make_vc(GA->getAliasee(), 0);
+          V = make_vc(GA->getAliasee(), V.second);
           continue;
         }
       }
@@ -651,7 +651,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const Value *FirstV, int
     }
     
     // Analyze the base pointer next.
-    V = GEPOp->getOperand(0);
+    V = make_vc(GEPOp->getOperand(0), V.second);
   } while (--MaxLookup);
   
   // If the chain of expressions is too deep, just return early.
@@ -831,10 +831,12 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
 /// UnderlyingV2 is the same for V2.
 ///
 AliasAnalysis::AliasResult
-BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
-                             const Value *V2, unsigned V2Size,
+BasicAliasAnalysis::aliasGEP(const ValCtx V1, unsigned V1Size,
+                             const ValCtx V2, unsigned V2Size,
                              const ValCtx UnderlyingV1,
                              const ValCtx UnderlyingV2) {
+
+  const GEPOperator* GEP1 = cast<GEPOperator>(V1.first);
   // If this GEP has been visited before, we're on a use-def cycle.
   // Such cycles are only valid when PHI nodes are involved or in unreachable
   // code. The visitPHI function catches cycles containing PHIs, but there
@@ -847,7 +849,7 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
 
   // If we have two gep instructions with must-alias'ing base pointers, figure
   // out if the indexes to the GEP tell us anything about the derived pointer.
-  if (const GEPOperator *GEP2 = dyn_cast<GEPOperator>(V2)) {
+  if (isa<GEPOperator>(V2.first)) {
     // Do the base pointers alias?
     AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize,
                                        UnderlyingV2, UnknownSize);
@@ -860,12 +862,12 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
     // exactly, see if the computed offset from the common pointer tells us
     // about the relation of the resulting pointer.
     const ValCtx GEP1BasePtr =
-      DecomposeGEPExpression(GEP1, GEP1BaseOffset, GEP1VariableIndices, TD);
+      DecomposeGEPExpression(V1, GEP1BaseOffset, GEP1VariableIndices, TD);
     
     int64_t GEP2BaseOffset;
     SmallVector<VariableGEPIndex, 4> GEP2VariableIndices;
     const ValCtx GEP2BasePtr =
-      DecomposeGEPExpression(GEP2, GEP2BaseOffset, GEP2VariableIndices, TD);
+      DecomposeGEPExpression(V2, GEP2BaseOffset, GEP2VariableIndices, TD);
     
     // If DecomposeGEPExpression isn't able to look all the way through the
     // addressing operation, we must not have TD and this is too complex for us
@@ -899,8 +901,8 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
       // with the first operand of the getelementptr".
       return R;
 
-    const Value *GEP1BasePtr =
-      DecomposeGEPExpression(GEP1, GEP1BaseOffset, GEP1VariableIndices, TD);
+    const ValCtx GEP1BasePtr =
+      DecomposeGEPExpression(V1, GEP1BaseOffset, GEP1VariableIndices, TD);
     
     // If DecomposeGEPExpression isn't able to look all the way through the
     // addressing operation, we must not have TD and this is too complex for us
@@ -951,8 +953,10 @@ BasicAliasAnalysis::aliasGEP(const GEPOperator *GEP1, unsigned V1Size,
 /// aliasSelect - Provide a bunch of ad-hoc rules to disambiguate a Select
 /// instruction against another.
 AliasAnalysis::AliasResult
-BasicAliasAnalysis::aliasSelect(const SelectInst *SI, unsigned SISize,
-                                const Value *V2, unsigned V2Size) {
+BasicAliasAnalysis::aliasSelect(const ValCtx V1, unsigned SISize,
+                                const ValCtx V2, unsigned V2Size) {
+  
+  SelectInst* SI = cast<SelectInst>(V1.first);
   // If this select has been visited before, we're on a use-def cycle.
   // Such cycles are only valid when PHI nodes are involved or in unreachable
   // code. The visitPHI function catches cycles containing PHIs, but there
@@ -960,26 +964,26 @@ BasicAliasAnalysis::aliasSelect(const SelectInst *SI, unsigned SISize,
   if (!Visited.insert(SI))
     return MayAlias;
 
-  ConstantInt* SICond = cast_or_null<ConstantInt>(getConstReplacement(SI->getCondition()));
+  ConstantInt* SICond = cast_or_null<ConstantInt>(getConstReplacement(SI->getCondition(), V1.second));
   if(SICond) {
     if(SICond == ConstantInt::getTrue(SI->getContext()))
-      return aliasCheck(SI->getTrueValue(), SISize, V2, V2Size);
+      return aliasCheck(make_vc(SI->getTrueValue(), V1.second), SISize, V2, V2Size);
     else
-      return aliasCheck(SI->getFalseValue(), SISize, V2, V2Size);
+      return aliasCheck(make_vc(SI->getFalseValue(), V1.second), SISize, V2, V2Size);
   }
 
   // If the values are Selects with the same condition, we can do a more precise
   // check: just check for aliases between the values on corresponding arms.
-  if (const SelectInst *SI2 = dyn_cast<SelectInst>(V2))
-    if (getReplacement(SI->getCondition()) == getReplacement(SI2->getCondition())) {
+  if (SelectInst *SI2 = dyn_cast<SelectInst>(V2.first))
+    if (getReplacement(SI->getCondition(), V1.second) == getReplacement(SI2->getCondition(), V2.second)) {
       AliasResult Alias =
-        aliasCheck(SI->getTrueValue(), SISize,
-                   SI2->getTrueValue(), V2Size);
+        aliasCheck(make_vc(SI->getTrueValue(), V1.second), SISize,
+                   make_vc(SI2->getTrueValue(), V2.second), V2Size);
       if (Alias == MayAlias)
         return MayAlias;
       AliasResult ThisAlias =
-        aliasCheck(SI->getFalseValue(), SISize,
-                   SI2->getFalseValue(), V2Size);
+        aliasCheck(make_vc(SI->getFalseValue(), V1.second), SISize,
+                   make_vc(SI2->getFalseValue(), V2.second), V2Size);
       if (ThisAlias != Alias)
         return MayAlias;
       return Alias;
@@ -988,17 +992,17 @@ BasicAliasAnalysis::aliasSelect(const SelectInst *SI, unsigned SISize,
   // If both arms of the Select node NoAlias or MustAlias V2, then returns
   // NoAlias / MustAlias. Otherwise, returns MayAlias.
   AliasResult Alias =
-    aliasCheck(V2, V2Size, SI->getTrueValue(), SISize);
+    aliasCheck(V2, V2Size, make_vc(SI->getTrueValue(), V1.second), SISize);
   if (Alias == MayAlias)
     return MayAlias;
 
   // If V2 is visited, the recursive case will have been caught in the
   // above aliasCheck call, so these subsequent calls to aliasCheck
   // don't need to assume that V2 is being visited recursively.
-  Visited.erase(V2);
+  Visited.erase(V2.first);
 
   AliasResult ThisAlias =
-    aliasCheck(V2, V2Size, SI->getFalseValue(), SISize);
+    aliasCheck(V2, V2Size, make_vc(SI->getFalseValue(), V1.second), SISize);
   if (ThisAlias != Alias)
     return MayAlias;
   return Alias;
@@ -1007,8 +1011,10 @@ BasicAliasAnalysis::aliasSelect(const SelectInst *SI, unsigned SISize,
 // aliasPHI - Provide a bunch of ad-hoc rules to disambiguate a PHI instruction
 // against another.
 AliasAnalysis::AliasResult
-BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
-                             const Value *V2, unsigned V2Size) {
+BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
+                             const ValCtx V2, unsigned V2Size) {
+  
+  PHINode* PN = cast<PHINode>(V1.first);
   // The PHI node has already been visited, avoid recursion any further.
   if (!Visited.insert(PN))
     return MayAlias;
@@ -1019,8 +1025,8 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
 
   const BasicBlock* PNParent = PN->getParent();
 
-  if (const PHINode *PN2 = dyn_cast<PHINode>(V2))
-    if (PN2->getParent() == PNParent) {
+  if (const PHINode *PN2 = dyn_cast<PHINode>(V2.first))
+    if (PN2->getParent() == PNParent && V1.second == V2.second) {
       bool AliasValid = false;
       AliasAnalysis::AliasResult Alias = MayAlias;
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
@@ -1028,9 +1034,8 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
 	if(parent && parent->edgeIsDead(PredBB, const_cast<BasicBlock*>(PNParent)))
 	  continue;
         AliasResult ThisAlias =
-          aliasCheck(PN->getIncomingValue(i), PNSize,
-                     PN2->getIncomingValueForBlock(PN->getIncomingBlock(i)),
-                     V2Size);
+          aliasCheck(make_vc(PN->getIncomingValue(i), V1.second), PNSize,
+                     make_vc(PN2->getIncomingValueForBlock(PN->getIncomingBlock(i)), V2.second /* == V1.second */), V2Size);
 	if(!AliasValid) {
 	  AliasValid = true;
 	  Alias = ThisAlias;
@@ -1055,7 +1060,7 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
       V1Srcs.push_back(PV1);
   }
 
-  AliasResult Alias = aliasCheck(V2, V2Size, V1Srcs[0], PNSize);
+  AliasResult Alias = aliasCheck(V2, V2Size, make_vc(V1Srcs[0], V1.second), PNSize);
   // Early exit if the check of the first PHI source against V2 is MayAlias.
   // Other results are not possible.
   if (Alias == MayAlias)
@@ -1069,9 +1074,9 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
     // If V2 is visited, the recursive case will have been caught in the
     // above aliasCheck call, so these subsequent calls to aliasCheck
     // don't need to assume that V2 is being visited recursively.
-    Visited.erase(V2);
+    Visited.erase(V2.first);
 
-    AliasResult ThisAlias = aliasCheck(V2, V2Size, V, PNSize);
+    AliasResult ThisAlias = aliasCheck(V2, V2Size, make_vc(V, V1.second), PNSize);
     if (ThisAlias != Alias || ThisAlias == MayAlias)
       return MayAlias;
   }
@@ -1080,9 +1085,9 @@ BasicAliasAnalysis::aliasPHI(const PHINode *PN, unsigned PNSize,
 }
 
 ValCtx
-BasicAliasAnalysis::getUltimateUnderlyingObject(Value* V) {
+BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V) {
 
-  ValCtx CurrentV = make_vc(V, 0);
+  ValCtx CurrentV = V;
   while(1) {
 
     Value* O = CurrentV.first->getUnderlyingObject();
@@ -1104,21 +1109,21 @@ BasicAliasAnalysis::getUltimateUnderlyingObject(Value* V) {
 // such as array references.
 //
 AliasAnalysis::AliasResult
-BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
-                               const Value *V2, unsigned V2Size) {
+BasicAliasAnalysis::aliasCheck(ValCtx V1, unsigned V1Size,
+                               ValCtx V2, unsigned V2Size) {
   // If either of the memory references is empty, it doesn't matter what the
   // pointer values are.
   if (V1Size == 0 || V2Size == 0)
     return NoAlias;
 
   // Strip off any casts if they exist.
-  V1 = V1->stripPointerCasts();
-  V2 = V2->stripPointerCasts();
+  V1 = make_vc(V1.first->stripPointerCasts(), V1.second);
+  V2 = make_vc(V2.first->stripPointerCasts(), V2.second);
 
   // Are we checking for alias of the same value?
   if (V1 == V2) return MustAlias;
 
-  if (!V1->getType()->isPointerTy() || !V2->getType()->isPointerTy())
+  if (!V1.first->getType()->isPointerTy() || !V2.first->getType()->isPointerTy())
     return NoAlias;  // Scalars cannot alias each other
 
   // Figure out what objects these things are pointing to if we can.
@@ -1184,29 +1189,30 @@ BasicAliasAnalysis::aliasCheck(const Value *V1, unsigned V1Size,
   
   // FIXME: This isn't aggressively handling alias(GEP, PHI) for example: if the
   // GEP can't simplify, we don't even look at the PHI cases.
-  if (!isa<GEPOperator>(V1) && isa<GEPOperator>(V2)) {
+  if (!isa<GEPOperator>(V1.first) && isa<GEPOperator>(V2.first)) {
     std::swap(V1, V2);
     std::swap(V1Size, V2Size);
     std::swap(UO1, UO2);
   }
-  if (const GEPOperator *GV1 = dyn_cast<GEPOperator>(V1))
-    return aliasGEP(GV1, V1Size, V2, V2Size, UO1, UO2);
+  if (isa<GEPOperator>(V1.first))
+    return aliasGEP(V1, V1Size, V2, V2Size, UO1, UO2);
 
-  if (isa<PHINode>(V2) && !isa<PHINode>(V1)) {
+  if (isa<PHINode>(V2.first) && !isa<PHINode>(V1.first)) {
     std::swap(V1, V2);
     std::swap(V1Size, V2Size);
   }
-  if (const PHINode *PN = dyn_cast<PHINode>(V1))
-    return aliasPHI(PN, V1Size, V2, V2Size);
+  if (isa<PHINode>(V1.first))
+    return aliasPHI(V1, V1Size, V2, V2Size);
 
-  if (isa<SelectInst>(V2) && !isa<SelectInst>(V1)) {
+  if (isa<SelectInst>(V2.first) && !isa<SelectInst>(V1.first)) {
     std::swap(V1, V2);
     std::swap(V1Size, V2Size);
   }
-  if (const SelectInst *S1 = dyn_cast<SelectInst>(V1))
-    return aliasSelect(S1, V1Size, V2, V2Size);
+  if (isa<SelectInst>(V1.first))
+    return aliasSelect(V1, V1Size, V2, V2Size);
 
-  return NoAA::alias(V1, V1Size, V2, V2Size);
+  // This throws away important information, but it doesn't matter as NoAA just returns MayAlias.
+  return NoAA::alias(V1.first, V1Size, V2.first, V2Size);
 }
 
 // Make sure that anything that uses AliasAnalysis pulls in this file.

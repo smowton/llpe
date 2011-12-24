@@ -45,8 +45,6 @@ using namespace llvm;
 
 bool instructionCounts(Instruction* I);
 
-namespace {
-
   class InlineAttempt;
   class PeelAttempt;
 
@@ -104,7 +102,6 @@ namespace {
     Constant* getConstReplacement(Value* V, int frameIndex = 0);
     virtual Loop* getLoopContext() = 0;
     virtual Instruction* getEntryInstruction() = 0;
-    virtual BasicBlock* getEntryBlock() = 0;
     void tryImproveChildren(Value* Improved);
     virtual void tryImproveParent();
     void localImprove(Value* From, ValCtx To);
@@ -292,8 +289,6 @@ namespace {
   };
 
   char IntegrationHeuristicsPass::ID = 0;
-  
-}
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();

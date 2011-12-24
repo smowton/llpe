@@ -45,7 +45,7 @@ class PHITransAddr {
   /// InstInputs - The inputs for our symbolic address.
   SmallVector<Instruction*, 4> InstInputs;
 public:
-  PHITransAddr(Value *addr, const TargetData *td, HCFParentCallbacks* P = 0) : Addr(addr), TD(td), parent(p) {
+  PHITransAddr(Value *addr, const TargetData *td, HCFParentCallbacks* P = 0) : Addr(addr), TD(td), parent(P) {
     // If the address is an instruction, the whole thing is considered an input.
     if (Instruction *I = dyn_cast<Instruction>(Addr))
       InstInputs.push_back(I);
@@ -117,6 +117,14 @@ private:
       InstInputs.push_back(VI);
     return V;
   }
+
+  Constant* getConstReplacement(Value* V) const {
+
+    ValCtx VC = parent->getReplacement(V);
+    return dyn_cast<Constant>(VC.first);
+
+  }
+
   
 };
 

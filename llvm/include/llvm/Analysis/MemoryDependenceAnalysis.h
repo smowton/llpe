@@ -34,6 +34,7 @@ namespace llvm {
   class PredIteratorCache;
   class DominatorTree;
   class PHITransAddr;
+  class HCFParentCallbacks;
   
   /// MemDepResult - A memory dependence query can return one of three different
   /// answers, described below.
@@ -265,7 +266,7 @@ namespace llvm {
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, HCFParentCallbacks* parent);
+    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0);
 
     /// Clean up memory in between runs
     void releaseMemory();
@@ -273,7 +274,6 @@ namespace llvm {
     /// getDependency - Return the instruction on which a memory operation
     /// depends.  See the class comment for more details.  It is illegal to call
     /// this on non-memory instructions.
-    MemDepResult getDependency(Instruction *QueryInst, const DenseMap<Value*, Constant*>&, const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
     MemDepResult getDependency(Instruction *QueryInst);
 
     /// getNonLocalCallDependency - Perform a full dependency query for the
@@ -298,13 +298,8 @@ namespace llvm {
     /// This method assumes the pointer has a "NonLocal" dependency within BB.
     void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
                                       BasicBlock *BB,
-				      SmallVectorImpl<NonLocalDepResult> &Result,
-				      const DenseMap<Value*, Constant*>&,
-				      const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
-    void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
-				      BasicBlock *BB,
 				      SmallVectorImpl<NonLocalDepResult> &Result);
-    
+
     /// removeInstruction - Remove an instruction from the dependence analysis,
     /// updating the dependence of instructions that previously depended on it.
     void removeInstruction(Instruction *InstToRemove);
@@ -325,9 +320,7 @@ namespace llvm {
     MemDepResult getPointerDependencyFrom(Value *Pointer, uint64_t MemSize,
                                           bool isLoad, 
                                           BasicBlock::iterator ScanIt,
-                                          BasicBlock *BB,
-					  const DenseMap<Value*, Constant*>&,
-					  const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+                                          BasicBlock *BB);
     MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
                                            BasicBlock::iterator ScanIt,
                                            BasicBlock *BB);
@@ -335,15 +328,11 @@ namespace llvm {
                                      bool isLoad, BasicBlock *BB,
                                      SmallVectorImpl<NonLocalDepResult> &Result,
                                      DenseMap<BasicBlock*, Value*> &Visited,
-                                     bool SkipFirstBlock,
-				     const DenseMap<Value*, Constant*>&,
-				     const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+                                     bool SkipFirstBlock);
     MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
                                          bool isLoad, BasicBlock *BB,
                                          NonLocalDepInfo *Cache,
-                                         unsigned NumSortedEntries,
-					 const DenseMap<Value*, Constant*>&,
-					 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>&);
+                                         unsigned NumSortedEntries);
 
     void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
     

@@ -21,6 +21,7 @@
 #include "llvm/Function.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/PHITransAddr.h"
@@ -169,9 +170,7 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
 /// read-only operations.
 MemDepResult MemoryDependenceAnalyser::
 getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad, 
-                         BasicBlock::iterator ScanIt, BasicBlock *BB, 
-			 const DenseMap<Value*, Constant*>& replaceInsts,
-			 const SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4>& ignoreEdges) {
+                         BasicBlock::iterator ScanIt, BasicBlock *BB) {
 
   Value *InvariantTag = 0;
 
@@ -405,8 +404,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst) {
     if (IntrinsicInst *II = dyn_cast<MemoryUseIntrinsic>(QueryInst)) {
       isLoad |= II->getIntrinsicID() == Intrinsic::lifetime_end;
     }
-    LocalCache = getPointerDependencyFrom(MemPtr, MemSize, isLoad, ScanPos,
-                                          QueryParent, replaceInsts, ignoreEdges);
+    LocalCache = getPointerDependencyFrom(MemPtr, MemSize, isLoad, ScanPos, QueryParent);
   }
   
   // Remember the result!
@@ -825,7 +823,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
       SkipFirstBlock = false;
       for (BasicBlock **PI = PredCache->GetPreds(BB); *PI; ++PI) {
         // Verify that we haven't looked at this block yet.
-	if(ignoreEdges.count(std::make_pair(*PI, BB)))
+	if(parent->edgeIsDead(*PI, BB))
 	  continue;
         std::pair<DenseMap<BasicBlock*,Value*>::iterator, bool>
           InsertRes = Visited.insert(std::make_pair(*PI, Pointer.getAddr()));
