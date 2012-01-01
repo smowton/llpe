@@ -52,7 +52,7 @@ bool instructionCounts(Instruction* I);
 
   protected:
 
-    LoopInfo* LI;
+    DenseMap<Function*, LoopInfo*> LI;
     TargetData* TD;
     AliasAnalysis* AA;
 
@@ -79,7 +79,7 @@ bool instructionCounts(Instruction* I);
 
   public:
 
-    IntegrationAttempt(IntegrationAttempt* P, Function& _F, LoopInfo* _LI, TargetData* _TD, AliasAnalysis* _AA, 
+    IntegrationAttempt(IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 		       int depth, int indent) : 
       LI(_LI),
       TD(_TD), 
@@ -103,7 +103,7 @@ bool instructionCounts(Instruction* I);
     virtual Loop* getLoopContext() = 0;
     virtual Instruction* getEntryInstruction() = 0;
     void tryImproveChildren(Value* Improved);
-    virtual void tryImproveParent();
+    virtual void tryImproveParent() = 0;
     void localImprove(Value* From, ValCtx To);
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
     InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
@@ -113,7 +113,7 @@ bool instructionCounts(Instruction* I);
     void realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions);
     void destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions);
 
-    virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
+    virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr) = 0;
     bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result);
     ValCtx getDefn(const MemDepResult& Res);
     MemDepResult getUniqueDependency(LoadInst* LI);
@@ -149,7 +149,7 @@ bool instructionCounts(Instruction* I);
 
   public:
 
-    PeelIteration(IntegrationAttempt* P, PeelAttempt* PP, Function& F, LoopInfo* _LI, TargetData* _TD,
+    PeelIteration(IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
 		  AliasAnalysis* _AA, Loop* _L, int iter, int depth, int dbind) :
       IntegrationAttempt(P, F, _LI, _TD, _AA, depth, dbind),
       iterationCount(iter),
@@ -176,7 +176,6 @@ bool instructionCounts(Instruction* I);
     virtual bool shouldIgnoreInstruction(Instruction*);
     virtual Instruction* getEntryInstruction();
     virtual BasicBlock* getEntryBlock();
-    virtual ValCtx tryForwardLoad(LoadInst* LoadI);
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
@@ -190,7 +189,7 @@ bool instructionCounts(Instruction* I);
     IntegrationAttempt* parent;
     Function& F;
 
-    LoopInfo* LI;
+    DenseMap<Function*, LoopInfo*>& LI;
     TargetData* TD;
     AliasAnalysis* AA;
 
@@ -201,7 +200,7 @@ bool instructionCounts(Instruction* I);
 
   public:
 
-    PeelAttempt(IntegrationAttempt* P, Function& _F, LoopInfo* _LI, TargetData* _TD, AliasAnalysis* _AA, 
+    PeelAttempt(IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 		Loop* _L, int depth, int dbind) :
       parent(P),
       F(_F),
@@ -237,7 +236,7 @@ bool instructionCounts(Instruction* I);
 
   public:
 
-    InlineAttempt(IntegrationAttempt* P, Function& F, LoopInfo* LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, int depth, int dbind) 
+    InlineAttempt(IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, int depth, int dbind) 
       : 
       IntegrationAttempt(P, F, LI, TD, AA, depth, dbind),
       CI(_CI)
@@ -246,7 +245,6 @@ bool instructionCounts(Instruction* I);
     void foldArgument(Argument* A, ValCtx V);
     virtual Instruction* getEntryInstruction();
     virtual BasicBlock* getEntryBlock();
-    virtual ValCtx tryForwardLoad(LoadInst* LoadI);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
@@ -255,7 +253,7 @@ bool instructionCounts(Instruction* I);
 
   class IntegrationHeuristicsPass : public ModulePass {
 
-    LoopInfo* LI;
+    DenseMap<Function*, LoopInfo*> LIs;
     TargetData* TD;
     AliasAnalysis* AA;
 
@@ -440,13 +438,13 @@ void IntegrationAttempt::setNonLocalEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 
 bool IntegrationAttempt::shouldIgnoreBlock(BasicBlock* BB) {
 
-  return LI->getLoopFor(BB) != 0;
+  return LI[&F]->getLoopFor(BB) != 0;
 
 }
 
 bool PeelIteration::shouldIgnoreBlock(BasicBlock* BB) {
 
-  return LI->getLoopFor(BB) != L;
+  return LI[&F]->getLoopFor(BB) != L;
 
 }
 
@@ -526,7 +524,7 @@ void PeelIteration::giveInvariantsTo(PeelIteration* NewIter) {
     bool shouldProp = false;
 
     if(Instruction* I = dyn_cast<Instruction>(it->first)) {
-      Loop* VLoop = LI->getLoopFor(I->getParent());
+      Loop* VLoop = LI[&F]->getLoopFor(I->getParent());
       if(!L->contains(VLoop))
 	shouldProp = true;
     }
@@ -653,7 +651,7 @@ Loop* PeelIteration::getLoopContext() {
 
 void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I) {
 
-  Loop* L = LI->getLoopFor(I->getParent());
+  Loop* L = LI[&F]->getLoopFor(I->getParent());
   Loop* MyL = getLoopContext();
 
   if(L == MyL) {
@@ -862,7 +860,7 @@ Instruction* PeelIteration::getEntryInstruction() {
 
 void IntegrationAttempt::forceExploreChildren() {
 
-  for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it) {
+  for(LoopInfo::iterator it = LI[&F]->begin(), it2 = LI[&F]->end(); it != it2; ++it) {
 
     if(!blockIsDead((*it)->getHeader()))
       getOrCreatePeelAttempt(*it);
@@ -1306,14 +1304,19 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
   AA = &getAnalysis<AliasAnalysis>();
-  LI = &getAnalysis<LoopInfo>();
+  
+  for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
+
+    LIs[MI] = &getAnalysis<LoopInfo>(*MI);
+
+  }
 
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
     Function& F = *MI;
 
     DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
-    rootAttempts.push_back(new InlineAttempt(0, F, LI, TD, AA, 0, 0, 2));
+    rootAttempts.push_back(new InlineAttempt(0, F, LIs, TD, AA, 0, 0, 2));
     rootAttempts.back()->forceExploreChildren();
     //    rootAttempts.back()->considerCalls(true);
     //    rootAttempts.back()->countResidualCalls();
