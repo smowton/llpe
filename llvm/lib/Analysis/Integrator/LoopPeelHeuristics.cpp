@@ -198,6 +198,8 @@ bool instructionCounts(Instruction* I);
     int nesting_depth;
     int debugIndent;
 
+    std::string dbgind() const;
+
   public:
 
     PeelAttempt(IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
@@ -486,16 +488,20 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
     if((!FCalled->isDeclaration()) && (!FCalled->isVarArg())) {
 
-      InlineAttempt* IA = new InlineAttempt(this, F, this->LI, this->TD, this->AA, CI, this->nesting_depth + 1, this->debugIndent + 2);
+      InlineAttempt* IA = new InlineAttempt(this, *FCalled, this->LI, this->TD, this->AA, CI, this->nesting_depth + 1, this->debugIndent + 2);
       inlineChildren[CI] = IA;
+
+      LPDEBUG("Considering inlining " << FCalled->getName() << " at " << *CI << "\n");
 
       // Feed the inline attempt any 'natural' constants; any improvements will be delivered by our caller.
       
       for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
 	Argument* A = AI;
 	Value* AVal = CI->getArgOperand(A->getArgNo());
-	if(shouldForwardValue(AVal))
+	if(shouldForwardValue(AVal)) {
+	  LPDEBUG("Propagating a natural constant argument:\n");
 	  IA->foldArgument(A, make_vc(AVal, 1));
+	}
       }
 
       return IA;
@@ -531,8 +537,10 @@ void PeelIteration::giveInvariantsTo(PeelIteration* NewIter) {
     else if(isa<Argument>(it->first))
       shouldProp = true;
 
-    if(shouldProp)
+    if(shouldProp) {
+      LPDEBUG("Propagating a loop invariant to new iteration:\n");
       NewIter->foldValue(it->first, make_vc(it->second.first, it->second.second + 1));
+    }
 
   }
 
@@ -543,6 +551,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   if(Iterations.size() > iter)
     return Iterations[iter];
   else {
+    LPDEBUG("Considering peeling iteration " << iter << " of loop starting at " << L->getHeader()->getName() << "\n");
     assert(iter == Iterations.size());
     PeelIteration* OldIter = 0;
     if(Iterations.size())
@@ -572,6 +581,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(Loop* NewL) {
 
   if(NewL->getLoopPreheader() && NewL->getLoopLatch()) {
 
+    LPDEBUG("Considering inlining loop with header " << NewL->getHeader()->getName() << "\n");
     PeelAttempt* LPA = new PeelAttempt(this, F, LI, TD, AA, NewL, nesting_depth + 1, debugIndent + 2);
     peelChildren[NewL] = LPA;
 
@@ -582,8 +592,10 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(Loop* NewL) {
 
       PHINode* PN = cast<PHINode>(BI);
       Value* Incoming = PN->getIncomingValueForBlock(PreHeader);
-      if(shouldForwardValue(Incoming))
+      if(shouldForwardValue(Incoming)) {
+	LPDEBUG("Propagating a loop header natural constant:\n");
 	LPA->foldValue(PN, make_vc(Incoming, 0));
+      }
 
     }
 
@@ -625,6 +637,7 @@ void PeelIteration::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Ins
 
       if(Improved == PN->getIncomingValueForBlock(L->getLoopLatch())) {
 	PeelIteration* PI = getOrCreateNextIteration();
+	LPDEBUG("Forwarding constant across loop " << L->getHeader()->getName() << "'s latch\n");
 	PI->foldValue(PN, ImprovedTo);
 	return;
       }
@@ -658,6 +671,7 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
   
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
+      LPDEBUG("Improved value is used by a loop-local call " << *CI << ":\n");
       InlineAttempt* IA = getOrCreateInlineAttempt(CI);
       if(IA) {
 	      
@@ -677,11 +691,13 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
   }
   else {
 
+    
     Loop* outermostChildLoop = L;
     while(outermostChildLoop->getParentLoop() != MyL)
       outermostChildLoop = outermostChildLoop->getParentLoop();
 
-    PeelAttempt* LPA = getOrCreatePeelAttempt(L);
+    LPDEBUG("Improved value is used in loop " << L->getHeader()->getName() << ", (immediate child " << outermostChildLoop->getHeader()->getName() << "), handing off:\n");
+    PeelAttempt* LPA = getOrCreatePeelAttempt(outermostChildLoop);
     if(LPA)
       LPA->foldValue(Improved, ImprovedTo);
 
@@ -692,6 +708,7 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
 void IntegrationAttempt::tryImproveChildren(Value* Improved) {
 
   ValCtx ImprovedTo = getReplacement(Improved, 0);
+  LPDEBUG("Considering passing " << *Improved << " -> " << ImprovedTo << " to child calls and loops:\n");
       
   for (Value::use_iterator UI = Improved->use_begin(), UE = Improved->use_end(); UI != UE;++UI) {
 
@@ -720,6 +737,7 @@ void IntegrationAttempt::localImprove(Value* From, ValCtx To) {
     
     for(SmallVector<std::pair<Value*, Constant*>, 1>::iterator it = newNLVals.begin(), it2 = newNLVals.end(); it != it2; it++) {
 
+      LPDEBUG("Integrating nonlocal improvement " << *(it->first) << " -> " << *(it->second) << "\n");
       H.getBenefit(it->first, make_vc(it->second, 0));
 
     }
@@ -738,6 +756,7 @@ void IntegrationAttempt::localImprove(Value* From, ValCtx To) {
 
     for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = newlyDEs.begin(), it2 = newlyDEs.end(); it != it2; it++) {
 
+      LPDEBUG("Integrating nonlocally killed edge " << it->first->getName() << " -> " << it->second->getName() << "\n");
       H.killEdge(it->first, it->second);
 
     }
@@ -797,12 +816,15 @@ void PeelIteration::tryImproveParent() {
     BasicBlock* Header = L->getHeader();
     if(deadEdges.count(std::make_pair(Latch, Header))) {
 
+      LPDEBUG("Loop " << L->getHeader()->getName() << " backedge was killed: exporting loop variants to parent context:\n");
+
       // The loop won't iterate again -- export local constants and dead edges to the next loop/function out.
 
       for(DenseMap<Value*, ValCtx >::iterator VI = improvedValues.begin(), VE = improvedValues.end(); VI != VE; VI++) {
 
 	if(Constant* C = dyn_cast<Constant>(VI->second.first)) {
 	  
+	  LPDEBUG("Exporting " << *(VI->first) << " -> "  << *C << "\n");
 	  parent->setNonLocalReplacement(VI->first, C);
 	  
 	}
@@ -813,8 +835,10 @@ void PeelIteration::tryImproveParent() {
       L->getExitEdges(ExitEdges);
       for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = ExitEdges.begin(), EE = ExitEdges.end(); EI != EE; EI++) {
 
-	if(deadEdges.count(*EI))
+	if(deadEdges.count(*EI)) {
+	  LPDEBUG("Exporting dead exit edge " << EI->first->getName() << " -> "  << EI->second->getName() << "\n");
 	  parent->setEdgeDead(EI->first, EI->second);
+	}
 
       }
 
@@ -901,10 +925,14 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
     return VCNull;
   }
 
-  if(improved.first != Res.getInst() || improved.second > 0)
+  if(improved.first != Res.getInst() || improved.second > 0) {
+    LPDEBUG("Definition improved to " << improved << "\n");
     return improved;
-  else
+  }
+  else {
+    LPDEBUG("Definition not improved\n");
     return VCNull;
+  }
 
 }
 
@@ -914,9 +942,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
   MemoryDependenceAnalyser MD;
   MD.init(AA, this);
 
-  MemDepResult Seen;
-
-  Seen = MD.getDependency(LoadI);
+  MemDepResult Seen = MD.getDependency(LoadI);
 
   if(Seen.isNonLocal()) {
 
@@ -944,6 +970,11 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
 
     }
 
+    LPDEBUG(*LoadI << " nonlocally defined by " << Seen << "\n");
+
+  }
+  else {
+    LPDEBUG(*LoadI << " locally defined by " << Seen << "\n");
   }
 
   return Seen;
@@ -1084,6 +1115,8 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
 // and ask our parent to continue resolving the load.
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
+  LPDEBUG("Trying to forward load: " << *LoadI << "\n");
+
   ValCtx Result;
   if(forwardLoadIsNonLocal(LoadI, Result)) {
     SmallVector<SymExpr*, 4> Expr;
@@ -1108,8 +1141,10 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
     return SubcallResult;
   }
-  else
+  else {
+    LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
     return Result;
+  }
 
 }
 
@@ -1118,6 +1153,7 @@ ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr) {
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
   Th->RealVal = std::make_pair(Th->RealVal.first, Th->RealVal.second - 1);
+  LPDEBUG("Resolving load at call site\n");
   ValCtx Result = parent->tryResolveLoadAtChildSite(this, Expr);
   if(Result.first)
     return make_vc(Result.first, Result.second + 1);
@@ -1141,23 +1177,33 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
   SymThunk* Th = cast<SymThunk>(Expr.back());
   ValCtx Result;
 
+  LPDEBUG("Trying to resolve by walking backwards through " << L->getHeader()->getName() << "\n");
+
   for(int iter = originIter - 1; iter >= 0; iter--) {
 
+    LPDEBUG("Trying to resolve in iteration " << iter << "\n");
+
     if((originIter - iter) > Th->RealVal.second) {
-      //LPDEBUG("Can't pursue this expression further, as it resolves to a value out of scope\n");
+      LPDEBUG("Abandoning resolution: " << Th->RealVal << " is out of scope\n");
       return VCNull;
     }
 
     if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, originIter - iter)) {
-      if(Result.first)
+      if(Result.first) {
+	LPDEBUG("Resolved to " << Result << "\n");
 	return make_vc(Result.first, Result.second + (originIter - iter));
-      else
+      }
+      else {
+	LPDEBUG("Resolution failed\n");
 	return VCNull;
+      }
     }
 
   }
 
   Iterations[0]->destroySymExpr(tempInstructions);
+
+  LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
 
   Th->RealVal = make_vc(Th->RealVal.first, Th->RealVal.second - originIter);
   return parent->tryResolveLoadAtChildSite(Iterations[0], Expr);
@@ -1178,7 +1224,7 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
   MemDepResult Res = getUniqueDependency(LoadI);
 
   if(Res.isClobber()) {
-    LPDEBUG(*LoadI << " is clobbered by " << Res.getInst() << "\n");
+    LPDEBUG(*LoadI << " is clobbered by " << *(Res.getInst()) << "\n");
     if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
       if(TestII == getEntryBlock()->begin()) {
@@ -1255,6 +1301,8 @@ ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, Sma
 
   ValCtx Result;
 
+  LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
+
   if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result))
     return tryForwardExprFromParent(Expr);
   else
@@ -1300,6 +1348,12 @@ std::string IntegrationAttempt::dbgind() const {
 
 }
 
+std::string PeelAttempt::dbgind() const {
+
+  return ind(debugIndent);
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
@@ -1307,11 +1361,15 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
-    LIs[MI] = &getAnalysis<LoopInfo>(*MI);
+    if(!MI->isDeclaration())
+      LIs[MI] = &getAnalysis<LoopInfo>(*MI);
 
   }
 
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
+
+    if(MI->isDeclaration())
+      continue;
 
     Function& F = *MI;
 

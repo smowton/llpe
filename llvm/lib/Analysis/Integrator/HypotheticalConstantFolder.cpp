@@ -354,35 +354,39 @@ void HypotheticalConstantFolder::killEdge(BasicBlock* B1, BasicBlock* B2) {
 
 }
 
-raw_ostream &operator<<(raw_ostream& Stream, ValCtx& VC) {
+namespace llvm { 
 
-  if(!VC.first)
-    Stream << "NULL";
-  else if(isa<Constant>(VC.first) || !VC.second)
-    Stream << *VC.first;
-  else
-    Stream << *VC.first << "@" << VC.second;
+  raw_ostream& operator<<(raw_ostream& Stream, const ValCtx& VC) {
 
-  return Stream;
+    if(!VC.first)
+      Stream << "NULL";
+    else if(isa<Constant>(VC.first) || !VC.second)
+      Stream << *VC.first;
+    else
+      Stream << *VC.first << "@" << VC.second;
 
-}
+    return Stream;
 
-raw_ostream &operator<<(raw_ostream& Stream, MemDepResult& MDR) {
-
-  if(MDR.isNonLocal()) {
-    Stream << "NonLocal";
-  }
-  else {
-    if(MDR.isClobber()) {
-      Stream << "Clobber(";
-    }
-    else if(MDR.isDef()) {
-      Stream << "Def(";
-    }
-    Stream << *MDR.getInst() << ")";
   }
 
-  return Stream;
+  raw_ostream& operator<<(raw_ostream& Stream, const MemDepResult& MDR) {
+
+    if(MDR.isNonLocal()) {
+      Stream << "NonLocal";
+    }
+    else {
+      if(MDR.isClobber()) {
+	Stream << "Clobber(";
+      }
+      else if(MDR.isDef()) {
+	Stream << "Def(";
+      }
+      Stream << *MDR.getInst() << ")";
+    }
+
+    return Stream;
+
+  }
 
 }
 
