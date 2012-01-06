@@ -371,7 +371,7 @@ namespace {
 
     bool GEPHasAllZeroIndices(const GEPOperator*);
 
-    ValCtx getUltimateUnderlyingObject(ValCtx);
+    ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset);
 
     ValCtx getReplacement(const Value*, int frame = 0);
     Constant* getConstReplacement(const Value*, int frame = 0);
@@ -1084,21 +1084,52 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
   return Alias;
 }
 
-ValCtx
-BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V) {
+// A cowardly duplication of Value::getUnderlyingObject, to avoid potentially screwups
+// in modifying Value, which is used throughout LLVM.
+Value* getUnderlyingObject(Value* VIn, bool& isOffset) {
+  
+  unsigned MaxLookup = 10;
+  if (!VIn->getType()->isPointerTy())
+    return VIn;
+  Value *V = VIn;
+  for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
+    if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
+      V = GEP->getPointerOperand();
+      isOffset = true;
+      // Actually perhaps not, as it might be an all-zero GEP, before or after replacement.
+      // This is fine though, as this case will be caught by the standard AliasGEP path.
+    } else if (Operator::getOpcode(V) == Instruction::BitCast) {
+      V = cast<Operator>(V)->getOperand(0);
+    } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
+      if (GA->mayBeOverridden())
+        return V;
+      V = GA->getAliasee();
+    } else {
+      return V;
+    }
+    assert(V->getType()->isPointerTy() && "Unexpected operand type!");
+  }
+  return V;  
 
+}
+
+ValCtx
+BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
+
+  isOffset = false;
   ValCtx CurrentV = V;
   while(1) {
 
-    Value* O = CurrentV.first->getUnderlyingObject();
+    // This might set isOffset if we look through a GEP.
+    Value* O = getUnderlyingObject(CurrentV.first, isOffset);
     // Note here: getUnderlyingObject might take us out a scope, e.g. by a loop-variant GEP referencing a loop-invariant load instruction!
     // This is okay, because Loop iterations are already expected to resolve invariants using the appropriate parent scope, so "inst at scope X"
     // is transparently proxied as "inst at scope X + n".
     if(isIdentifiedObject(O))
       return make_vc(O, CurrentV.second);
-    ValCtx NewV = getReplacement(CurrentV.first, CurrentV.second);
-    if(NewV == CurrentV)
-      return CurrentV;
+    ValCtx NewV = getReplacement(O, CurrentV.second);
+    if(NewV == make_vc(O, CurrentV.second))
+      return NewV;
     CurrentV = NewV;
 
   }
@@ -1116,24 +1147,25 @@ BasicAliasAnalysis::aliasCheck(ValCtx V1, unsigned V1Size,
   if (V1Size == 0 || V2Size == 0)
     return NoAlias;
 
-  // Strip off any casts if they exist.
-  V1 = make_vc(V1.first->stripPointerCasts(), V1.second);
-  V2 = make_vc(V2.first->stripPointerCasts(), V2.second);
-
-  // Are we checking for alias of the same value?
-  if (V1 == V2) return MustAlias;
-
   if (!V1.first->getType()->isPointerTy() || !V2.first->getType()->isPointerTy())
     return NoAlias;  // Scalars cannot alias each other
 
   // Figure out what objects these things are pointing to if we can.
-  ValCtx UO1 = getUltimateUnderlyingObject(V1);
+  bool UO1Offset = false, UO2Offset = false;
+  ValCtx UO1 = getUltimateUnderlyingObject(V1, UO1Offset);
   Value* O1 = UO1.first;
-  ValCtx UO2 = getUltimateUnderlyingObject(V2);
+  ValCtx UO2 = getUltimateUnderlyingObject(V2, UO2Offset);
   Value* O2 = UO2.first;
 
-  // Don't looks these up for constanthood, because they're only relevant
-  // if they're malloc() or alloca() calls, which don't get constantified.
+  // Are we checking for alias of the same value?
+  if (UO1 == UO2 && (!UO1Offset) && (!UO2Offset)) return MustAlias;
+
+  // Otherwise either the pointers are based off potentially different objects,
+  // or else they're potentially different derived pointers off the same base.
+
+  // Strip off any casts if they exist.
+  V1 = make_vc(V1.first->stripPointerCasts(), V1.second);
+  V2 = make_vc(V2.first->stripPointerCasts(), V2.second);
 
   // Null values in the default address space don't point to any object, so they
   // don't alias any other pointer.

@@ -268,11 +268,11 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	  else {
 	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
 	      LPDEBUG("User " << *I << " may read or write global state; not propagating\n");
-	      continue;
 	    }
 	    else {
 	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	    }
+	    continue;
 	  }
 	  getImprovementBenefit(I, make_vc(newConst, 0));
 	}

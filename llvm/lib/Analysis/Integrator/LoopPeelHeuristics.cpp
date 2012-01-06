@@ -45,8 +45,8 @@ using namespace llvm;
 
 bool instructionCounts(Instruction* I);
 
-  class InlineAttempt;
-  class PeelAttempt;
+class InlineAttempt;
+class PeelAttempt;
 
   class IntegrationAttempt : public HCFParentCallbacks {
 
@@ -75,6 +75,10 @@ bool instructionCounts(Instruction* I);
 
     HypotheticalConstantFolder H;
 
+    int improvableInstructions;
+    SmallVector<CallInst*, 4> unexploredCalls;
+    SmallVector<Loop*, 4> unexploredLoops;
+
     std::string dbgind() const;
 
   public:
@@ -88,7 +92,8 @@ bool instructionCounts(Instruction* I);
       parent(P),
       nesting_depth(depth), 
       debugIndent(indent), 
-      H(&_F, _AA, _TD, *this)
+      H(&_F, _AA, _TD, *this),
+      improvableInstructions(0)
     {
 
       H.setDebugIndent(indent);
@@ -121,9 +126,14 @@ bool instructionCounts(Instruction* I);
     bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result);
     bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset = 0);
     void forceExploreChildren();
+    void improveParentAndChildren();
     bool shouldForwardValue(Value*);
 
-    void print(raw_ostream &OS) const;
+    void collectBlockStats(BasicBlock* BB);
+    virtual void collectAllBlockStats() = 0;
+    void collectStats();
+    void print(raw_ostream& OS) const;
+    virtual void printHeader(raw_ostream& OS) const = 0;
 
     // Overrides:
 
@@ -143,7 +153,6 @@ bool instructionCounts(Instruction* I);
     int iterationCount;
     Loop* L;
     PeelAttempt* parentPA;
-    bool terminated;
 
     PeelIteration* getOrCreateNextIteration();
 
@@ -169,6 +178,8 @@ bool instructionCounts(Instruction* I);
 
     }
 
+    bool terminated;
+
     void giveInvariantsTo(PeelIteration* NewIter);
     void foldValue(Value* Improved, ValCtx ImprovedTo);
     virtual ValCtx getReplacement(Value* V, int frameIndex = 0);
@@ -180,6 +191,9 @@ bool instructionCounts(Instruction* I);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
+
+    virtual void collectAllBlockStats();
+    virtual void printHeader(raw_ostream&) const;
 
   };
 
@@ -227,12 +241,13 @@ bool instructionCounts(Instruction* I);
     void foldValue(Value* Improved, ValCtx ImprovedTo);
     ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter);
 
+    void collectStats();
+    void print(raw_ostream& OS) const;
+
   };
 
   class InlineAttempt : public IntegrationAttempt { 
 
-    int totalInstructions;
-    int residualCalls;
     Constant* returnVal;
     CallInst* CI;
 
@@ -241,6 +256,7 @@ bool instructionCounts(Instruction* I);
     InlineAttempt(IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, int depth, int dbind) 
       : 
       IntegrationAttempt(P, F, LI, TD, AA, depth, dbind),
+      returnVal(0),
       CI(_CI)
     { }
 
@@ -250,6 +266,9 @@ bool instructionCounts(Instruction* I);
     virtual Loop* getLoopContext();
     virtual void tryImproveParent();
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
+
+    virtual void collectAllBlockStats();
+    virtual void printHeader(raw_ostream&) const;
 
   };
 
@@ -729,6 +748,11 @@ void IntegrationAttempt::tryImproveChildren(Value* Improved) {
 void IntegrationAttempt::localImprove(Value* From, ValCtx To) {
 
   H.getBenefit(From, To);
+  improveParentAndChildren();
+
+}
+
+void IntegrationAttempt::improveParentAndChildren() {
 
   while(newLocalImprovedValues.size() || newNonLocalImprovedValues.size() || newlyDeadEdges.size()) {
 
@@ -1062,7 +1086,7 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
   Value* lastPtr;
   
   SI--;
-  SymThunk* th = cast<SymThunk>(SI);
+  SymThunk* th = cast<SymThunk>(*SI);
 
   LLVMContext& ctx = F.getContext();
   BasicBlock::iterator BI(Where);
@@ -1106,7 +1130,7 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
   tempInstructions.push_back(Accessor);
 
   //LPDEBUG("Temporarily augmented parent block:\n");
-  //DEBUG(dbgs() << *CS->getParent());
+  //DEBUG(dbgs() << *Where->getParent());
 
 }
 
@@ -1142,7 +1166,9 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     return SubcallResult;
   }
   else {
-    LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
+    if(Result != make_vc(0, 0)) {
+      LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
+    }
     return Result;
   }
 
@@ -1224,7 +1250,6 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
   MemDepResult Res = getUniqueDependency(LoadI);
 
   if(Res.isClobber()) {
-    LPDEBUG(*LoadI << " is clobbered by " << *(Res.getInst()) << "\n");
     if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
       if(TestII == getEntryBlock()->begin()) {
@@ -1271,7 +1296,8 @@ void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstru
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
 
-  improvedValues[FakeBase] = make_vc(Th->RealVal.first, Th->RealVal.second - offset);
+  improvedValues[FakeBase] = Th->RealVal;
+  //LPDEBUG("Set fake base pointer " << *FakeBase << " --> " << Th->RealVal << "\n");
   bool shouldPursueFurther = forwardLoadIsNonLocal(Accessor, Result);
   improvedValues.erase(FakeBase);
 
@@ -1303,42 +1329,147 @@ ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, Sma
 
   LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
 
-  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result))
+  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result)) {
+    LPDEBUG("Still nonlocal, passing to our parent scope\n");
     return tryForwardExprFromParent(Expr);
-  else
+  }
+  else {
+    LPDEBUG("Resolved at this scope: " << Result << "\n");
     return Result;
+  }
 
 }
 
-/*void IntegrationAttempt::countResidualCalls() {
+void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+  Loop* BlockL = LI[&F]->getLoopFor(BB);
+  bool mine = (BlockL == getLoopContext());
     
-    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+  if(!mine) {
+    DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.find(BlockL);	
+    if(it == peelChildren.end()) {
+      unexploredLoops.push_back(BlockL);
+      mine = true;
+    }
+  }
+    
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
       
-      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	DenseMap<CallInst*, InlineAttempt*>::iterator II = subAttempts.find(CI);
-	if(II == subAttempts.end()) {
-	  residualCalls++;
-	}
-	else {
-	  II->second->countResidualCalls();
-	}
-      }
+    if(instructionCounts(BI))
+      improvableInstructions++;
 
+    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+      DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
+      if(it == inlineChildren.end())
+	unexploredCalls.push_back(CI);
     }
 
   }
 
-  }*/
+}
+
+void InlineAttempt::collectAllBlockStats() {
+
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+
+    collectBlockStats(FI);
+
+  }
+
+}
+
+void PeelIteration::collectAllBlockStats() {
+
+  std::vector<BasicBlock*> Blocks = L->getBlocks();
+  for(std::vector<BasicBlock*>::iterator it = Blocks.begin(), it2 = Blocks.end(); it != it2; ++it) {
+
+    collectBlockStats(*it);
+
+  }
+
+}
+
+void PeelAttempt::collectStats() {
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
+
+    (*it)->collectStats();
+
+  }
+
+}
+
+void IntegrationAttempt::collectStats() {
+
+  collectAllBlockStats();
+  std::sort(unexploredLoops.begin(), unexploredLoops.end());
+  std::unique(unexploredLoops.begin(), unexploredLoops.end());
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->collectStats();
+
+  }
+
+  for(DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    it->second->collectStats();
+
+  }
+
+}
+
+void InlineAttempt::printHeader(raw_ostream& OS) const {
+
+  OS << (!CI ? "Root " : "") << "Function " << F.getName();
+  if(CI)
+    OS << " at " << *CI;
+
+}
+
+void PeelIteration::printHeader(raw_ostream& OS) const {
+
+  OS << "Iteration " << iterationCount;
+
+}
+
+void PeelAttempt::print(raw_ostream& OS) const {
+
+  OS << dbgind() << "Loop " << L->getHeader()->getName() << (Iterations.back()->terminated ? "(terminated)" : "(not terminated)") << "\n";
+
+  for(std::vector<PeelIteration*>::const_iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
+
+    (*it)->print(OS);
+
+  }
+
+}
 
 void IntegrationAttempt::print(raw_ostream& OS) const {
 
-  //  OS << dbgind() << F.getName() << ": eliminated " << eliminatedInstructions.size() << "/" << totalInstructions << " instructions, " << residualCalls << " residual uninlined calls\n";
+  OS << dbgind();
+  printHeader(OS);
+  OS << ": improved " << improvedValues.size() << "/" << improvableInstructions << "\n";
+  if(unexploredLoops.size()) {
+    OS << dbgind() << "Unexplored loops:\n";
+    for(SmallVector<Loop*, 4>::const_iterator it = unexploredLoops.begin(), it2 = unexploredLoops.end(); it != it2; ++it) {
+      OS << dbgind() << "  " << (*it)->getHeader()->getName() << "\n";
+    }
+  }
+  if(unexploredCalls.size()) {
+    OS << dbgind() << "Unexplored calls:\n";
+    for(SmallVector<CallInst*, 4>::const_iterator it = unexploredCalls.begin(), it2 = unexploredCalls.end(); it != it2; ++it) {
+      OS << dbgind() << **it << "\n";
+    }
+  }
 
-  /* for(DenseMap<CallInst*, InlineAttempt*>::const_iterator CII = subAttempts.begin(), CIE = subAttempts.end(); CII != CIE; CII++) {
-    CII->second->print(OS);
-    }*/
+  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+    it->second->print(OS);
+  }
+
+  for(DenseMap<Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+    it->second->print(OS);
+  }
 
 }
 
@@ -1376,6 +1507,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
     rootAttempts.push_back(new InlineAttempt(0, F, LIs, TD, AA, 0, 0, 2));
     rootAttempts.back()->forceExploreChildren();
+    rootAttempts.back()->improveParentAndChildren();
+    rootAttempts.back()->collectStats();
+    
     //    rootAttempts.back()->considerCalls(true);
     //    rootAttempts.back()->countResidualCalls();
 
