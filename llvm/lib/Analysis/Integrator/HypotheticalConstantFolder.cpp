@@ -70,6 +70,11 @@ void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, B
 
   parent.setEdgeDead(BBPred, BB);
 
+  if(parent.shouldIgnoreEdge(BBPred, BB)) {
+    LPDEBUG(BBPred->getName() << "->" << BB->getName() << " ignored for const-prop purposes\n");
+    return;
+  }
+
   if(parent.shouldIgnoreBlock(BB)) {
     LPDEBUG(BB->getName() << " not under consideration" << "\n");
     return;
@@ -128,8 +133,8 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
       return;
     }
     else {
-      LPDEBUG("Improved to " << *onlyValue.first << "@" << onlyValue.second << "\n");
-      getImprovementBenefit(PN, onlyValue, true);
+      LPDEBUG("Improved to " << onlyValue << "\n");
+      tryGetImprovementBenefit(PN, onlyValue, true);
     }
   }
   else {
@@ -140,13 +145,6 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
 }
 
 void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local */, ValCtx Replacement, bool force) {
-
-  Instruction* ArgI = dyn_cast<Instruction>(ArgV);
-
-  if(ArgI && parent.shouldIgnoreBlock(ArgI->getParent())) { 
-    LPDEBUG(*ArgI << " block not under consideration, ignoring\n");
-    return;
-  }
 
   if(!force) {
     if(getReplacement(ArgV) != make_vc(ArgV, 0)) {
@@ -233,7 +231,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	  else
 	    newVal = make_vc(SI->getTrueValue(), 0);
 	  if(getReplacement(SI) != newVal)
-	    getImprovementBenefit(SI, newVal);
+	    tryGetImprovementBenefit(SI, newVal);
 	}
       }
       else {
@@ -274,7 +272,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	    }
 	    continue;
 	  }
-	  getImprovementBenefit(I, make_vc(newConst, 0));
+	  tryGetImprovementBenefit(I, make_vc(newConst, 0));
 	}
 
       }
@@ -289,6 +287,21 @@ void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC,
   debugIndent += 2;
   realGetImprovementBenefit(ArgV, ArgC, force);
   debugIndent -= 2;
+
+}
+
+void HypotheticalConstantFolder::tryGetImprovementBenefit(Value* ArgV, ValCtx ArgC, bool force) {
+
+  if(Instruction* ArgI = dyn_cast<Instruction>(ArgV)) {
+  
+    if(ArgI && parent.shouldIgnoreBlock(ArgI->getParent())) { 
+      LPDEBUG(*ArgI << " block not under consideration, ignoring\n");
+      return;
+    }
+
+  }
+
+  getImprovementBenefit(ArgV, ArgC, force);
 
 }
 
@@ -326,7 +339,7 @@ void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
 	  else {
 	    ValCtx Result = parent.tryForwardLoad(LI);
 	    if(Result.first) {
-	      getImprovementBenefit(LI, Result);
+	      tryGetImprovementBenefit(LI, Result);
 	      anyStoreForwardingBenefits = true;
 	    }
 	  }
