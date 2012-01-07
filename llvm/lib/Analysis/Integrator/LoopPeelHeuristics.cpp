@@ -136,6 +136,7 @@ class PeelAttempt;
 
     void collectBlockStats(BasicBlock* BB);
     virtual void collectAllBlockStats() = 0;
+    void collectLoopStats(Loop*);
     void collectStats();
     void print(raw_ostream& OS) const;
     virtual void printHeader(raw_ostream& OS) const = 0;
@@ -1438,96 +1439,82 @@ ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, Sma
 
 void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
 
-  Loop* BlockL = LI[&F]->getLoopFor(BB);
-  bool mine = (BlockL == getLoopContext());
-    
-  if(!mine) {
-    DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.find(BlockL);	
-    if(it == peelChildren.end()) {
-      unexploredLoops.push_back(BlockL);
-      mine = true;
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
+      
+    if(instructionCounts(BI)) { 
+
+      improvableInstructions++;
+
+      if(blockIsDead(BB))
+	improvedInstructions++;
+      else if(improvedValues.find(BI) != improvedValues.end())
+	improvedInstructions++;
+      else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
+	if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
+	  improvedInstructions++;
+      }
+
     }
+
+    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+      DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
+      if(it == inlineChildren.end())
+	unexploredCalls.push_back(CI);
+    }
+
   }
 
-  if(mine) {
-    
-    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
-      
-      if(instructionCounts(BI)) { 
+}
 
-	improvableInstructions++;
+void IntegrationAttempt::collectLoopStats(Loop* LoopI) {
 
-	if(blockIsDead(BB))
-	  improvedInstructions++;
-	else if(improvedValues.find(BI) != improvedValues.end())
-	  improvedInstructions++;
-	else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
-	  if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
-	    improvedInstructions++;
-	}
+  DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.find(LoopI);
 
-      }
-
-      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
-	if(it == inlineChildren.end())
-	  unexploredCalls.push_back(CI);
-      }
-
-    }
-
+  if(it == peelChildren.end()) {
+    unexploredLoops.push_back(LoopI);
+    for(Loop::block_iterator BI = LoopI->block_begin(), BE = LoopI->block_end(); BI != BE; ++BI)
+      collectBlockStats(*BI);
   }
 
 }
 
 void InlineAttempt::collectAllBlockStats() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI)
+    if(!LI[&F]->getLoopFor(FI))
+      collectBlockStats(FI);
 
-    collectBlockStats(FI);
-
-  }
+  for(LoopInfo::iterator LoopI = LI[&F]->begin(), LoopE = LI[&F]->end(); LoopI != LoopE; ++LoopI)
+    collectLoopStats(*LoopI);
 
 }
 
 void PeelIteration::collectAllBlockStats() {
 
-  std::vector<BasicBlock*> Blocks = L->getBlocks();
-  for(std::vector<BasicBlock*>::iterator it = Blocks.begin(), it2 = Blocks.end(); it != it2; ++it) {
-
-    collectBlockStats(*it);
-
-  }
+  for(Loop::iterator LoopI = L->begin(), LoopE = L->end(); LoopI != LoopE; ++LoopI)
+    collectLoopStats(*LoopI);
 
 }
 
 void PeelAttempt::collectStats() {
 
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
-
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
     (*it)->collectStats();
-
-  }
 
 }
 
 void IntegrationAttempt::collectStats() {
 
   collectAllBlockStats();
+
   std::sort(unexploredLoops.begin(), unexploredLoops.end());
-  std::unique(unexploredLoops.begin(), unexploredLoops.end());
+  unexploredLoops.set_size(std::unique(unexploredLoops.begin(), unexploredLoops.end()) - unexploredLoops.begin());
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
     it->second->collectStats();
 
-  }
-
-  for(DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
+  for(DenseMap<Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)
     it->second->collectStats();
-
-  }
 
 }
 
