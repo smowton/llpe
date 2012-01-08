@@ -71,6 +71,7 @@ class PeelAttempt;
     SmallVector<Value*, 8> newLocalImprovedValues;
     SmallVector<std::pair<Value*, Constant*>, 1> newNonLocalImprovedValues;
 
+    SmallSet<BasicBlock*, 4> deadBlocks;
     SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
     SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> newlyDeadEdges;
     SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> newlyDeadEdgesNL;
@@ -113,7 +114,8 @@ class PeelAttempt;
     virtual Instruction* getEntryInstruction() = 0;
     void tryImproveChildren(Value* Improved);
     virtual void tryImproveChildrenDE(std::pair<BasicBlock*, BasicBlock*>);
-    virtual void tryImproveParent() = 0;
+    virtual void tryImproveParent(Value*) = 0;
+    virtual void tryImproveParentDE(std::pair<BasicBlock*, BasicBlock*>);
     void localImprove(Value* From, ValCtx To);
     void killEdge(BasicBlock* From, BasicBlock* To);
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
@@ -148,9 +150,11 @@ class PeelAttempt;
     virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
     virtual void setEdgeDead(BasicBlock*, BasicBlock*);
     virtual bool shouldIgnoreEdge(BasicBlock*, BasicBlock*);
-    virtual bool shouldIgnoreBlock(BasicBlock*);
+    virtual bool shouldIgnoreBlockForConstProp(BasicBlock*);
+    virtual bool shouldIgnoreBlockForDCE(BasicBlock*);
     virtual bool shouldIgnoreInstruction(Instruction*);
     virtual bool blockIsDead(BasicBlock*);
+    virtual void setBlockDead(BasicBlock*);
     virtual ValCtx tryForwardLoad(LoadInst*);
 
   };
@@ -179,7 +183,8 @@ class PeelAttempt;
     void giveInvariantsTo(PeelIteration* NewIter);
     void foldValue(Value* Improved, ValCtx ImprovedTo);
     virtual ValCtx getReplacement(Value* V, int frameIndex = 0);
-    virtual bool shouldIgnoreBlock(BasicBlock*);
+    virtual bool shouldIgnoreBlockForConstProp(BasicBlock*);
+    virtual bool shouldIgnoreBlockForDCE(BasicBlock*);
     virtual bool shouldIgnoreEdge(BasicBlock*, BasicBlock*);
     virtual bool shouldIgnoreInstruction(Instruction*);
     virtual Instruction* getEntryInstruction();
@@ -187,7 +192,8 @@ class PeelAttempt;
     virtual void considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Instruction* I);
     virtual Loop* getLoopContext();
     virtual void tryImproveChildrenDE(std::pair<BasicBlock*, BasicBlock*>);
-    virtual void tryImproveParent();
+    virtual void tryImproveParent(Value*);
+    virtual void tryImproveParentDE(std::pair<BasicBlock*, BasicBlock*>);
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
 
     virtual void collectAllBlockStats();
@@ -282,7 +288,7 @@ class PeelAttempt;
     virtual Instruction* getEntryInstruction();
     virtual BasicBlock* getEntryBlock();
     virtual Loop* getLoopContext();
-    virtual void tryImproveParent();
+    virtual void tryImproveParent(Value*);
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
 
     virtual void collectAllBlockStats();
@@ -462,8 +468,8 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 void IntegrationAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 
   std::pair<BasicBlock*, BasicBlock*> Edge = std::make_pair(B1, B2);
-  newlyDeadEdges.push_back(Edge);
-  deadEdges.insert(Edge);
+  if(deadEdges.insert(Edge))
+    newlyDeadEdges.push_back(Edge);
 
 }
 
@@ -474,15 +480,27 @@ void IntegrationAttempt::setNonLocalEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 
 }
 
-bool IntegrationAttempt::shouldIgnoreBlock(BasicBlock* BB) {
+bool IntegrationAttempt::shouldIgnoreBlockForConstProp(BasicBlock* BB) {
 
   return LI[&F]->getLoopFor(BB) != 0;
 
 }
 
-bool PeelIteration::shouldIgnoreBlock(BasicBlock* BB) {
+bool PeelIteration::shouldIgnoreBlockForConstProp(BasicBlock* BB) {
 
   return LI[&F]->getLoopFor(BB) != L;
+
+}
+
+bool IntegrationAttempt::shouldIgnoreBlockForDCE(BasicBlock* BB) {
+
+  return false;
+
+}
+
+bool PeelIteration::shouldIgnoreBlockForDCE(BasicBlock* BB) {
+
+  return !L->contains(BB);
 
 }
 
@@ -513,17 +531,13 @@ bool PeelIteration::shouldIgnoreInstruction(Instruction* I) {
 
 bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
 
-  if(&(BB->getParent()->getEntryBlock()) == BB)
-    return false;
+  return deadBlocks.count(BB);
 
-  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; PI++) {
-      
-    if(!edgeIsDead(*PI, BB))
-      return false;
+}
 
-  }
+void IntegrationAttempt::setBlockDead(BasicBlock* BB) {
 
-  return true;
+  deadBlocks.insert(BB);
 
 }
 
@@ -662,6 +676,9 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(Loop* NewL) {
   if(it != peelChildren.end())
     return it->second;
 
+  if(blockIsDead(NewL->getHeader()))
+    return 0;
+
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
     LPDEBUG("Considering inlining loop with header " << NewL->getHeader()->getName() << "\n");
@@ -696,6 +713,15 @@ void PeelAttempt::foldValue(Value* Improved, ValCtx ImprovedTo) {
     (*it)->foldValue(Improved, ImprovedTo);
 
   }
+
+  // Check for preheader PHI definitions, special cases not seen by the HCF:
+
+  for(BasicBlock::iterator BI = L->getHeader()->begin(), BE = L->getHeader()->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+    PHINode* PN = cast<PHINode>(BI);
+    if(PN->getIncomingValueForBlock(L->getLoopPreheader()) == Improved) {
+      Iterations[0]->foldValue(PN, ImprovedTo);
+    }
+  }  
 
 }
 
@@ -764,11 +790,13 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
 
   }
   else {
-
     
     Loop* outermostChildLoop = L;
-    while(outermostChildLoop->getParentLoop() != MyL)
+    while(outermostChildLoop && (outermostChildLoop->getParentLoop() != MyL))
       outermostChildLoop = outermostChildLoop->getParentLoop();
+
+    if(!outermostChildLoop) // Use is in a sibling or parent scope
+      return;
 
     LPDEBUG("Improved value is used in loop " << L->getHeader()->getName() << ", (immediate child " << outermostChildLoop->getHeader()->getName() << "), handing off:\n");
     PeelAttempt* LPA = getOrCreatePeelAttempt(outermostChildLoop);
@@ -789,8 +817,6 @@ void IntegrationAttempt::tryImproveChildren(Value* Improved) {
     if(Instruction* I = dyn_cast<Instruction>(*UI)) {
 
       if(blockIsDead(I->getParent()))
-	continue;
-      if(shouldIgnoreBlock(I->getParent()))
 	continue;
       considerInlineOrPeel(Improved, ImprovedTo, I);
 
@@ -842,8 +868,10 @@ void IntegrationAttempt::improveParentAndChildren() {
     
     for(SmallVector<std::pair<Value*, Constant*>, 1>::iterator it = newNLVals.begin(), it2 = newNLVals.end(); it != it2; it++) {
 
-      LPDEBUG("Integrating nonlocal improvement " << *(it->first) << " -> " << *(it->second) << "\n");
-      H.getBenefit(it->first, make_vc(it->second, 0));
+      if(improvedValues.find(it->first) == improvedValues.end()) {
+	LPDEBUG("Integrating nonlocal improvement " << *(it->first) << " -> " << *(it->second) << "\n");
+	H.getBenefit(it->first, make_vc(it->second, 0));
+      }
 
     }
 
@@ -851,8 +879,18 @@ void IntegrationAttempt::improveParentAndChildren() {
     newLocalImprovedValues.clear();
 
     for(SmallVector<Value*, 4>::iterator it = newVals.begin(), it2 = newVals.end(); it != it2; it++) {
-
-      tryImproveChildren(*it);
+      
+      // Did this just come from one of our children?
+      bool cameFromChild = false;
+      for(SmallVector<std::pair<Value*, Constant*>, 1>::iterator it3 = newNLVals.begin(), it4 = newNLVals.end(); it3 != it4; it3++) {
+	if(it3->first == *it) {
+	  cameFromChild = true;
+	  break;
+	}
+      }
+      if(!cameFromChild)
+	tryImproveChildren(*it);
+      tryImproveParent(*it);
 
     }
 
@@ -872,63 +910,103 @@ void IntegrationAttempt::improveParentAndChildren() {
     for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = newlyDEs.begin(), it2 = newlyDEs.end(); it != it2; it++) {
     
       tryImproveChildrenDE(*it);
+      tryImproveParentDE(*it);
 
     }
 
   }
 
-  if(parent)
-    tryImproveParent();
-
 }
 
-void InlineAttempt::tryImproveParent() {
+void InlineAttempt::tryImproveParent(Value* Improved) {
+
+  if((!parent) || returnVal || F.getReturnType()->isVoidTy())
+    return;
+
+  bool usedByRet = false;
+
+  for (Value::use_iterator UI = Improved->use_begin(), UE = Improved->use_end(); UI != UE;++UI) {
+    
+    if(isa<ReturnInst>(*UI))
+      usedByRet = true;
+
+  }
+
+  if(!usedByRet)
+    return;
 
   // Let's have a go at supplying a return value to our caller. Simple measure:
   // we know the value if all the 'ret' instructions except one are dead,
   // and we know that instruction's operand.
 
-  if((!returnVal) && (!F.getReturnType()->isVoidTy())) {
-    bool foundReturnInst = false;
-    for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
-      if(blockIsDead(FI))
-	continue;
-      for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
-	if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
-	  if(foundReturnInst) {
-	    LPDEBUG("Can't determine return value: more than one 'ret' is live\n");
-	    returnVal = 0;
-	    break;
-	  }
-	  else
-	    foundReturnInst = true;
-	  Value* ThisRet = RI->getReturnValue();
-	  Constant* C = getConstReplacement(ThisRet, 0);
-	  if(C)
-	    returnVal = C;
-	  else {
-	    LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-constant value " << *(RI->getReturnValue()) << "\n");
-	    break;
-	  }
+  bool foundReturnInst = false;
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
+    if(blockIsDead(FI))
+      continue;
+    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
+      if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
+	if(foundReturnInst) {
+	  LPDEBUG("Can't determine return value: more than one 'ret' is live\n");
+	  returnVal = 0;
+	  break;
+	}
+	else
+	  foundReturnInst = true;
+	Value* ThisRet = RI->getReturnValue();
+	Constant* C = getConstReplacement(ThisRet, 0);
+	if(C)
+	  returnVal = C;
+	else {
+	  LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-constant value " << *(RI->getReturnValue()) << "\n");
+	  break;
 	}
       }
     }
+  }
     
-    if(returnVal) {
-      LPDEBUG("Found return value: " << *returnVal << "\n");
-      parent->setNonLocalReplacement(this->CI, returnVal);
-    }
+  if(returnVal) {
+    LPDEBUG("Found return value: " << *returnVal << "\n");
+    parent->setNonLocalReplacement(this->CI, returnVal);
   }
 
 }
 
-void PeelIteration::tryImproveParent() {
+void PeelIteration::tryImproveParent(Value* Improved) {
+
+  if(terminated) {
+
+    for (Value::use_iterator UI = Improved->use_begin(), UE = Improved->use_end(); UI != UE; ++UI) {
+      if(PHINode* PN = dyn_cast<PHINode>(*UI)) {
+	BasicBlock* BB = PN->getParent();
+	if(LI[&F]->getLoopFor(BB) == L->getParentLoop()) {
+	  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+	    if(LI[&F]->getLoopFor(*PI) == L) {
+	      Instruction* Outgoing = dyn_cast<Instruction>(PN->getIncomingValueForBlock(*PI));
+	      if(Outgoing) {
+		Constant* C = getConstReplacement(Outgoing);
+		if(C) {
+		  LPDEBUG("Exporting " << *(Outgoing) << " -> "  << *C << "\n");
+		  parent->setNonLocalReplacement(Outgoing, C);
+		}
+	      }    
+	      break;
+	    }
+	  }
+	}
+      }
+    }
+
+  }
+
+}
+
+void PeelIteration::tryImproveParentDE(std::pair<BasicBlock*, BasicBlock*> Edge) {
 
   if(!terminated) {
 
     BasicBlock* Latch = L->getLoopLatch();
     BasicBlock* Header = L->getHeader();
-    if(deadEdges.count(std::make_pair(Latch, Header))) {
+    if(Edge == std::make_pair(Latch, Header)) {
 
       LPDEBUG("Loop " << L->getHeader()->getName() << " backedge was killed: exporting loop variants to parent context:\n");
 
@@ -967,7 +1045,13 @@ void PeelIteration::tryImproveParent() {
 
     }
 
-  }
+  }  
+
+}
+
+void IntegrationAttempt::tryImproveParentDE(std::pair<BasicBlock*, BasicBlock*> Edge) {
+
+  return;
 
 }
 
@@ -1443,6 +1527,9 @@ void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
       
     if(instructionCounts(BI)) { 
 
+      if(BB == getEntryBlock() && isa<PHINode>(BI))
+	continue;
+
       improvableInstructions++;
 
       if(blockIsDead(BB))
@@ -1491,6 +1578,11 @@ void InlineAttempt::collectAllBlockStats() {
 
 void PeelIteration::collectAllBlockStats() {
 
+  for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
+    if(LI[&F]->getLoopFor(*BI) == L)
+      collectBlockStats(*BI);
+  }
+
   for(Loop::iterator LoopI = L->begin(), LoopE = L->end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
 
@@ -1506,9 +1598,6 @@ void PeelAttempt::collectStats() {
 void IntegrationAttempt::collectStats() {
 
   collectAllBlockStats();
-
-  std::sort(unexploredLoops.begin(), unexploredLoops.end());
-  unexploredLoops.set_size(std::unique(unexploredLoops.begin(), unexploredLoops.end()) - unexploredLoops.begin());
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
     it->second->collectStats();
@@ -1549,6 +1638,9 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   OS << dbgind();
   printHeader(OS);
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
+  for(DenseMap<Value*, ValCtx>::const_iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
+    OS << dbgind() << *(it->first) << " -> " << it->second << "\n";
+  }
   if(unexploredLoops.size()) {
     OS << dbgind() << "Unexplored loops:\n";
     for(SmallVector<Loop*, 4>::const_iterator it = unexploredLoops.begin(), it2 = unexploredLoops.end(); it != it2; ++it) {

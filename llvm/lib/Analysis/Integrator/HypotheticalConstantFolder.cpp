@@ -66,7 +66,7 @@ Constant* HypotheticalConstantFolder::getConstReplacement(Value* V) {
 
 void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
 
-  LPDEBUG("Getting benefit due elimination of predecessor " << BBPred->getName() << " from BB " << BB->getName() << "\n");
+  LPDEBUG("Edge " << BBPred->getName() << "->" << BB->getName() << " killed\n");
 
   parent.setEdgeDead(BBPred, BB);
 
@@ -75,25 +75,12 @@ void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, B
     return;
   }
 
-  if(parent.shouldIgnoreBlock(BB)) {
+  if(parent.shouldIgnoreBlockForDCE(BB)) {
     LPDEBUG(BB->getName() << " not under consideration" << "\n");
     return;
   }
 
-  if(parent.blockIsDead(BB)) {
-    // This BB is dead! Kill its instructions, then remove it as a predecessor to all successor blocks and see if that helps anything.
-    LPDEBUG("Block is dead; killing successor edges\n");
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-      getRemoveBlockPredBenefit(*SI, BB);
-    }
-  }
-  else {
-    // See if any of our PHI nodes are now defined
-    for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
-      PHINode* PN = cast<PHINode>(I);
-      getPHINodeBenefit(PN);
-    }
-  }
+  BlocksImproved.push_back(BB);
 
 }
 
@@ -144,14 +131,7 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
 
 }
 
-void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local */, ValCtx Replacement, bool force) {
-
-  if(!force) {
-    if(getReplacement(ArgV) != make_vc(ArgV, 0)) {
-      LPDEBUG(*ArgV << " already constant\n");
-      return;
-    }
-  }
+void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local */, ValCtx Replacement) {
 
   parent.setReplacement(ArgV, Replacement);
 
@@ -172,7 +152,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 
     if(parent.shouldIgnoreInstruction(I)) {
       LPDEBUG(*I << " instruction not under consideration, ignoring\n");
-      return;
+      continue;
     }
 
     LPDEBUG("Considering user instruction " << *I << "\n");
@@ -282,45 +262,148 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 
 }
 
-void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC, bool force) {
+void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC) {
 
   debugIndent += 2;
-  realGetImprovementBenefit(ArgV, ArgC, force);
+  realGetImprovementBenefit(ArgV, ArgC);
   debugIndent -= 2;
 
 }
 
 void HypotheticalConstantFolder::tryGetImprovementBenefit(Value* ArgV, ValCtx ArgC, bool force) {
 
+  if(!force) {
+    if(getReplacement(ArgV) != make_vc(ArgV, 0)) {
+      LPDEBUG(*ArgV << " already constant\n");
+      return;
+    }
+  }
+
   if(Instruction* ArgI = dyn_cast<Instruction>(ArgV)) {
   
-    if(ArgI && parent.shouldIgnoreBlock(ArgI->getParent())) { 
+    if(ArgI && parent.shouldIgnoreBlockForConstProp(ArgI->getParent())) { 
       LPDEBUG(*ArgI << " block not under consideration, ignoring\n");
       return;
     }
 
   }
 
-  getImprovementBenefit(ArgV, ArgC, force);
+  getImprovementBenefit(ArgV, ArgC);
 
 }
 
-void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
+bool HypotheticalConstantFolder::collectDeadBlocks() {
 
-  getImprovementBenefit(V, Replacement);
+  bool anyImprovements = false;
+  bool improvedThisTime = true;
 
-  bool anyStoreForwardingBenefits = true;
+  while(improvedThisTime) {
 
-  while(anyStoreForwardingBenefits) {
+    improvedThisTime = false;
 
-    LPDEBUG("Considering store-to-load forwards...\n");
-    anyStoreForwardingBenefits = false;
+    LPDEBUG("Collecting dead BBs...\n");
 
-    for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; FI++) {
+    SmallSet<BasicBlock*, 8> LiveBlocks;
+    SmallVector<BasicBlock*, 4> BlockWL;
+
+    BlockWL.push_back(parent.getEntryBlock());
+
+    while(BlockWL.size()) {
+
+      SmallVector<BasicBlock*, 4> BBs = BlockWL;
+      BlockWL.clear();
+
+      for(SmallVector<BasicBlock*, 4>::iterator BI = BBs.begin(), BE = BBs.end(); BI != BE; ++BI) {
+
+	BasicBlock* BB = *BI;
+
+	if(LiveBlocks.insert(BB))
+	  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+	    if(!parent.edgeIsDead(BB, *SI))
+	      BlockWL.push_back(*SI);
+	  }
+
+      }
+
+    }
+
+    SmallVector<BasicBlock*, 4> NewlyDeadBlocks;
+
+    for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
 
       BasicBlock* BB = FI;
 
-      if(parent.shouldIgnoreBlock(BB))
+      if(parent.shouldIgnoreBlockForDCE(BB))
+	continue;
+
+      if(!LiveBlocks.count(BB)) {
+	if(!parent.blockIsDead(BB)) {
+	  improvedThisTime = true;
+	  anyImprovements = true;
+	  LPDEBUG("Block " << BB->getName() << " killed\n");
+	  parent.setBlockDead(BB);
+	  NewlyDeadBlocks.push_back(BB);
+	}
+      }
+
+    }
+
+    for(SmallVector<BasicBlock*, 4>::iterator BI = NewlyDeadBlocks.begin(), BE = NewlyDeadBlocks.end(); BI != BE; ++BI) {
+
+      BasicBlock* BB = *BI;
+
+      for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+	BasicBlock* SuccBB = *SI;
+	getRemoveBlockPredBenefit(SuccBB, BB);
+      }
+
+    }
+
+  }
+
+  return anyImprovements;
+
+}
+
+bool HypotheticalConstantFolder::improvePHINodes() {
+
+  SmallVector<BasicBlock*, 4> CheckBlocks = BlocksImproved;
+  BlocksImproved.clear();
+
+  for(SmallVector<BasicBlock*, 4>::iterator BI = CheckBlocks.begin(), BE = CheckBlocks.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = *BI;
+
+    if(!parent.blockIsDead(BB)) {
+      // See if any of our PHI nodes are now defined
+      for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
+	PHINode* PN = cast<PHINode>(I);
+	getPHINodeBenefit(PN);
+      }
+    }
+
+  }
+
+  return CheckBlocks.size() > 0;
+
+}
+
+bool HypotheticalConstantFolder::improveLoadInsts() {
+
+  bool improvedThisTime = true;
+  bool anyImprovements = false;
+
+  LPDEBUG("Considering store-to-load forwards...\n");
+
+  while(improvedThisTime) {
+
+    improvedThisTime = false;
+
+    for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+      BasicBlock* BB = FI;
+
+      if(parent.shouldIgnoreBlockForConstProp(BB))
 	continue;
 
       if(parent.blockIsDead(BB))
@@ -340,7 +423,8 @@ void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
 	    ValCtx Result = parent.tryForwardLoad(LI);
 	    if(Result.first) {
 	      tryGetImprovementBenefit(LI, Result);
-	      anyStoreForwardingBenefits = true;
+	      anyImprovements = true;
+	      improvedThisTime = true;
 	    }
 	  }
 
@@ -350,12 +434,32 @@ void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
 
     }
 
-    if(anyStoreForwardingBenefits) {
+    if(improvedThisTime) {
       LPDEBUG("At least one load was improved; trying again\n");
     }
     else {
       LPDEBUG("No loads were made constant\n");
     }
+
+  }
+
+  return anyImprovements;
+
+}
+
+void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
+
+  getImprovementBenefit(V, Replacement);
+
+  bool anyImprovements = true;
+
+  while(anyImprovements) {
+
+    anyImprovements = false;
+    
+    anyImprovements |= collectDeadBlocks();
+    anyImprovements |= improvePHINodes();
+    anyImprovements |= improveLoadInsts();
 
   }
   

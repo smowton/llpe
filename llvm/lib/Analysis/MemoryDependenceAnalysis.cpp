@@ -861,7 +861,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
     for (BasicBlock **PI = PredCache->GetPreds(BB); *PI; ++PI) {
       BasicBlock *Pred = *PI;
       
-      if(parent && (parent->edgeIsDead(*PI, BB) || parent->shouldIgnoreBlock(*PI)))
+      if(parent && (parent->edgeIsDead(*PI, BB)))
 	continue;
 
       // Get the PHI translated pointer in this predecessor.  This can fail if

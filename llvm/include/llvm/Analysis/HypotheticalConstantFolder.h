@@ -104,10 +104,12 @@ class HCFParentCallbacks {
   virtual void setReplacement(Value*, ValCtx) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
   virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
-  virtual bool shouldIgnoreBlock(BasicBlock*) = 0;
+  virtual bool shouldIgnoreBlockForConstProp(BasicBlock*) = 0;
+  virtual bool shouldIgnoreBlockForDCE(BasicBlock*) = 0;
   virtual bool shouldIgnoreEdge(BasicBlock*, BasicBlock*) = 0;
   virtual bool shouldIgnoreInstruction(Instruction*) = 0;
   virtual bool blockIsDead(BasicBlock*) = 0;
+  virtual void setBlockDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
 
 };
@@ -117,6 +119,8 @@ class HypotheticalConstantFolder {
   Function* F;
   AliasAnalysis* AA;
   TargetData* TD;
+
+  SmallVector<BasicBlock*, 4> BlocksImproved;
 
   int debugIndent;
 
@@ -128,10 +132,15 @@ class HypotheticalConstantFolder {
 
   void realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
   void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void realGetImprovementBenefit(Value* V, ValCtx, bool force);
+  void realGetImprovementBenefit(Value* V, ValCtx);
   void tryGetImprovementBenefit(Value* V, ValCtx, bool force = false);
-  void getImprovementBenefit(Value* V, ValCtx, bool force = false);
+  void getImprovementBenefit(Value* V, ValCtx);
   void getPHINodeBenefit(PHINode* PN);
+
+  bool improveLoadInsts();
+  bool improvePHINodes();
+  bool collectDeadBlocks();
+
   std::string dbgind();
 
  public:
