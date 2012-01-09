@@ -5,19 +5,23 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  nested_loops nonconstarrayloop partial_nested_loops pass-pointer-in
 
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
+LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))
 
 .PHONY: all clean
 
-all: $(TARGETS) $(BC_TARGETS)
+all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS)
 
 % : %.c
 	gcc -std=c99 $< -o $@
 
-%.ll : %.c
+%.ltemp : %.c
 	$(LLVM_GCC) -std=c99 $< -o $@
 
-%.bc : %.ll
+%.bc : %.ltemp
 	opt -mem2reg -loopsimplify -lcssa $< -o $@
+
+%.ll : %.bc
+	llvm-dis $<
 
 clean:
 	-rm -f $(TARGETS)

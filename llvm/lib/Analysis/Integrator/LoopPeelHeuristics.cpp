@@ -779,7 +779,7 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
 	for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
 	  Argument* A = AI;
 	  Value* AVal = CI->getArgOperand(A->getArgNo());
-	  if(AVal == AI) {
+	  if(AVal == Improved) {
 	    IA->foldArgument(A, make_vc(ImprovedTo.first, ImprovedTo.second + 1));
 	  }
 	}
