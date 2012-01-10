@@ -50,16 +50,28 @@ bool PHITransAddr::VerifySubExpr(const Value* Expr,
   // If this is a non-instruction value, there is nothing to do.
   const Instruction *I = dyn_cast<Instruction>(Expr);
   if (I == 0) return true;
-  
+
+  DEBUG(dbgs() << "Verifying " << *Expr << "\n");
+
   // If it's an instruction, it is either in Tmp or its operands recursively
   // are.
   SmallVectorImpl<Instruction*>::iterator Entry =
     std::find(InstInputs.begin(), InstInputs.end(), I);
   if (Entry != InstInputs.end()) {
+    DEBUG(dbgs() << "Erased " << *Expr << "\n");
     InstInputs.erase(Entry);
     return true;
   }
-  
+
+  if(parent) {
+    ValCtx Replacement = parent->getReplacement(const_cast<Value*>(Expr));
+    DEBUG(dbgs() << "Replaced " << *Expr << " with " << *(Replacement.first) << "@" << Replacement.second << "\n");
+    if(Replacement.second > 0)
+      return true;
+    if(!(I = dyn_cast<Instruction>(Replacement.first)))
+      return true;
+  }
+ 
   // If it isn't in the InstInputs list it is a subexpr incorporated into the
   // address.  Sanity check that it is phi translatable.
   if (!CanPHITrans(I)) {
@@ -146,14 +158,19 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
                                          const DominatorTree *DT) {
   // If this is a non-instruction value, it can't require PHI translation.
   Instruction *Inst = dyn_cast<Instruction>(V);
+  Instruction *OrigInst = Inst;
   if (Inst == 0) return V;
   
   // Determine whether 'Inst' is an input to our PHI translatable expression.
   bool isInput = std::count(InstInputs.begin(), InstInputs.end(), Inst);
 
+  DEBUG(dbgs() << "Translate " << *V << ", input: " << isInput << "\n"); 
+
   if(parent) {
     // Check if our parent can replace this for us:
     ValCtx VC = parent->getReplacement(V);
+
+    DEBUG(dbgs() << "Replaced with " << *(VC.first) << "@" << VC.second << "\n");
 
     if(VC.second > 0) // The value is defined by something from an outer scope relative to PredBB. Fine.
       return V;
@@ -174,7 +191,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     // translated, we need to incorporate the value into the expression or fail.
 
     // In either case, the instruction itself isn't an input any longer.
-    InstInputs.erase(std::find(InstInputs.begin(), InstInputs.end(), Inst));
+    InstInputs.erase(std::find(InstInputs.begin(), InstInputs.end(), OrigInst));
     
     // If this is a PHI, go ahead and translate it.
     if (PHINode *PN = dyn_cast<PHINode>(Inst)) {

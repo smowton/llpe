@@ -1228,13 +1228,13 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
     }
     else {
       ValCtx Repl = getReplacement(Ptr);
-      if(Repl.first == Ptr && Repl.second == 0) {
-	LPDEBUG("Won't investigate load from parent function due to unresolved pointer " << *Ptr << "\n");
-	success = false; break;
-      }
-      else if(Repl.second > 0) {
+      if(isIdentifiedObject(Repl.first) || Repl.second > 0) {
 	Expr.push_back((new SymThunk(Repl)));
 	break;
+      }
+      else if(Repl.first == Ptr && Repl.second == 0) {
+	LPDEBUG("Won't investigate load from parent context due to unresolved pointer " << *Ptr << "\n");
+	success = false; break;
       }
       else {
 	Ptr = Repl.first; // Must continue resolving!
