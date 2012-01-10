@@ -109,7 +109,7 @@ class PeelAttempt;
 
     void setNonLocalReplacement(Value* V, Constant* C);
     void setNonLocalEdgeDead(BasicBlock* B1, BasicBlock* B2);
-    Constant* getConstReplacement(Value* V, int frameIndex = 0);
+    Constant* getConstReplacement(Value* V);
     virtual Loop* getLoopContext() = 0;
     virtual Instruction* getEntryInstruction() = 0;
     void tryImproveChildren(Value* Improved);
@@ -132,7 +132,7 @@ class PeelAttempt;
     MemDepResult getUniqueDependency(LoadInst* LI);
     ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr);
     bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result);
-    bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset = 0);
+    bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result);
     void forceExploreChildren();
     void improveParentAndChildren();
 
@@ -145,7 +145,8 @@ class PeelAttempt;
 
     // Overrides:
 
-    virtual ValCtx getReplacement(Value* V, int frameIndex = 0);
+    virtual ValCtx getDefaultVC(Value*);
+    virtual ValCtx getReplacement(Value* V);
     virtual void setReplacement(Value*, ValCtx);
     virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
     virtual void setEdgeDead(BasicBlock*, BasicBlock*);
@@ -182,7 +183,8 @@ class PeelAttempt;
 
     void giveInvariantsTo(PeelIteration* NewIter);
     void foldValue(Value* Improved, ValCtx ImprovedTo);
-    virtual ValCtx getReplacement(Value* V, int frameIndex = 0);
+    virtual ValCtx getReplacement(Value* V);
+    virtual ValCtx getDefaultVC(Value* V);
     virtual bool shouldIgnoreBlockForConstProp(BasicBlock*);
     virtual bool shouldIgnoreBlockForDCE(BasicBlock*);
     virtual bool shouldIgnoreEdge(BasicBlock*, BasicBlock*);
@@ -195,6 +197,9 @@ class PeelAttempt;
     virtual void tryImproveParent(Value*);
     virtual void tryImproveParentDE(std::pair<BasicBlock*, BasicBlock*>);
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
+    virtual void describe(raw_ostream& Stream) const {
+      Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << ")";
+    }
 
     virtual void collectAllBlockStats();
     virtual void printHeader(raw_ostream&) const;
@@ -241,7 +246,7 @@ class PeelAttempt;
       for(BasicBlock::iterator BI = HB->begin(), BE = HB->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
 	PHINode* PN = cast<PHINode>(BI);
-	ValCtx PHVal = make_vc(PN->getIncomingValueForBlock(PB), 0);
+	ValCtx PHVal = parent->getDefaultVC(PN->getIncomingValueForBlock(PB));
 	ValCtx Incoming = parent->getReplacement(PHVal.first);
 	if(Incoming != PHVal || shouldForwardValue(PHVal.first)) {
 	  LPDEBUG("Propagating a value from the loop preheader:\n");
@@ -290,6 +295,11 @@ class PeelAttempt;
     virtual Loop* getLoopContext();
     virtual void tryImproveParent(Value*);
     virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr);
+    virtual void describe(raw_ostream& Stream) const {
+
+      Stream << "(" << F.getName() << ")";
+
+    }
 
     virtual void collectAllBlockStats();
     virtual void printHeader(raw_ostream&) const;
@@ -375,77 +385,67 @@ bool instructionCounts(Instruction* I) {
 
 // Implement HCFParentCallbacks, except for tryForwardLoad which comes later
 
-ValCtx IntegrationAttempt::getReplacement(Value* V, int frameIndex) {
+ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
-  if(!frameIndex) {
-    DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
-    if(it == improvedValues.end())
-      return make_vc(V, 0);
-    else
-      return it->second;
-  }
-  else {
-    if(parent) {
-      ValCtx Result =  parent->getReplacement(V, frameIndex - 1);
-      return make_vc(Result.first, Result.second + 1);
-    }
-    else {
-      LPDEBUG("Anomaly: asked to resolve " << *V << "@" << frameIndex << " whose frame is out of range\n");
-      return make_vc(V, 0);
-    }
-  }
+  if(Constant* C = dyn_cast<Constant>(V))
+    return const_vc(C);
+
+  DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
+  if(it == improvedValues.end())
+    return make_vc(V, this);
+  else
+    return it->second;
 
 }
 
-ValCtx PeelIteration::getReplacement(Value* V, int frameIndex) {
+ValCtx PeelIteration::getReplacement(Value* V) {
 
-  // frameIndex for us refers to previous iterations for a while, then once they bottom out to our parent
-  // loop, then *his* previous iterations, then eventually the base function. Avoid a massive stack by
-  // taking a shortcut.
-  // The exception is values directly referenced from outside this loop. Their frame index is an offset from
-  // *their* innermost loop iteration.
+  // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
+  // or an invariant belonging to one of my parent loops, or the root function.
 
-  Instruction* I;
-  if((I = dyn_cast<Instruction>(V)) && !L->contains(I->getParent())) {
-    return parent->getReplacement(I, frameIndex);
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+    Loop* VL = LI[&F]->getLoopFor(I->getParent());
+    if(VL != L)
+      return parent->getReplacement(V);
   }
-  else if(!frameIndex) {
-    DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
-    if(it == improvedValues.end())
-      return make_vc(V, 0);
-    else
-      return it->second;
-  }
-  else {
-    return parentPA->getReplacement(V, frameIndex, this->iterationCount);
-  }
+
+  return IntegrationAttempt::getReplacement(V);
 
 }
 
-ValCtx PeelAttempt::getReplacement(Value* V, int frameIndex, int sourceIteration) {
+ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
 
-  int targetIteration = sourceIteration - frameIndex;
-
-  if(targetIteration >= 0) {
-    return Iterations[targetIteration]->getReplacement(V, 0);
-  }
-  else {
-    return parent->getReplacement(V, frameIndex - sourceIteration);
-  }
+  if(Constant* C = dyn_cast<Constant>(V))
+    return const_vc(C);
+  
+  return make_vc(V, this);
 
 }
 
-Constant* IntegrationAttempt::getConstReplacement(Value* V, int frameIndex) {
+ValCtx PeelIteration::getDefaultVC(Value* V) {
+
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+    Loop* VL = LI[&F]->getLoopFor(I->getParent());
+    if(VL != L)
+      return parent->getDefaultVC(V);
+  }
+
+  return IntegrationAttempt::getDefaultVC(V);
+
+}
+
+Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
-  ValCtx Replacement = getReplacement(V, frameIndex);
+  ValCtx Replacement = getReplacement(V);
   if(Constant* C = dyn_cast<Constant>(Replacement.first))
     return C;
   return 0;
 
 }
 
+// Only ever called on things that belong in this scope, thanks to shouldIgnoreBlock et al.
 void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
 
   newLocalImprovedValues.push_back(V);
@@ -563,7 +563,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 	Value* AVal = CI->getArgOperand(A->getArgNo());
 	if(shouldForwardValue(AVal)) {
 	  LPDEBUG("Propagating a natural constant argument:\n");
-	  IA->foldArgument(A, make_vc(AVal, 1));
+	  IA->foldArgument(A, getDefaultVC(AVal));
 	}
       }
 
@@ -602,7 +602,7 @@ void PeelIteration::giveInvariantsTo(PeelIteration* NewIter) {
 
     if(shouldProp) {
       LPDEBUG("Propagating a loop invariant to new iteration:\n");
-      NewIter->foldValue(it->first, make_vc(it->second.first, it->second.second + 1));
+      NewIter->foldValue(it->first, it->second);
     }
 
   }
@@ -646,8 +646,8 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
       for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
 	PHINode* PN = cast<PHINode>(BI);
-	ValCtx LatchVal = make_vc(PN->getIncomingValueForBlock(Latch), 0);
-	ValCtx Incoming = OldIter->getReplacement(LatchVal.first);
+	ValCtx LatchVal = (--(Iterations.back()))->getDefaultVC(PN->getIncomingValueForBlock(Latch));
+	ValCtx Incoming = LatchVal.second->getReplacement(LatchVal.first);
 	if(Incoming != LatchVal || shouldForwardValue(LatchVal.first)) {
 	  LPDEBUG("Propagating a value across the loop latch:\n");
 	  NewIter->foldValue(PN, Incoming);
@@ -780,7 +780,7 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
 	  Argument* A = AI;
 	  Value* AVal = CI->getArgOperand(A->getArgNo());
 	  if(AVal == Improved) {
-	    IA->foldArgument(A, make_vc(ImprovedTo.first, ImprovedTo.second + 1));
+	    IA->foldArgument(A, ImprovedTo);
 	  }
 	}
 
@@ -809,7 +809,7 @@ void IntegrationAttempt::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo
 
 void IntegrationAttempt::tryImproveChildren(Value* Improved) {
 
-  ValCtx ImprovedTo = getReplacement(Improved, 0);
+  ValCtx ImprovedTo = getReplacement(Improved);
   LPDEBUG("Considering passing " << *Improved << " -> " << ImprovedTo << " to child calls and loops:\n");
       
   for (Value::use_iterator UI = Improved->use_begin(), UE = Improved->use_end(); UI != UE;++UI) {
@@ -870,7 +870,7 @@ void IntegrationAttempt::improveParentAndChildren() {
 
       if(improvedValues.find(it->first) == improvedValues.end()) {
 	LPDEBUG("Integrating nonlocal improvement " << *(it->first) << " -> " << *(it->second) << "\n");
-	H.getBenefit(it->first, make_vc(it->second, 0));
+	H.getBenefit(it->first, const_vc(it->second));
       }
 
     }
@@ -953,7 +953,7 @@ void InlineAttempt::tryImproveParent(Value* Improved) {
 	else
 	  foundReturnInst = true;
 	Value* ThisRet = RI->getReturnValue();
-	Constant* C = getConstReplacement(ThisRet, 0);
+	Constant* C = getConstReplacement(ThisRet);
 	if(C)
 	  returnVal = C;
 	else {
@@ -1130,7 +1130,7 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
     return VCNull;
   }
 
-  if(improved.first != Res.getInst() || improved.second > 0) {
+  if(improved.first != Res.getInst() || improved.second != this) {
     LPDEBUG("Definition improved to " << improved << "\n");
     return improved;
   }
@@ -1200,8 +1200,8 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
 
   LPDEBUG("Trying to resolve load from " << *LoadI << " by exploring parent contexts\n");
 
-  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an argument or an outer object,
-  // and construct a symbolic expression to pass to our parent as we go.
+  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an identified object, and
+  // build a symbolic expression representing the derived expression if so.
  
   bool success = true;
 
@@ -1347,7 +1347,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     return SubcallResult;
   }
   else {
-    if(Result != make_vc(0, 0)) {
+    if(Result != VCNull) {
       LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
     }
     return Result;
@@ -1358,14 +1358,8 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
 ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr) {
 
-  SymThunk* Th = cast<SymThunk>(Expr.back());
-  Th->RealVal = std::make_pair(Th->RealVal.first, Th->RealVal.second - 1);
   LPDEBUG("Resolving load at call site\n");
-  ValCtx Result = parent->tryResolveLoadAtChildSite(this, Expr);
-  if(Result.first)
-    return make_vc(Result.first, Result.second + 1);
-  else
-    return VCNull;
+  return parent->tryResolveLoadAtChildSite(this, Expr);
 
 }
 
@@ -1390,20 +1384,20 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
-    if((originIter - iter) > Th->RealVal.second) {
-      LPDEBUG("Abandoning resolution: " << Th->RealVal << " is out of scope\n");
-      return VCNull;
-    }
-
-    if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, originIter - iter)) {
+    if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result)) {
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
-	return make_vc(Result.first, Result.second + (originIter - iter));
+	return Result;
       }
       else {
 	LPDEBUG("Resolution failed\n");
 	return VCNull;
       }
+    }
+
+    if(Th->RealVal.second == Iterations[iter]) {
+      LPDEBUG("Abandoning resolution: " << Th->RealVal << " is out of scope\n");
+      return VCNull;
     }
 
   }
@@ -1412,7 +1406,6 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
   LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
 
-  Th->RealVal = make_vc(Th->RealVal.first, Th->RealVal.second - originIter);
   return parent->tryResolveLoadAtChildSite(Iterations[0], Expr);
 
 }
@@ -1473,7 +1466,7 @@ void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstru
 
 }
 
- bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, int offset) {
+ bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result) {
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
 

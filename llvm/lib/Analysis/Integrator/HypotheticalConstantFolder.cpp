@@ -51,7 +51,7 @@ std::string HypotheticalConstantFolder::dbgind() {
 
 ValCtx HypotheticalConstantFolder::getReplacement(Value* V) {
 
-  return parent.getReplacement(V, 0);
+  return parent.getReplacement(V);
 
 }
 
@@ -104,7 +104,7 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
     if(parent.edgeIsDead(*PI, BB))
       continue;
 
-    ValCtx oldValue = make_vc(PN->getIncomingValueForBlock(*PI), 0);
+    ValCtx oldValue = parent.getDefaultVC(PN->getIncomingValueForBlock(*PI));
     ValCtx predValue = getReplacement(oldValue.first);
     if(!onlyValue.first)
       onlyValue = predValue;
@@ -207,9 +207,9 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	if(Cond) {
 	  ValCtx newVal;
 	  if(cast<ConstantInt>(Cond)->isZero())
-	    newVal = make_vc(SI->getFalseValue(), 0);
+	    newVal = parent.getDefaultVC(SI->getFalseValue());
 	  else
-	    newVal = make_vc(SI->getTrueValue(), 0);
+	    newVal = parent.getDefaultVC(SI->getTrueValue());
 	  if(getReplacement(SI) != newVal)
 	    tryGetImprovementBenefit(SI, newVal);
 	}
@@ -252,7 +252,7 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	    }
 	    continue;
 	  }
-	  tryGetImprovementBenefit(I, make_vc(newConst, 0));
+	  tryGetImprovementBenefit(I, const_vc(newConst));
 	}
 
       }
@@ -273,7 +273,7 @@ void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC)
 void HypotheticalConstantFolder::tryGetImprovementBenefit(Value* ArgV, ValCtx ArgC, bool force) {
 
   if(!force) {
-    if(getReplacement(ArgV) != make_vc(ArgV, 0)) {
+    if(getReplacement(ArgV) != parent.getDefaultVC(ArgV)) {
       LPDEBUG(*ArgV << " already constant\n");
       return;
     }
@@ -471,7 +471,14 @@ void HypotheticalConstantFolder::killEdge(BasicBlock* B1, BasicBlock* B2) {
 
 }
 
-namespace llvm { 
+namespace llvm {
+
+  raw_ostream& operator<<(raw_ostream& Stream, const HCFParentCallbacks& P) {
+
+    P.describe(Stream);
+    return Stream;
+
+  }
 
   raw_ostream& operator<<(raw_ostream& Stream, const ValCtx& VC) {
 
@@ -480,7 +487,7 @@ namespace llvm {
     else if(isa<Constant>(VC.first) || !VC.second)
       Stream << *VC.first;
     else
-      Stream << *VC.first << "@" << VC.second;
+      Stream << *VC.first << "@" << *VC.second;
 
     return Stream;
 

@@ -303,7 +303,7 @@ namespace {
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
       this->parent = parent;
-      AliasResult Alias = aliasCheck(make_vc(const_cast<Value*>(V1), 0), V1Size, make_vc(const_cast<Value*>(V2), 0), V2Size);
+      AliasResult Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
       Visited.clear();
       this->parent = 0;
       return Alias;      
@@ -373,13 +373,16 @@ namespace {
 
     ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset);
 
-    ValCtx getReplacement(const Value*, int frame = 0);
-    Constant* getConstReplacement(const Value*, int frame = 0);
-    Value* tryConstReplacement(const Value*, int frame = 0);
+    ValCtx getReplacement(const Value*);
+    ValCtx getReplacement(const ValCtx);
+    Constant* getConstReplacement(const Value*);
+    Constant* getConstReplacement(const ValCtx);
+    Value* tryConstReplacement(const Value*);
+    ValCtx tryConstReplacement(const ValCtx);
 
     Value* GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
 			       ExtensionKind &Extension,
-			       const TargetData &TD, unsigned Depth, int frame);
+			       const TargetData &TD, unsigned Depth, HCFParentCallbacks* Ctx);
 
   };
 }  // End of anonymous namespace
@@ -407,31 +410,57 @@ bool BasicAliasAnalysis::GEPHasAllZeroIndices(const GEPOperator* GEP) {
   return true;
 }
 
-ValCtx BasicAliasAnalysis::getReplacement(const Value* VConst, int frame) {
+ValCtx BasicAliasAnalysis::getReplacement(const Value* VConst) {
 
   Value* V = const_cast<Value*>(VConst);
 
   if(!parent)
     return make_vc(V, 0);
 
-  return parent->getReplacement(V, frame);
+  return parent->getReplacement(V);
 
 }
 
-Constant* BasicAliasAnalysis::getConstReplacement(const Value* VConst, int frame) {
+ValCtx BasicAliasAnalysis::getReplacement(const ValCtx VC) {
 
-  ValCtx VC = getReplacement(VConst, frame);
+  if(!VC.second)
+    return VC;
+  else
+    return VC.second->getReplacement(VC.first);
+
+}
+
+Constant* BasicAliasAnalysis::getConstReplacement(const Value* VConst) {
+
+  ValCtx VC = getReplacement(VConst);
   return dyn_cast<Constant>(VC.first);
 
 }
 
-Value* BasicAliasAnalysis::tryConstReplacement(const Value* VConst, int frame) {
+Constant* BasicAliasAnalysis::getConstReplacement(const ValCtx VC) {
+
+  ValCtx VC2 = getReplacement(VC);
+  return dyn_cast<Constant>(VC2.first);
+
+}
+
+Value* BasicAliasAnalysis::tryConstReplacement(const Value* VConst) {
 
   Constant* Ret = getConstReplacement(VConst);
   if(Ret)
     return Ret;
   else
     return const_cast<Value*>(VConst);
+
+}
+
+ValCtx BasicAliasAnalysis::tryConstReplacement(const ValCtx VC) {
+
+  Constant* Ret = getConstReplacement(VC);
+  if(Ret)
+    return const_vc(Ret);
+  else
+    return VC;
 
 }
 
@@ -445,7 +474,7 @@ Value* BasicAliasAnalysis::tryConstReplacement(const Value* VConst, int frame) {
 /// represented in the result.
 Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
 					       ExtensionKind &Extension,
-					       const TargetData &TD, unsigned Depth, int frame) {
+					       const TargetData &TD, unsigned Depth, HCFParentCallbacks* ctx) {
   assert(V->getType()->isIntegerTy() && "Not an integer value");
 
   // Limit our recursion depth.
@@ -456,7 +485,8 @@ Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Of
   }
   
   if (BinaryOperator *BOp = dyn_cast<BinaryOperator>(V)) {
-    if (ConstantInt *RHSC = dyn_cast<ConstantInt>(tryConstReplacement(BOp->getOperand(1), frame))) {
+    ValCtx VC = make_vc(BOp->getOperand(1), ctx);
+    if (ConstantInt *RHSC = dyn_cast<ConstantInt>(tryConstReplacement(VC).first)) {
       switch (BOp->getOpcode()) {
       default: break;
       case Instruction::Or:
@@ -467,18 +497,18 @@ Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Of
         // FALL THROUGH.
       case Instruction::Add:
         V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
-                                TD, Depth+1, frame);
+                                TD, Depth+1, ctx);
         Offset += RHSC->getValue();
         return V;
       case Instruction::Mul:
         V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
-                                TD, Depth+1, frame);
+                                TD, Depth+1, ctx);
         Offset *= RHSC->getValue();
         Scale *= RHSC->getValue();
         return V;
       case Instruction::Shl:
         V = GetLinearExpression(BOp->getOperand(0), Scale, Offset, Extension,
-                                TD, Depth+1, frame);
+                                TD, Depth+1, ctx);
         Offset <<= RHSC->getValue().getLimitedValue();
         Scale <<= RHSC->getValue().getLimitedValue();
         return V;
@@ -499,7 +529,7 @@ Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Of
     Extension = isa<SExtInst>(V) ? EK_SignExt : EK_ZeroExt;
 
     Value *Result = GetLinearExpression(CastOp, Scale, Offset, Extension,
-                                        TD, Depth+1, frame);
+                                        TD, Depth+1, ctx);
     Scale.zext(OldWidth);
     Offset.zext(OldWidth);
     
@@ -555,7 +585,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
     
     const GEPOperator *GEPOp = dyn_cast<GEPOperator>(Op);
     if (GEPOp == 0) {
-      ValCtx NewV = getReplacement(V.first, V.second);
+      ValCtx NewV = getReplacement(V);
       // Look through a resolved pointer if our parent has that information
       if(NewV == V)
 	return V;
@@ -584,12 +614,12 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
     gep_type_iterator GTI = gep_type_begin(GEPOp);
     for (User::const_op_iterator I = GEPOp->op_begin()+1,
          E = GEPOp->op_end(); I != E; ++I) {
-      Value *Index = tryConstReplacement(*I, V.second);
+      ValCtx Index = tryConstReplacement(make_vc(*I, V.second));
       
       // Compute the (potentially symbolic) offset in bytes for this index.
       if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
         // For a struct, add the member offset.
-        unsigned FieldNo = cast<ConstantInt>(Index)->getZExtValue();
+        unsigned FieldNo = cast<ConstantInt>(Index.first)->getZExtValue();
         if (FieldNo == 0) continue;
         
         BaseOffs += TD->getStructLayout(STy)->getElementOffset(FieldNo);
@@ -598,7 +628,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
 
       // For an array/pointer, add the element offset, explicitly scaled.
 
-      if (ConstantInt* CIdx = dyn_cast<ConstantInt>(Index)) {
+      if (ConstantInt* CIdx = dyn_cast<ConstantInt>(Index.first)) {
         if (CIdx->isZero()) continue;
         BaseOffs += TD->getTypeAllocSize(*GTI)*CIdx->getSExtValue();
         continue;
@@ -609,14 +639,13 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
       
       // If the integer type is smaller than the pointer size, it is implicitly
       // sign extended to pointer size.
-      unsigned Width = cast<IntegerType>(Index->getType())->getBitWidth();
+      unsigned Width = cast<IntegerType>(Index.first->getType())->getBitWidth();
       if (TD->getPointerSizeInBits() > Width)
         Extension = EK_SignExt;
       
       // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
       APInt IndexScale(Width, 0), IndexOffset(Width, 0);
-      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension,
-                                  *TD, 0, V.second);
+      Index = make_vc(GetLinearExpression(Index.first, IndexScale, IndexOffset, Extension, *TD, 0, V.second), V.second);
       
       // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
       // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
@@ -629,7 +658,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
       //   A[x][x] -> x*16 + x*4 -> x*20
       // This also ensures that 'x' only appears in the index list once.
       for (unsigned i = 0, e = VarIndices.size(); i != e; ++i) {
-        if (VarIndices[i].VC == make_vc(Index, V.second) &&
+        if (VarIndices[i].VC == Index &&
             VarIndices[i].Extension == Extension) {
           Scale += VarIndices[i].Scale;
           VarIndices.erase(VarIndices.begin()+i);
@@ -645,7 +674,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
       }
       
       if (Scale) {
-        VariableGEPIndex Entry = {make_vc(Index, V.second), Extension, Scale};
+        VariableGEPIndex Entry = {Index, Extension, Scale};
         VarIndices.push_back(Entry);
       }
     }
@@ -964,7 +993,7 @@ BasicAliasAnalysis::aliasSelect(const ValCtx V1, unsigned SISize,
   if (!Visited.insert(SI))
     return MayAlias;
 
-  ConstantInt* SICond = cast_or_null<ConstantInt>(getConstReplacement(SI->getCondition(), V1.second));
+  ConstantInt* SICond = cast_or_null<ConstantInt>(getConstReplacement(make_vc(SI->getCondition(), V1.second)));
   if(SICond) {
     if(SICond == ConstantInt::getTrue(SI->getContext()))
       return aliasCheck(make_vc(SI->getTrueValue(), V1.second), SISize, V2, V2Size);
@@ -975,7 +1004,7 @@ BasicAliasAnalysis::aliasSelect(const ValCtx V1, unsigned SISize,
   // If the values are Selects with the same condition, we can do a more precise
   // check: just check for aliases between the values on corresponding arms.
   if (SelectInst *SI2 = dyn_cast<SelectInst>(V2.first))
-    if (getReplacement(SI->getCondition(), V1.second) == getReplacement(SI2->getCondition(), V2.second)) {
+    if (getReplacement(make_vc(SI->getCondition(), V1.second)) == getReplacement(make_vc(SI2->getCondition(), V2.second))) {
       AliasResult Alias =
         aliasCheck(make_vc(SI->getTrueValue(), V1.second), SISize,
                    make_vc(SI2->getTrueValue(), V2.second), V2Size);
@@ -1127,7 +1156,7 @@ BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
     // is transparently proxied as "inst at scope X + n".
     if(isIdentifiedObject(O))
       return make_vc(O, CurrentV.second);
-    ValCtx NewV = getReplacement(O, CurrentV.second);
+    ValCtx NewV = getReplacement(make_vc(O, CurrentV.second));
     if(NewV == make_vc(O, CurrentV.second))
       return NewV;
     CurrentV = NewV;

@@ -24,18 +24,26 @@ class raw_ostream;
 class ConstantInt;
 class Type;
 
-typedef std::pair<Value*, int> ValCtx;
+class HCFParentCallbacks;
+
+typedef std::pair<Value*, HCFParentCallbacks*> ValCtx;
 
 raw_ostream &operator<<(raw_ostream&, const ValCtx&);
 raw_ostream &operator<<(raw_ostream&, const MemDepResult&);
 
-inline ValCtx make_vc(Value* V, int F) {
+#define VCNull (std::make_pair<Value*, HCFParentCallbacks*>(0, 0))
 
-  return std::make_pair(V, F);
+inline ValCtx const_vc(Constant* C) {
+
+  return std::make_pair<Constant*, HCFParentCallbacks*>(C, 0);
 
 }
 
-#define VCNull (make_vc(0, 0))
+inline ValCtx make_vc(Value* V, HCFParentCallbacks* H) {
+
+  return std::make_pair(V, H);
+
+}
 
 enum SymSubclasses {
 
@@ -100,7 +108,7 @@ class HCFParentCallbacks {
  public:
 
   virtual ValCtx tryForwardLoad(LoadInst*) = 0;
-  virtual ValCtx getReplacement(Value*, int frameIndex = 0) = 0;
+  virtual ValCtx getReplacement(Value*) = 0;
   virtual void setReplacement(Value*, ValCtx) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
   virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
@@ -111,6 +119,8 @@ class HCFParentCallbacks {
   virtual bool blockIsDead(BasicBlock*) = 0;
   virtual void setBlockDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
+  virtual ValCtx getDefaultVC(Value*) = 0;
+  virtual void describe(raw_ostream&) const = 0;
 
 };
 

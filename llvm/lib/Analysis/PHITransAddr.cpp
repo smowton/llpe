@@ -51,22 +51,18 @@ bool PHITransAddr::VerifySubExpr(const Value* Expr,
   const Instruction *I = dyn_cast<Instruction>(Expr);
   if (I == 0) return true;
 
-  DEBUG(dbgs() << "Verifying " << *Expr << "\n");
-
   // If it's an instruction, it is either in Tmp or its operands recursively
   // are.
   SmallVectorImpl<Instruction*>::iterator Entry =
     std::find(InstInputs.begin(), InstInputs.end(), I);
   if (Entry != InstInputs.end()) {
-    DEBUG(dbgs() << "Erased " << *Expr << "\n");
     InstInputs.erase(Entry);
     return true;
   }
 
   if(parent) {
     ValCtx Replacement = parent->getReplacement(const_cast<Value*>(Expr));
-    DEBUG(dbgs() << "Replaced " << *Expr << " with " << *(Replacement.first) << "@" << Replacement.second << "\n");
-    if(Replacement.second > 0)
+    if(Replacement.second != parent)
       return true;
     if(!(I = dyn_cast<Instruction>(Replacement.first)))
       return true;
@@ -121,7 +117,7 @@ bool PHITransAddr::IsPotentiallyPHITranslatable() const {
   Value* CheckAddr = Addr;
   if(parent) {
     ValCtx VC = parent->getReplacement(Addr);
-    if(VC.second != 0)
+    if(VC.second != parent)
       return true;
     CheckAddr = VC.first;
   }
@@ -164,15 +160,11 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
   // Determine whether 'Inst' is an input to our PHI translatable expression.
   bool isInput = std::count(InstInputs.begin(), InstInputs.end(), Inst);
 
-  DEBUG(dbgs() << "Translate " << *V << ", input: " << isInput << "\n"); 
-
   if(parent) {
     // Check if our parent can replace this for us:
     ValCtx VC = parent->getReplacement(V);
 
-    DEBUG(dbgs() << "Replaced with " << *(VC.first) << "@" << VC.second << "\n");
-
-    if(VC.second > 0) // The value is defined by something from an outer scope relative to PredBB. Fine.
+    if(VC.second != parent) // The value is defined by something from an outer scope relative to PredBB. Fine.
       return V;
 
     Inst = dyn_cast<Instruction>(VC.first); // Investigate the replacement, not the real expression.
@@ -184,7 +176,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     if (Inst->getParent() != CurBB) {
       // If it is an input defined in a different block, then it remains an
       // input.
-      return Inst;
+      return OrigInst;
     }
 
     // If 'Inst' is defined in this block and is an input that needs to be phi
