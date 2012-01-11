@@ -43,6 +43,27 @@ static std::string ind(int i) {
 
 }
 
+namespace llvm {
+
+  bool shouldForwardValue(Value* V) {
+
+    if(isa<Constant>(V))
+      return true;
+
+    if(V->getType()->isPointerTy()) {
+    
+      Value* O = V->getUnderlyingObject();
+      if(isIdentifiedObject(O))
+	return true;
+
+    }
+
+    return false;
+
+  }
+
+}
+
 std::string HypotheticalConstantFolder::dbgind() {
 
   return ind(debugIndent);
@@ -106,7 +127,7 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
 
     ValCtx oldValue = parent.getDefaultVC(PN->getIncomingValueForBlock(*PI));
     ValCtx predValue = getReplacement(oldValue.first);
-    if(!onlyValue.first)
+    if(onlyValue == VCNull)
       onlyValue = predValue;
     else if(onlyValue != predValue) {
       onlyValue = VCNull;
@@ -114,7 +135,7 @@ void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
     }
 
   }
-  if(onlyValue.first) {
+  if(onlyValue.first && shouldForwardValue(onlyValue.first)) {
     if(getReplacement(PN) == onlyValue) {
       LPDEBUG("Already improved");
       return;

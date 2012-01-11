@@ -44,7 +44,6 @@
 using namespace llvm;
 
 bool instructionCounts(Instruction* I);
-bool shouldForwardValue(Value*);
 
 class InlineAttempt;
 class PeelAttempt;
@@ -400,12 +399,16 @@ ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
 ValCtx PeelIteration::getReplacement(Value* V) {
 
+  LPDEBUG("Get " << *V << " in " << *this << "\n");
+
   // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
   // or an invariant belonging to one of my parent loops, or the root function.
+  // Exception to this rule: it might be from a child loop whose constants have been exported.
+  // This should probably be fixed in the long term -- people propagating from out of a loop shouldn't
+  // copy constants from its last iteration but should query that last iteration at an appropriate time.
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
-    Loop* VL = LI[&F]->getLoopFor(I->getParent());
-    if(VL != L)
+    if(!L->contains(I->getParent())) 
       return parent->getReplacement(V);
   }
 
@@ -646,7 +649,8 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
       for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
 	PHINode* PN = cast<PHINode>(BI);
-	ValCtx LatchVal = (--(Iterations.back()))->getDefaultVC(PN->getIncomingValueForBlock(Latch));
+	
+	ValCtx LatchVal = OldIter->getDefaultVC(PN->getIncomingValueForBlock(Latch));
 	ValCtx Incoming = LatchVal.second->getReplacement(LatchVal.first);
 	if(Incoming != LatchVal || shouldForwardValue(LatchVal.first)) {
 	  LPDEBUG("Propagating a value across the loop latch:\n");
@@ -729,17 +733,21 @@ void PeelIteration::considerInlineOrPeel(Value* Improved, ValCtx ImprovedTo, Ins
 
   // Check whether this defines an entry PHI for the next iteration
 
-  if(PHINode* PN = dyn_cast<PHINode>(I)) {
+  if(!terminated) { // Otherwise there's no point as the next iteration shouldn't exist!
 
-    if(PN->getParent() == L->getHeader()) {
+    if(PHINode* PN = dyn_cast<PHINode>(I)) {
 
-      if(Improved == PN->getIncomingValueForBlock(L->getLoopLatch())) {
-	PeelIteration* PI = getOrCreateNextIteration();
-	if(PI) {
-	  LPDEBUG("Forwarding constant across loop " << L->getHeader()->getName() << "'s latch\n");
-	  PI->foldValue(PN, ImprovedTo);
+      if(PN->getParent() == L->getHeader()) {
+
+	if(Improved == PN->getIncomingValueForBlock(L->getLoopLatch())) {
+	  PeelIteration* PI = getOrCreateNextIteration();
+	  if(PI) {
+	    LPDEBUG("Forwarding constant across loop " << L->getHeader()->getName() << "'s latch\n");
+	    PI->foldValue(PN, ImprovedTo);
+	  }
+	  return;
 	}
-	return;
+
       }
 
     }
@@ -1434,23 +1442,6 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result) 
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
-  }
-
-  return false;
-
-}
-
-bool shouldForwardValue(Value* V) {
-
-  if(isa<Constant>(V))
-    return true;
-
-  if(V->getType()->isPointerTy()) {
-    
-    Value* O = V->getUnderlyingObject();
-    if(isIdentifiedObject(O))
-      return true;
-
   }
 
   return false;

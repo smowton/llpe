@@ -30,6 +30,7 @@ typedef std::pair<Value*, HCFParentCallbacks*> ValCtx;
 
 raw_ostream &operator<<(raw_ostream&, const ValCtx&);
 raw_ostream &operator<<(raw_ostream&, const MemDepResult&);
+raw_ostream &operator<<(raw_ostream&, const HCFParentCallbacks&);
 
 #define VCNull (std::make_pair<Value*, HCFParentCallbacks*>(0, 0))
 
@@ -44,6 +45,8 @@ inline ValCtx make_vc(Value* V, HCFParentCallbacks* H) {
   return std::make_pair(V, H);
 
 }
+
+bool shouldForwardValue(Value* V);
 
 enum SymSubclasses {
 
