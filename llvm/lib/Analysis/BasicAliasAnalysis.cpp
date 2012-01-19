@@ -171,11 +171,11 @@ namespace {
 
     virtual bool pointsToConstantMemory(const Value *P) { return false; }
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                       const Value *P, unsigned Size) {
+                                       const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
       return ModRef;
     }
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                       ImmutableCallSite CS2) {
+                                       ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
       return ModRef;
     }
 
@@ -303,7 +303,11 @@ namespace {
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
       this->parent = parent;
-      AliasResult Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
+      AliasResult Alias;
+      if(parent)
+	Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
+      else
+	Alias = aliasCheck(make_vc(const_cast<Value*>(V1), 0), V1Size, make_vc(const_cast<Value*>(V2), 0), V2Size);
       Visited.clear();
       this->parent = 0;
       return Alias;      
@@ -311,12 +315,12 @@ namespace {
     }
 
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                       const Value *P, unsigned Size);
+                                       const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
 
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                       ImmutableCallSite CS2) {
+                                       ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
       // The AliasAnalysis base class has some smarts, lets use them.
-      return AliasAnalysis::getModRefInfo(CS1, CS2);
+      return AliasAnalysis::getModRefInfo(CS1, CS2, Pa);
     }
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
@@ -739,7 +743,7 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 /// simple "address taken" analysis on local objects.
 AliasAnalysis::ModRefResult
 BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                  const Value *P, unsigned Size) {
+                                  const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   assert(notDifferentParent(CS.getInstruction(), P) &&
          "AliasAnalysis query involving multiple functions!");
 
@@ -850,7 +854,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     }
 
   // The AliasAnalysis base class has some smarts, lets use them.
-  return AliasAnalysis::getModRefInfo(CS, P, Size);
+  return AliasAnalysis::getModRefInfo(CS, P, Size, Pa);
 }
 
 

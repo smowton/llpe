@@ -436,7 +436,7 @@ bool HypotheticalConstantFolder::improveLoadInsts() {
 
 	  ValCtx Repl = getReplacement(LI);
 
-	  if(Repl.first != LI || Repl.second > 0) {
+	  if(Repl != parent.getDefaultVC(LI)) {
 	    LPDEBUG("Ignoring " << *LI << " because it's already improved\n");
 	    continue;
 	  }

@@ -237,35 +237,35 @@ public:
   /// pointer.
   ///
   virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                     const Value *P, unsigned Size);
+                                     const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
 
   /// getModRefInfo - Return information about whether two call sites may refer
   /// to the same set of memory locations.  See 
   ///   http://llvm.org/docs/AliasAnalysis.html#ModRefInfo
   /// for details.
   virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                     ImmutableCallSite CS2);
+                                     ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0);
 
 public:
   /// Convenience functions...
-  ModRefResult getModRefInfo(const LoadInst *L, const Value *P, unsigned Size);
-  ModRefResult getModRefInfo(const StoreInst *S, const Value *P, unsigned Size);
-  ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, unsigned Size);
-  ModRefResult getModRefInfo(const CallInst *C, const Value *P, unsigned Size) {
-    return getModRefInfo(ImmutableCallSite(C), P, Size);
+  ModRefResult getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
+  ModRefResult getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
+  ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, unsigned Size, HCFParentCallbacks* Pa = 0);
+  ModRefResult getModRefInfo(const CallInst *C, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
+    return getModRefInfo(ImmutableCallSite(C), P, Size, Pa);
   }
   ModRefResult getModRefInfo(const InvokeInst *I,
-                             const Value *P, unsigned Size) {
-    return getModRefInfo(ImmutableCallSite(I), P, Size);
+                             const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
+    return getModRefInfo(ImmutableCallSite(I), P, Size, Pa);
   }
   ModRefResult getModRefInfo(const Instruction *I,
-                             const Value *P, unsigned Size) {
+                             const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
     switch (I->getOpcode()) {
-    case Instruction::VAArg:  return getModRefInfo((const VAArgInst*)I, P,Size);
-    case Instruction::Load:   return getModRefInfo((const LoadInst*)I, P, Size);
-    case Instruction::Store:  return getModRefInfo((const StoreInst*)I, P,Size);
-    case Instruction::Call:   return getModRefInfo((const CallInst*)I, P, Size);
-    case Instruction::Invoke: return getModRefInfo((const InvokeInst*)I,P,Size);
+    case Instruction::VAArg:  return getModRefInfo((const VAArgInst*)I, P,Size, Pa);
+    case Instruction::Load:   return getModRefInfo((const LoadInst*)I, P, Size, Pa);
+    case Instruction::Store:  return getModRefInfo((const StoreInst*)I, P,Size, Pa);
+    case Instruction::Call:   return getModRefInfo((const CallInst*)I, P, Size, Pa);
+    case Instruction::Invoke: return getModRefInfo((const InvokeInst*)I,P,Size, Pa);
     default:                  return NoModRef;
     }
   }

@@ -399,8 +399,6 @@ ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
 ValCtx PeelIteration::getReplacement(Value* V) {
 
-  LPDEBUG("Get " << *V << " in " << *this << "\n");
-
   // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
   // or an invariant belonging to one of my parent loops, or the root function.
   // Exception to this rule: it might be from a child loop whose constants have been exported.
@@ -1318,8 +1316,8 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
   Accessor = Builder.CreateLoad(lastPtr);
   tempInstructions.push_back(Accessor);
 
-  //LPDEBUG("Temporarily augmented parent block:\n");
-  //DEBUG(dbgs() << *Where->getParent());
+  LPDEBUG("Temporarily augmented parent block:\n");
+  DEBUG(dbgs() << *Where->getParent());
 
 }
 

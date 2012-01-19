@@ -79,7 +79,7 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 
 AliasAnalysis::ModRefResult
 AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                             const Value *P, unsigned Size) {
+                             const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
 
@@ -113,11 +113,11 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS, P, Size) & Mask);
+  return ModRefResult(AA->getModRefInfo(CS, P, Size, Pa) & Mask);
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2) {
+AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, HCFParentCallbacks* Pa) {
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
 
@@ -146,7 +146,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2) {
     AliasAnalysis::ModRefResult R = NoModRef;
     for (ImmutableCallSite::arg_iterator
          I = CS2.arg_begin(), E = CS2.arg_end(); I != E; ++I) {
-      R = ModRefResult((R | getModRefInfo(CS1, *I, UnknownSize)) & Mask);
+      R = ModRefResult((R | getModRefInfo(CS1, *I, UnknownSize, Pa)) & Mask);
       if (R == Mask)
         break;
     }
@@ -159,7 +159,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2) {
     AliasAnalysis::ModRefResult R = NoModRef;
     for (ImmutableCallSite::arg_iterator
          I = CS1.arg_begin(), E = CS1.arg_end(); I != E; ++I)
-      if (getModRefInfo(CS2, *I, UnknownSize) != NoModRef) {
+      if (getModRefInfo(CS2, *I, UnknownSize, Pa) != NoModRef) {
         R = Mask;
         break;
       }
@@ -172,7 +172,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2) {
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS1, CS2) & Mask);
+  return ModRefResult(AA->getModRefInfo(CS1, CS2, Pa) & Mask);
 }
 
 AliasAnalysis::ModRefBehavior
@@ -207,14 +207,14 @@ AliasAnalysis::getModRefBehavior(const Function *F) {
 //===----------------------------------------------------------------------===//
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size) {
+AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   // Be conservative in the face of volatile.
   if (L->isVolatile())
     return ModRef;
 
   // If the load address doesn't alias the given address, it doesn't read
   // or write the specified memory.
-  if (!alias(L->getOperand(0), getTypeStoreSize(L->getType()), P, Size))
+  if (!aliasHypothetical(L->getOperand(0), getTypeStoreSize(L->getType()), P, Size, Pa))
     return NoModRef;
 
   // Otherwise, a load just reads.
@@ -222,15 +222,15 @@ AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size) {
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size) {
+AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   // Be conservative in the face of volatile.
   if (S->isVolatile())
     return ModRef;
 
   // If the store address cannot alias the pointer in question, then the
   // specified memory cannot be modified by the store.
-  if (!alias(S->getOperand(1),
-             getTypeStoreSize(S->getOperand(0)->getType()), P, Size))
+  if (!aliasHypothetical(S->getOperand(1),
+             getTypeStoreSize(S->getOperand(0)->getType()), P, Size, Pa))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
@@ -243,10 +243,10 @@ AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size) 
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const VAArgInst *V, const Value *P, unsigned Size) {
+AliasAnalysis::getModRefInfo(const VAArgInst *V, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   // If the va_arg address cannot alias the pointer in question, then the
   // specified memory cannot be accessed by the va_arg.
-  if (!alias(V->getOperand(0), UnknownSize, P, Size))
+  if (!aliasHypothetical(V->getOperand(0), UnknownSize, P, Size, Pa))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
