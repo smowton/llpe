@@ -1383,6 +1383,7 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
   
   SymThunk* Th = cast<SymThunk>(Expr.back());
   ValCtx Result;
+  bool resultValid = false;
 
   LPDEBUG("Trying to resolve by walking backwards through " << L->getHeader()->getName() << "\n");
 
@@ -1393,22 +1394,29 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
     if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result)) {
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
-	return Result;
       }
       else {
+	Result = VCNull;
 	LPDEBUG("Resolution failed\n");
-	return VCNull;
       }
+      resultValid = true;
+      break;
     }
 
     if(Th->RealVal.second == Iterations[iter]) {
       LPDEBUG("Abandoning resolution: " << Th->RealVal << " is out of scope\n");
-      return VCNull;
+      Result = VCNull;
+      resultValid = true;
+      break;
     }
 
   }
 
+  LPDEBUG("*** Destroy from PeelAttempt\n");
   Iterations[0]->destroySymExpr(tempInstructions);
+
+  if(resultValid)
+    return Result;
 
   LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
 
@@ -1477,6 +1485,7 @@ bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Inst
   
   bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result);
 
+  LPDEBUG("*** Erase from tryResolveExprFrom\n");
   destroySymExpr(tempInstructions);
 
   return shouldPursueFurther;

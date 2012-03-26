@@ -377,6 +377,8 @@ namespace {
 
     ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset);
 
+    Value* getUnderlyingObject(Value* VIn, bool& isOffset);
+
     ValCtx getReplacement(const Value*);
     ValCtx getReplacement(const ValCtx);
     Constant* getConstReplacement(const Value*);
@@ -1119,7 +1121,7 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
 
 // A cowardly duplication of Value::getUnderlyingObject, to avoid potentially screwups
 // in modifying Value, which is used throughout LLVM.
-Value* getUnderlyingObject(Value* VIn, bool& isOffset) {
+Value* BasicAliasAnalysis::getUnderlyingObject(Value* VIn, bool& isOffset) {
   
   unsigned MaxLookup = 10;
   if (!VIn->getType()->isPointerTy())
@@ -1128,9 +1130,13 @@ Value* getUnderlyingObject(Value* VIn, bool& isOffset) {
   for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
     if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
       V = GEP->getPointerOperand();
-      isOffset = true;
-      // Actually perhaps not, as it might be an all-zero GEP, before or after replacement.
-      // This is fine though, as this case will be caught by the standard AliasGEP path.
+      // This check turns out to be important: otherwise we might conclude that we need to check the aliasGEP path
+      // but then strip the all-zero GEP using Value::stripPointerCasts(), which regards such pointless GEPs as casts.
+      // Then we end up with two non-GEP, non-PHI, non-Select instructions and fall through to MayAlias.
+      // In summary: if we're going to conclude that two things Must-Alias due to referring to the same object without an offset,
+      // we must do so NOW.
+      if(!GEPHasAllZeroIndices(GEP))
+	isOffset = true;
     } else if (Operator::getOpcode(V) == Instruction::BitCast) {
       V = cast<Operator>(V)->getOperand(0);
     } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
