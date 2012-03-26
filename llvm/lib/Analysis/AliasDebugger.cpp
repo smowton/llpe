@@ -100,14 +100,14 @@ namespace {
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size) {
+                               const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
       assert(Vals.find(P) != Vals.end() && "Never seen value in AA before");
-      return AliasAnalysis::getModRefInfo(CS, P, Size);
+      return AliasAnalysis::getModRefInfo(CS, P, Size, Pa);
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
-      return AliasAnalysis::getModRefInfo(CS1,CS2);
+                               ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
+      return AliasAnalysis::getModRefInfo(CS1, CS2, Pa);
     }
     
     bool pointsToConstantMemory(const Value *P) {

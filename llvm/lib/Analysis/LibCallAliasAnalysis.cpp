@@ -118,7 +118,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
 //
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                    const Value *P, unsigned Size) {
+                                    const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the
@@ -133,5 +133,5 @@ LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo | AliasAnalysis::getModRefInfo(CS, P, Size));
+  return (ModRefResult)(MRInfo | AliasAnalysis::getModRefInfo(CS, P, Size, Pa));
 }

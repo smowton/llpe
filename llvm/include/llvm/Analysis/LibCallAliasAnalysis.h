@@ -36,12 +36,12 @@ namespace llvm {
     ~LibCallAliasAnalysis();
     
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size);
+                               const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
     
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
+                               ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
       // TODO: Could compare two direct calls against each other if we cared to.
-      return AliasAnalysis::getModRefInfo(CS1, CS2);
+      return AliasAnalysis::getModRefInfo(CS1, CS2, Pa);
     }
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;

@@ -94,7 +94,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     bool doesAlias = false;
     for (ImmutableCallSite::arg_iterator AI = CS.arg_begin(), AE = CS.arg_end();
          AI != AE; ++AI)
-      if (!isNoAlias(*AI, ~0U, P, Size)) {
+      if (!isNoAlias(*AI, ~0U, P, Size, Pa)) {
         doesAlias = true;
         break;
       }

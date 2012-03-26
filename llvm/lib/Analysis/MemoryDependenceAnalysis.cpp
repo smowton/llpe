@@ -227,7 +227,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       AliasAnalysis::AliasResult R =
         AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, parent);
 
-      DEBUG(dbgs() << "Alias: " << *Pointer << " x " << *MemPtr << ": " << R << "\n");
+      //DEBUG(dbgs() << "Alias: " << *Pointer << " x " << *MemPtr << ": " << R << "\n");
 
       if (R == AliasAnalysis::NoAlias)
         continue;
@@ -248,7 +248,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       // If alias analysis can tell that this store is guaranteed to not modify
       // the query pointer, ignore it.  Use getModRefInfo to handle cases where
       // the query pointer points to constant memory etc.
-      if (AA->getModRefInfoHypothetical(SI, MemPtr, MemSize, parent) == AliasAnalysis::NoModRef)
+      if (AA->getModRefInfo(SI, MemPtr, MemSize, parent) == AliasAnalysis::NoModRef)
         continue;
 
       // Ok, this store might clobber the query pointer.  Check to see if it is
@@ -286,7 +286,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
     }
 
     // See if this instruction (e.g. a call or vaarg) mod/ref's the pointer.
-    switch (AA->getModRefInfoHypothetical(Inst, MemPtr, MemSize, parent)) {
+    switch (AA->getModRefInfo(Inst, MemPtr, MemSize, parent)) {
     case AliasAnalysis::NoModRef:
       // If the call has no effect on the queried pointer, just ignore it.
       continue;

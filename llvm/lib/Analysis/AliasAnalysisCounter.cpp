@@ -104,10 +104,10 @@ namespace {
                       const Value *V2, unsigned V2Size);
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size);
+                               const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
-      return AliasAnalysis::getModRefInfo(CS1,CS2);
+                               ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
+      return AliasAnalysis::getModRefInfo(CS1,CS2, Pa);
     }
   };
 }
@@ -148,8 +148,8 @@ AliasAnalysisCounter::alias(const Value *V1, unsigned V1Size,
 
 AliasAnalysis::ModRefResult
 AliasAnalysisCounter::getModRefInfo(ImmutableCallSite CS,
-                                    const Value *P, unsigned Size) {
-  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, P, Size);
+                                    const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, P, Size, Pa);
 
   const char *MRString;
   switch (R) {
