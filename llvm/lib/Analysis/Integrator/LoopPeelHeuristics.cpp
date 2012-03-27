@@ -1391,7 +1391,8 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
-    if(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result)) {
+    if(!(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result))) {
+      // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
       }
@@ -1401,6 +1402,9 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
       }
       resultValid = true;
       break;
+    }
+    else {
+      // Go round the loop and try the next iteration.
     }
 
     if(Th->RealVal.second == Iterations[iter]) {
@@ -1412,7 +1416,6 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
   }
 
-  LPDEBUG("*** Destroy from PeelAttempt\n");
   Iterations[0]->destroySymExpr(tempInstructions);
 
   if(resultValid)
@@ -1463,7 +1466,7 @@ void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstru
 
 }
 
- bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result) {
+bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result) {
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
 
@@ -1485,7 +1488,6 @@ bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Inst
   
   bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result);
 
-  LPDEBUG("*** Erase from tryResolveExprFrom\n");
   destroySymExpr(tempInstructions);
 
   return shouldPursueFurther;
