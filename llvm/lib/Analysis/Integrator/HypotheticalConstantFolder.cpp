@@ -22,6 +22,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/AliasAnalysis.h" // For isIdentifiedObject
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Debug.h"
@@ -29,19 +30,7 @@
 
 #include <string>
 
-#define LPDEBUG(x) DEBUG(dbgs() << dbgind() << x)
-
 using namespace llvm;
-
-static std::string ind(int i) {
-
-  char* arr = (char*)alloca(i+1);
-  for(int j = 0; j < i; j++)
-    arr[j] = ' ';
-  arr[i] = '\0';
-  return std::string(arr);
-
-}
 
 namespace llvm {
 
@@ -62,178 +51,471 @@ namespace llvm {
 
   }
 
-}
+  std::string ind(int i) {
 
-std::string HypotheticalConstantFolder::dbgind() {
+    char* arr = (char*)alloca(i+1);
+    for(int j = 0; j < i; j++)
+      arr[j] = ' ';
+    arr[i] = '\0';
+    return std::string(arr);
 
-  return ind(debugIndent);
-
-}
-
-ValCtx HypotheticalConstantFolder::getReplacement(Value* V) {
-
-  return parent.getReplacement(V);
+  }
 
 }
 
-Constant* HypotheticalConstantFolder::getConstReplacement(Value* V) {
+bool IntegrationAttempt::checkLoopSpecialBlock(BasicBlock* BB) {
 
-  if(Constant* C = const_cast<Constant*>(dyn_cast<Constant>(V)))
-    return C;
+  // Check for a loop header being entered for the first time (i.e., a child loop should perhaps be expanded?)
+  Loop* L = LI[&F]->getLoopFor(BB);
+
+  bool isSpecialBlock = BB == L->getHeader();
+
+  if(isSpecialBlock) {
+    // I *think* this is necessarily an immediate child of this loop.
+
+    if(!getPeelAttempt(L)) {
+
+      BasicBlock* Preheader = L->getLoopPreheader();
+
+      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(Preheader, BB))) {
+
+	LPDEBUG("Block " << BB->getName() << " killed, and is a loop header. Marking exit edges dead, and successors for consideration.");
+
+	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
+
+	L->getExitEdges(exitEdges);
+
+	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = exitEdges.begin(), endit = exitEdges.end(); it != endit; ++it) {
+
+	  deadEdges.insert(*it);
+	  pass->queueCheckBlock(this, it->second);
+
+	}
+
+      }
+
+    }
+
+  }
+
+  return isSpecialBlock;
+
+}
+
+bool PeelIteration::checkLoopSpecialBlock(BasicBlock* BB) {
+
+  // BB's predecessor information has changed. Check if that's because of the latch or an exit becoming certain.
+
+  bool isSpecialBranchTarget = (BB == L->getHeader() || !L->contains(BB));
+
+  if(iterStatus == IterationStatusUnknown && isSpecialBranchTarget) {
+    getOrCreateNextIteration();
+    if(iterStatus == IterationStatusUnknown)
+      checkFinalIteration();
+  }
+
+  if(isSpecialBranchTarget)
+    return true;
   else
-    return const_cast<Constant*>(dyn_cast<Constant>(getReplacement(V).first));
+    return IntegrationAttempt::checkLoopSpecialBlock(BB);
 
 }
 
-void HypotheticalConstantFolder::realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
+void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
-  LPDEBUG("Edge " << BBPred->getName() << "->" << BB->getName() << " killed\n");
+  LPDEBUG("Checking status of block " << BB->getName() << ": ");
 
-  parent.setEdgeDead(BBPred, BB);
-
-  if(parent.shouldIgnoreEdge(BBPred, BB)) {
-    LPDEBUG(BBPred->getName() << "->" << BB->getName() << " ignored for const-prop purposes\n");
+  if(!shouldCheckBlock(BB)) {
+    LPDEBUG("already known\n");
     return;
   }
-
-  if(parent.shouldIgnoreBlockForDCE(BB)) {
-    LPDEBUG(BB->getName() << " not under consideration" << "\n");
-    return;
+  else {
+    LPDEBUG("\n");
   }
 
-  BlocksImproved.push_back(BB);
+  if(checkLoopSpecialBlock(BB))
+    return;
+
+  // OK, this is a standard block. Check whether we've become dead or certain, and queue our PHIs for checking.
+  
+  bool isDead = true;
+  bool isCertain = true;
+
+  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+
+    if(!deadEdges.count(std::make_pair(*PI, BB)))
+      isDead = false;
+    else {
+
+      if(certainBlocks.count(*PI)) {
+
+	bool onlySuccessor = true;
+
+	for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+
+	  if((*SI) != BB && !deadEdges.count(std::make_pair(*PI, *SI))) {
+	    onlySuccessor = false;
+	    break;
+	  }
+
+	}
+
+	if(!onlySuccessor)
+	  isCertain = false;
+
+      }
+
+    }
+
+  }
+
+  if(isDead && isCertain)
+    isCertain = false;
+
+  if(isDead) {
+    LPDEBUG("Block is dead. Killing outgoing edges and queueing successors.\n"); 
+    deadBlocks.insert(BB);
+  }
+  
+  if(isCertain) {
+    LPDEBUG("Block is certain to execute. Queueing successors.\n");
+    certainBlocks.insert(BB);
+  }
+
+  if(isDead || isCertain) {
+    
+    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+      
+      if(isDead)
+	deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
+      pass->queueCheckBlock(this, *SI);
+
+    }
+
+  }
+
+  if(!isDead) {
+
+    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
+
+      pass->queueTryEvaluate(this, BI);
+
+    }
+
+  }
+  else {
+
+    // Queue all loads for reconsideration which are blocked due to CFG issues at this scope.
+    for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
+
+      pass->queueCheckLoad(LI->first, LI->second);
+
+    }
+
+    CFGBlockedLoads.clear();
+
+  }
 
 }
 
-void HypotheticalConstantFolder::getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred) {
+bool IntegrationAttempt::shouldCheckBlock(BasicBlock* BB) {
 
-  debugIndent += 2;
-  realGetRemoveBlockPredBenefit(BB, BBPred);
-  debugIndent -= 2;
+  return !(deadBlocks.count(BB) || certainBlocks.count(BB));
 
 }
 
-void HypotheticalConstantFolder::getPHINodeBenefit(PHINode* PN) {
+bool IntegrationAttempt::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
 
-  LPDEBUG("Checking if PHI " << *PN << " is improved" << "\n");
+  return false;
+
+}
+
+bool PeelIteration::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
+
+  bool isHeaderPHI = PN->getParent() == L->getHeader();
+
+  if(isHeaderPHI) {
+
+    if(iterationCount == 0) {
+
+      LPDEBUG("Pulling PHI value from preheader\n");
+      result = parent->getReplacement(PN->getIncomingValueForBlock(L->getLoopPreheader()));
+
+    }
+    else {
+
+      LPDEBUG("Pulling PHI value from previous iteration latch\n");
+      PeelIteration* PreviousIter = parentPA->getIteration(iterationCount - 1);
+      result = PreviousIter->getReplacement(PN->getIncomingValueForBlock(L->getLoopLatch()));
+
+    }
+
+  }
+
+  return isHeaderPHI;
+
+}
+
+ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
   BasicBlock* BB = PN->getParent();
   ValCtx onlyValue = VCNull;
 
-  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+  if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
-    if(parent.edgeIsDead(*PI, BB))
-      continue;
+    LPDEBUG("Trying to evaluate PHI " << *PN << " by standard means\n");  
 
-    ValCtx oldValue = parent.getDefaultVC(PN->getIncomingValueForBlock(*PI));
-    ValCtx predValue = getReplacement(oldValue.first);
-    if(onlyValue == VCNull)
-      onlyValue = predValue;
-    else if(onlyValue != predValue) {
-      onlyValue = VCNull;
-      break;
+    for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+      
+      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(*PI, BB)))
+	continue;
+      
+      ValCtx oldValue = getDefaultVC(PN->getIncomingValueForBlock(*PI));
+      ValCtx predValue = getReplacement(oldValue.first);
+      if(onlyValue == VCNull)
+	onlyValue = predValue;
+      else if(onlyValue != predValue) {
+	onlyValue = VCNull;
+	break;
+      }
+      
     }
 
   }
+
   if(onlyValue.first && shouldForwardValue(onlyValue.first)) {
-    if(getReplacement(PN) == onlyValue) {
-      LPDEBUG("Already improved");
-      return;
-    }
-    else {
-      LPDEBUG("Improved to " << onlyValue << "\n");
-      tryGetImprovementBenefit(PN, onlyValue, true);
-    }
+    LPDEBUG("Improved to " << onlyValue << "\n");
+    return onlyValue;
   }
   else {
     LPDEBUG("Not improved\n");
-    return;
+    return VCNull;
+  }
+  
+}
+
+bool IntegrationAttempt::queueImproveNextIterationPHI(Instruction* I) {
+
+  return false;
+
+}
+
+bool PeelIteration::queueImproveNextIterationPHI(Instruction* I) {
+
+  if(PHINode* PN = dyn_cast<PHINode>(I)) {
+
+    if(PN->getParent() == L->getHeader()) {
+
+      if(PeelIteration* PI = getOrCreateNextIteration()) {
+
+	pass->queueTryEvaluate(PI, PN);
+
+      }
+
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
+void IntegrationAttempt::queueLoadsBlockedOn(Instruction* SI) {
+
+  // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
+  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
+
+  if(it != InstBlockedLoads.end()) {
+
+    for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
+
+      pass->queueCheckLoad(LI->first, LI->second);
+
+    }
+
+    InstBlockedLoads.erase(it);
+
   }
 
 }
 
-void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local */, ValCtx Replacement) {
+void PeelIteration::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used) {
 
-  parent.setReplacement(ArgV, Replacement);
+  // Doh, this makes walking the tree o' loops n^2. Oh well.
+  const Loop* immediateChild = VILoop;
+  while(immediateChild->getParentLoop() != L)
+    immediateChild = immediateChild->getParentLoop();
 
-  LPDEBUG("Getting benefit due to value " << *ArgV << " having improved value " << Replacement << "\n");
+  PeelAttempt* LPA = getPeelAttempt(immediateChild);
+  if(LPA)
+    LPA->queueTryEvaluateVariant(VI, VILoop, Used);
 
-  for (Value::use_iterator UI = ArgV->use_begin(), E = ArgV->use_end(); UI != E;++UI) {
+}
 
-    Instruction* I;
-    if(!(I = dyn_cast<Instruction>(*UI))) {
-      LPDEBUG("Instruction has a non-instruction user: " << *UI << "\n");
-      continue;
+void PeelAttempt::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used) {
+
+  // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
+  if(VILoop == L && VI->getParent() == L->getHeader() && isa<PHINode>(VI)) {
+
+    Iterations[0]->queueTryEvaluateGeneric(VI, Used);
+    return;
+
+  }
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
+
+    if(VILoop == L)
+      (*it)->queueTryEvaluateGeneric(VI, Used);
+    else
+      (*it)->queueTryEvaluateVariant(VI, VILoop, Used);
+
+  }
+
+}
+
+bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV) {
+
+  Instruction* I;
+  Argument* A;
+
+  ValCtx Improved = getReplacement(ArgV);
+  if(Improved != getDefaultVC(ArgV)) {
+    LPDEBUG("already improved\n");
+    return false;
+  }
+  if((I = dyn_cast<Instruction>(ArgV))) {
+    if(blockIsDead(I->getParent())) {
+      LPDEBUG("already eliminated (in dead block)\n");
+      return false;
     }
+    return true;
+  }
+  else if((A = dyn_cast<Argument>(ArgV))) {
+    return true;
+  }
+  else {
+    LPDEBUG("Improvement candidate " << *I << " neither an instruction nor an argument!\n");
+    return false;
+  }
 
-    if(parent.blockIsDead(I->getParent())) {
-      LPDEBUG("User instruction " << *I << " already eliminated (in dead block)\n");
-      continue;
-    }
+}
 
-    if(parent.shouldIgnoreInstruction(I)) {
-      LPDEBUG(*I << " instruction not under consideration, ignoring\n");
-      continue;
-    }
+ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
+  
+  LPDEBUG("Try-improve " << *ArgV << ": ");
+  if(!shouldTryEvaluate(ArgV)) {
+    LPDEBUG("\n");
+    return VCNull;
+  }
+  else {
+    LPDEBUG("\n");
+  }
 
-    LPDEBUG("Considering user instruction " << *I << "\n");
+  Instruction* I;
+  ValCtx Improved = VCNull;
+  if((I = dyn_cast<Instruction>(ArgV))) {
 
     if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
-      if(Constant* C = dyn_cast<Constant>(Replacement.first)) {
-	// Both Branches and Switches have one potentially non-const arg which we now know is constant.
-	// The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
-	// time instead, by searching for PHIs that will be made constant.
-	BasicBlock* target;
+
+      Value* Condition;
+      // Both Branches and Switches have one potentially non-const arg which we now know is constant.
+      // The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
+      // time instead, by searching for PHIs that will be made constant.
+      if(BranchInst* BI = dyn_cast<BranchInst>(I))
+	Condition = BI->getCondition();
+      else {
+	SwitchInst* SI = cast<SwitchInst>(I);
+	Condition = SI->getCondition();
+      }
+      
+      Constant* ConstCondition = getConstReplacement(Condition);
+      BasicBlock* takenTarget = 0;
+
+      if(ConstCondition) {
+
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  // This ought to be a boolean.
-	  if((cast<ConstantInt>(C))->isZero())
-	    target = BI->getSuccessor(1);
+	  if((cast<ConstantInt>(ConstCondition))->isZero())
+	    takenTarget = BI->getSuccessor(1);
 	  else
-	    target = BI->getSuccessor(0);
+	    takenTarget = BI->getSuccessor(0);
 	}
 	else {
 	  SwitchInst* SI = cast<SwitchInst>(I);
-	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(C));
-	  target = SI->getSuccessor(targetidx);
+	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(ConstCondition));
+	  takenTarget = SI->getSuccessor(targetidx);
 	}
-	if(target) {
+	if(takenTarget) {
 	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
-	  LPDEBUG("Branch or switch instruction given known target: " << target->getName() << "\n");
+	  LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
+
 	  TerminatorInst* TI = cast<TerminatorInst>(I);
+
 	  const unsigned NumSucc = TI->getNumSuccessors();
+
 	  for (unsigned I = 0; I != NumSucc; ++I) {
-	    BasicBlock* otherTarget = TI->getSuccessor(I);
-	    if(otherTarget != target)
-	      getRemoveBlockPredBenefit(otherTarget, TI->getParent());
+
+	    BasicBlock* thisTarget = TI->getSuccessor(I);
+
+	    if(shouldCheckBlock(thisTarget)) {
+
+	      if(thisTarget != takenTarget)
+		deadEdges.insert(std::make_pair(TI->getParent(), thisTarget));
+
+	      pass->queueCheckBlock(this, thisTarget);
+
+	    }
+	    else {
+
+	      LPDEBUG("Branch/switch potential target " << thisTarget->getName() << " fate already known\n");
+
+	    }
+
 	  }
+
 	}
+
       }
+
+      return VCNull;
+
     }
     else {
-      // An ordinary instruction. Give bonuses or penalties for particularly fruitful or difficult instructions,
-      // then count the benefits of that instruction becoming constant.
-      if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
-	LPDEBUG("Improved call argument\n");
+
+      // A non-branch instruction. First check for instructions with non-standard ways to evaluate / non-standard things to do with the result:
+
+      if(CallInst* CI = dyn_cast<CallInst>(I)) {
+	
+	InlineAttempt* IA = getInlineAttempt(CI);
+	if(IA)
+	  Improved = IA->tryGetReturnValue();
+
+      }
+      else if(PHINode* PN = dyn_cast<PHINode>(I)) {
+
+	// PHI nodes are special because of their BB arguments, and the special-case "constant folding" that affects them
+	Improved = getPHINodeValue(PN);
+
       }
 
       // Try to calculate a constant value resulting from this instruction. Only possible if
       // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
 
-      if(PHINode* PN = dyn_cast<PHINode>(I)) {
-	// PHI nodes are special because of their BB arguments, and the special-case "constant folding" that affects them
-	getPHINodeBenefit(PN);
-      }
       else if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
-        Constant* Cond = getConstReplacement(SI->getCondition());
+
+	Constant* Cond = getConstReplacement(SI->getCondition());
 	if(Cond) {
 	  ValCtx newVal;
 	  if(cast<ConstantInt>(Cond)->isZero())
-	    newVal = parent.getDefaultVC(SI->getFalseValue());
+	    newVal = getDefaultVC(SI->getFalseValue());
 	  else
-	    newVal = parent.getDefaultVC(SI->getTrueValue());
+	    newVal = getDefaultVC(SI->getTrueValue());
 	  if(getReplacement(SI) != newVal)
-	    tryGetImprovementBenefit(SI, newVal);
+	    Improved = newVal;
 	}
+
       }
       else {
 
@@ -262,7 +544,8 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
 
 	  if(newConst) {
-	    LPDEBUG("User " << *I << " now constant at " << *newConst << "\n");
+	    LPDEBUG(*I << " now constant at " << *newConst << "\n");
+	    Improved = const_vc(newConst);
 	  }
 	  else {
 	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
@@ -271,183 +554,176 @@ void HypotheticalConstantFolder::realGetImprovementBenefit(Value* ArgV /* Local 
 	    else {
 	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
 	    }
-	    continue;
+	    Improved = VCNull;
 	  }
-	  tryGetImprovementBenefit(I, const_vc(newConst));
 	}
 
       }
 
     }
+
+  }
+  else {
+    LPDEBUG("Improvement candidate " << *I << " neither an instruction nor an argument!\n");
+    return VCNull;
+  }
+
+  return Improved;
+
+}
+
+ValCtx InlineAttempt::tryEvaluateResult(Value* V) {
+
+  Argument* A;
+  if((A = dyn_cast<Argument>(V))) {
+    return getImprovedCallArgument(A);
+  }
+  else {
+    return IntegrationAttempt::tryEvaluateResult(V);
   }
 
 }
 
-void HypotheticalConstantFolder::getImprovementBenefit(Value* ArgV, ValCtx ArgC) {
+void InlineAttempt::queueTryEvaluateOwnCall() {
 
-  debugIndent += 2;
-  realGetImprovementBenefit(ArgV, ArgC);
-  debugIndent -= 2;
+  pass->queueTryEvaluate(parent, getEntryInstruction());
 
 }
 
-void HypotheticalConstantFolder::tryGetImprovementBenefit(Value* ArgV, ValCtx ArgC, bool force) {
+void PeelIteration::queueTryEvaluateOwnCall() {
 
-  if(!force) {
-    if(getReplacement(ArgV) != parent.getDefaultVC(ArgV)) {
-      LPDEBUG(*ArgV << " already constant\n");
-      return;
+  return parent->queueTryEvaluateOwnCall();
+
+}
+
+void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used) {
+
+  // UserI might have been improved. Queue work appropriate to find out and if so use that information.
+  // If it's a pointer type, find loads and stores that eventually use it and queue them/loads dependent on them for reconsideration.
+  // Otherwise just consider the value.
+
+  if(UserI->mayWriteToMemory())
+    queueLoadsBlockedOn(UserI);
+
+  if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
+
+    InlineAttempt* IA = getInlineAttempt(CI);
+    if(IA) {
+
+      int argNumber = -1;
+      for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
+
+	if(Used == CI->getArgOperand(i)) {
+	  argNumber = i;
+	  break;
+	}
+
+      }
+
+      if(argNumber == -1) {
+
+	LPDEBUG("BUG: Value " << *Used << " not really used by call " << *CI << "???\n");
+
+      }
+      else {
+
+	Function::arg_iterator it = CI->getCalledFunction()->arg_begin();
+	for(int i = 0; i < argNumber; ++i)
+	  ++it;
+
+	pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
+
+      }
+
     }
+
+  }
+  else if(isa<ReturnInst>(UserI)) {
+
+    // Our caller should try to pull the return value, if this made it uniquely defined.
+    queueTryEvaluateOwnCall();
+
+  }
+  else if(UserI->getType()->isPointerTy()) {
+
+    // Explore the use graph further looking for loads and stores.
+    investigateUsers(UserI);
+
+  }
+  else if(LoadInst* LI = dyn_cast<LoadInst>(UserI)) {
+
+    pass->queueCheckLoad(this, LI);
+
+  }
+  else {
+
+    pass->queueTryEvaluate(this, UserI);
+
   }
 
-  if(Instruction* ArgI = dyn_cast<Instruction>(ArgV)) {
+}
+
+void IntegrationAttempt::queueTryEvalExitPHI(Instruction* UserI) {
+
+  assert(0 && "Tried to queue exit PHI in non-loop context");
+
+}
   
-    if(ArgI && parent.shouldIgnoreBlockForConstProp(ArgI->getParent())) { 
-      LPDEBUG(*ArgI << " block not under consideration, ignoring\n");
-      return;
-    }
+void PeelIteration::queueTryEvalExitPHI(Instruction* UserI) {
 
+  // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI and belongs to our immediate parent.
+  if(iterStatus == IterationStatusFinal) {
+    assert(isa<PHINode>(UserI) && LI[&F]->getLoopFor(UserI->getParent()) == (L->getParentLoop()));
+    pass->queueTryEvaluate(parent, UserI);
   }
-
-  getImprovementBenefit(ArgV, ArgC);
 
 }
 
-bool HypotheticalConstantFolder::collectDeadBlocks() {
+void IntegrationAttempt::investigateUsers(Value* V) {
 
-  bool anyImprovements = false;
-  bool improvedThisTime = true;
+  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+    // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
+    // a child loop (defer to it to decide what to do), or a parent loop (again defer).
+    // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
 
-  while(improvedThisTime) {
+    Instruction* UserI = dyn_cast<Instruction>(UserI);
 
-    improvedThisTime = false;
+    if(Loop* L = LI[&F]->getLoopFor(UserI->getParent())) {
 
-    LPDEBUG("Collecting dead BBs...\n");
+      const Loop* MyL = getLoopContext();
 
-    SmallSet<BasicBlock*, 8> LiveBlocks;
-    SmallVector<BasicBlock*, 4> BlockWL;
+      if(L == MyL) {
+	  
+	if(!queueImproveNextIterationPHI(UserI)) {
 
-    BlockWL.push_back(parent.getEntryBlock());
+	  // Just an ordinary user in the same iteration (or out of any loop!).
 
-    while(BlockWL.size()) {
-
-      SmallVector<BasicBlock*, 4> BBs = BlockWL;
-      BlockWL.clear();
-
-      for(SmallVector<BasicBlock*, 4>::iterator BI = BBs.begin(), BE = BBs.end(); BI != BE; ++BI) {
-
-	BasicBlock* BB = *BI;
-
-	if(LiveBlocks.insert(BB))
-	  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-	    if(!parent.edgeIsDead(BB, *SI))
-	      BlockWL.push_back(*SI);
+	  if(shouldTryEvaluate(UserI)) {
+	    queueTryEvaluateGeneric(UserI, V);
 	  }
 
-      }
-
-    }
-
-    SmallVector<BasicBlock*, 4> NewlyDeadBlocks;
-
-    for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
-
-      BasicBlock* BB = FI;
-
-      if(parent.shouldIgnoreBlockForDCE(BB))
-	continue;
-
-      if(!LiveBlocks.count(BB)) {
-	if(!parent.blockIsDead(BB)) {
-	  improvedThisTime = true;
-	  anyImprovements = true;
-	  LPDEBUG("Block " << BB->getName() << " killed\n");
-	  parent.setBlockDead(BB);
-	  NewlyDeadBlocks.push_back(BB);
 	}
+
       }
+      else {
 
-    }
+	Loop* outermostChildLoop = L;
 
-    for(SmallVector<BasicBlock*, 4>::iterator BI = NewlyDeadBlocks.begin(), BE = NewlyDeadBlocks.end(); BI != BE; ++BI) {
+	while(outermostChildLoop && (outermostChildLoop->getParentLoop() != MyL))
+	  outermostChildLoop = outermostChildLoop->getParentLoop();
 
-      BasicBlock* BB = *BI;
+	if(outermostChildLoop) {
+	  // Used in a child loop. Check if that child exists at all (having just setReplacement'd it might make it so!) and defer to it.
 
-      for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-	BasicBlock* SuccBB = *SI;
-	getRemoveBlockPredBenefit(SuccBB, BB);
-      }
+	  PeelAttempt* LPA = getOrCreatePeelAttempt(outermostChildLoop);
 
-    }
+	  if(LPA)
+	    LPA->queueTryEvaluateVariant(UserI, L, V);
 
-  }
+	}
+	else {
 
-  return anyImprovements;
-
-}
-
-bool HypotheticalConstantFolder::improvePHINodes() {
-
-  SmallVector<BasicBlock*, 4> CheckBlocks = BlocksImproved;
-  BlocksImproved.clear();
-
-  for(SmallVector<BasicBlock*, 4>::iterator BI = CheckBlocks.begin(), BE = CheckBlocks.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = *BI;
-
-    if(!parent.blockIsDead(BB)) {
-      // See if any of our PHI nodes are now defined
-      for(BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E && isa<PHINode>(*I); ++I) {
-	PHINode* PN = cast<PHINode>(I);
-	getPHINodeBenefit(PN);
-      }
-    }
-
-  }
-
-  return CheckBlocks.size() > 0;
-
-}
-
-bool HypotheticalConstantFolder::improveLoadInsts() {
-
-  bool improvedThisTime = true;
-  bool anyImprovements = false;
-
-  LPDEBUG("Considering store-to-load forwards...\n");
-
-  while(improvedThisTime) {
-
-    improvedThisTime = false;
-
-    for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
-
-      BasicBlock* BB = FI;
-
-      if(parent.shouldIgnoreBlockForConstProp(BB))
-	continue;
-
-      if(parent.blockIsDead(BB))
-	continue;
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; II++) {
-
-	if(LoadInst* LI = dyn_cast<LoadInst>(II)) {
-
-	  ValCtx Repl = getReplacement(LI);
-
-	  if(Repl != parent.getDefaultVC(LI)) {
-	    LPDEBUG("Ignoring " << *LI << " because it's already improved\n");
-	    continue;
-	  }
-	  else {
-	    ValCtx Result = parent.tryForwardLoad(LI);
-	    if(Result.first) {
-	      tryGetImprovementBenefit(LI, Result);
-	      anyImprovements = true;
-	      improvedThisTime = true;
-	    }
-	  }
+	  queueTryEvalExitPHI(UserI);
 
 	}
 
@@ -455,40 +731,54 @@ bool HypotheticalConstantFolder::improveLoadInsts() {
 
     }
 
-    if(improvedThisTime) {
-      LPDEBUG("At least one load was improved; trying again\n");
-    }
-    else {
-      LPDEBUG("No loads were made constant\n");
+  }
+
+}
+
+void IntegrationAttempt::queueCheckAllLoads() {
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    if(LI[&F]->getLoopFor(BB) == getLoopContext()) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	if(LoadInst* LI = dyn_cast<LoadInst>(II))
+	  pass->queueCheckLoad(this, LI);
+
+      }
+
     }
 
   }
 
-  return anyImprovements;
-
 }
 
-void HypotheticalConstantFolder::getBenefit(Value* V, ValCtx Replacement) {
+void IntegrationAttempt::tryEvaluate(Value* V) {
 
-  getImprovementBenefit(V, Replacement);
+  ValCtx Improved = tryEvaluateResult(V);
 
-  bool anyImprovements = true;
+  if(Improved.first && shouldForwardValue(Improved.first)) {
 
-  while(anyImprovements) {
+    setReplacement(V, Improved);
 
-    anyImprovements = false;
-    
-    anyImprovements |= collectDeadBlocks();
-    anyImprovements |= improvePHINodes();
-    anyImprovements |= improveLoadInsts();
+    investigateUsers(V);
 
   }
-  
+
 }
 
-void HypotheticalConstantFolder::killEdge(BasicBlock* B1, BasicBlock* B2) {
+void IntegrationAttempt::checkLoad(LoadInst* LI) {
 
-  getRemoveBlockPredBenefit(B2, B1);
+  if(!shouldTryEvaluate(LI))
+    return;
+
+  ValCtx Result = tryForwardLoad(LI);
+  if(Result.first) {
+    setReplacement(LI, Result);
+    investigateUsers(LI);
+  }
 
 }
 

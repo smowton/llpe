@@ -5,8 +5,12 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Pass.h"
 
 #include <string>
+#include <vector>
+
+#define LPDEBUG(x) do { printHeader(dbgs()); dbgs() << ": " << x; } while(0)
 
 namespace llvm {
 
@@ -23,14 +27,15 @@ class LoadInst;
 class raw_ostream;
 class ConstantInt;
 class Type;
+class Argument;
 
 class HCFParentCallbacks;
 
 typedef std::pair<Value*, HCFParentCallbacks*> ValCtx;
 
-raw_ostream &operator<<(raw_ostream&, const ValCtx&);
-raw_ostream &operator<<(raw_ostream&, const MemDepResult&);
-raw_ostream &operator<<(raw_ostream&, const HCFParentCallbacks&);
+raw_ostream& operator<<(raw_ostream&, const ValCtx&);
+raw_ostream& operator<<(raw_ostream&, const MemDepResult&);
+raw_ostream& operator<<(raw_ostream&, const HCFParentCallbacks&);
 
 #define VCNull (std::make_pair<Value*, HCFParentCallbacks*>(0, 0))
 
@@ -106,72 +111,378 @@ public:
 
 };
 
+// Interface exposed to Memory Dependence Analysis and other external analyses that the integrator uses.
 class HCFParentCallbacks {
 
  public:
 
-  virtual ValCtx tryForwardLoad(LoadInst*) = 0;
   virtual ValCtx getReplacement(Value*) = 0;
-  virtual void setReplacement(Value*, ValCtx) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
-  virtual void setEdgeDead(BasicBlock*, BasicBlock*) = 0;
-  virtual bool shouldIgnoreBlockForConstProp(BasicBlock*) = 0;
-  virtual bool shouldIgnoreBlockForDCE(BasicBlock*) = 0;
-  virtual bool shouldIgnoreEdge(BasicBlock*, BasicBlock*) = 0;
-  virtual bool shouldIgnoreInstruction(Instruction*) = 0;
   virtual bool blockIsDead(BasicBlock*) = 0;
-  virtual void setBlockDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
   virtual ValCtx getDefaultVC(Value*) = 0;
   virtual void describe(raw_ostream&) const = 0;
 
 };
 
-class HypotheticalConstantFolder {
+class InlineAttempt;
+class PeelAttempt;
+class IntegrationAttempt;
+class IntegrationHeuristicsPass;
 
-  Function* F;
-  AliasAnalysis* AA;
+ class Function;
+ class LoopInfo;
+ class TargetData;
+ class AliasAnalysis;
+ class CallInst;
+ class Loop;
+
+
+enum IterationStatus {
+
+  IterationStatusUnknown,
+  IterationStatusFinal,
+  IterationStatusNonFinal
+
+};
+
+class IntegrationAttempt : public HCFParentCallbacks {
+
+protected:
+
+  IntegrationHeuristicsPass* pass;
+  IntegrationAttempt* parent;
+
+  // Analyses created by the Pass.
+  DenseMap<Function*, LoopInfo*> LI;
   TargetData* TD;
+  AliasAnalysis* AA;
 
-  SmallVector<BasicBlock*, 4> BlocksImproved;
+  Function& F;
 
-  int debugIndent;
+  DenseMap<CallInst*, InlineAttempt*> inlineChildren;
+  DenseMap<const Loop*, PeelAttempt*> peelChildren;
+    
+  DenseMap<Value*, ValCtx> improvedValues;
 
-  HCFParentCallbacks& parent;
+  SmallSet<BasicBlock*, 4> deadBlocks;
+  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
+  SmallSet<BasicBlock*, 8> certainBlocks;
 
-  ValCtx getReplacement(Value*);
-  Constant* getConstReplacement(Value*);
-  bool blockIsDead(BasicBlock*);
+  int improvableInstructions;
+  int improvedInstructions;
+  SmallVector<CallInst*, 4> unexploredCalls;
+  SmallVector<const Loop*, 4> unexploredLoops;
 
-  void realGetRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void getRemoveBlockPredBenefit(BasicBlock* BB, BasicBlock* BBPred);
-  void realGetImprovementBenefit(Value* V, ValCtx);
-  void tryGetImprovementBenefit(Value* V, ValCtx, bool force = false);
-  void getImprovementBenefit(Value* V, ValCtx);
-  void getPHINodeBenefit(PHINode* PN);
+  SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
+  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
 
-  bool improveLoadInsts();
-  bool improvePHINodes();
-  bool collectDeadBlocks();
+  std::string nestingIndent() const;
 
-  std::string dbgind();
+  int nesting_depth;
+
+  public:
+
+ IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
+		    int depth) : 
+  pass(Pass),
+    parent(P),
+    LI(_LI),
+    TD(_TD), 
+    AA(_AA), 
+    F(_F),
+    improvableInstructions(0),
+    improvedInstructions(0),
+    nesting_depth(depth)
+      { }
+
+  ~IntegrationAttempt();
+
+  // Implement HCFParentCallbacks (partially):
+
+  virtual ValCtx getDefaultVC(Value*);
+  virtual ValCtx getReplacement(Value* V);
+  virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
+  virtual bool blockIsDead(BasicBlock*);
+
+
+
+  // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
+
+  virtual const Loop* getLoopContext() = 0;
+  virtual Instruction* getEntryInstruction() = 0;
+  virtual void collectAllBlockStats() = 0;
+  virtual void printHeader(raw_ostream& OS) const = 0;
+  virtual void queueTryEvaluateOwnCall() = 0;
+
+  // Simple state-tracking helpers:
+
+  void setReplacement(Value*, ValCtx);
+  void setEdgeDead(BasicBlock*, BasicBlock*);
+  void setBlockDead(BasicBlock*);
+
+  Constant* getConstReplacement(Value* V);
+
+  // Constant propagation:
+
+  virtual bool shouldTryEvaluate(Value* ArgV);
+
+  ValCtx getPHINodeValue(PHINode*);
+  virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
+  void tryEvaluate(Value*);
+  virtual ValCtx tryEvaluateResult(Value*);
+  void investigateUsers(Value* V);
+
+  virtual void queueTryEvalExitPHI(Instruction* UserI);
+  bool queueImproveNextIterationPHI(Instruction* I);
+  void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
+
+  // CFG analysis:
+
+  bool shouldCheckBlock(BasicBlock* BB);
+  void checkBlock(BasicBlock* BB);
+  virtual bool checkLoopSpecialBlock(BasicBlock* BB);
+  
+  // Child (inlines, peels) management
+
+  InlineAttempt* getInlineAttempt(CallInst* CI);
+  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
+ 
+  PeelAttempt* getPeelAttempt(const Loop*);
+  PeelAttempt* getOrCreatePeelAttempt(const Loop*);
+
+  // Load forwarding:
+
+  void checkLoad(LoadInst* LI);
+  ValCtx tryForwardLoad(LoadInst*);
+  bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, IntegrationAttempt* originCtx);
+  ValCtx getDefn(const MemDepResult& Res);
+  MemDepResult getUniqueDependency(LoadInst* LI);
+
+  bool buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>& Expr);
+  void realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions);
+  void destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions);
+
+  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) = 0;
+  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
+  bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, IntegrationAttempt* originCtx);
+  bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, IntegrationAttempt* originCtx);
+
+  void queueLoadsBlockedOn(Instruction* SI);
+  void queueCheckAllLoads();
+
+  // Stat collection and printing:
+
+  void collectBlockStats(BasicBlock* BB);
+  void collectLoopStats(const Loop*);
+  void collectStats();
+  void print(raw_ostream& OS) const;
+
+};
+
+class PeelIteration : public IntegrationAttempt {
+
+  int iterationCount;
+  const Loop* L;
+  PeelAttempt* parentPA;
+
+  PeelIteration* getOrCreateNextIteration();
+
+public:
+
+ PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
+	       AliasAnalysis* _AA, const Loop* _L, int iter, int depth) :
+  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, depth),
+    iterationCount(iter),
+    L(_L),
+    parentPA(PP),
+    iterStatus(IterationStatusUnknown)
+    { }
+
+  IterationStatus iterStatus;
+
+  virtual ValCtx getReplacement(Value* V);
+  virtual ValCtx getDefaultVC(Value* V);
+
+  virtual Instruction* getEntryInstruction();
+  virtual BasicBlock* getEntryBlock();
+  virtual const Loop* getLoopContext();
+
+  virtual bool checkLoopSpecialBlock(BasicBlock* BB);
+  virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
+  virtual bool queueImproveNextIterationPHI(Instruction* I);
+  void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
+  virtual void queueTryEvaluateOwnCall();
+  virtual void queueTryEvalExitPHI(Instruction* UserI);
+
+  void queueCheckExitBlock(BasicBlock* BB);
+  void checkFinalIteration();
+
+  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
+
+  virtual void describe(raw_ostream& Stream) const;
+
+  virtual void collectAllBlockStats();
+  virtual void printHeader(raw_ostream&) const;
+
+};
+
+class PeelAttempt {
+   // Not a subclass of IntegrationAttempt -- this is just a helper.
+
+   IntegrationHeuristicsPass* pass;
+   IntegrationAttempt* parent;
+   Function& F;
+
+   DenseMap<Function*, LoopInfo*>& LI;
+   TargetData* TD;
+   AliasAnalysis* AA;
+
+   const Loop* L;
+   std::vector<PeelIteration*> Iterations;
+   int nesting_depth;
+   int debugIndent;
 
  public:
 
- HypotheticalConstantFolder(Function* FIn,
-			    AliasAnalysis* _AA,
-			    TargetData* _TD,
-			    HCFParentCallbacks& P) : 
-  F(FIn), AA(_AA), TD(_TD), debugIndent(0), parent(P) { 
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, const Loop* _L, int depth);
+   ~PeelAttempt();
 
-  }
+   SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
 
-  void getBenefit(Value*, ValCtx);
-  void killEdge(BasicBlock* B1, BasicBlock* B2);
+   PeelIteration* getIteration(unsigned iter);
+   PeelIteration* getOrCreateIteration(unsigned iter);
 
-  void setDebugIndent(int d) { debugIndent = d; }
+   ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
+
+   ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, IntegrationAttempt* originCtx);
+
+   void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
+
+   void collectStats();
+   void printHeader(raw_ostream& OS) const;
+   void print(raw_ostream& OS) const;
+
+   std::string nestingIndent() const;
+
+ };
+
+class InlineAttempt : public IntegrationAttempt { 
+
+  CallInst* CI;
+
+ public:
+
+ InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, int depth) 
+   : 
+   IntegrationAttempt(Pass, P, F, LI, TD, AA, depth),
+     CI(_CI)
+     { }
+
+   virtual ValCtx tryEvaluateResult(Value*);
+
+   virtual Instruction* getEntryInstruction();
+   virtual BasicBlock* getEntryBlock();
+   virtual const Loop* getLoopContext();
+
+   virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
+
+   virtual void queueTryEvaluateOwnCall();
+
+   ValCtx tryGetReturnValue();
+
+   ValCtx getImprovedCallArgument(Argument* A);
+
+   virtual void describe(raw_ostream& Stream) const;
+
+   virtual void collectAllBlockStats();
+   virtual void printHeader(raw_ostream&) const;
 
 };
+
+enum IntegratorWQItemType {
+
+   TryEval,
+   CheckBlock,
+   CheckLoad
+
+};
+
+// A cheesy hack to make a value type that acts like a dynamic dispatch hierarchy
+class IntegratorWQItem {
+
+  IntegrationAttempt* ctx;
+  IntegratorWQItemType type;
+  void* operand;
+
+public:
+
+IntegratorWQItem(IntegrationAttempt* c, IntegratorWQItemType t, void* op) : ctx(c), type(t), operand(op) { }
+
+  void execute();
+  void describe(raw_ostream& s);
+
+};
+
+class IntegrationHeuristicsPass : public ModulePass {
+
+   DenseMap<Function*, LoopInfo*> LIs;
+   TargetData* TD;
+   AliasAnalysis* AA;
+
+   SmallVector<InlineAttempt*, 4> rootAttempts;
+
+   SmallVector<IntegratorWQItem, 64> workQueue1;
+   SmallVector<IntegratorWQItem, 64> workQueue2;
+
+   SmallVector<IntegratorWQItem, 64>* produceQueue;
+
+ public:
+
+   static char ID;
+
+   explicit IntegrationHeuristicsPass() : ModulePass(ID) { }
+   bool runOnModule(Module& M);
+
+   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
+
+     produceQueue->push_back(IntegratorWQItem(ctx, TryEval, val));
+     
+   }
+
+   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
+
+     produceQueue->push_back(IntegratorWQItem(ctx, CheckBlock, BB));
+
+   }
+
+   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
+
+     produceQueue->push_back(IntegratorWQItem(ctx, CheckLoad, LI));
+
+   }
+
+   void print(raw_ostream &OS, const Module* M) const {
+     for(SmallVector<InlineAttempt*, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
+       (*II)->print(OS);
+   }
+
+   void releaseMemory(void) {
+     for(SmallVector<InlineAttempt*, 4>::iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
+       delete *II;
+   }
+
+   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+
+     AU.addRequired<AliasAnalysis>();
+     AU.addRequired<LoopInfo>();
+     AU.setPreservesAll();
+
+   }
+
+ };
+
+ std::string ind(int i);
 
 } // Namespace LLVM
 
