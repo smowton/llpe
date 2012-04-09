@@ -68,12 +68,15 @@ bool IntegrationAttempt::checkLoopSpecialBlock(BasicBlock* BB) {
   // Check for a loop header being entered for the first time (i.e., a child loop should perhaps be expanded?)
   Loop* L = LI[&F]->getLoopFor(BB);
 
+  if(!L)
+    return false;
+
   bool isSpecialBlock = BB == L->getHeader();
 
   if(isSpecialBlock) {
     // I *think* this is necessarily an immediate child of this loop.
 
-    if(!getPeelAttempt(L)) {
+    if(!getOrCreatePeelAttempt(L)) {
 
       BasicBlock* Preheader = L->getLoopPreheader();
 
@@ -126,11 +129,11 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
 
   if(!shouldCheckBlock(BB)) {
-    LPDEBUG("already known\n");
+    DEBUG(dbgs() << "already known\n");
     return;
   }
   else {
-    LPDEBUG("\n");
+    DEBUG(dbgs() << "\n");
   }
 
   if(checkLoopSpecialBlock(BB))
@@ -141,27 +144,37 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   bool isDead = true;
   bool isCertain = true;
 
-  for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+  if(BB == getEntryBlock()) {
 
-    if(!deadEdges.count(std::make_pair(*PI, BB)))
-      isDead = false;
-    else {
+    isCertain = true;
+    isDead = false;
 
-      if(certainBlocks.count(*PI)) {
+  }
+  else {
 
-	bool onlySuccessor = true;
+    for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
 
-	for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+      if(!deadEdges.count(std::make_pair(*PI, BB)))
+	isDead = false;
+      else {
 
-	  if((*SI) != BB && !deadEdges.count(std::make_pair(*PI, *SI))) {
-	    onlySuccessor = false;
-	    break;
+	if(certainBlocks.count(*PI)) {
+
+	  bool onlySuccessor = true;
+
+	  for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+
+	    if((*SI) != BB && !deadEdges.count(std::make_pair(*PI, *SI))) {
+	      onlySuccessor = false;
+	      break;
+	    }
+
 	  }
 
-	}
+	  if(!onlySuccessor)
+	    isCertain = false;
 
-	if(!onlySuccessor)
-	  isCertain = false;
+	}
 
       }
 
@@ -264,14 +277,51 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
   if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
     LPDEBUG("Trying to evaluate PHI " << *PN << " by standard means\n");  
-
+      
     for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
       
       if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(*PI, BB)))
 	continue;
-      
+
       ValCtx oldValue = getDefaultVC(PN->getIncomingValueForBlock(*PI));
-      ValCtx predValue = getReplacement(oldValue.first);
+      ValCtx predValue;
+
+      Loop* predLoop = LI[&F]->getLoopFor(*PI);
+      if(predLoop != getLoopContext()) {
+
+	// LCSSA form: this must be read from an immediate child loop. Read it if we can, or else fail.
+	if(PeelAttempt* PA = getPeelAttempt(predLoop)) {
+
+	  PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
+	  if(finalIter->iterStatus == IterationStatusFinal) {
+
+	    predValue = finalIter->getReplacement(oldValue.first);
+
+	  }
+	  else {
+	    
+	    LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop is not known to terminate yet");
+	    onlyValue = VCNull;
+	    break;
+
+	  }
+
+	}
+	else {
+
+	  LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop has not been peeled yet");
+	  onlyValue = VCNull;
+	  break;
+
+	}
+
+      }
+      else {
+      
+	// Local predecessor
+	predValue = getReplacement(oldValue.first);
+
+      }
       if(onlyValue == VCNull)
 	onlyValue = predValue;
       else if(onlyValue != predValue) {
@@ -280,9 +330,8 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
       }
       
     }
-
+    
   }
-
   if(onlyValue.first && shouldForwardValue(onlyValue.first)) {
     LPDEBUG("Improved to " << onlyValue << "\n");
     return onlyValue;
@@ -306,7 +355,7 @@ bool PeelIteration::queueImproveNextIterationPHI(Instruction* I) {
 
     if(PN->getParent() == L->getHeader()) {
 
-      if(PeelIteration* PI = getOrCreateNextIteration()) {
+      if(PeelIteration* PI = getNextIteration()) {
 
 	pass->queueTryEvaluate(PI, PN);
 
@@ -375,19 +424,21 @@ void PeelAttempt::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, V
 
 }
 
-bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV) {
+bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
   Argument* A;
 
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
-    LPDEBUG("already improved\n");
+    if(verbose)
+      DEBUG(dbgs() << "already improved\n");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {
     if(blockIsDead(I->getParent())) {
-      LPDEBUG("already eliminated (in dead block)\n");
+      if(verbose)
+	DEBUG(dbgs() << "already eliminated (in dead block)\n");
       return false;
     }
     return true;
@@ -396,7 +447,8 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV) {
     return true;
   }
   else {
-    LPDEBUG("Improvement candidate " << *I << " neither an instruction nor an argument!\n");
+    if(verbose)
+      DEBUG(dbgs() << "Improvement candidate " << *I << " neither an instruction nor an argument!\n");
     return false;
   }
 
@@ -406,11 +458,11 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
   
   LPDEBUG("Try-improve " << *ArgV << ": ");
   if(!shouldTryEvaluate(ArgV)) {
-    LPDEBUG("\n");
+    DEBUG(dbgs() << "\n");
     return VCNull;
   }
   else {
-    LPDEBUG("\n");
+    DEBUG(dbgs() << "\n");
   }
 
   Instruction* I;
@@ -586,7 +638,8 @@ ValCtx InlineAttempt::tryEvaluateResult(Value* V) {
 
 void InlineAttempt::queueTryEvaluateOwnCall() {
 
-  pass->queueTryEvaluate(parent, getEntryInstruction());
+  if(parent)
+    pass->queueTryEvaluate(parent, getEntryInstruction());
 
 }
 
@@ -686,9 +739,11 @@ void IntegrationAttempt::investigateUsers(Value* V) {
     // a child loop (defer to it to decide what to do), or a parent loop (again defer).
     // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
 
-    Instruction* UserI = dyn_cast<Instruction>(UserI);
+    Instruction* UserI = dyn_cast<Instruction>(*UI);
 
-    if(Loop* L = LI[&F]->getLoopFor(UserI->getParent())) {
+    if(UserI) {
+
+      Loop* L = LI[&F]->getLoopFor(UserI->getParent());
 
       const Loop* MyL = getLoopContext();
 
@@ -698,7 +753,7 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 
 	  // Just an ordinary user in the same iteration (or out of any loop!).
 
-	  if(shouldTryEvaluate(UserI)) {
+	  if(shouldTryEvaluate(UserI, false)) {
 	    queueTryEvaluateGeneric(UserI, V);
 	  }
 
@@ -715,7 +770,7 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 	if(outermostChildLoop) {
 	  // Used in a child loop. Check if that child exists at all (having just setReplacement'd it might make it so!) and defer to it.
 
-	  PeelAttempt* LPA = getOrCreatePeelAttempt(outermostChildLoop);
+	  PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
 
 	  if(LPA)
 	    LPA->queueTryEvaluateVariant(UserI, L, V);

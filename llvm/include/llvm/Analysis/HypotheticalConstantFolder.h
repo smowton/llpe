@@ -225,7 +225,7 @@ protected:
 
   // Constant propagation:
 
-  virtual bool shouldTryEvaluate(Value* ArgV);
+  virtual bool shouldTryEvaluate(Value* ArgV, bool verbose = true);
 
   ValCtx getPHINodeValue(PHINode*);
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
@@ -234,7 +234,7 @@ protected:
   void investigateUsers(Value* V);
 
   virtual void queueTryEvalExitPHI(Instruction* UserI);
-  bool queueImproveNextIterationPHI(Instruction* I);
+  virtual bool queueImproveNextIterationPHI(Instruction* I);
   void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
 
   // CFG analysis:
@@ -286,6 +286,7 @@ class PeelIteration : public IntegrationAttempt {
   const Loop* L;
   PeelAttempt* parentPA;
 
+  PeelIteration* getNextIteration();
   PeelIteration* getOrCreateNextIteration();
 
 public:
@@ -339,11 +340,12 @@ class PeelAttempt {
    AliasAnalysis* AA;
 
    const Loop* L;
-   std::vector<PeelIteration*> Iterations;
    int nesting_depth;
    int debugIndent;
 
  public:
+
+   std::vector<PeelIteration*> Iterations;
 
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, const Loop* _L, int depth);
    ~PeelAttempt();
@@ -446,18 +448,21 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
 
+     assert(ctx && val && "Queued a null value");
      produceQueue->push_back(IntegratorWQItem(ctx, TryEval, val));
      
    }
 
    void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
 
+     assert(ctx && BB && "Queued a null block");
      produceQueue->push_back(IntegratorWQItem(ctx, CheckBlock, BB));
 
    }
 
    void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
 
+     assert(ctx && LI && "Queued a null load");
      produceQueue->push_back(IntegratorWQItem(ctx, CheckLoad, LI));
 
    }
@@ -472,13 +477,7 @@ class IntegrationHeuristicsPass : public ModulePass {
        delete *II;
    }
 
-   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-
-     AU.addRequired<AliasAnalysis>();
-     AU.addRequired<LoopInfo>();
-     AU.setPreservesAll();
-
-   }
+   virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
  };
 

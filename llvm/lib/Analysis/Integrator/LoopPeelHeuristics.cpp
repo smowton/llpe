@@ -294,7 +294,9 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   Iterations.push_back(NewIter);
     
   BasicBlock* Header = L->getHeader();
-    
+   
+  pass->queueCheckBlock(NewIter, L->getHeader());
+ 
   for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
     pass->queueTryEvaluate(NewIter, BI);
@@ -307,31 +309,35 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
 }
 
+PeelIteration* PeelIteration::getNextIteration() {
+
+  return parentPA->getIteration(this->iterationCount + 1);
+
+}
+
 PeelIteration* PeelIteration::getOrCreateNextIteration() {
+
+  if(PeelIteration* Existing = getNextIteration())
+    return Existing;
 
   if(iterStatus == IterationStatusFinal) {
     LPDEBUG("Loop known to exit: will not create next iteration\n");
     return 0;
   }
 
-  bool willIterate = false;
+  bool willIterate = true;
 
-  BasicBlock* Latch = L->getLoopLatch();
-  if(certainBlocks.count(Latch)) {
+  for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
 
-    succ_iterator S1 = succ_begin(Latch);
-    succ_iterator S2 = S1;
-    S2++;
-    BasicBlock* LatchExit = ((*S1) == L->getHeader() ? *S2 : *S1);
-    
-    if(deadEdges.count(std::make_pair(Latch, LatchExit)))
-      willIterate = true;
+    if(!deadEdges.count(*EI)) {
+      willIterate = false;
+    }
 
   }
   
   if(!willIterate) {
 
-    LPDEBUG("Won't peel yet because loop is not certain to iterate.\n");
+    LPDEBUG("Won't peel loop " << L->getHeader()->getName() << " yet because at least one exit edge is still alive\n");
     return 0;
       
   }
@@ -356,7 +362,8 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
   if(PeelAttempt* PA = getPeelAttempt(NewL))
     return PA;
-
+  
+  // Preheaders only have one successor (the header), so this is enough.
   if(!certainBlocks.count(NewL->getLoopPreheader())) {
    
     LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " at this time because the preheader is not certain to execute\n");
@@ -508,7 +515,13 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
     SmallVector<NonLocalDepResult, 4> NLResults;
 
     MD.getNonLocalPointerDependency(LPointer, true, LoadI->getParent(), NLResults);
-    assert(NLResults.size() > 0);
+
+    if(NLResults.size() == 0) {
+
+      // Probably we're in a block which is dead, but has yet to be diagnosed as such.
+      return MemDepResult();
+
+    }
 
     for(unsigned int i = 0; i < NLResults.size(); i++) {
 		
@@ -661,8 +674,8 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
   Accessor = Builder.CreateLoad(lastPtr);
   tempInstructions.push_back(Accessor);
 
-  LPDEBUG("Temporarily augmented parent block:\n");
-  DEBUG(dbgs() << *Where->getParent());
+  //  LPDEBUG("Temporarily augmented parent block:\n");
+  //  DEBUG(dbgs() << *Where->getParent());
 
 }
 
@@ -976,13 +989,13 @@ void InlineAttempt::printHeader(raw_ostream& OS) const {
 
 void PeelIteration::printHeader(raw_ostream& OS) const {
 
-  OS << "Iteration " << iterationCount;
+  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
 
 }
 
 void PeelAttempt::printHeader(raw_ostream& OS) const {
 
-  Iterations[0]->printHeader(OS);
+  OS << "Loop " << L->getHeader()->getName();
 
 }
 
@@ -1059,7 +1072,7 @@ void IntegratorWQItem::describe(raw_ostream& s) {
 
   switch(type) {
   case TryEval:
-    s << "Try-eval " << ((Value*)operand);
+    s << "Try-eval " << *((Value*)operand);
     break;
   case CheckBlock:
     s << "Check-BB-status " << ((BasicBlock*)operand)->getName();
@@ -1134,4 +1147,12 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   return false;
 
+}
+
+void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
+
+  AU.addRequired<AliasAnalysis>();
+  AU.addRequired<LoopInfo>();
+  AU.setPreservesAll();
+  
 }
