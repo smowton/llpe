@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/Passes.h"
@@ -571,7 +572,7 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
 
   while(1) {
 
-    if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(Ptr)) {
+    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr)) {
       SmallVector<Value*, 4> idxs;
       for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
 	Value* idx = GEP->getOperand(i);
@@ -592,7 +593,7 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
     }
     else {
       ValCtx Repl = getReplacement(Ptr);
-      if(isIdentifiedObject(Repl.first) || Repl.second > 0) {
+      if(isIdentifiedObject(Repl.first)) {
 	Expr.push_back((new SymThunk(Repl)));
 	break;
       }
@@ -687,6 +688,44 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   LPDEBUG("Trying to forward load: " << *LoadI << "\n");
 
   ValCtx Result;
+
+  if(Constant* C = getConstReplacement(LoadI->getPointerOperand())) {
+
+    // Try ordinary constant folding first! Might not work because globals constitute constant expressions.
+    // For them we should do the ordinary alias analysis task.
+    Constant* ret = ConstantFoldLoadFromConstPtr(C, this->TD);
+    LPDEBUG("Resolved load as a constant expression\n");
+    if(ret)
+      return const_vc(ret);
+
+  }
+
+  // Check whether pursuing alises is pointless -- this is true if we're certain that the ultimate underlying object is a constant.
+  // If it is, our attempt above was likely foiled only by uncertainty about the specific bit of the constant (e.g. index within a const string)
+  // and the only way the situation will improve is if those offsets become clear.
+
+  ValCtx Ultimate = getDefaultVC(LoadI->getPointerOperand());
+  while(!isIdentifiedObject(Ultimate.first)) {
+
+    ValCtx New = Ultimate.second->getReplacement(Ultimate.first);
+    New = make_vc(New.first->getUnderlyingObject(), New.second);
+  
+    if(New == Ultimate)
+      break;
+
+    Ultimate = New;
+
+  }
+
+  if(GlobalVariable* GV = dyn_cast<GlobalVariable>(Ultimate.first)) {
+
+    if(GV->isConstant()) {
+      LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
+      return VCNull;
+    }
+
+  }
+
   if(forwardLoadIsNonLocal(LoadI, Result, this)) {
     SmallVector<SymExpr*, 4> Expr;
     if(!buildSymExpr(LoadI, Expr))
@@ -722,8 +761,14 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
 ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) {
 
-  LPDEBUG("Resolving load at call site\n");
-  return parent->tryResolveLoadAtChildSite(this, Expr, originCtx);
+  if(!parent) {
+    LPDEBUG("Unable to pursue further; this function is the root\n");
+    return VCNull;
+  }
+  else {
+    LPDEBUG("Resolving load at call site\n");
+    return parent->tryResolveLoadAtChildSite(this, Expr, originCtx);
+  }
 
 }
 

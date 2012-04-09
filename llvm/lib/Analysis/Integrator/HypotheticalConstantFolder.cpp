@@ -700,6 +700,8 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
   else if(UserI->getType()->isPointerTy()) {
 
     // Explore the use graph further looking for loads and stores.
+    // Additionally queue the instruction itself! GEPs and casts, if ultimately defined from a global, are expressible as ConstantExprs.
+    pass->queueTryEvaluate(this, UserI);
     investigateUsers(UserI);
 
   }
