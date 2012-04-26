@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#define LPDEBUG(x) do { printHeader(dbgs()); dbgs() << ": " << x; } while(0)
+#define LPDEBUG(x) DEBUG(do { printHeader(dbgs()); dbgs() << ": " << x; } while(0))
 
 namespace llvm {
 
@@ -205,8 +205,6 @@ protected:
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
   virtual bool blockIsDead(BasicBlock*);
 
-
-
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
   virtual const Loop* getLoopContext() = 0;
@@ -241,7 +239,8 @@ protected:
 
   bool shouldCheckBlock(BasicBlock* BB);
   void checkBlock(BasicBlock* BB);
-  virtual bool checkLoopSpecialBlock(BasicBlock* BB);
+  void checkEdge(BasicBlock*, BasicBlock*);
+  virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   
   // Child (inlines, peels) management
 
@@ -277,6 +276,8 @@ protected:
   void collectLoopStats(const Loop*);
   void collectStats();
   void print(raw_ostream& OS) const;
+  // Callable from GDB
+  void dump() const;
 
 };
 
@@ -309,12 +310,15 @@ public:
   virtual BasicBlock* getEntryBlock();
   virtual const Loop* getLoopContext();
 
-  virtual bool checkLoopSpecialBlock(BasicBlock* BB);
+  virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   virtual bool queueImproveNextIterationPHI(Instruction* I);
   void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
   virtual void queueTryEvaluateOwnCall();
   virtual void queueTryEvalExitPHI(Instruction* UserI);
+
+  bool isInterestingLoopInvariantInst(Instruction &I);
+  void queueInvariantInstructions();
 
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();

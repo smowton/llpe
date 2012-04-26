@@ -211,6 +211,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
 	LPDEBUG("Inlining " << FCalled->getName() << " at " << *CI << "\n");
 
+	pass->queueCheckBlock(IA, &(FCalled->getEntryBlock()));
 	// Check every argument, for natural constants or for variables that have already been established.
       
 	for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
@@ -303,7 +304,8 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
     pass->queueTryEvaluate(NewIter, BI);
 
   }
-
+  
+  NewIter->queueInvariantInstructions();
   NewIter->queueCheckAllLoads();
 
   return NewIter;
@@ -561,7 +563,7 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
   if(!parent)
     return false;
 
-  Value* Ptr = LoadI->getPointerOperand();
+  ValCtx Ptr = getDefaultVC(LoadI->getPointerOperand());
 
   LPDEBUG("Trying to resolve load from " << *LoadI << " by exploring parent contexts\n");
 
@@ -572,7 +574,7 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
 
   while(1) {
 
-    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr)) {
+    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr.first)) {
       SmallVector<Value*, 4> idxs;
       for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
 	Value* idx = GEP->getOperand(i);
@@ -581,28 +583,30 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
 	  idxs.push_back(Cidx);
 	else {
 	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
-	  success = false; break;
+	  success = false; 
+	  break;
 	}
       }
       Expr.push_back((new SymGEP(idxs)));
-      Ptr = GEP->getPointerOperand();
+      Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
     }
-    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr)) {
+    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
       Expr.push_back((new SymCast(C->getType())));
-      Ptr = C->getOperand(0);
+      Ptr = make_vc(C->getOperand(0), Ptr.second);
     }
     else {
-      ValCtx Repl = getReplacement(Ptr);
+      ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
       if(isIdentifiedObject(Repl.first)) {
 	Expr.push_back((new SymThunk(Repl)));
 	break;
       }
-      else if(Repl.first == Ptr && Repl.second == 0) {
-	LPDEBUG("Won't investigate load from parent context due to unresolved pointer " << *Ptr << "\n");
-	success = false; break;
+      else if(Repl == Ptr) {
+	LPDEBUG("Won't investigate load from parent context due to unresolved pointer " << Ptr << "\n");
+	success = false; 
+	break;
       }
       else {
-	Ptr = Repl.first; // Must continue resolving!
+	Ptr = Repl; // Must continue resolving!
       }
     }
     
@@ -851,8 +855,9 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, 
       }
     }
     else {
-      assert(Res.getInst()->mayWriteToMemory());
-      InstBlockedLoads[Res.getInst()].push_back(std::make_pair(originCtx, LoadI));
+      if(Res.getInst()->mayWriteToMemory())
+	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(originCtx, LoadI));
+      // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
     }
     Result = VCNull;
   }
@@ -935,6 +940,13 @@ void PeelIteration::describe(raw_ostream& Stream) const {
 void InlineAttempt::describe(raw_ostream& Stream) const {
 
   Stream << "(" << F.getName() << ")";
+
+}
+
+// GDB callable:
+void IntegrationAttempt::dump() const {
+
+  describe(outs());
 
 }
 

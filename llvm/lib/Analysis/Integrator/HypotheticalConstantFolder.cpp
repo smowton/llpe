@@ -63,26 +63,24 @@ namespace llvm {
 
 }
 
-bool IntegrationAttempt::checkLoopSpecialBlock(BasicBlock* BB) {
+bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
   // Check for a loop header being entered for the first time (i.e., a child loop should perhaps be expanded?)
-  Loop* L = LI[&F]->getLoopFor(BB);
+  Loop* L = LI[&F]->getLoopFor(ToBB);
 
   if(!L)
     return false;
 
-  bool isSpecialBlock = BB == L->getHeader();
+  bool isSpecialEdge = (ToBB == L->getHeader()) && (FromBB == L->getLoopPreheader());
 
-  if(isSpecialBlock) {
+  if(isSpecialEdge) {
     // I *think* this is necessarily an immediate child of this loop.
 
     if(!getOrCreatePeelAttempt(L)) {
 
-      BasicBlock* Preheader = L->getLoopPreheader();
+      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(FromBB, ToBB))) {
 
-      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(Preheader, BB))) {
-
-	LPDEBUG("Block " << BB->getName() << " killed, and is a loop header. Marking exit edges dead, and successors for consideration.");
+	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.");
 
 	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
 
@@ -101,15 +99,15 @@ bool IntegrationAttempt::checkLoopSpecialBlock(BasicBlock* BB) {
 
   }
 
-  return isSpecialBlock;
+  return isSpecialEdge;
 
 }
 
-bool PeelIteration::checkLoopSpecialBlock(BasicBlock* BB) {
+bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
-  // BB's predecessor information has changed. Check if that's because of the latch or an exit becoming certain.
+  // Check if this is the latch or an exit edge.
 
-  bool isSpecialBranchTarget = (BB == L->getHeader() || !L->contains(BB));
+  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || !L->contains(ToBB));
 
   if(iterStatus == IterationStatusUnknown && isSpecialBranchTarget) {
     getOrCreateNextIteration();
@@ -120,7 +118,14 @@ bool PeelIteration::checkLoopSpecialBlock(BasicBlock* BB) {
   if(isSpecialBranchTarget)
     return true;
   else
-    return IntegrationAttempt::checkLoopSpecialBlock(BB);
+    return IntegrationAttempt::checkLoopSpecialEdge(FromBB, ToBB);
+
+}
+
+void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  if(!checkLoopSpecialEdge(FromBB, ToBB))
+    pass->queueCheckBlock(this, ToBB);
 
 }
 
@@ -136,10 +141,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     DEBUG(dbgs() << "\n");
   }
 
-  if(checkLoopSpecialBlock(BB))
-    return;
-
-  // OK, this is a standard block. Check whether we've become dead or certain, and queue our PHIs for checking.
+  // Check whether this block has become dead or certain, and queue its PHIs for checking if appropriate.
   
   bool isDead = true;
   bool isCertain = true;
@@ -154,9 +156,9 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
 
-      if(!deadEdges.count(std::make_pair(*PI, BB)))
+      if(!deadEdges.count(std::make_pair(*PI, BB))) {
+
 	isDead = false;
-      else {
 
 	if(certainBlocks.count(*PI)) {
 
@@ -175,6 +177,11 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 	    isCertain = false;
 
 	}
+	else {
+	  
+	  isCertain = false;
+
+	}
 
       }
 
@@ -191,8 +198,19 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   
   if(isCertain) {
-    LPDEBUG("Block is certain to execute. Queueing successors.\n");
+    LPDEBUG("Block is certain to execute. Queueing successors and calls.\n");
     certainBlocks.insert(BB);
+    
+    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+
+      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+
+	getOrCreateInlineAttempt(CI);
+
+      }
+
+    }
+
   }
 
   if(isDead || isCertain) {
@@ -201,7 +219,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
       
       if(isDead)
 	deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
-      pass->queueCheckBlock(this, *SI);
+      checkEdge(BB, *SI);
 
     }
 
@@ -516,7 +534,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	      if(thisTarget != takenTarget)
 		deadEdges.insert(std::make_pair(TI->getParent(), thisTarget));
 
-	      pass->queueCheckBlock(this, thisTarget);
+	      checkEdge(TI->getParent(), thisTarget);
 
 	    }
 	    else {
@@ -660,7 +678,7 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
   if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
-    InlineAttempt* IA = getInlineAttempt(CI);
+    InlineAttempt* IA = getOrCreateInlineAttempt(CI);
     if(IA) {
 
       int argNumber = -1;
@@ -697,17 +715,17 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
     queueTryEvaluateOwnCall();
 
   }
+  else if(LoadInst* LI = dyn_cast<LoadInst>(UserI)) {
+
+    pass->queueCheckLoad(this, LI);
+
+  }
   else if(UserI->getType()->isPointerTy()) {
 
     // Explore the use graph further looking for loads and stores.
     // Additionally queue the instruction itself! GEPs and casts, if ultimately defined from a global, are expressible as ConstantExprs.
     pass->queueTryEvaluate(this, UserI);
     investigateUsers(UserI);
-
-  }
-  else if(LoadInst* LI = dyn_cast<LoadInst>(UserI)) {
-
-    pass->queueCheckLoad(this, LI);
 
   }
   else {
@@ -803,6 +821,48 @@ void IntegrationAttempt::queueCheckAllLoads() {
 
 	if(LoadInst* LI = dyn_cast<LoadInst>(II))
 	  pass->queueCheckLoad(this, LI);
+
+      }
+
+    }
+
+  }
+
+}
+
+// Mostly taken from LICM.cpp
+bool PeelIteration::isInterestingLoopInvariantInst(Instruction &I) {
+  // The instruction is loop invariant if all of its operands are loop-invariant
+  for (unsigned i = 0, e = I.getNumOperands(); i != e; ++i)
+    if (!L->isLoopInvariant(I.getOperand(i)))
+      return false;
+
+  // If we got this far, the instruction is loop invariant! However some instructions can't really be evaluated at all, e.g. stores, unconditional branches.
+
+  if(isa<StoreInst>(I))
+    return false;
+  if(BranchInst* BI = dyn_cast<BranchInst>(&I))
+    if(!BI->isConditional())
+      return false;
+
+  return true;
+}
+
+void PeelIteration::queueInvariantInstructions() {
+
+  // LICM should be performed prior to integration, but some invariants can remain within the loop: a typical example is branch conditions controlling variants.
+  // E.g. int x = 1; while(...) { if(x) { ...variants here... } else { ... } }
+  // LLVM's current LICM implementation will practically always host, with the exception of instructions causing side-effects. Unfortunately that includes division, which can cause SIGFPE.
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    if(LI[&F]->getLoopFor(BB) == L) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	if(isInterestingLoopInvariantInst(*II))
+	  pass->queueTryEvaluate(this, II);
 
       }
 
