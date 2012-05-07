@@ -2,7 +2,8 @@
 include Makefile.config
 
 TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inline-siblings \
-	  nested_loops nonconstarrayloop partial_nested_loops pass-pointer-in nonconstglobal
+	  nested_loops nonconstarrayloop partial_nested_loops pass-pointer-in nonconstglobal \
+          invariants
 
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
 LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))
@@ -18,7 +19,7 @@ all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS)
 	$(LLVM_GCC) -std=c99 $< -o $@
 
 %.bc : %.ltemp
-	opt -mem2reg -loopsimplify -lcssa -licm $< -o $@
+	opt -mem2reg -loopsimplify -lcssa $< -o $@
 
 %.ll : %.bc
 	llvm-dis $<

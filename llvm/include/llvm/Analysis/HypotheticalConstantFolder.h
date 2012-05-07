@@ -160,6 +160,10 @@ protected:
 
   Function& F;
 
+  DenseMap<Instruction*, const Loop*>& invariantInsts;
+  DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
+  DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
+
   DenseMap<CallInst*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
     
@@ -183,14 +187,17 @@ protected:
 
   public:
 
- IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
-		    int depth) : 
+ IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA,
+		    DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) : 
   pass(Pass),
     parent(P),
     LI(_LI),
     TD(_TD), 
     AA(_AA), 
     F(_F),
+    invariantInsts(_invariantInsts),
+    invariantEdges(_invariantEdges),
+    invariantBlocks(_invariantBlocks),
     improvableInstructions(0),
     improvedInstructions(0),
     nesting_depth(depth)
@@ -204,6 +211,20 @@ protected:
   virtual ValCtx getReplacement(Value* V);
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
   virtual bool blockIsDead(BasicBlock*);
+
+  // Helpers for the above:
+
+  const Loop* getValueScope(Value*);
+  ValCtx getReplacementUsingScope(Value*, const Loop*);
+  ValCtx getDefaultVCWithScope(Value*, const Loop*);
+
+  const Loop* getEdgeScope(BasicBlock*, BasicBlock*);
+  bool edgeIsDeadWithScope(BasicBlock*, BasicBlock*, const Loop*);
+
+  const Loop* getBlockScope(BasicBlock*);
+  bool blockIsDeadWithScope(BasicBlock*, const Loop*);
+
+  bool blockIsCertain(BasicBlock*);
 
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
@@ -240,6 +261,8 @@ protected:
   bool shouldCheckBlock(BasicBlock* BB);
   void checkBlock(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
+  void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
+  void checkLocalEdge(BasicBlock*, BasicBlock*);
   virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   
   // Child (inlines, peels) management
@@ -293,8 +316,9 @@ class PeelIteration : public IntegrationAttempt {
 public:
 
  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
-	       AliasAnalysis* _AA, const Loop* _L, int iter, int depth) :
-  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, depth),
+	       AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
+	       DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth) :
+  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
     iterationCount(iter),
     L(_L),
     parentPA(PP),
@@ -316,9 +340,6 @@ public:
   void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
   virtual void queueTryEvaluateOwnCall();
   virtual void queueTryEvalExitPHI(Instruction* UserI);
-
-  bool isInterestingLoopInvariantInst(Instruction &I);
-  void queueInvariantInstructions();
 
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
@@ -344,6 +365,11 @@ class PeelAttempt {
    AliasAnalysis* AA;
 
    const Loop* L;
+
+   DenseMap<Instruction*, const Loop*>& invariantInsts;
+   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
+   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
+
    int nesting_depth;
    int debugIndent;
 
@@ -351,7 +377,8 @@ class PeelAttempt {
 
    std::vector<PeelIteration*> Iterations;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, const Loop* _L, int depth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
+	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth);
    ~PeelAttempt();
 
    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
@@ -379,9 +406,10 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
- InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, int depth) 
+ InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
+	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) 
    : 
-   IntegrationAttempt(Pass, P, F, LI, TD, AA, depth),
+  IntegrationAttempt(Pass, P, F, LI, TD, AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
      CI(_CI)
      { }
 
@@ -433,6 +461,9 @@ IntegratorWQItem(IntegrationAttempt* c, IntegratorWQItemType t, void* op) : ctx(
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
+   DenseMap<Function*, DenseMap<Instruction*, const Loop*> > invariantInstScopes;
+   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
+   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
    TargetData* TD;
    AliasAnalysis* AA;
 
@@ -481,11 +512,17 @@ class IntegrationHeuristicsPass : public ModulePass {
        delete *II;
    }
 
+   void createInvariantScopes(Function*, DenseMap<Instruction*, const Loop*>*&, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*&, DenseMap<BasicBlock*, const Loop*>*&);
+   DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
+   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
+   DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
+
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
  };
 
  std::string ind(int i);
+ const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
 
 } // Namespace LLVM
 

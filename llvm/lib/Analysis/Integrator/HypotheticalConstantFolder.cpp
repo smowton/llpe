@@ -61,6 +61,16 @@ namespace llvm {
 
   }
 
+  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child) {
+
+    // Doh, this makes walking the tree o' loops n^2. Oh well.
+    const Loop* immediateChild = Child;
+    while(immediateChild->getParentLoop() != Parent)
+      immediateChild = immediateChild->getParentLoop();
+    return immediateChild;
+
+  }
+
 }
 
 bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
@@ -78,7 +88,7 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
     if(!getOrCreatePeelAttempt(L)) {
 
-      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(FromBB, ToBB))) {
+      if(edgeIsDead(FromBB, ToBB)) {
 
 	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.");
 
@@ -88,7 +98,13 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
 	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = exitEdges.begin(), endit = exitEdges.end(); it != endit; ++it) {
 
-	  deadEdges.insert(*it);
+	  const Loop* edgeScope = getEdgeScope(it->first, it->second);
+	  if(edgeScope == getLoopContext() || edgeScope == L) {
+	    // The edge is either invariant at our scope, or ordinarily a loop variant
+	    deadEdges.insert(*it);
+	  }
+
+	  // Check regardless because certainty is always variant
 	  pass->queueCheckBlock(this, it->second);
 
 	}
@@ -122,10 +138,41 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
 }
 
-void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+void IntegrationAttempt::checkLocalEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
   if(!checkLoopSpecialEdge(FromBB, ToBB))
     pass->queueCheckBlock(this, ToBB);
+  
+}
+
+void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  const Loop* EdgeScope = getEdgeScope(FromBB, ToBB);
+
+  if((!EdgeScope) || EdgeScope->contains(getLoopContext())) {
+    // Check regardless of scope, because certainty is always variant
+    checkLocalEdge(FromBB, ToBB);
+  }
+  else {
+    checkVariantEdge(FromBB, ToBB, EdgeScope);
+  }
+
+}
+
+void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, const Loop* ScopeL) {
+
+  const Loop* MyScope = getLoopContext();
+
+  if(MyScope == ScopeL) {
+    checkLocalEdge(FromBB, ToBB);
+  }
+  else {
+    const Loop* ChildL = immediateChildLoop(MyScope, ScopeL);
+    if(PeelAttempt* LPA = getPeelAttempt(ChildL)) {
+      for(unsigned int i = 0; i < LPA->Iterations.size(); ++i)
+	LPA->Iterations[i]->checkVariantEdge(FromBB, ToBB, ScopeL);
+    }
+  }
 
 }
 
@@ -156,17 +203,17 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
 
-      if(!deadEdges.count(std::make_pair(*PI, BB))) {
+      if(!edgeIsDead(*PI, BB)) {
 
 	isDead = false;
 
-	if(certainBlocks.count(*PI)) {
+	if(blockIsCertain(*PI)) {
 
 	  bool onlySuccessor = true;
 
 	  for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
 
-	    if((*SI) != BB && !deadEdges.count(std::make_pair(*PI, *SI))) {
+	    if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
 	      onlySuccessor = false;
 	      break;
 	    }
@@ -251,7 +298,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 bool IntegrationAttempt::shouldCheckBlock(BasicBlock* BB) {
 
-  return !(deadBlocks.count(BB) || certainBlocks.count(BB));
+  return !(blockIsDead(BB) || blockIsCertain(BB));
 
 }
 
@@ -294,18 +341,20 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
   if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
-    LPDEBUG("Trying to evaluate PHI " << *PN << " by standard means\n");  
+    LPDEBUG("Trying to evaluate PHI " << *PN << " by standard means\n");
+    const Loop* phiLoop = getValueScope(PN);
       
     for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
       
-      if(deadEdges.count(std::make_pair<BasicBlock*, BasicBlock*>(*PI, BB)))
+      if(edgeIsDead(*PI, BB))
 	continue;
 
-      ValCtx oldValue = getDefaultVC(PN->getIncomingValueForBlock(*PI));
+      Value* oldValue = PN->getIncomingValueForBlock(*PI);
       ValCtx predValue;
 
-      Loop* predLoop = LI[&F]->getLoopFor(*PI);
-      if(predLoop != getLoopContext()) {
+      const Loop* predLoop = getValueScope(oldValue);
+      // If the predecessor comes from a descendent of the PHI's loop
+      if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
 
 	// LCSSA form: this must be read from an immediate child loop. Read it if we can, or else fail.
 	if(PeelAttempt* PA = getPeelAttempt(predLoop)) {
@@ -313,12 +362,12 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 	  PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
 	  if(finalIter->iterStatus == IterationStatusFinal) {
 
-	    predValue = finalIter->getReplacement(oldValue.first);
+	    predValue = finalIter->getReplacement(oldValue);
 
 	  }
 	  else {
 	    
-	    LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop is not known to terminate yet");
+	    LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop is not known to terminate yet\n");
 	    onlyValue = VCNull;
 	    break;
 
@@ -327,7 +376,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 	}
 	else {
 
-	  LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop has not been peeled yet");
+	  LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop has not been peeled yet\n");
 	  onlyValue = VCNull;
 	  break;
 
@@ -336,8 +385,8 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
       }
       else {
       
-	// Local predecessor
-	predValue = getReplacement(oldValue.first);
+	// Predecessor comes from the same scope or a parent; getReplacement handles both cases
+	predValue = getReplacement(oldValue);
 
       }
       if(onlyValue == VCNull)
@@ -410,10 +459,7 @@ void IntegrationAttempt::queueLoadsBlockedOn(Instruction* SI) {
 
 void PeelIteration::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used) {
 
-  // Doh, this makes walking the tree o' loops n^2. Oh well.
-  const Loop* immediateChild = VILoop;
-  while(immediateChild->getParentLoop() != L)
-    immediateChild = immediateChild->getParentLoop();
+  const Loop* immediateChild = immediateChildLoop(L, VILoop);
 
   PeelAttempt* LPA = getPeelAttempt(immediateChild);
   if(LPA)
@@ -450,13 +496,13 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
     if(verbose)
-      DEBUG(dbgs() << "already improved\n");
+      DEBUG(dbgs() << "already improved");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {
     if(blockIsDead(I->getParent())) {
       if(verbose)
-	DEBUG(dbgs() << "already eliminated (in dead block)\n");
+	DEBUG(dbgs() << "already eliminated (in dead block)");
       return false;
     }
     return true;
@@ -466,7 +512,7 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   }
   else {
     if(verbose)
-      DEBUG(dbgs() << "Improvement candidate " << *I << " neither an instruction nor an argument!\n");
+      DEBUG(dbgs() << "Improvement candidate " << *I << " neither an instruction nor an argument!");
     return false;
   }
 
@@ -532,7 +578,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	    if(shouldCheckBlock(thisTarget)) {
 
 	      if(thisTarget != takenTarget)
-		deadEdges.insert(std::make_pair(TI->getParent(), thisTarget));
+		setEdgeDead(TI->getParent(), thisTarget);
 
 	      checkEdge(TI->getParent(), thisTarget);
 
@@ -763,7 +809,7 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 
     if(UserI) {
 
-      Loop* L = LI[&F]->getLoopFor(UserI->getParent());
+      const Loop* L = getValueScope(UserI); // The innermost loop on which the user has dependencies (distinct from the loop at actually occupies).
 
       const Loop* MyL = getLoopContext();
 
@@ -782,7 +828,7 @@ void IntegrationAttempt::investigateUsers(Value* V) {
       }
       else {
 
-	Loop* outermostChildLoop = L;
+	const Loop* outermostChildLoop = L;
 
 	while(outermostChildLoop && (outermostChildLoop->getParentLoop() != MyL))
 	  outermostChildLoop = outermostChildLoop->getParentLoop();
@@ -821,48 +867,6 @@ void IntegrationAttempt::queueCheckAllLoads() {
 
 	if(LoadInst* LI = dyn_cast<LoadInst>(II))
 	  pass->queueCheckLoad(this, LI);
-
-      }
-
-    }
-
-  }
-
-}
-
-// Mostly taken from LICM.cpp
-bool PeelIteration::isInterestingLoopInvariantInst(Instruction &I) {
-  // The instruction is loop invariant if all of its operands are loop-invariant
-  for (unsigned i = 0, e = I.getNumOperands(); i != e; ++i)
-    if (!L->isLoopInvariant(I.getOperand(i)))
-      return false;
-
-  // If we got this far, the instruction is loop invariant! However some instructions can't really be evaluated at all, e.g. stores, unconditional branches.
-
-  if(isa<StoreInst>(I))
-    return false;
-  if(BranchInst* BI = dyn_cast<BranchInst>(&I))
-    if(!BI->isConditional())
-      return false;
-
-  return true;
-}
-
-void PeelIteration::queueInvariantInstructions() {
-
-  // LICM should be performed prior to integration, but some invariants can remain within the loop: a typical example is branch conditions controlling variants.
-  // E.g. int x = 1; while(...) { if(x) { ...variants here... } else { ... } }
-  // LLVM's current LICM implementation will practically always host, with the exception of instructions causing side-effects. Unfortunately that includes division, which can cause SIGFPE.
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    if(LI[&F]->getLoopFor(BB) == L) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-	if(isInterestingLoopInvariantInst(*II))
-	  pass->queueTryEvaluate(this, II);
 
       }
 
