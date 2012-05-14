@@ -3,7 +3,7 @@ include Makefile.config
 
 TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inline-siblings \
 	  nested_loops nonconstarrayloop partial_nested_loops pass-pointer-in nonconstglobal \
-          invariants def-function
+          invariants def-function def-skip-function
 
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
 LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))

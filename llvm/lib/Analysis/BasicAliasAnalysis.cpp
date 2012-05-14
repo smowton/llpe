@@ -581,15 +581,13 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
           continue;
         }
       }
-      return V;
     }
-    
-    if (Op->getOpcode() == Instruction::BitCast) {
+    else if (Op->getOpcode() == Instruction::BitCast) {
       V = make_vc(Op->getOperand(0), V.second);
       continue;
     }
     
-    const GEPOperator *GEPOp = dyn_cast<GEPOperator>(Op);
+    const GEPOperator *GEPOp = dyn_cast_or_null<GEPOperator>(Op);
     if (GEPOp == 0) {
       ValCtx NewV = getReplacement(V);
       // Look through a resolved pointer if our parent has that information
