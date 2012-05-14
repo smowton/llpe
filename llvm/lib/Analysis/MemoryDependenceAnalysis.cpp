@@ -83,10 +83,12 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, HCFParentCallbacks* P) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, HCFParentCallbacks* P, LoadInst* OriginalLI, HCFParentCallbacks* OriginCtx) {
 
   this->AA = AA;
   this->parent = P;
+  this->OriginalLI = OriginalLI;
+  this->OriginCtx = OriginCtx;
   if (PredCache == 0)
     PredCache.reset(new PredIteratorCache());
 
@@ -294,6 +296,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       // If we're in an invariant region, we can ignore calls that ONLY
       // modify the pointer.
       if (InvariantTag) continue;
+      break;
       return MemDepResult::getClobber(Inst);
     case AliasAnalysis::Ref:
       // If the call is known to never store to the pointer, and if this is a
@@ -302,8 +305,25 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
         continue;
     default:
       // Otherwise, there is a potential dependence.  Return a clobber.
-      return MemDepResult::getClobber(Inst);
+      break;
     }
+
+    // Inst does something to the pointer; we'll have to call it a clobber unless our parent can explore in more detail:
+
+    if(parent) {
+      if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
+	MemDepResult parentResult;
+	if(parent->tryForwardLoadThroughCall(CI, MemPtr, MemSize, parentResult, OriginalLI, OriginCtx)) {
+	  if(parentResult.isNonLocal())
+	    continue;
+	  else
+	    return parentResult;
+	}
+      }
+    }
+
+    return MemDepResult::getClobber(Inst);
+
   }
   
   // No dependence found.  If this is the entry block of the function, it is a

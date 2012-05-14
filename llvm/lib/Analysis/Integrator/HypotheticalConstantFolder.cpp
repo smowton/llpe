@@ -496,7 +496,7 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
     if(verbose)
-      DEBUG(dbgs() << "already improved");
+      DEBUG(dbgs() << "already improved\n");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {

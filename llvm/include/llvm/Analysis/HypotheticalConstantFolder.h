@@ -28,6 +28,7 @@ class raw_ostream;
 class ConstantInt;
 class Type;
 class Argument;
+class CallInst;
 
 class HCFParentCallbacks;
 
@@ -121,6 +122,7 @@ class HCFParentCallbacks {
   virtual bool blockIsDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
   virtual ValCtx getDefaultVC(Value*) = 0;
+  virtual bool tryForwardLoadThroughCall(CallInst*, Value*, uint64_t ValSize, MemDepResult&, LoadInst*, HCFParentCallbacks*) = 0;
   virtual void describe(raw_ostream&) const = 0;
 
 };
@@ -130,13 +132,11 @@ class PeelAttempt;
 class IntegrationAttempt;
 class IntegrationHeuristicsPass;
 
- class Function;
- class LoopInfo;
- class TargetData;
- class AliasAnalysis;
- class CallInst;
- class Loop;
-
+class Function;
+class LoopInfo;
+class TargetData;
+class AliasAnalysis;
+class Loop;
 
 enum IterationStatus {
 
@@ -181,6 +181,9 @@ protected:
   SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
   DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
 
+  SmallVector<SymExpr*, 4> currentSymExpr;
+  bool currentSymExprValid;
+
   std::string nestingIndent() const;
 
   int nesting_depth;
@@ -200,6 +203,7 @@ protected:
     invariantBlocks(_invariantBlocks),
     improvableInstructions(0),
     improvedInstructions(0),
+    currentSymExprValid(false),
     nesting_depth(depth)
       { }
 
@@ -277,18 +281,21 @@ protected:
 
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
-  bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, IntegrationAttempt* originCtx);
+  bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, llvm::Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
   ValCtx getDefn(const MemDepResult& Res);
-  MemDepResult getUniqueDependency(LoadInst* LI);
+  MemDepResult getUniqueDependency(LoadInst* LI, LoadInst* originalLI, IntegrationAttempt* originCtx);
 
-  bool buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>& Expr);
+  bool buildSymExpr(Value* InitialPtr);
+  void destroyCurrentSymExpr();
   void realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions);
   void destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions);
 
-  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) = 0;
-  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
-  bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, IntegrationAttempt* originCtx);
-  bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, IntegrationAttempt* originCtx);
+  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) = 0;
+  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
+
+  bool tryForwardLoadThroughCall(CallInst*, Value*, uint64_t ValSize, MemDepResult&, LoadInst* originalLI, HCFParentCallbacks* originCtx);
 
   void queueLoadsBlockedOn(Instruction* SI);
   void queueCheckAllLoads();
@@ -344,7 +351,7 @@ public:
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
 
-  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
+  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
 
   virtual void describe(raw_ostream& Stream) const;
 
@@ -388,7 +395,7 @@ class PeelAttempt {
 
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
-   ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, IntegrationAttempt* originCtx);
+   ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, LoadInst* originalLI, IntegrationAttempt* originCtx);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
@@ -403,34 +410,32 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   CallInst* CI;
+  BasicBlock* UniqueReturnBlock;
 
  public:
 
- InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
-	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) 
-   : 
-  IntegrationAttempt(Pass, P, F, LI, TD, AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
-     CI(_CI)
-     { }
+  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
+		DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth);
 
-   virtual ValCtx tryEvaluateResult(Value*);
+  virtual ValCtx tryEvaluateResult(Value*);
+  
+  virtual Instruction* getEntryInstruction();
+  virtual BasicBlock* getEntryBlock();
+  virtual const Loop* getLoopContext();
+  
+  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  bool tryForwardLoadFromExit(CallInst*, SmallVector<llvm::SymExpr*, 4u>&, MemDepResult&, LoadInst*, IntegrationAttempt*);
 
-   virtual Instruction* getEntryInstruction();
-   virtual BasicBlock* getEntryBlock();
-   virtual const Loop* getLoopContext();
-
-   virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx);
-
-   virtual void queueTryEvaluateOwnCall();
-
-   ValCtx tryGetReturnValue();
-
-   ValCtx getImprovedCallArgument(Argument* A);
-
-   virtual void describe(raw_ostream& Stream) const;
-
-   virtual void collectAllBlockStats();
-   virtual void printHeader(raw_ostream&) const;
+  virtual void queueTryEvaluateOwnCall();
+  
+  ValCtx tryGetReturnValue();
+  
+  ValCtx getImprovedCallArgument(Argument* A);
+  
+  virtual void describe(raw_ostream& Stream) const;
+  
+  virtual void collectAllBlockStats();
+  virtual void printHeader(raw_ostream&) const;
 
 };
 
@@ -464,6 +469,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<Instruction*, const Loop*> > invariantInstScopes;
    DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
+
+   DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
+
    TargetData* TD;
    AliasAnalysis* AA;
 
@@ -517,12 +525,29 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
    DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
 
+   BasicBlock* getUniqueReturnBlock(Function* F);
+
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
  };
 
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
+
+ // A simple helper that binds use of the current symbolic load to a scope.
+ class SymExprUser {
+   
+   IntegrationAttempt* parent;
+
+ public:
+
+   SymExprUser(IntegrationAttempt* P) : parent(P) { }
+   
+   ~SymExprUser() {
+     parent->destroyCurrentSymExpr();
+   }
+
+ };
 
 } // Namespace LLVM
 

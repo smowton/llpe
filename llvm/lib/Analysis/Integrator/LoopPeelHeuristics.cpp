@@ -65,6 +65,17 @@ IntegrationAttempt::~IntegrationAttempt() {
   }
 }
 
+InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
+			     DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
+			     DenseMap<Instruction*, const Loop*>& _invariantInsts, 
+			     DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
+			     DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) : 
+  IntegrationAttempt(Pass, P, F, LI, TD, AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
+  CI(_CI)
+  { 
+    UniqueReturnBlock = Pass->getUniqueReturnBlock(&F);
+  }
+
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 			 DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
 			 DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth) 
@@ -135,8 +146,6 @@ ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
 
   if(Constant* C = dyn_cast<Constant>(V))
     return const_vc(C);
-  else if(isa<Argument>(V))
-    return make_vc(V, 0);
   
   return make_vc(V, this);
 
@@ -614,12 +623,13 @@ ValCtx InlineAttempt::getImprovedCallArgument(Argument* A) {
 // Given a MemDep Def, get the value loaded or stored.
 ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 
+  IntegrationAttempt* QueryCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
   ValCtx improved = VCNull;
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
-    improved = getReplacement(SI->getOperand(0));
+    improved = QueryCtx->getReplacement(SI->getOperand(0));
   }
   else if(LoadInst* DefLI= dyn_cast<LoadInst>(Res.getInst())) {
-    improved = getReplacement(DefLI);
+    improved = QueryCtx->getReplacement(DefLI);
   }
   else {
     LPDEBUG("Defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
@@ -638,10 +648,10 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 }
 
 // Find the unique definer or clobberer for a given Load.
-MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
+MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI, LoadInst* OriginalLI, IntegrationAttempt* OriginCtx) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, this);
+  MD.init(AA, this, OriginalLI, OriginCtx);
 
   MemDepResult Seen = MD.getDependency(LoadI);
 
@@ -664,6 +674,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
     for(unsigned int i = 0; i < NLResults.size(); i++) {
 		
       const MemDepResult& Res = NLResults[i].getResult();
+
       if(Res.isNonLocal())
 	continue;
       else if(Res == Seen)
@@ -690,17 +701,14 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI) {
 
 // Make a symbolic expression for a given load instruction if it depends solely on one pointer
 // with many constant offsets.
-bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>& Expr) {
+bool IntegrationAttempt::buildSymExpr(Value* InitialPtr) {
 
-  // Precondition: LoadI is clobbered in exactly one place: the entry instruction to the enclosing context.
-  // This might mean that instruction actually clobbers it, or it's defined by instructions outside this function.
-  
-  if(!parent)
-    return false;
+  if(currentSymExprValid)
+    return (currentSymExpr.size() > 0);
 
-  ValCtx Ptr = getDefaultVC(LoadI->getPointerOperand());
+  ValCtx Ptr = getDefaultVC(InitialPtr);
 
-  LPDEBUG("Trying to resolve load from " << *LoadI << " by exploring parent contexts\n");
+  LPDEBUG("Trying to describe load from " << *InitialPtr << " as a simple symbolic expression\n");
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an identified object, and
   // build a symbolic expression representing the derived expression if so.
@@ -717,26 +725,26 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
 	if(Cidx)
 	  idxs.push_back(Cidx);
 	else {
-	  LPDEBUG("Can't investigate external dep with non-const index " << *idx << "\n");
+	  LPDEBUG("Can't describe load from pointer with non-const offset " << *idx << "\n");
 	  success = false; 
 	  break;
 	}
       }
-      Expr.push_back((new SymGEP(idxs)));
+      currentSymExpr.push_back((new SymGEP(idxs)));
       Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
     }
     else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
-      Expr.push_back((new SymCast(C->getType())));
+      currentSymExpr.push_back((new SymCast(C->getType())));
       Ptr = make_vc(C->getOperand(0), Ptr.second);
     }
     else {
       ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
       if(isIdentifiedObject(Repl.first)) {
-	Expr.push_back((new SymThunk(Repl)));
+	currentSymExpr.push_back((new SymThunk(Repl)));
 	break;
       }
       else if(Repl == Ptr) {
-	LPDEBUG("Won't investigate load from parent context due to unresolved pointer " << Ptr << "\n");
+	LPDEBUG("Can't describe load due to unresolved pointer " << Ptr << "\n");
 	success = false; 
 	break;
       }
@@ -747,14 +755,8 @@ bool IntegrationAttempt::buildSymExpr(LoadInst* LoadI, SmallVector<SymExpr*, 4>&
     
   }
 
-
-  if(!success) {
-    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
-      delete (*it);
-    }
-    Expr.clear();
-  }
-
+  currentSymExprValid = true;
+  
   return success;
 
 }
@@ -819,6 +821,16 @@ void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instructio
 
 }
 
+void IntegrationAttempt::destroyCurrentSymExpr() {
+
+  for(SmallVector<SymExpr*, 4>::iterator it = currentSymExpr.begin(), it2 = currentSymExpr.end(); it != it2; it++) {
+    delete (*it);
+  }
+  currentSymExpr.clear();
+  currentSymExprValid = false;
+
+}
+
 // Main load forwarding entry point:
 // Try to forward the load locally (within this loop or function), or otherwise build a symbolic expression
 // and ask our parent to continue resolving the load.
@@ -865,27 +877,30 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   }
 
-  if(forwardLoadIsNonLocal(LoadI, Result, this)) {
-    SmallVector<SymExpr*, 4> Expr;
-    if(!buildSymExpr(LoadI, Expr))
+  Instruction* Ignored;
+  if(forwardLoadIsNonLocal(LoadI, Result, Ignored, LoadI, this)) {
+
+    if(!parent)
+      return VCNull;
+
+    // Ensures that the symbolic expression is cleared up when we leave this scope.
+    SymExprUser Sentinel(this);
+
+    if(!buildSymExpr(LoadI->getPointerOperand()))
       return VCNull; 
 
     LPDEBUG("Will resolve ");
 
-    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
-      if(it != Expr.begin())
+    for(SmallVector<SymExpr*, 4>::iterator it = currentSymExpr.begin(), it2 = currentSymExpr.end(); it != it2; it++) {
+      if(it != currentSymExpr.begin())
 	DEBUG(dbgs() << " of ");
       DEBUG((*it)->describe(dbgs()));
     }
 
     DEBUG(dbgs() << "\n");
 
-    ValCtx SubcallResult = tryForwardExprFromParent(Expr, this);
+    ValCtx SubcallResult = tryForwardExprFromParent(currentSymExpr, LoadI, this);
    
-    for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
-      delete (*it);
-    }
-
     return SubcallResult;
   }
   else {
@@ -898,7 +913,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 }
 
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
-ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) {
+ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
@@ -906,14 +921,14 @@ ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, I
   }
   else {
     LPDEBUG("Resolving load at call site\n");
-    return parent->tryResolveLoadAtChildSite(this, Expr, originCtx);
+    return parent->tryResolveLoadAtChildSite(this, Expr, originalLI, originCtx);
   }
 
 }
 
 // Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
 // then ask our enclosing loop or function body to look further.
-ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, IntegrationAttempt* originCtx) {
+ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of Expr for all of these checks, since the instructions are always the same.
@@ -933,7 +948,8 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
-    if(!(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, originCtx))) {
+    Instruction* Ignored;
+    if(!(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, Ignored, originalLI, originCtx))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
@@ -965,22 +981,22 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
 
   LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
 
-  return parent->tryResolveLoadAtChildSite(Iterations[0], Expr, originCtx);
+  return parent->tryResolveLoadAtChildSite(Iterations[0], Expr, originalLI, originCtx);
 
 }
 
 // Helper: loop iterations defer the resolution process to the abstract loop.
-ValCtx PeelIteration::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) {
+ValCtx PeelIteration::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
-  return parentPA->tryForwardExprFromParent(Expr, this->iterationCount, originCtx);
+  return parentPA->tryForwardExprFromParent(Expr, this->iterationCount, originalLI, originCtx);
 
 }
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, IntegrationAttempt* originCtx) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
-  MemDepResult Res = getUniqueDependency(LoadI);
+  MemDepResult Res = getUniqueDependency(LoadI, originalLI, originCtx);
 
   if(Res.isClobber()) {
     if(Res.getInst()->getParent() == getEntryBlock()) {
@@ -991,17 +1007,18 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, 
     }
     else {
       if(Res.getInst()->mayWriteToMemory())
-	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(originCtx, LoadI));
+	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(originCtx, originalLI));
       // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
     }
     Result = VCNull;
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
+    DefInst = Res.getInst();
   }
   else if(Res == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
-    CFGBlockedLoads.push_back(std::make_pair(originCtx, LoadI));
+    CFGBlockedLoads.push_back(std::make_pair(originCtx, originalLI));
   }
 
   return false;
@@ -1017,27 +1034,27 @@ void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstru
 
 }
 
-bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, IntegrationAttempt* originCtx) {
+bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
   SymThunk* Th = cast<SymThunk>(Expr.back());
 
   improvedValues[FakeBase] = Th->RealVal;
   //LPDEBUG("Set fake base pointer " << *FakeBase << " --> " << Th->RealVal << "\n");
-  bool shouldPursueFurther = forwardLoadIsNonLocal(Accessor, Result, originCtx);
+  bool shouldPursueFurther = forwardLoadIsNonLocal(Accessor, Result, DefInst, originalLI, originCtx);
   improvedValues.erase(FakeBase);
 
   return shouldPursueFurther;
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, IntegrationAttempt* originCtx) {
+bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
   Instruction* FakeBase;
   LoadInst* Accessor;
   SmallVector<Instruction*, 4> tempInstructions;
   realiseSymExpr(Expr, Where, FakeBase, Accessor, tempInstructions);
   
-  bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result, originCtx);
+  bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result, DefInst, originalLI, originCtx);
 
   destroySymExpr(tempInstructions);
 
@@ -1048,20 +1065,84 @@ bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Inst
 // Entry point for a child loop or function that wishes us to continue pursuing a load.
 // Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
 // expression, and try ordinary load forwarding from there.
-ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, IntegrationAttempt* originCtx) {
+ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
 
   ValCtx Result;
 
   LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
 
-  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result, originCtx)) {
+  Instruction* Ignored;
+  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result, Ignored, originalLI, originCtx)) {
     LPDEBUG("Still nonlocal, passing to our parent scope\n");
-    return tryForwardExprFromParent(Expr, originCtx);
+    return tryForwardExprFromParent(Expr, originalLI, originCtx);
   }
   else {
     LPDEBUG("Resolved at this scope: " << Result << "\n");
     return Result;
   }
+
+}
+
+bool InlineAttempt::tryForwardLoadFromExit(CallInst* CI, SmallVector<SymExpr*, 4>& Expr, MemDepResult& Result, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+
+  BasicBlock* RetBB = pass->getUniqueReturnBlock(&F);
+
+  if(!RetBB) {
+
+    LPDEBUG("Can't investigate because this function has no unique return block! Run -mergereturn\n");
+    return false;
+
+  }
+
+  ValCtx VCResult;
+  Instruction* DefInst;
+
+  if(tryResolveExprFrom(Expr, RetBB->getTerminator(), VCResult, DefInst, originalLI, originCtx)) {
+    LPDEBUG("Call " << *CI << " doesn't affect load from " << *originalLI << "\n");
+    Result = MemDepResult::getNonLocal();
+    return true;
+  }
+  else if(VCResult == VCNull) {
+    LPDEBUG("Call " << *CI << " clobbers load " << *originalLI << "\n");
+    return false;
+  }
+  else {
+    LPDEBUG("Call " << *CI << " defines load " << *originalLI << " to " << VCResult << "\n");
+    Result = MemDepResult::getDef(DefInst, this);
+    return true;
+  }
+
+}
+
+bool IntegrationAttempt::tryForwardLoadThroughCall(CallInst* CI, Value* Val, uint64_t ValSize, MemDepResult& Result, LoadInst* originalLI, HCFParentCallbacks* originCtx) {
+
+  InlineAttempt* IA = getInlineAttempt(CI);
+
+  if(!IA) {
+    LPDEBUG("Unable to pursue load through call " << *CI << " as it has not yet been explored\n");
+    return false;
+  }
+
+  LPDEBUG("Trying to forward load " << *Val << " through call " << *CI << ":\n");
+  
+  bool ret;
+
+  {
+    SymExprUser Sentinel(this);
+    if(!buildSymExpr(Val))
+      return false;
+
+    ret = IA->tryForwardLoadFromExit(CI, currentSymExpr, Result, originalLI, (IntegrationAttempt*)originCtx);
+  }
+
+  if(!ret) {
+    LPDEBUG("Uncertain, returning a clobber\n");
+  }
+  else if(Result.isNonLocal()) {
+    LPDEBUG("Call has no effect\n");
+  }
+
+  return ret;
 
 }
 
@@ -1273,6 +1354,36 @@ void IntegratorWQItem::describe(raw_ostream& s) {
     s << "Check-load " << make_vc((LoadInst*)operand, ctx);
     break;
   }
+
+}
+
+BasicBlock* IntegrationHeuristicsPass::getUniqueReturnBlock(Function* F) {
+
+  DenseMap<Function*, BasicBlock*>::iterator it = uniqueReturnBlocks.find(F);
+  
+  if(it != uniqueReturnBlocks.end())
+    return it->second;
+
+  BasicBlock* uniqueReturnBlock = 0;
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    BasicBlock* BB = FI;
+
+    if(isa<ReturnInst>(BB->getTerminator())) {
+      if(!uniqueReturnBlock)
+	uniqueReturnBlock = BB;
+      else {
+	uniqueReturnBlock = 0;
+	break;
+      }
+    }
+
+  }
+
+  uniqueReturnBlocks[F] = uniqueReturnBlock;
+
+  return uniqueReturnBlock;
 
 }
 

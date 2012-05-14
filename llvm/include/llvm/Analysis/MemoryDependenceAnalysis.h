@@ -35,6 +35,7 @@ namespace llvm {
   class DominatorTree;
   class PHITransAddr;
   class HCFParentCallbacks;
+  class LoadInst;
   
   /// MemDepResult - A memory dependence query can return one of three different
   /// answers, described below.
@@ -76,14 +77,15 @@ namespace llvm {
     };
     typedef PointerIntPair<Instruction*, 2, DepType> PairTy;
     PairTy Value;
-    explicit MemDepResult(PairTy V) : Value(V) {}
+    HCFParentCallbacks* Cookie;
+    explicit MemDepResult(PairTy V, HCFParentCallbacks* C = 0) : Value(V), Cookie(C) {}
   public:
-    MemDepResult() : Value(0, Invalid) {}
+    MemDepResult() : Value(0, Invalid), Cookie(0) {}
     
     /// get methods: These are static ctor methods for creating various
     /// MemDepResult kinds.
-    static MemDepResult getDef(Instruction *Inst) {
-      return MemDepResult(PairTy(Inst, Def));
+    static MemDepResult getDef(Instruction *Inst, HCFParentCallbacks* C = 0) {
+      return MemDepResult(PairTy(Inst, Def), C);
     }
     static MemDepResult getClobber(Instruction *Inst) {
       return MemDepResult(PairTy(Inst, Clobber));
@@ -108,6 +110,8 @@ namespace llvm {
     /// getInst() - If this is a normal dependency, return the instruction that
     /// is depended on.  Otherwise, return null.
     Instruction *getInst() const { return Value.getPointer(); }
+
+    HCFParentCallbacks* getCookie() const { return Cookie; }
     
     bool operator==(const MemDepResult &M) const { return Value == M.Value; }
     bool operator!=(const MemDepResult &M) const { return Value != M.Value; }
@@ -260,13 +264,17 @@ namespace llvm {
     AliasAnalysis *AA;
     TargetData *TD;
     HCFParentCallbacks* parent;
+
+    LoadInst* OriginalLI;
+    HCFParentCallbacks* OriginCtx;
+
     OwningPtr<PredIteratorCache> PredCache;
 
     MemoryDependenceAnalyser();
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0);
+    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0, LoadInst* OriginalLI = 0, HCFParentCallbacks* OriginCtx = 0);
 
     /// Clean up memory in between runs
     void releaseMemory();
