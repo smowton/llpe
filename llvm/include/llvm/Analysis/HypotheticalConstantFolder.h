@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#define LPDEBUG(x) DEBUG(do { printHeader(dbgs()); dbgs() << ": " << x; } while(0))
+#define LPDEBUG(x) DEBUG(do { printDebugHeader(dbgs()); dbgs() << ": " << x; } while(0))
 
 namespace llvm {
 
@@ -112,6 +112,10 @@ public:
 
 };
 
+class LoadForwardAttempt;
+class LFARealization;
+class LFAQueryable;
+
 // Interface exposed to Memory Dependence Analysis and other external analyses that the integrator uses.
 class HCFParentCallbacks {
 
@@ -122,7 +126,7 @@ class HCFParentCallbacks {
   virtual bool blockIsDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
   virtual ValCtx getDefaultVC(Value*) = 0;
-  virtual bool tryForwardLoadThroughCall(CallInst*, Value*, uint64_t ValSize, MemDepResult&, LoadInst*, HCFParentCallbacks*) = 0;
+  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&) = 0;
   virtual void describe(raw_ostream&) const = 0;
 
 };
@@ -181,9 +185,6 @@ protected:
   SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
   DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
 
-  SmallVector<SymExpr*, 4> currentSymExpr;
-  bool currentSymExprValid;
-
   std::string nestingIndent() const;
 
   int nesting_depth;
@@ -203,7 +204,6 @@ protected:
     invariantBlocks(_invariantBlocks),
     improvableInstructions(0),
     improvedInstructions(0),
-    currentSymExprValid(false),
     nesting_depth(depth)
       { }
 
@@ -241,6 +241,7 @@ protected:
   // Simple state-tracking helpers:
 
   void setReplacement(Value*, ValCtx);
+  void eraseReplacement(Value*);
   void setEdgeDead(BasicBlock*, BasicBlock*);
   void setBlockDead(BasicBlock*);
 
@@ -281,21 +282,16 @@ protected:
 
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
-  bool forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, llvm::Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  bool forwardLoadIsNonLocal(LFAQueryable&, ValCtx& Result, llvm::Instruction*& DefInst);
   ValCtx getDefn(const MemDepResult& Res);
-  MemDepResult getUniqueDependency(LoadInst* LI, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  MemDepResult getUniqueDependency(LFAQueryable&);
 
-  bool buildSymExpr(Value* InitialPtr);
-  void destroyCurrentSymExpr();
-  void realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions);
-  void destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions);
+  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&) = 0;
+  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& DefInst);
+  bool tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& DefInst);
 
-  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) = 0;
-  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
-  bool tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
-  bool tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx);
-
-  bool tryForwardLoadThroughCall(CallInst*, Value*, uint64_t ValSize, MemDepResult&, LoadInst* originalLI, HCFParentCallbacks* originCtx);
+  bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
 
   void queueLoadsBlockedOn(Instruction* SI);
   void queueCheckAllLoads();
@@ -308,6 +304,10 @@ protected:
   void print(raw_ostream& OS) const;
   // Callable from GDB
   void dump() const;
+
+  void printDebugHeader(raw_ostream& Str) {
+    printHeader(Str);
+  }
 
 };
 
@@ -351,7 +351,7 @@ public:
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
 
-  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
+  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&);
 
   virtual void describe(raw_ostream& Stream) const;
 
@@ -395,12 +395,15 @@ class PeelAttempt {
 
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
-   ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, LoadInst* originalLI, IntegrationAttempt* originCtx);
+   ValCtx tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
    void collectStats();
    void printHeader(raw_ostream& OS) const;
+   void printDebugHeader(raw_ostream& OS) const {
+     printHeader(OS);
+   }
    void print(raw_ostream& OS) const;
 
    std::string nestingIndent() const;
@@ -423,8 +426,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual BasicBlock* getEntryBlock();
   virtual const Loop* getLoopContext();
   
-  virtual ValCtx tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx);
-  bool tryForwardLoadFromExit(CallInst*, SmallVector<llvm::SymExpr*, 4u>&, MemDepResult&, LoadInst*, IntegrationAttempt*);
+  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&);
+  bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&);
 
   virtual void queueTryEvaluateOwnCall();
   
@@ -436,6 +439,91 @@ class InlineAttempt : public IntegrationAttempt {
   
   virtual void collectAllBlockStats();
   virtual void printHeader(raw_ostream&) const;
+
+};
+
+class LoadForwardAttempt;
+
+class LFAQueryable {
+
+ public:
+
+  virtual LoadInst* getOriginalInst() = 0;
+  virtual IntegrationAttempt* getOriginalCtx() = 0;
+  virtual LoadInst* getQueryInst() = 0;
+  virtual LoadForwardAttempt& getLFA() = 0;
+
+};
+
+class LoadForwardAttempt : public LFAQueryable {
+
+  LoadInst* LI;
+  IntegrationAttempt* originalCtx;
+  SmallVector<SymExpr*, 4> Expr;
+  bool ExprValid;
+
+  bool buildSymExpr();
+
+ public:
+
+  virtual LoadInst* getOriginalInst();
+  virtual IntegrationAttempt* getOriginalCtx();
+  virtual LoadInst* getQueryInst();
+  virtual LoadForwardAttempt& getLFA();  
+
+  void describeSymExpr(raw_ostream& Str);
+  bool tryBuildSymExpr();
+  bool canBuildSymExpr();
+
+  SmallVector<SymExpr*, 4>* getSymExpr();
+
+  ValCtx getBaseVC();
+  HCFParentCallbacks* getBaseContext();
+
+ LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C) : LI(_LI), originalCtx(C), ExprValid(false) { }
+  ~LoadForwardAttempt();
+
+  void printDebugHeader(raw_ostream& Str) { 
+    originalCtx->printDebugHeader(Str);
+  }
+
+};
+
+class LFARealization : public LFAQueryable {
+
+  LoadForwardAttempt& LFA;
+  LoadInst* QueryInst;
+  Instruction* FakeBase;
+  Instruction* InsertPoint;
+  SmallVector<Instruction*, 4> tempInstructions;
+  
+ public:
+
+  virtual LoadInst* getOriginalInst();
+  virtual IntegrationAttempt* getOriginalCtx();
+  virtual LoadInst* getQueryInst();
+  virtual LoadForwardAttempt& getLFA();
+
+  LFARealization(LoadForwardAttempt& LFA, IntegrationAttempt* Ctx, Instruction* Insert);
+  ~LFARealization();
+
+  Instruction* getFakeBase();
+
+  void printDebugHeader(raw_ostream& Str) { 
+    LFA.getOriginalCtx()->printDebugHeader(Str);
+  }
+
+};
+
+class LFARMapping {
+
+  LFARealization& LFAR;
+  IntegrationAttempt* Ctx;
+
+ public:
+
+  LFARMapping(LFARealization& LFAR, IntegrationAttempt* Ctx);
+  ~LFARMapping();
 
 };
 
@@ -533,21 +621,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
-
- // A simple helper that binds use of the current symbolic load to a scope.
- class SymExprUser {
-   
-   IntegrationAttempt* parent;
-
- public:
-
-   SymExprUser(IntegrationAttempt* P) : parent(P) { }
-   
-   ~SymExprUser() {
-     parent->destroyCurrentSymExpr();
-   }
-
- };
+ Constant* getConstReplacement(Value*, HCFParentCallbacks*);
 
 } // Namespace LLVM
 

@@ -35,6 +35,7 @@ namespace llvm {
   class DominatorTree;
   class PHITransAddr;
   class HCFParentCallbacks;
+  class LoadForwardAttempt;
   class LoadInst;
   
   /// MemDepResult - A memory dependence query can return one of three different
@@ -265,8 +266,7 @@ namespace llvm {
     TargetData *TD;
     HCFParentCallbacks* parent;
 
-    LoadInst* OriginalLI;
-    HCFParentCallbacks* OriginCtx;
+    LoadForwardAttempt* LFA;
 
     OwningPtr<PredIteratorCache> PredCache;
 
@@ -274,7 +274,7 @@ namespace llvm {
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0, LoadInst* OriginalLI = 0, HCFParentCallbacks* OriginCtx = 0);
+    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0, LoadForwardAttempt* LFA = 0);
 
     /// Clean up memory in between runs
     void releaseMemory();

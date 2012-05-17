@@ -170,14 +170,20 @@ ValCtx IntegrationAttempt::getDefaultVCWithScope(Value* V, const Loop* LScope) {
 
 }
 
-Constant* IntegrationAttempt::getConstReplacement(Value* V) {
+Constant* llvm::getConstReplacement(Value* V, HCFParentCallbacks* Ctx) {
 
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
-  ValCtx Replacement = getReplacement(V);
+  ValCtx Replacement = Ctx->getReplacement(V);
   if(Constant* C = dyn_cast<Constant>(Replacement.first))
     return C;
   return 0;
+
+}
+
+Constant* IntegrationAttempt::getConstReplacement(Value* V) {
+
+  return llvm::getConstReplacement(V, this);
 
 }
 
@@ -185,6 +191,12 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
 
   improvedValues[V] = R;
+
+}
+
+void IntegrationAttempt::eraseReplacement(Value* V) {
+
+  improvedValues.erase(V);
 
 }
 
@@ -648,21 +660,24 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 }
 
 // Find the unique definer or clobberer for a given Load.
-MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI, LoadInst* OriginalLI, IntegrationAttempt* OriginCtx) {
+MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, this, OriginalLI, OriginCtx);
+  MD.init(AA, this, &(LFA.getLFA()));
 
-  MemDepResult Seen = MD.getDependency(LoadI);
+  LoadInst* QueryInst = LFA.getQueryInst();
+  LoadInst* OriginalInst = LFA.getOriginalInst();
+
+  MemDepResult Seen = MD.getDependency(QueryInst);
 
   if(Seen.isNonLocal()) {
 
     Seen = MemDepResult();
-    Value* LPointer = LoadI->getOperand(0);
+    Value* LPointer = QueryInst->getOperand(0);
 
     SmallVector<NonLocalDepResult, 4> NLResults;
 
-    MD.getNonLocalPointerDependency(LPointer, true, LoadI->getParent(), NLResults);
+    MD.getNonLocalPointerDependency(LPointer, true, QueryInst->getParent(), NLResults);
 
     if(NLResults.size() == 0) {
 
@@ -682,152 +697,20 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LoadInst* LoadI, LoadInst* 
       else if(Seen == MemDepResult()) // Nothing seen yet
 	Seen = Res;
       else {
-	LPDEBUG(*LoadI << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
+	LPDEBUG(*OriginalInst << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
 	return MemDepResult();
       }
 
     }
 
-    LPDEBUG(*LoadI << " nonlocally defined by " << Seen << "\n");
+    LPDEBUG(*OriginalInst << " nonlocally defined by " << Seen << "\n");
 
   }
   else {
-    LPDEBUG(*LoadI << " locally defined by " << Seen << "\n");
+    LPDEBUG(*OriginalInst << " locally defined by " << Seen << "\n");
   }
 
   return Seen;
-
-}
-
-// Make a symbolic expression for a given load instruction if it depends solely on one pointer
-// with many constant offsets.
-bool IntegrationAttempt::buildSymExpr(Value* InitialPtr) {
-
-  if(currentSymExprValid)
-    return (currentSymExpr.size() > 0);
-
-  ValCtx Ptr = getDefaultVC(InitialPtr);
-
-  LPDEBUG("Trying to describe load from " << *InitialPtr << " as a simple symbolic expression\n");
-
-  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an identified object, and
-  // build a symbolic expression representing the derived expression if so.
- 
-  bool success = true;
-
-  while(1) {
-
-    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr.first)) {
-      SmallVector<Value*, 4> idxs;
-      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
-	Value* idx = GEP->getOperand(i);
-	Constant* Cidx = getConstReplacement(idx);
-	if(Cidx)
-	  idxs.push_back(Cidx);
-	else {
-	  LPDEBUG("Can't describe load from pointer with non-const offset " << *idx << "\n");
-	  success = false; 
-	  break;
-	}
-      }
-      currentSymExpr.push_back((new SymGEP(idxs)));
-      Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
-    }
-    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
-      currentSymExpr.push_back((new SymCast(C->getType())));
-      Ptr = make_vc(C->getOperand(0), Ptr.second);
-    }
-    else {
-      ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
-      if(isIdentifiedObject(Repl.first)) {
-	currentSymExpr.push_back((new SymThunk(Repl)));
-	break;
-      }
-      else if(Repl == Ptr) {
-	LPDEBUG("Can't describe load due to unresolved pointer " << Ptr << "\n");
-	success = false; 
-	break;
-      }
-      else {
-	Ptr = Repl; // Must continue resolving!
-      }
-    }
-    
-  }
-
-  currentSymExprValid = true;
-  
-  return success;
-
-}
-
-// Realise a symbolic expression at a given location. 
-// Temporary instructions are created and recorded for later deletion.
-void IntegrationAttempt::realiseSymExpr(SmallVector<SymExpr*, 4>& in, Instruction* Where, Instruction*& FakeBaseObject, LoadInst*& Accessor, SmallVector<Instruction*, 4>& tempInstructions) {
-
-  // Build it backwards: the in chain should end in a defined object, in or outside our scope.
-  // Start with that, then wrap it incrementally in operators.
-  
-  SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
-  
-  Value* lastPtr;
-  
-  SI--;
-  SymThunk* th = cast<SymThunk>(*SI);
-
-  LLVMContext& ctx = F.getContext();
-  BasicBlock::iterator BI(Where);
-  IRBuilder<> Builder(ctx);
-  Builder.SetInsertPoint(Where->getParent(), *BI);
-
-  // I make up a fake location that we're supposedly accessing. The structure is
-  // %pointless = alloca()
-  // %junk = load %pointless
-  // %expr_0 = gep(%junk, ...)
-  // %expr_1 = bitcast(%expr_0)
-  // ...
-  // %expr_n = gep(%expr_n_1, ...)
-  // %accessor = load %expr_n
-  // Then our caller should set his local improvedValues so that junk resolves to
-  // the base pointer he wishes to query (i.e. the base pointer from the SymExpr),
-  // and then issue a MemDep query against accessor.
-
-  Instruction* FakeLoc = Builder.CreateAlloca(th->RealVal.first->getType());
-  tempInstructions.push_back(FakeLoc);
-  lastPtr = FakeBaseObject = Builder.CreateLoad(FakeLoc);
-  tempInstructions.push_back(FakeBaseObject);
-
-  while(SI != SE) {
-    SI--;
-    if(SymGEP* GEP = dyn_cast<SymGEP>(*SI)) {
-      lastPtr = Builder.CreateGEP(lastPtr, GEP->Offsets.begin(), GEP->Offsets.end());
-    }
-    else if(SymCast* Cast = dyn_cast<SymCast>(*SI)) {
-      lastPtr = Builder.CreateBitCast(lastPtr, Cast->ToType);
-    }
-    else {
-      assert(0 && "Investigated expression should only contain GEPs and Casts except at the end\n");
-    }
-    //LPDEBUG("Created temporary instruction: " << *lastPtr << "\n");
-    tempInstructions.push_back(cast<Instruction>(lastPtr));
-  }
-
-  // Make up a fake load, since MD wants an accessor.
-  Accessor = Builder.CreateLoad(lastPtr);
-  tempInstructions.push_back(Accessor);
-
-  //  LPDEBUG("Temporarily augmented parent block:\n");
-  //  DEBUG(dbgs() << *Where->getParent());
-
-}
-
-void IntegrationAttempt::destroyCurrentSymExpr() {
-
-  for(SmallVector<SymExpr*, 4>::iterator it = currentSymExpr.begin(), it2 = currentSymExpr.end(); it != it2; it++) {
-    delete (*it);
-  }
-  currentSymExpr.clear();
-  currentSymExprValid = false;
 
 }
 
@@ -878,28 +761,20 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   }
 
   Instruction* Ignored;
-  if(forwardLoadIsNonLocal(LoadI, Result, Ignored, LoadI, this)) {
+  LoadForwardAttempt Attempt(LoadI, this);
+  if(forwardLoadIsNonLocal(Attempt, Result, Ignored)) {
 
     if(!parent)
       return VCNull;
 
-    // Ensures that the symbolic expression is cleared up when we leave this scope.
-    SymExprUser Sentinel(this);
-
-    if(!buildSymExpr(LoadI->getPointerOperand()))
+    if(!Attempt.canBuildSymExpr())
       return VCNull; 
 
     LPDEBUG("Will resolve ");
-
-    for(SmallVector<SymExpr*, 4>::iterator it = currentSymExpr.begin(), it2 = currentSymExpr.end(); it != it2; it++) {
-      if(it != currentSymExpr.begin())
-	DEBUG(dbgs() << " of ");
-      DEBUG((*it)->describe(dbgs()));
-    }
-
+    DEBUG(Attempt.describeSymExpr(dbgs()));
     DEBUG(dbgs() << "\n");
 
-    ValCtx SubcallResult = tryForwardExprFromParent(currentSymExpr, LoadI, this);
+    ValCtx SubcallResult = tryForwardExprFromParent(Attempt);
    
     return SubcallResult;
   }
@@ -913,7 +788,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 }
 
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
-ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+ValCtx InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
@@ -921,27 +796,20 @@ ValCtx InlineAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, L
   }
   else {
     LPDEBUG("Resolving load at call site\n");
-    return parent->tryResolveLoadAtChildSite(this, Expr, originalLI, originCtx);
+    return parent->tryResolveLoadAtChildSite(this, LFA);
   }
 
 }
 
 // Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
 // then ask our enclosing loop or function body to look further.
-ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int originIter, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
-  // of Expr for all of these checks, since the instructions are always the same.
+  // of the LFA for all of these checks, since the instructions are always the same.
 
-  SmallVector<Instruction*, 4> tempInstructions;
-  Instruction* FakeBase;
-  LoadInst* Accessor;
-  Iterations[0]->realiseSymExpr(Expr, L->getLoopLatch()->getTerminator(), FakeBase, Accessor, tempInstructions);
+  LFARealization LFAR(LFA, Iterations[0], L->getLoopLatch()->getTerminator());
   
-  SymThunk* Th = cast<SymThunk>(Expr.back());
-  ValCtx Result;
-  bool resultValid = false;
-
   LPDEBUG("Trying to resolve by walking backwards through loop " << L->getHeader()->getName() << "\n");
 
   for(int iter = originIter - 1; iter >= 0; iter--) {
@@ -949,54 +817,47 @@ ValCtx PeelAttempt::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, int
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
     Instruction* Ignored;
-    if(!(Iterations[iter]->tryResolveExprUsing(Expr, FakeBase, Accessor, Result, Ignored, originalLI, originCtx))) {
+    ValCtx Result;
+    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, Ignored))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
+	return Result;
       }
       else {
-	Result = VCNull;
 	LPDEBUG("Resolution failed\n");
+	return VCNull;
       }
-      resultValid = true;
-      break;
     }
     else {
       // Go round the loop and try the next iteration.
     }
 
-    if(Th->RealVal.second == Iterations[iter]) {
-      LPDEBUG("Abandoning resolution: " << Th->RealVal << " is out of scope\n");
-      Result = VCNull;
-      resultValid = true;
-      break;
+    if(LFA.getBaseContext() == Iterations[iter]) {
+      LPDEBUG("Abandoning resolution: " << LFA.getBaseVC() << " is out of scope\n");
+      return VCNull;
     }
 
   }
 
-  Iterations[0]->destroySymExpr(tempInstructions);
-
-  if(resultValid)
-    return Result;
-
   LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
 
-  return parent->tryResolveLoadAtChildSite(Iterations[0], Expr, originalLI, originCtx);
+  return parent->tryResolveLoadAtChildSite(Iterations[0], LFA);
 
 }
 
 // Helper: loop iterations defer the resolution process to the abstract loop.
-ValCtx PeelIteration::tryForwardExprFromParent(SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+ValCtx PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
-  return parentPA->tryForwardExprFromParent(Expr, this->iterationCount, originalLI, originCtx);
+  return parentPA->tryForwardExprFromParent(LFA, this->iterationCount);
 
 }
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Result, Instruction*& DefInst) {
 
-  MemDepResult Res = getUniqueDependency(LoadI, originalLI, originCtx);
+  MemDepResult Res = getUniqueDependency(LFAQ);
 
   if(Res.isClobber()) {
     if(Res.getInst()->getParent() == getEntryBlock()) {
@@ -1007,7 +868,7 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, 
     }
     else {
       if(Res.getInst()->mayWriteToMemory())
-	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(originCtx, originalLI));
+	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
       // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
     }
     Result = VCNull;
@@ -1018,63 +879,42 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LoadInst* LoadI, ValCtx& Result, 
   }
   else if(Res == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
-    CFGBlockedLoads.push_back(std::make_pair(originCtx, originalLI));
+    CFGBlockedLoads.push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
   }
 
   return false;
 
 }
 
-void IntegrationAttempt::destroySymExpr(SmallVector<Instruction*, 4>& tempInstructions) {
+bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& DefInst) {
 
-  for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
-    Instruction* I = *(--II);
-    I->eraseFromParent();
-  }
+  LFARMapping LFARM(LFAR, this);
 
-}
-
-bool IntegrationAttempt::tryResolveExprUsing(SmallVector<SymExpr*, 4>& Expr, Instruction* FakeBase, LoadInst* Accessor, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
-
-  SymThunk* Th = cast<SymThunk>(Expr.back());
-
-  improvedValues[FakeBase] = Th->RealVal;
-  //LPDEBUG("Set fake base pointer " << *FakeBase << " --> " << Th->RealVal << "\n");
-  bool shouldPursueFurther = forwardLoadIsNonLocal(Accessor, Result, DefInst, originalLI, originCtx);
-  improvedValues.erase(FakeBase);
-
-  return shouldPursueFurther;
+  return forwardLoadIsNonLocal(LFAR, Result, DefInst);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(SmallVector<SymExpr*, 4>& Expr, Instruction* Where, ValCtx& Result, Instruction*& DefInst, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& DefInst) {
 
-  Instruction* FakeBase;
-  LoadInst* Accessor;
-  SmallVector<Instruction*, 4> tempInstructions;
-  realiseSymExpr(Expr, Where, FakeBase, Accessor, tempInstructions);
+  LFARealization LFAR(LFA, this, Where);
   
-  bool shouldPursueFurther = tryResolveExprUsing(Expr, FakeBase, Accessor, Result, DefInst, originalLI, originCtx);
-
-  destroySymExpr(tempInstructions);
-
-  return shouldPursueFurther;
+  return tryResolveExprUsing(LFAR, Result, DefInst);
 
 }
 
 // Entry point for a child loop or function that wishes us to continue pursuing a load.
 // Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
 // expression, and try ordinary load forwarding from there.
-ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, SmallVector<SymExpr*, 4>& Expr, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt& LFA) {
 
   ValCtx Result;
 
   LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
 
   Instruction* Ignored;
-  if(tryResolveExprFrom(Expr, IA->getEntryInstruction(), Result, Ignored, originalLI, originCtx)) {
+  if(tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result, Ignored)) {
     LPDEBUG("Still nonlocal, passing to our parent scope\n");
-    return tryForwardExprFromParent(Expr, originalLI, originCtx);
+    return tryForwardExprFromParent(LFA);
   }
   else {
     LPDEBUG("Resolved at this scope: " << Result << "\n");
@@ -1083,7 +923,7 @@ ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, Sma
 
 }
 
-bool InlineAttempt::tryForwardLoadFromExit(CallInst* CI, SmallVector<SymExpr*, 4>& Expr, MemDepResult& Result, LoadInst* originalLI, IntegrationAttempt* originCtx) {
+bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult& Result) {
 
   BasicBlock* RetBB = pass->getUniqueReturnBlock(&F);
 
@@ -1097,24 +937,21 @@ bool InlineAttempt::tryForwardLoadFromExit(CallInst* CI, SmallVector<SymExpr*, 4
   ValCtx VCResult;
   Instruction* DefInst;
 
-  if(tryResolveExprFrom(Expr, RetBB->getTerminator(), VCResult, DefInst, originalLI, originCtx)) {
-    LPDEBUG("Call " << *CI << " doesn't affect load from " << *originalLI << "\n");
+  if(tryResolveExprFrom(LFA, RetBB->getTerminator(), VCResult, DefInst)) {
     Result = MemDepResult::getNonLocal();
     return true;
   }
   else if(VCResult == VCNull) {
-    LPDEBUG("Call " << *CI << " clobbers load " << *originalLI << "\n");
     return false;
   }
   else {
-    LPDEBUG("Call " << *CI << " defines load " << *originalLI << " to " << VCResult << "\n");
     Result = MemDepResult::getDef(DefInst, this);
     return true;
   }
 
 }
 
-bool IntegrationAttempt::tryForwardLoadThroughCall(CallInst* CI, Value* Val, uint64_t ValSize, MemDepResult& Result, LoadInst* originalLI, HCFParentCallbacks* originCtx) {
+bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, CallInst* CI, MemDepResult& Result) {
 
   InlineAttempt* IA = getInlineAttempt(CI);
 
@@ -1123,23 +960,23 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(CallInst* CI, Value* Val, uin
     return false;
   }
 
-  LPDEBUG("Trying to forward load " << *Val << " through call " << *CI << ":\n");
+  LPDEBUG("Trying to forward load " << *(LFA.getOriginalInst()) << " through call " << *CI << ":\n");
   
   bool ret;
 
-  {
-    SymExprUser Sentinel(this);
-    if(!buildSymExpr(Val))
-      return false;
+  if(!LFA.canBuildSymExpr())
+    return false;
 
-    ret = IA->tryForwardLoadFromExit(CI, currentSymExpr, Result, originalLI, (IntegrationAttempt*)originCtx);
-  }
+  ret = IA->tryForwardLoadFromExit(LFA, Result);
 
   if(!ret) {
-    LPDEBUG("Uncertain, returning a clobber\n");
+    LPDEBUG("Call " << *CI << " clobbers " << *(LFA.getOriginalInst()) << "\n");
   }
   else if(Result.isNonLocal()) {
-    LPDEBUG("Call has no effect\n");
+    LPDEBUG("Call " << *CI << " doesn't affect " << *(LFA.getOriginalInst()) << "\n");
+  }
+  else {
+    LPDEBUG("Call " << *CI << " defines " << *(LFA.getOriginalInst()) << "\n");
   }
 
   return ret;
@@ -1324,6 +1161,267 @@ std::string IntegrationAttempt::nestingIndent() const {
 std::string PeelAttempt::nestingIndent() const {
 
   return ind(nesting_depth * 2);
+
+}
+
+// Implement LoadForwardAttempt
+
+void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
+  
+  if(!tryBuildSymExpr())
+    return;
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    if(it != Expr.begin())
+      Str << " of ";
+    (*it)->describe(Str);
+  }
+  
+}
+
+// Make a symbolic expression for a given load instruction if it depends solely on one pointer
+// with many constant offsets.
+bool LoadForwardAttempt::buildSymExpr() {
+
+  ValCtx Ptr = originalCtx->getDefaultVC(LI->getPointerOperand());
+
+  LPDEBUG("Trying to describe " << Ptr << " as a simple symbolic expression\n");
+
+  // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an identified object, and
+  // build a symbolic expression representing the derived expression if so.
+ 
+  bool success = true;
+
+  while(1) {
+
+    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr.first)) {
+      SmallVector<Value*, 4> idxs;
+      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
+	Value* idx = GEP->getOperand(i);
+	Constant* Cidx = getConstReplacement(idx, Ptr.second);
+	if(Cidx)
+	  idxs.push_back(Cidx);
+	else {
+	  LPDEBUG("Can't describe pointer with non-const offset " << *idx << "\n");
+	  success = false; 
+	  break;
+	}
+      }
+      Expr.push_back((new SymGEP(idxs)));
+      Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
+    }
+    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
+      Expr.push_back((new SymCast(C->getType())));
+      Ptr = make_vc(C->getOperand(0), Ptr.second);
+    }
+    else {
+      ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
+      if(isIdentifiedObject(Repl.first)) {
+	Expr.push_back((new SymThunk(Repl)));
+	break;
+      }
+      else if(Repl == Ptr) {
+	LPDEBUG("Can't describe due to unresolved pointer " << Ptr << "\n");
+	success = false; 
+	break;
+      }
+      else {
+	Ptr = Repl; // Must continue resolving!
+      }
+    }
+    
+  }
+
+  return success;
+
+}
+
+bool LoadForwardAttempt::tryBuildSymExpr() {
+
+  if(ExprValid)
+    return (Expr.size() > 0);
+  else {
+    bool ret = buildSymExpr();
+    ExprValid = true;
+    return ret;
+  }
+
+}
+
+bool LoadForwardAttempt::canBuildSymExpr() {
+
+  // Perhaps we could do some quickier checks than just making the thing right away?
+  return tryBuildSymExpr();
+
+}
+
+SmallVector<SymExpr*, 4>* LoadForwardAttempt::getSymExpr() {
+  
+  if(!tryBuildSymExpr())
+    return 0;
+  else
+    return &Expr;
+  
+}
+
+LoadForwardAttempt& LoadForwardAttempt::getLFA() {
+
+  return *this;
+
+}
+
+IntegrationAttempt* LoadForwardAttempt::getOriginalCtx() {
+
+  return originalCtx;
+
+}
+
+LoadInst* LoadForwardAttempt::getOriginalInst() {
+
+  return LI;
+
+}
+
+LoadInst* LoadForwardAttempt::getQueryInst() {
+
+  return LI;
+
+}
+
+LoadForwardAttempt::~LoadForwardAttempt() {
+
+  for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
+    delete (*it);
+  }
+
+}
+
+// Precondition for both: checked Expr is a real thing already.
+
+ValCtx LoadForwardAttempt::getBaseVC() { 
+  return (cast<SymThunk>(Expr.back()))->RealVal; 
+}
+
+HCFParentCallbacks* LoadForwardAttempt::getBaseContext() { 
+  return getBaseVC().second; 
+}
+
+// Implement LFARealisation
+
+// Realise a symbolic expression at a given location. 
+// Temporary instructions are created and recorded for later deletion.
+LFARealization::LFARealization(LoadForwardAttempt& _LFA, IntegrationAttempt* IA, Instruction* InsertPoint) : LFA(_LFA) {
+
+  // Build it backwards: the in chain should end in a defined object, in or outside our scope.
+  // Start with that, then wrap it incrementally in operators.
+  // Precondition: LFA.canBuildSymExpr()
+  
+  SmallVector<SymExpr*, 4>& in = *(LFA.getSymExpr());
+  SmallVector<SymExpr*, 4>::iterator SI = in.end(), SE = in.begin();
+  
+  Value* lastPtr;
+  
+  SI--;
+  SymThunk* th = cast<SymThunk>(*SI);
+
+  LLVMContext& ctx = InsertPoint->getContext();
+  BasicBlock::iterator BI(InsertPoint);
+  IRBuilder<> Builder(ctx);
+  Builder.SetInsertPoint(InsertPoint->getParent(), *BI);
+
+  // I make up a fake location that we're supposedly accessing. The structure is
+  // %pointless = alloca()
+  // %junk = load %pointless
+  // %expr_0 = gep(%junk, ...)
+  // %expr_1 = bitcast(%expr_0)
+  // ...
+  // %expr_n = gep(%expr_n_1, ...)
+  // %accessor = load %expr_n
+  // Then our caller should set his local improvedValues so that junk resolves to
+  // the base pointer he wishes to query (i.e. the base pointer from the SymExpr),
+  // and then issue a MemDep query against accessor.
+
+  Instruction* FakeLoc = Builder.CreateAlloca(th->RealVal.first->getType());
+  tempInstructions.push_back(FakeLoc);
+  lastPtr = FakeBase = Builder.CreateLoad(FakeLoc);
+  tempInstructions.push_back(FakeBase);
+
+  while(SI != SE) {
+    SI--;
+    if(SymGEP* GEP = dyn_cast<SymGEP>(*SI)) {
+      lastPtr = Builder.CreateGEP(lastPtr, GEP->Offsets.begin(), GEP->Offsets.end());
+    }
+    else if(SymCast* Cast = dyn_cast<SymCast>(*SI)) {
+      lastPtr = Builder.CreateBitCast(lastPtr, Cast->ToType);
+    }
+    else {
+      assert(0 && "Investigated expression should only contain GEPs and Casts except at the end\n");
+    }
+    //LPDEBUG("Created temporary instruction: " << *lastPtr << "\n");
+    tempInstructions.push_back(cast<Instruction>(lastPtr));
+  }
+
+  // Make up a fake load, since MD wants an accessor.
+  QueryInst = Builder.CreateLoad(lastPtr);
+  tempInstructions.push_back(QueryInst);
+
+  //  LPDEBUG("Temporarily augmented parent block:\n");
+  //  DEBUG(dbgs() << *Where->getParent());
+
+}
+
+LFARealization::~LFARealization() {
+
+  for(SmallVector<Instruction*, 4>::iterator II = tempInstructions.end(), IE = tempInstructions.begin(); II != IE; ) {
+    Instruction* I = *(--II);
+    I->eraseFromParent();
+  }
+
+}
+
+LoadInst* LFARealization::getQueryInst() {
+
+  return QueryInst;
+
+}
+
+LoadInst* LFARealization::getOriginalInst() {
+
+  return LFA.getOriginalInst();
+
+}
+
+IntegrationAttempt* LFARealization::getOriginalCtx() {
+
+  return LFA.getOriginalCtx();
+
+}
+
+LoadForwardAttempt& LFARealization::getLFA() {
+
+  return LFA;
+
+}
+
+Instruction* LFARealization::getFakeBase() {
+
+  return FakeBase;
+
+}
+
+// Implement LFARMapping
+
+// Precondition: LFAR.getLFA().canBuildSymExpr()
+LFARMapping::LFARMapping(LFARealization& _LFAR, IntegrationAttempt* _Ctx) : LFAR(_LFAR), Ctx(_Ctx) {
+
+  SymThunk* Th = cast<SymThunk>(LFAR.getLFA().getSymExpr()->back());
+  Ctx->setReplacement(LFAR.getFakeBase(), Th->RealVal);
+
+}
+
+LFARMapping::~LFARMapping() {
+
+  Ctx->eraseReplacement(LFAR.getFakeBase());
 
 }
 

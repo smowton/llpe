@@ -83,12 +83,11 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, HCFParentCallbacks* P, LoadInst* OriginalLI, HCFParentCallbacks* OriginCtx) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, HCFParentCallbacks* P, LoadForwardAttempt* LFA) {
 
   this->AA = AA;
   this->parent = P;
-  this->OriginalLI = OriginalLI;
-  this->OriginCtx = OriginCtx;
+  this->LFA = LFA;
   if (PredCache == 0)
     PredCache.reset(new PredIteratorCache());
 
@@ -313,7 +312,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
     if(parent) {
       if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
 	MemDepResult parentResult;
-	if(parent->tryForwardLoadThroughCall(CI, MemPtr, MemSize, parentResult, OriginalLI, OriginCtx)) {
+	if(parent->tryForwardLoadThroughCall(*LFA, CI, parentResult)) {
 	  if(parentResult.isNonLocal())
 	    continue;
 	  else
