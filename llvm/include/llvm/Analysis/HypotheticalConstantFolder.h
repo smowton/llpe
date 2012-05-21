@@ -23,6 +23,7 @@ class TargetData;
 class AliasAnalysis;
 class PHINode;
 class MemDepResult;
+class NonLocalDepResult;
 class LoadInst;
 class raw_ostream;
 class ConstantInt;
@@ -127,6 +128,7 @@ class HCFParentCallbacks {
   virtual BasicBlock* getEntryBlock() = 0;
   virtual ValCtx getDefaultVC(Value*) = 0;
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&) = 0;
+  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) = 0;
   virtual void describe(raw_ostream&) const = 0;
 
 };
@@ -292,6 +294,7 @@ protected:
   bool tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& DefInst);
 
   bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
+  bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
   void queueLoadsBlockedOn(Instruction* SI);
   void queueCheckAllLoads();
@@ -396,8 +399,11 @@ class PeelAttempt {
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
    ValCtx tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
+   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, Instruction*& defInst, ValCtx& VC, int& defIter);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
+
+   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
    void collectStats();
    void printHeader(raw_ostream& OS) const;
@@ -462,6 +468,9 @@ class LoadForwardAttempt : public LFAQueryable {
   SmallVector<SymExpr*, 4> Expr;
   bool ExprValid;
 
+  DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult> lastIterCache;
+  DenseMap<const Loop*, MemDepResult> otherItersCache;
+
   bool buildSymExpr();
 
  public:
@@ -480,7 +489,10 @@ class LoadForwardAttempt : public LFAQueryable {
   ValCtx getBaseVC();
   HCFParentCallbacks* getBaseContext();
 
- LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C) : LI(_LI), originalCtx(C), ExprValid(false) { }
+  std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> getLastIterCache(BasicBlock* FromBB, const Loop* L);
+  std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> getOtherItersCache(const Loop* L);
+
+  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C);
   ~LoadForwardAttempt();
 
   void printDebugHeader(raw_ostream& Str) { 

@@ -801,9 +801,7 @@ ValCtx InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 }
 
-// Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
-// then ask our enclosing loop or function body to look further.
-ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
+bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, Instruction*& defInst, ValCtx& VC, int& defIter) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of the LFA for all of these checks, since the instructions are always the same.
@@ -816,18 +814,19 @@ ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int origin
 
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
-    Instruction* Ignored;
     ValCtx Result;
-    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, Ignored))) {
+    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, defInst))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
-	return Result;
+	VC = Result;
+	defIter = iter;
       }
       else {
 	LPDEBUG("Resolution failed\n");
-	return VCNull;
+	VC = VCNull;
       }
+      return false;
     }
     else {
       // Go round the loop and try the next iteration.
@@ -835,14 +834,30 @@ ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int origin
 
     if(LFA.getBaseContext() == Iterations[iter]) {
       LPDEBUG("Abandoning resolution: " << LFA.getBaseVC() << " is out of scope\n");
-      return VCNull;
+      VC = VCNull;
+      return false;
     }
 
   }
 
-  LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
+  return true;
 
-  return parent->tryResolveLoadAtChildSite(Iterations[0], LFA);
+}
+
+// Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
+// then ask our enclosing loop or function body to look further.
+ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
+
+  ValCtx VC;
+  int defIter;
+  Instruction* defInst;
+  if(!tryForwardExprFromIter(LFA, originIter, defInst, VC, defIter)) {
+    return VC;
+  }
+  else {
+    LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
+    return parent->tryResolveLoadAtChildSite(Iterations[0], LFA);
+  }
 
 }
 
@@ -980,6 +995,119 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
   }
 
   return ret;
+
+}
+
+bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) {
+
+  // MDA has just traversed an exit edge. Pursue the load from the exiting block to the header,
+  // then from latch to preheader like the forward-from-parent case. Cache in the LFA object
+  // which exit block -> header paths and which Loops' main bodies have already been investigated.
+
+  PreheaderOut = 0;
+
+  if(Iterations.back()->iterStatus != IterationStatusFinal) {
+    
+    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (L->getHeader()->getName()) << " without per-iteration knowledge as it is not yet known to terminate\n");
+    return false;
+
+  }
+  
+  std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> LastIterEntry = LFA.getLastIterCache(BB, L);
+  MemDepResult& LastIterResult = LastIterEntry.first->second;
+
+  if(!LastIterEntry.second) {
+    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << " (cached: " << LastIterResult << ")\n");
+    if(!LastIterResult.isNonLocal()) {
+      Result.push_back(NonLocalDepResult(BB, LastIterResult, 0)); // Hack -- NLDRs should contain the true BB where a relationship was discovered and the PHI translated address.
+      return true;
+    }
+  }
+  else {
+    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
+
+    ValCtx VCResult;
+    Instruction* DefInst;
+
+    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), VCResult, DefInst)) {
+      LastIterResult = MemDepResult::getNonLocal();
+    }
+    else {
+      if(VCResult == VCNull) {
+	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
+	LastIterResult = MemDepResult::getClobber(BB->getTerminator());
+      }
+      else {
+	LPDEBUG(*(LFA.getOriginalInst()) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
+	LastIterResult = MemDepResult::getDef(DefInst, Iterations.back());
+      }
+      Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
+      return true;
+    }
+  }
+
+  // OK, try raising the load through the iterations before the last.
+  std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> OtherItersEntry = LFA.getOtherItersCache(L);
+  MemDepResult& OtherItersResult = OtherItersEntry.first->second;
+
+  if(!OtherItersEntry.second) { 
+    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << " (cached: " << OtherItersResult << ")\n");
+    if(!OtherItersResult.isNonLocal()) {
+      Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
+      return true;
+    }
+  }
+  else {
+    ValCtx VC;
+    int defIter;
+    Instruction* defInst;
+    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << "\n");
+    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, defInst, VC, defIter)) {
+      OtherItersResult = MemDepResult::getNonLocal();
+    }
+    else {
+      if(VC == VCNull) {
+	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
+	OtherItersResult = MemDepResult::getClobber(BB->getTerminator());
+      }
+      else {
+	LPDEBUG(*(LFA.getOriginalInst()) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
+	OtherItersResult = MemDepResult::getDef(defInst, Iterations[defIter]);
+      }
+      Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
+      return true;
+    }
+  }
+
+  // Made it here: the instruction propagates through the entire loop.
+  PreheaderOut = L->getLoopPreheader();
+  return true;
+
+}
+
+bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) {
+
+  const Loop* BBL = LI[&F]->getLoopFor(BB);
+
+  if(BBL != getLoopContext() && ((!getLoopContext()) || getLoopContext()->contains(BBL))) {
+
+    PeelAttempt* LPA = getPeelAttempt(BBL);
+    if(!LPA) {
+      LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge as it has not yet been explored\n");
+      return false;
+    }
+
+    if(!LFA.canBuildSymExpr()) {
+      LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge because the pointer cannot be represented simply\n");
+      return false;
+    }
+
+    return LPA->tryForwardLoadThroughLoopFromBB(BB, LFA, PreheaderOut, Result);
+
+  }
+  else {
+    return false;
+  }
 
 }
 
@@ -1166,6 +1294,8 @@ std::string PeelAttempt::nestingIndent() const {
 
 // Implement LoadForwardAttempt
 
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C) : LI(_LI), originalCtx(C), ExprValid(false) { }
+
 void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
   
   if(!tryBuildSymExpr())
@@ -1304,6 +1434,14 @@ ValCtx LoadForwardAttempt::getBaseVC() {
 
 HCFParentCallbacks* LoadForwardAttempt::getBaseContext() { 
   return getBaseVC().second; 
+}
+
+std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> LoadForwardAttempt::getLastIterCache(BasicBlock* FromBB, const Loop* L) {
+  return lastIterCache.insert(std::make_pair(std::make_pair(FromBB, L), MemDepResult()));
+}
+
+std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> LoadForwardAttempt::getOtherItersCache(const Loop* L) {
+  return otherItersCache.insert(std::make_pair(L, MemDepResult()));
 }
 
 // Implement LFARealisation

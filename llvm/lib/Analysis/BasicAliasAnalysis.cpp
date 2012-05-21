@@ -1162,8 +1162,6 @@ BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
     // Note here: getUnderlyingObject might take us out a scope, e.g. by a loop-variant GEP referencing a loop-invariant load instruction!
     // This is okay, because Loop iterations are already expected to resolve invariants using the appropriate parent scope, so "inst at scope X"
     // is transparently proxied as "inst at scope X + n".
-    if(isIdentifiedObject(O))
-      return make_vc(O, CurrentV.second);
     ValCtx NewV = getReplacement(make_vc(O, CurrentV.second));
     if(NewV == make_vc(O, CurrentV.second))
       return NewV;

@@ -826,9 +826,35 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
       // Get the dependency info for Pointer in BB.  If we have cached
       // information, we will use it, otherwise we compute it.
       DEBUG(AssertSorted(*Cache, NumSortedEntries));
+
+      if(parent) {
+	// Check for the special case that we're about to ascend into a loop -- if so, our parent
+	// will investigate the whole loop synchronously and return a special result if appropriate.
+	// It might also prompt us to queue the loop's preheader (rather than BB's immediate predecessors).
+	BasicBlock* CheckPreheader;
+
+	if(parent->tryForwardLoadThroughLoopFromBB(BB, *LFA, CheckPreheader, Result)) {
+	  // Parent special cased it, and will have added any extra checks necessary to Result.
+	  if(CheckPreheader) {
+	    std::pair<DenseMap<BasicBlock*,Value*>::iterator, bool>
+	      InsertRes = Visited.insert(std::make_pair(CheckPreheader, Pointer.getAddr()));
+	    if(InsertRes.second) {
+	      Worklist.push_back(CheckPreheader);
+	      continue;
+	    }
+	    if(InsertRes.first->second != Pointer.getAddr())
+	      goto PredTranslationFailure;
+	  }
+
+	  continue;
+
+	}
+
+      }
+
       MemDepResult Dep = GetNonLocalInfoForBlock(Pointer.getAddr(), PointeeSize,
-                                                 isLoad, BB, Cache,
-                                                 NumSortedEntries);
+						 isLoad, BB, Cache,
+						 NumSortedEntries);
       
       // If we got a Def or Clobber, add this to the list of results.
       if (!Dep.isNonLocal()) {
@@ -851,7 +877,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
           InsertRes = Visited.insert(std::make_pair(*PI, Pointer.getAddr()));
         if (InsertRes.second) {
           // First time we've looked at *PI.
-          Worklist.push_back(*PI);
+	  Worklist.push_back(*PI);
           continue;
         }
         
