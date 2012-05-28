@@ -34,23 +34,6 @@ using namespace llvm;
 
 namespace llvm {
 
-  bool shouldForwardValue(Value* V) {
-
-    if(isa<Constant>(V))
-      return true;
-
-    if(V->getType()->isPointerTy()) {
-    
-      Value* O = V->getUnderlyingObject();
-      if(isIdentifiedObject(O))
-	return true;
-
-    }
-
-    return false;
-
-  }
-
   std::string ind(int i) {
 
     char* arr = (char*)alloca(i+1);
@@ -70,6 +53,33 @@ namespace llvm {
     return immediateChild;
 
   }
+
+}
+
+bool IntegrationAttempt::isForwardableOpenCall(Value* V) {
+
+  if(CallInst* CI = dyn_cast<CallInst>(V))
+    return forwardableOpenCalls.count(CI);
+
+}
+
+bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
+
+  if(isa<Constant>(V.first))
+    return true;
+  
+  if(V->getType()->isPointerTy()) {
+    
+    ValCtx O = getUltimateUnderlyingObject(V);
+    if(isIdentifiedObject(V.first))
+      return true;
+
+  }
+
+  if(isForwardableOpenCall(V.first))
+    return true;
+
+  return false;
 
 }
 
@@ -399,7 +409,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
     }
     
   }
-  if(onlyValue.first && shouldForwardValue(onlyValue.first)) {
+  if(onlyValue.first && shouldForwardValue(onlyValue)) {
     LPDEBUG("Improved to " << onlyValue << "\n");
     return onlyValue;
   }
@@ -602,11 +612,21 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
       // A non-branch instruction. First check for instructions with non-standard ways to evaluate / non-standard things to do with the result:
 
+      bool tryConstFold = false;
+
       if(CallInst* CI = dyn_cast<CallInst>(I)) {
 	
 	InlineAttempt* IA = getInlineAttempt(CI);
-	if(IA)
+	if(IA) {
+	 
 	  Improved = IA->tryGetReturnValue();
+
+	}
+	else {
+
+	  tryPromoteOpenCall(CI);
+
+	}
 
       }
       else if(PHINode* PN = dyn_cast<PHINode>(I)) {
@@ -625,15 +645,44 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	if(Cond) {
 	  ValCtx newVal;
 	  if(cast<ConstantInt>(Cond)->isZero())
-	    newVal = getDefaultVC(SI->getFalseValue());
+	    Improved = getDefaultVC(SI->getFalseValue());
 	  else
-	    newVal = getDefaultVC(SI->getTrueValue());
-	  if(getReplacement(SI) != newVal)
-	    Improved = newVal;
+	    Improved = getDefaultVC(SI->getTrueValue());
 	}
 
       }
+
+      // Special cases for forwarding file descriptors, which are not represented as constants but rather VCs pointing to open instructions and so don't fall into the else case:
+      // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
+
+      else if(CastInst* CI = dyn_cast<CastInst>(I)) {
+
+	const Type* SrcTy = CI->getSrcTy();
+	const Type* DestTy = CI->getDestTy();
+	
+	ValCtx SrcVC = getReplacement(CI->getOperand(0));
+	if(isForwardableOpenCall(SrcVC) 
+	   && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
+	   && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+
+	  Improved = SrcVC;
+
+	}
+	else {
+
+	  tryConstFold = true;
+
+	}
+
+      }
+
       else {
+
+	tryConstFold = true;
+
+      }
+
+      if(tryConstFold) {
 
 	SmallVector<Constant*, 4> instOperands;
 
@@ -880,7 +929,7 @@ void IntegrationAttempt::tryEvaluate(Value* V) {
 
   ValCtx Improved = tryEvaluateResult(V);
 
-  if(Improved.first && shouldForwardValue(Improved.first)) {
+  if(Improved.first && shouldForwardValue(Improved)) {
 
     setReplacement(V, Improved);
 

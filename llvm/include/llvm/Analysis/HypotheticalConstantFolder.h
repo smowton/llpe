@@ -53,8 +53,6 @@ inline ValCtx make_vc(Value* V, HCFParentCallbacks* H) {
 
 }
 
-bool shouldForwardValue(Value* V);
-
 enum SymSubclasses {
 
   SThunk,
@@ -152,6 +150,16 @@ enum IterationStatus {
 
 };
 
+struct OpenStatus {
+
+  std::string Name;
+  bool FDEscapes;
+  ValCtx LatestResolvedUser;
+
+  OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O) { }
+
+};
+
 class IntegrationAttempt : public HCFParentCallbacks {
 
 protected:
@@ -231,6 +239,9 @@ protected:
   bool blockIsDeadWithScope(BasicBlock*, const Loop*);
 
   bool blockIsCertain(BasicBlock*);
+
+  bool shouldForwardValue(ValCtx);
+  ValCtx getUltimateUnderlyingObject(Value*);
 
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
@@ -543,7 +554,8 @@ enum IntegratorWQItemType {
 
    TryEval,
    CheckBlock,
-   CheckLoad
+   CheckLoad,
+   OpenPush
 
 };
 
@@ -552,11 +564,22 @@ class IntegratorWQItem {
 
   IntegrationAttempt* ctx;
   IntegratorWQItemType type;
-  void* operand;
+  union {
+    LoadInst* LI;
+    Value* V;
+    BasicBlock* BB;
+    struct {
+      CallInst* OpenI;
+      ValCtx OpenProgress;
+    } OpenArgs;
+  } u;
 
 public:
 
-IntegratorWQItem(IntegrationAttempt* c, IntegratorWQItemType t, void* op) : ctx(c), type(t), operand(op) { }
+ IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad), u.LI(L) { }
+ IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval), u.V(V) { }
+ IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock), u.BB(BB) { }
+ IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush), u.OpenArgs.OpenI(OpenI), u.OpenArgs.OpenProgress(OpenProgress) { }
 
   void execute();
   void describe(raw_ostream& s);
@@ -592,21 +615,28 @@ class IntegrationHeuristicsPass : public ModulePass {
    void queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
 
      assert(ctx && val && "Queued a null value");
-     produceQueue->push_back(IntegratorWQItem(ctx, TryEval, val));
+     produceQueue->push_back(IntegratorWQItem(ctx, val));
      
    }
 
    void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
 
      assert(ctx && BB && "Queued a null block");
-     produceQueue->push_back(IntegratorWQItem(ctx, CheckBlock, BB));
+     produceQueue->push_back(IntegratorWQItem(ctx, BB));
 
    }
 
    void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
 
      assert(ctx && LI && "Queued a null load");
-     produceQueue->push_back(IntegratorWQItem(ctx, CheckLoad, LI));
+     produceQueue->push_back(IntegratorWQItem(ctx, LI));
+
+   }
+
+   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress) {
+
+     assert(OpenInst.first && OpenInst.second && OpenProgress.first && OpenProgress.second && "Queued an invalid open push");
+     produceQueue->push_back(IntegratorWQItem(OpenInst.first, OpenInst.second, OpenProgress.first));
 
    }
 

@@ -714,6 +714,25 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 
 }
 
+ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
+
+  ValCtx Ultimate = getDefaultVC(V);
+  while(!isIdentifiedObject(Ultimate.first)) {
+
+    ValCtx New = Ultimate.second->getReplacement(Ultimate.first);
+    New = make_vc(New.first->getUnderlyingObject(), New.second);
+  
+    if(New == Ultimate)
+      break;
+
+    Ultimate = New;
+
+  }
+
+  return Ultimate;
+
+}
+
 // Main load forwarding entry point:
 // Try to forward the load locally (within this loop or function), or otherwise build a symbolic expression
 // and ask our parent to continue resolving the load.
@@ -738,18 +757,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   // If it is, our attempt above was likely foiled only by uncertainty about the specific bit of the constant (e.g. index within a const string)
   // and the only way the situation will improve is if those offsets become clear.
 
-  ValCtx Ultimate = getDefaultVC(LoadI->getPointerOperand());
-  while(!isIdentifiedObject(Ultimate.first)) {
-
-    ValCtx New = Ultimate.second->getReplacement(Ultimate.first);
-    New = make_vc(New.first->getUnderlyingObject(), New.second);
-  
-    if(New == Ultimate)
-      break;
-
-    Ultimate = New;
-
-  }
+  ValCtx Ultimate = getUltimateUnderlyingObject(LoadI->getPointerOperand());
 
   if(GlobalVariable* GV = dyn_cast<GlobalVariable>(Ultimate.first)) {
 
@@ -874,6 +882,8 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Resul
 
   MemDepResult Res = getUniqueDependency(LFAQ);
 
+  bool instBlocked = false;
+
   if(Res.isClobber()) {
     if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
@@ -882,19 +892,28 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Resul
       }
     }
     else {
-      if(Res.getInst()->mayWriteToMemory())
-	InstBlockedLoads[Res.getInst()].push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
-      // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
+      instBlocked = true;
     }
     Result = VCNull;
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
+    if(!shouldForwardValue(Res.first)) {
+      LPDEBUG("Load resolved successfully, but " << Res << " is not a forwardable value\n");
+      instBlocked = true;
+      Res = VCNull;
+    }
     DefInst = Res.getInst();
   }
   else if(Res == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
     CFGBlockedLoads.push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
+  }
+
+  if(instBlocked) {
+    if(Res.getInst()->mayWriteToMemory())
+      InstBlockedLoads[Res.getInst()].push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
+    // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
   }
 
   return false;
@@ -1107,6 +1126,261 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
   }
   else {
     return false;
+  }
+
+}
+
+void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
+  
+  if(!certainBlocks.count(CI->getParent())) {
+    LPDEBUG("Won't promote open call " << *CI << " yet: not certain to execute\n");
+    return;
+  }
+
+  if(forwardableOpenCalls.count(CI)) {
+    LPDEBUG("Open call " << *CI << ": already promoted\n");
+    return;
+  }
+  
+  if(Function *SysOpen = F.getParent().getFunction("open")) {
+    const FunctionType *FT = SysOpen->getFunctionType();
+    if (FT->getNumParams() == 2 && FT->getReturnType()->isIntegerTy(32) &&
+        FT->getParamType(0)->isPointerTy() &&
+        FT->getParamType(1)->isIntegerTy(32) &&
+	FT->isVarArg()) {
+
+      ValCtx VCalled = getReplacement(CI->getCalledValue());
+      if(Function* FCalled = dyn_cast<Function>(VCalled.first)) {
+
+	if(FCalled == SysOpen) {
+
+	  ValCtx ModeArg = getReplacement(CI->getArgOperand(1));
+	  if(ConstantInt* ModeValue = dyn_cast<ConstantInt>(ModeArg.first)) {
+	    int RawMode = (int)ModeValue->getLimitedValue();
+	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
+	      LPDEBUG("Can't promote open call " << *CI << " because it is not O_RDONLY\n");
+	      return;
+	    }
+	  }
+	  else {
+	    LPDEBUG("Can't promote open call " << *CI << " because its mode argument can't be resolved\n");
+	    return;
+	  }
+	  
+	  ValCtx NameArg = getReplacement(CI->getArgOperand(0));
+	  std::string Filename;
+	  if (!GetConstantStringInfo(NameArg.first, Filename)) {
+	    LPDEBUG("Can't promote open call " << *CI << " because its filename argument is unresolved\n");
+	    return;
+	  }
+
+	  bool FDEscapes = false;
+	  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); (!FDEscapes) && (UI != UE); ++UI) {
+
+	    if(Instruction* I = dyn_cast<Instruction>(UI)) {
+
+	      if(I->mayWriteToMemory()) {
+		
+		LPDEBUG("Marking open call " << *CI << " escaped due to user " << *I << "\n");
+		FDEscapes = true;
+
+	      }
+
+	    }
+
+	  }
+
+	  LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
+	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, FDEscapes);
+
+	  queueOpenPush(make_vc(CI, this), make_vc(CI, this));
+      
+	}
+	else {
+	  
+	  LPDEBUG("Unable to identify " << *CI << " as an open call because it calls something else\n");
+
+	}
+
+      }
+      else {
+	
+	LPDEBUG("Unable to identify " << *CI << " as an open call because its target is unknown\n");
+
+      }
+
+    }
+    else {
+
+      LPDEBUG("Unable to identify " << *CI << " as an open call because the symbol 'open' resolves to something with inappropriate type!\n");
+
+    }
+
+  }
+  else {
+
+    LPDEBUG("Unable to identify " << *CI << " as an open call because no symbol 'open' is in scope\n");
+
+  }
+
+}
+
+void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
+
+  OpenStatus& OS = forwardableOpenCalls[OpenI];
+
+  if(OS.LatestResolvedUser != OpenProgress) {
+
+    LPDEBUG("Skipping as call has been pushed in the meantime\n");
+    return;
+
+  }
+
+  // Try to follow the trail from LastResolvedUser forwards.
+
+  LPDEBUG("Trying to extend VFS op chain for " << *OpenI << " from " << OpenProgress << "\n");
+
+  ValCtx NextStart = OpenProgress;
+  bool skipFirst = true;
+
+  while(tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst)) {
+    LPDEBUG("Continuing from " << NextStart << "\n");
+    skipFirst = false;
+  }
+
+}
+
+bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
+
+  Instruction* StartI = cast<Instruction>(Start.first);
+  BasicBlock* BB = StartI->getParent();
+  BasicBlock::iterator BI(StartI);
+
+  while(1) {
+
+    if(!skipFirst) {
+
+      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+
+	bool isVFSCall;
+	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall))
+	  return false;
+
+	if(!isVFSCall) {
+
+	  if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+	    Start = make_vc(IA->getEntryBlock()->begin(), IA);
+	    return true;
+
+	  }
+	  else {
+
+	    LPDEBUG("Unexpanded call " << *CI << " may affect FD from " << OpenInst << "\n");
+	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
+	    return false;
+
+	  }
+
+	}
+
+      }
+
+    }
+
+    ++BI;
+    if(BI == BB->end()) {
+      
+      BasicBlock* UniqueSuccessor = 0;
+      for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+
+	if(edgeIsDead(BB, SI))
+	  continue;
+	else if(UniqueSuccessor) {
+	  UniqueSuccessor = 0;
+	  break;
+	}
+	else {
+	  UniqueSuccessor = SI;
+	}
+
+      }
+
+      if(UniqueSuccessor) {
+
+	Loop* SuccLoop = LI[&F]->getLoopFor(SuccLoop);
+	if(SuccLoop != getLoopContext()) {
+
+	  if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
+
+	    if(LoopPeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
+
+	      assert(SuccLoop->getHeader() == UniqueSuccessor);
+	      Start = make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
+	      return true;
+
+	    }
+	    else {
+	      
+	      LPDEBUG("Open forwarding blocked by unexpanded loop " << LPA->getHeader()->getName() << "\n");
+	      CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	      return false;
+
+	    }
+
+	  }
+	  else {
+
+	    Start = make_vc(UniqueSuccessor->begin(), parent);
+	    return true;
+
+	  }
+
+	}
+	else {
+	  
+	  if(!certainBlocks.count(UniqueSuccessor)) {
+
+	    LPDEBUG("Open forwarding blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
+	    CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	    return false;
+
+	  }
+	  else {
+
+	    BB = UniqueSuccessor;
+	    BI = BB->begin();
+
+	  }
+
+	}
+
+      }
+      else {
+
+	if(isa<ReturnInst>(BB->getTerminator())) {
+
+	  if(!parent) {
+
+	    LPDEBUG("VFS instruction chain reaches end of main!\n");
+	    return false;
+
+	  }
+	  BasicBlock::iterator CallIt(getEntryInstruction());
+	  ++CallIt;
+	  Start = make_vc(CallIt, parent);
+	  return true;
+
+	}
+
+	LPDEBUG("Open forwarding blocked because block " << BB->getName() << " has no unique successor\n");
+	CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	return false;
+
+      }
+
+    }
+
   }
 
 }
@@ -1566,13 +1840,16 @@ LFARMapping::~LFARMapping() {
 void IntegratorWQItem::execute() { 
   switch(type) {
   case TryEval:
-    ctx->tryEvaluate((Value*)operand);
+    ctx->tryEvaluate(u.V);
     break;
   case CheckBlock:
-    ctx->checkBlock((BasicBlock*)operand);
+    ctx->checkBlock(u.BB);
     break;
   case CheckLoad:
-    ctx->checkLoad((LoadInst*)operand);
+    ctx->checkLoad(u.LI);
+    break;
+  case OpenPush:
+    ctx->tryPushOpen(u.OpenArgs.OpenI, u.OpenArgs.OpenProgress);
     break;
   }
 }
