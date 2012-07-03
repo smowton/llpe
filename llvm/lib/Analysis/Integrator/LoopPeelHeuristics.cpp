@@ -31,6 +31,7 @@
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
@@ -39,6 +40,11 @@
 
 #include <string>
 #include <algorithm>
+
+#include <fcntl.h> // For O_RDONLY et al
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 using namespace llvm;
 
@@ -215,6 +221,12 @@ const Loop* IntegrationAttempt::getValueScope(Value* V) {
 
 }
 
+bool IntegrationAttempt::isUnresolved(Value* V) {
+
+  return (!isa<Constant>(V)) && (getDefaultVC(V) == getReplacement(V));
+
+}
+
 bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
   const Loop* MyScope = getLoopContext();
@@ -371,7 +383,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
 	}
 
-	IA->queueCheckAllLoads();
+	IA->queueInitialWork();
 
 	return IA;
 
@@ -462,7 +474,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   }
   
-  NewIter->queueCheckAllLoads();
+  NewIter->queueInitialWork();
 
   return NewIter;
 
@@ -660,7 +672,7 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 }
 
 // Find the unique definer or clobberer for a given Load.
-MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
+MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, Value*& Address) {
 
   MemoryDependenceAnalyser MD;
   MD.init(AA, this, &(LFA.getLFA()));
@@ -694,8 +706,10 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 	continue;
       else if(Res == Seen)
 	continue;
-      else if(Seen == MemDepResult()) // Nothing seen yet
+      else if(Seen == MemDepResult()) { // Nothing seen yet
+	Address = NLResults[i].getAddress();
 	Seen = Res;
+      }
       else {
 	LPDEBUG(*OriginalInst << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
 	return MemDepResult();
@@ -707,6 +721,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 
   }
   else {
+    Address = QueryInst->getPointerOperand();
     LPDEBUG(*OriginalInst << " locally defined by " << Seen << "\n");
   }
 
@@ -809,7 +824,7 @@ ValCtx InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 }
 
-bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, Instruction*& defInst, ValCtx& VC, int& defIter) {
+bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, Instruction*& resultInst, ValCtx& VC, int& resultIter) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of the LFA for all of these checks, since the instructions are always the same.
@@ -823,12 +838,12 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
     ValCtx Result;
-    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, defInst))) {
+    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, resultInst))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
+      resultIter = iter;
       if(Result.first) {
 	LPDEBUG("Resolved to " << Result << "\n");
 	VC = Result;
-	defIter = iter;
       }
       else {
 	LPDEBUG("Resolution failed\n");
@@ -857,9 +872,9 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
 
   ValCtx VC;
-  int defIter;
-  Instruction* defInst;
-  if(!tryForwardExprFromIter(LFA, originIter, defInst, VC, defIter)) {
+  int resultIter;
+  Instruction* resultInst;
+  if(!tryForwardExprFromIter(LFA, originIter, resultInst, VC, resultIter)) {
     return VC;
   }
   else {
@@ -878,13 +893,15 @@ ValCtx PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Result, Instruction*& DefInst) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Result, Instruction*& ResultInst) {
 
-  MemDepResult Res = getUniqueDependency(LFAQ);
+  Value* LoadAddr;
+  MemDepResult Res = getUniqueDependency(LFAQ, LoadAddr);
 
   bool instBlocked = false;
 
   if(Res.isClobber()) {
+    Result = VCNull;
     if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
       if(TestII == getEntryBlock()->begin()) {
@@ -892,18 +909,30 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Resul
       }
     }
     else {
-      instBlocked = true;
+      // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
+
+      IntegrationAttempt* clobberAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
+      ValCtx clobberResolution = clobberAttempt->tryResolveClobber(LFAQ.getQueryInst(), LoadAddr, make_vc(Res.getInst(), clobberAttempt));
+
+      if(clobberResolution != VCNull) {
+
+	Result = clobberResolution;
+	
+      }
+      else {
+	instBlocked = true;
+      }
     }
-    Result = VCNull;
+    ResultInst = Res.getInst();
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
-    if(!shouldForwardValue(Res.first)) {
+    if(!shouldForwardValue(Result)) {
       LPDEBUG("Load resolved successfully, but " << Res << " is not a forwardable value\n");
       instBlocked = true;
-      Res = VCNull;
+      Result = VCNull;
     }
-    DefInst = Res.getInst();
+    ResultInst = Res.getInst();
   }
   else if(Res == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
@@ -920,19 +949,19 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Resul
 
 }
 
-bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& DefInst) {
+bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& ResultInst) {
 
   LFARMapping LFARM(LFAR, this);
 
-  return forwardLoadIsNonLocal(LFAR, Result, DefInst);
+  return forwardLoadIsNonLocal(LFAR, Result, ResultInst);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& DefInst) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& ResultInst) {
 
   LFARealization LFAR(LFA, this, Where);
   
-  return tryResolveExprUsing(LFAR, Result, DefInst);
+  return tryResolveExprUsing(LFAR, Result, ResultInst);
 
 }
 
@@ -969,9 +998,9 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
   }
 
   ValCtx VCResult;
-  Instruction* DefInst;
+  Instruction* ResultInst;
 
-  if(tryResolveExprFrom(LFA, RetBB->getTerminator(), VCResult, DefInst)) {
+  if(tryResolveExprFrom(LFA, RetBB->getTerminator(), VCResult, ResultInst)) {
     Result = MemDepResult::getNonLocal();
     return true;
   }
@@ -979,7 +1008,7 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
     return false;
   }
   else {
-    Result = MemDepResult::getDef(DefInst, this);
+    Result = MemDepResult::getDef(ResultInst, this);
     return true;
   }
 
@@ -1046,19 +1075,19 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
     LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
 
     ValCtx VCResult;
-    Instruction* DefInst;
+    Instruction* ResultInst;
 
-    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), VCResult, DefInst)) {
+    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), VCResult, ResultInst)) {
       LastIterResult = MemDepResult::getNonLocal();
     }
     else {
       if(VCResult == VCNull) {
 	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
-	LastIterResult = MemDepResult::getClobber(BB->getTerminator());
+	LastIterResult = MemDepResult::getClobber(ResultInst, Iterations.back());
       }
       else {
 	LPDEBUG(*(LFA.getOriginalInst()) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
-	LastIterResult = MemDepResult::getDef(DefInst, Iterations.back());
+	LastIterResult = MemDepResult::getDef(ResultInst, Iterations.back());
       }
       Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
       return true;
@@ -1078,20 +1107,20 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
   }
   else {
     ValCtx VC;
-    int defIter;
-    Instruction* defInst;
+    int resultIter;
+    Instruction* resultInst;
     LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << "\n");
-    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, defInst, VC, defIter)) {
+    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, resultInst, VC, resultIter)) {
       OtherItersResult = MemDepResult::getNonLocal();
     }
     else {
       if(VC == VCNull) {
 	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
-	OtherItersResult = MemDepResult::getClobber(BB->getTerminator());
+	OtherItersResult = MemDepResult::getClobber(resultInst, Iterations[resultIter]);
       }
       else {
 	LPDEBUG(*(LFA.getOriginalInst()) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
-	OtherItersResult = MemDepResult::getDef(defInst, Iterations[defIter]);
+	OtherItersResult = MemDepResult::getDef(resultInst, Iterations[resultIter]);
       }
       Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
       return true;
@@ -1142,7 +1171,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
     return;
   }
   
-  if(Function *SysOpen = F.getParent().getFunction("open")) {
+  if(Function *SysOpen = F.getParent()->getFunction("open")) {
     const FunctionType *FT = SysOpen->getFunctionType();
     if (FT->getNumParams() == 2 && FT->getReturnType()->isIntegerTy(32) &&
         FT->getParamType(0)->isPointerTy() &&
@@ -1177,7 +1206,9 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  bool FDEscapes = false;
 	  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); (!FDEscapes) && (UI != UE); ++UI) {
 
-	    if(Instruction* I = dyn_cast<Instruction>(UI)) {
+	    
+
+	    if(Instruction* I = dyn_cast<Instruction>(*UI)) {
 
 	      if(I->mayWriteToMemory()) {
 		
@@ -1193,7 +1224,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
 	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, FDEscapes);
 
-	  queueOpenPush(make_vc(CI, this), make_vc(CI, this));
+	  pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
       
 	}
 	else {
@@ -1250,7 +1281,7 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
 
 }
 
-bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
+bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
 
   Instruction* StartI = cast<Instruction>(Start.first);
   BasicBlock* BB = StartI->getParent();
@@ -1262,23 +1293,54 @@ bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadI
 
       if(CallInst* CI = dyn_cast<CallInst>(BI)) {
 
-	bool isVFSCall;
-	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall))
+	bool isVFSCall, shouldRequeue;
+	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
+	  if(shouldRequeue) {
+	    // Queue to retry when we know more about the call.
+	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
+	  }
 	  return false;
+	}
 
 	if(!isVFSCall) {
 
-	  if(InlineAttempt* IA = getInlineAttempt(CI)) {
+	  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
+	  bool callMayUseFD = false;
 
-	    Start = make_vc(IA->getEntryBlock()->begin(), IA);
-	    return true;
+	  if(OS.FDEscapes && !CI->getCalledFunction()->doesNotAccessMemory())
+	    callMayUseFD = true;
 
+	  if(!callMayUseFD) {
+
+	    for(unsigned i = 0; i < CI->getNumArgOperands() && !callMayUseFD; ++i) {
+
+	      ValCtx ArgVC = getReplacement(CI->getArgOperand(i));
+	      if(ArgVC == OpenInst)
+		callMayUseFD = true;
+	      if(isUnresolved(CI->getArgOperand(i))) {
+		LPDEBUG("Assuming " << *CI << " may use " << OpenInst << " due to unresolved argument " << ArgVC << "\n");
+		callMayUseFD = true;
+	      }
+
+	    }
+	    
 	  }
-	  else {
 
-	    LPDEBUG("Unexpanded call " << *CI << " may affect FD from " << OpenInst << "\n");
-	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
-	    return false;
+	  if(callMayUseFD) {
+
+	    if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+	      Start = make_vc(IA->getEntryBlock()->begin(), IA);
+	      return true;
+
+	    }
+	    else {
+
+	      LPDEBUG("Unexpanded call " << *CI << " may affect FD from " << OpenInst << "\n");
+	      InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
+	      return false;
+
+	    }
 
 	  }
 
@@ -1288,32 +1350,43 @@ bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadI
 
     }
 
+    skipFirst = false;
+
     ++BI;
     if(BI == BB->end()) {
       
       BasicBlock* UniqueSuccessor = 0;
       for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-	if(edgeIsDead(BB, SI))
+	if(edgeIsDead(BB, *SI))
 	  continue;
 	else if(UniqueSuccessor) {
 	  UniqueSuccessor = 0;
 	  break;
 	}
 	else {
-	  UniqueSuccessor = SI;
+	  UniqueSuccessor = *SI;
 	}
 
       }
 
       if(UniqueSuccessor) {
 
-	Loop* SuccLoop = LI[&F]->getLoopFor(SuccLoop);
+	if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start)) {
+	  if(Start == VCNull) {
+	    CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	    return false;
+	  }
+	  else
+	    return true;
+	}
+
+	Loop* SuccLoop = LI[&F]->getLoopFor(UniqueSuccessor);
 	if(SuccLoop != getLoopContext()) {
 
 	  if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
 
-	    if(LoopPeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
+	    if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
 
 	      assert(SuccLoop->getHeader() == UniqueSuccessor);
 	      Start = make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
@@ -1322,7 +1395,7 @@ bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadI
 	    }
 	    else {
 	      
-	      LPDEBUG("Open forwarding blocked by unexpanded loop " << LPA->getHeader()->getName() << "\n");
+	      LPDEBUG("Open forwarding blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
 	      CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
 	      return false;
 
@@ -1382,6 +1455,221 @@ bool InlineAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadI
     }
 
   }
+
+}
+
+bool InlineAttempt::checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  return false;
+
+}
+
+bool PeelIteration::checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
+
+    PeelIteration* nextIter = getNextIteration();
+    if(!nextIter) {
+
+      LPDEBUG("Can't continue to pursue open call because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
+      Start = VCNull;
+      return true;
+
+    }
+    else {
+
+      Start = make_vc(L->getHeader()->begin(), nextIter);
+      return true;
+
+    }
+
+  }
+  else if(!L->contains(NextBlock)) {
+
+    // LCSSA, so this must be our parent
+    Start = make_vc(NextBlock->begin(), parent);
+    return true;
+
+  }
+
+  return false;
+
+}
+
+int64_t IntegrationAttempt::tryGetIncomingOffset(Value* V) {
+
+  CallInst* CI = cast<CallInst>(V);
+
+  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+  if(it != resolvedReadCalls.end())
+    return it->second.incomingOffset + it->second.readSize;
+  else {
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end())
+      return it->second.newOffset;
+  }
+  
+  return -1;
+
+}
+
+ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
+
+  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+  if(it != resolvedReadCalls.end())
+    return &it->second;
+  else
+    return 0;
+
+}
+
+bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
+
+  // Call to read() or close()?
+
+  isVfsCall = false;
+  shouldRequeue = false;
+
+  Function* Callee = VFSCall->getCalledFunction();
+  if (!Callee->isDeclaration() || !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage())) {
+    // Call to an internal function. Our caller should handle this.
+    return false;
+  }
+  StringRef CalleeName = Callee->getName();
+  if(CalleeName == "read") {
+
+    const FunctionType *FT = Callee->getFunctionType();
+    if (FT->getNumParams() != 3 || !FT->getParamType(0)->isIntegerTy(32) ||
+	!FT->getParamType(1)->isPointerTy() || !FT->getParamType(2)->isIntegerTy() ||
+	!FT->getReturnType()->isIntegerTy()) {
+      LPDEBUG("Assuming call to " << *Callee << " is not 'read' due to its weird signature\n");
+      return false;
+    }
+
+    isVfsCall = true;
+
+    Value* readFD = VFSCall->getArgOperand(0);
+    if(isUnresolved(readFD)) {
+
+      shouldRequeue = true;
+      return true;
+
+    }
+    else if(getReplacement(readFD) != OpenInst) {
+
+      return false;
+
+    }
+
+    Value* readBytes = VFSCall->getArgOperand(2);
+
+    ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
+    if(!intBytes) {
+      LPDEBUG("Can't push " << OpenInst << " further: read amount uncertain\n");
+      shouldRequeue = true;
+      return true;
+    }
+
+    // OK, we know what this read operation does. Record that and queue another exploration from this point.
+    int64_t incomingOffset;
+    if(LastReadInst == OpenInst)
+      incomingOffset = 0;
+    else {
+      incomingOffset = LastReadInst.second->tryGetIncomingOffset(LastReadInst.first);
+    }
+
+    int cBytes = (int)intBytes->getLimitedValue();
+
+    struct stat file_stat;
+    if(::stat(OS.Name.c_str(), &file_stat) == -1) {
+      
+      LPDEBUG("Failed to stat " << OS.Name << "\n");
+      return true;
+
+    }
+    
+    int bytesAvail = file_stat.st_size - incomingOffset;
+    if(cBytes > bytesAvail) {
+      LPDEBUG("Desired read of " << cBytes << " truncated to " << bytesAvail << " (EOF)\n");
+      cBytes = bytesAvail;
+    }
+
+    // OK, we know what this read operation does. Record that and queue another exploration from this point.
+
+    resolvedReadCalls[VFSCall] = ReadFile(&OS, incomingOffset, cBytes);
+    ValCtx thisReader = make_vc(VFSCall, this);
+    OS.LatestResolvedUser = thisReader;
+    pass->queueOpenPush(OpenInst, thisReader);
+
+    // Investigate anyone that refs the buffer
+    investigateUsers(VFSCall->getArgOperand(1));
+
+    // The number of bytes read is also the return value of read.
+    setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt32Ty(VFSCall->getContext()), cBytes)));
+    investigateUsers(VFSCall);
+
+    return true;
+
+  }
+  else if(CalleeName == "close") {
+    const FunctionType *FT = Callee->getFunctionType();
+    if(FT->getNumParams() != 1 || !FT->getParamType(0)->isIntegerTy(32)) {
+      LPDEBUG("Assuming call to " << *Callee << " is not really 'close' due to weird signature\n");
+      return false;
+    }
+
+    isVfsCall = true;
+
+    Value* closeFD = VFSCall->getArgOperand(0);
+    if(isUnresolved(closeFD)) {
+      shouldRequeue = true;
+      return true;
+    }
+    else if(getReplacement(closeFD) != OpenInst) {
+      return false;
+    }
+
+    OS.LatestResolvedUser = make_vc(VFSCall, this);
+    return true;
+
+  }
+  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "llseek64") {
+
+    const FunctionType* FT = Callee->getFunctionType();
+    if(FT->getNumParams() != 3 || (!FT->getParamType(0)->isIntegerTy(32)) || (!FT->getParamType(1)->isIntegerTy()) || (!FT->getParamType(2)->isIntegerTy(32))) {
+      LPDEBUG("Assuming call to " << *Callee << " is not really an [l]lseek due to weird signature\n");
+      return false;
+    }
+
+    isVfsCall = true;
+
+    Value* seekFD = VFSCall->getArgOperand(0);
+    if(isUnresolved(seekFD)) {
+      shouldRequeue = true;
+      return true;
+    }
+    else if(getReplacement(seekFD) != OpenInst) {
+      return false;
+    }
+    
+    Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
+    if(!newOffset) {
+      LPDEBUG("Unable to push " << OpenInst << " further due to uncertainty of " << *VFSCall << " seek offset");
+      shouldRequeue = true;
+      return true;
+    }
+
+    resolvedSeekCalls[VFSCall] = SeekFile(&OS, cast<ConstantInt>(newOffset)->getLimitedValue());
+
+    ValCtx seekCall = make_vc(VFSCall, this);
+    OS.LatestResolvedUser = seekCall;
+    pass->queueOpenPush(OpenInst, seekCall);
+
+    return true;
+
+  }
+
+  return false;
 
 }
 
@@ -1858,14 +2146,16 @@ void IntegratorWQItem::describe(raw_ostream& s) {
 
   switch(type) {
   case TryEval:
-    s << "Try-eval " << *((Value*)operand);
+    s << "Try-eval " << *(u.V);
     break;
   case CheckBlock:
-    s << "Check-BB-status " << ((BasicBlock*)operand)->getName();
+    s << "Check-BB-status " << u.BB->getName();
     break;
   case CheckLoad:
-    s << "Check-load " << make_vc((LoadInst*)operand, ctx);
+    s << "Check-load " << make_vc(u.LI, ctx);
     break;
+  case OpenPush:
+    s << "Push-VFS-chain " << make_vc(u.OpenArgs.OpenI, ctx);
   }
 
 }
@@ -2150,7 +2440,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     produceQueue = &workQueue2;
 
     queueCheckBlock(IA, &(F.getEntryBlock()));
-    IA->queueCheckAllLoads();
+    IA->queueInitialWork();
 
     while(workQueue1.size() || workQueue2.size()) {
 

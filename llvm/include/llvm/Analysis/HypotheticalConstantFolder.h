@@ -6,6 +6,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Pass.h"
+#include "llvm/Value.h"
+#include "llvm/Constant.h"
 
 #include <string>
 #include <vector>
@@ -15,8 +17,6 @@
 namespace llvm {
 
 class Function;
-class Value;
-class Constant;
 class BasicBlock;
 class Instruction;
 class TargetData;
@@ -30,26 +30,37 @@ class ConstantInt;
 class Type;
 class Argument;
 class CallInst;
+class StoreInst;
+class MemIntrinsic;
 
 class HCFParentCallbacks;
 
-typedef std::pair<Value*, HCFParentCallbacks*> ValCtx;
+typedef struct { Value* first; HCFParentCallbacks* second; } ValCtx;
+
+inline bool operator==(ValCtx V1, ValCtx V2) {
+  return V1.first == V2.first && V1.second == V2.second;
+}
+
+inline bool operator!=(ValCtx V1, ValCtx V2) {
+   return !(V1 == V2);
+}
 
 raw_ostream& operator<<(raw_ostream&, const ValCtx&);
 raw_ostream& operator<<(raw_ostream&, const MemDepResult&);
 raw_ostream& operator<<(raw_ostream&, const HCFParentCallbacks&);
 
-#define VCNull (std::make_pair<Value*, HCFParentCallbacks*>(0, 0))
-
-inline ValCtx const_vc(Constant* C) {
-
-  return std::make_pair<Constant*, HCFParentCallbacks*>(C, 0);
-
-}
+#define VCNull (make_vc(0, 0))
 
 inline ValCtx make_vc(Value* V, HCFParentCallbacks* H) {
 
-  return std::make_pair(V, H);
+  ValCtx newCtx = {V, H};
+  return newCtx;
+
+}
+
+inline ValCtx const_vc(Constant* C) {
+
+  return make_vc(C, 0);
 
 }
 
@@ -115,12 +126,48 @@ class LoadForwardAttempt;
 class LFARealization;
 class LFAQueryable;
 
+struct OpenStatus {
+
+  std::string Name;
+  bool FDEscapes;
+  ValCtx LatestResolvedUser;
+
+  OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O) { }
+
+OpenStatus() : Name(""), FDEscapes(false), LatestResolvedUser(VCNull) {}
+
+};
+
+struct ReadFile {
+
+  struct OpenStatus* openArg;
+  uint64_t incomingOffset;
+  uint32_t readSize;
+
+  ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS) { }
+
+ReadFile() : openArg(0), incomingOffset(0), readSize(0) { }
+
+};
+
+struct SeekFile {
+
+  struct OpenStatus* openArg;
+  uint64_t newOffset;
+
+SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off) { }
+  
+SeekFile() : openArg(0), newOffset(0) { }
+
+};
+
 // Interface exposed to Memory Dependence Analysis and other external analyses that the integrator uses.
 class HCFParentCallbacks {
 
  public:
 
   virtual ValCtx getReplacement(Value*) = 0;
+  virtual Constant* getConstReplacement(Value* V) = 0;
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
   virtual bool blockIsDead(BasicBlock*) = 0;
   virtual BasicBlock* getEntryBlock() = 0;
@@ -128,6 +175,10 @@ class HCFParentCallbacks {
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&) = 0;
   virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) = 0;
   virtual void describe(raw_ostream&) const = 0;
+  virtual ValCtx getUltimateUnderlyingObject(Value*) = 0;
+  virtual bool isForwardableOpenCall(Value*) = 0;
+  virtual int64_t tryGetIncomingOffset(Value*) = 0;
+  virtual ReadFile* tryGetReadFile(CallInst* CI) = 0;
 
 };
 
@@ -147,16 +198,6 @@ enum IterationStatus {
   IterationStatusUnknown,
   IterationStatusFinal,
   IterationStatusNonFinal
-
-};
-
-struct OpenStatus {
-
-  std::string Name;
-  bool FDEscapes;
-  ValCtx LatestResolvedUser;
-
-  OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O) { }
 
 };
 
@@ -194,6 +235,13 @@ protected:
 
   SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
   DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
+
+  SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
+  DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
+
+  DenseMap<CallInst*, OpenStatus> forwardableOpenCalls;
+  DenseMap<CallInst*, ReadFile> resolvedReadCalls;
+  DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
 
   std::string nestingIndent() const;
 
@@ -241,8 +289,9 @@ protected:
   bool blockIsCertain(BasicBlock*);
 
   bool shouldForwardValue(ValCtx);
-  ValCtx getUltimateUnderlyingObject(Value*);
 
+  virtual ValCtx getUltimateUnderlyingObject(Value*);
+  
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
   virtual const Loop* getLoopContext() = 0;
@@ -255,10 +304,11 @@ protected:
 
   void setReplacement(Value*, ValCtx);
   void eraseReplacement(Value*);
+  bool isUnresolved(Value*);
   void setEdgeDead(BasicBlock*, BasicBlock*);
   void setBlockDead(BasicBlock*);
 
-  Constant* getConstReplacement(Value* V);
+  virtual Constant* getConstReplacement(Value* V);
 
   // Constant propagation:
 
@@ -297,7 +347,7 @@ protected:
   ValCtx tryForwardLoad(LoadInst*);
   bool forwardLoadIsNonLocal(LFAQueryable&, ValCtx& Result, llvm::Instruction*& DefInst);
   ValCtx getDefn(const MemDepResult& Res);
-  MemDepResult getUniqueDependency(LFAQueryable&);
+  MemDepResult getUniqueDependency(LFAQueryable&, Value*& Address);
 
   virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
@@ -307,8 +357,33 @@ protected:
   bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
-  void queueLoadsBlockedOn(Instruction* SI);
+  void queueWorkBlockedOn(Instruction* SI);
   void queueCheckAllLoads();
+
+  // VFS call forwarding:
+
+  virtual bool isForwardableOpenCall(Value*);
+  virtual int64_t tryGetIncomingOffset(Value*);
+  virtual ReadFile* tryGetReadFile(CallInst* CI);
+  void tryPromoteOpenCall(CallInst* CI);
+  void tryPromoteAllCalls();
+  void queueInitialWork();
+  void tryPushOpen(CallInst*, ValCtx);
+  bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
+  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
+  bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
+
+  // Tricky load forwarding (stolen from GVN)
+
+  int AnalyzeLoadFromClobberingWrite(const Type *LoadTy, Value *LoadPtr,
+				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
+				     uint64_t WriteSizeInBits);
+  int AnalyzeLoadFromClobberingStore(const Type *LoadTy, Value *LoadPtr, StoreInst *DepSI, HCFParentCallbacks* DepSICtx);
+  int AnalyzeLoadFromClobberingMemInst(const Type *LoadTy, Value *LoadPtr, MemIntrinsic *MI, HCFParentCallbacks* MICtx);
+  ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
+  bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
+  Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
+  ValCtx tryResolveClobber(LoadInst *LI, Value* Address, ValCtx Clobber);
 
   // Stat collection and printing:
 
@@ -366,6 +441,8 @@ public:
   void checkFinalIteration();
 
   virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&);
+
+  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
   virtual void describe(raw_ostream& Stream) const;
 
@@ -451,6 +528,8 @@ class InlineAttempt : public IntegrationAttempt {
   ValCtx tryGetReturnValue();
   
   ValCtx getImprovedCallArgument(Argument* A);
+
+  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
   
   virtual void describe(raw_ostream& Stream) const;
   
@@ -576,10 +655,10 @@ class IntegratorWQItem {
 
 public:
 
- IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad), u.LI(L) { }
- IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval), u.V(V) { }
- IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock), u.BB(BB) { }
- IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush), u.OpenArgs.OpenI(OpenI), u.OpenArgs.OpenProgress(OpenProgress) { }
+ IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
+ IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
+ IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock) { u.BB = BB; }
+ IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush) { u.OpenArgs.OpenI = OpenI; u.OpenArgs.OpenProgress = OpenProgress; }
 
   void execute();
   void describe(raw_ostream& s);
@@ -636,7 +715,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress) {
 
      assert(OpenInst.first && OpenInst.second && OpenProgress.first && OpenProgress.second && "Queued an invalid open push");
-     produceQueue->push_back(IntegratorWQItem(OpenInst.first, OpenInst.second, OpenProgress.first));
+     produceQueue->push_back(IntegratorWQItem((IntegrationAttempt*)OpenInst.second, cast<CallInst>(OpenInst.first), OpenProgress));
 
    }
 

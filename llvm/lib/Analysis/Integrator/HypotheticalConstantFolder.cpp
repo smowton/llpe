@@ -60,6 +60,8 @@ bool IntegrationAttempt::isForwardableOpenCall(Value* V) {
 
   if(CallInst* CI = dyn_cast<CallInst>(V))
     return forwardableOpenCalls.count(CI);
+  else
+    return false;
 
 }
 
@@ -68,10 +70,10 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
   if(isa<Constant>(V.first))
     return true;
   
-  if(V->getType()->isPointerTy()) {
+  if(V.first->getType()->isPointerTy()) {
     
-    ValCtx O = getUltimateUnderlyingObject(V);
-    if(isIdentifiedObject(V.first))
+    ValCtx O = V.second->getUltimateUnderlyingObject(V.first);
+    if(isIdentifiedObject(O.first))
       return true;
 
   }
@@ -293,7 +295,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   else {
 
-    // Queue all loads for reconsideration which are blocked due to CFG issues at this scope.
+    // Queue all loads and opens for reconsideration which are blocked due to CFG issues at this scope.
     for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
 
       pass->queueCheckLoad(LI->first, LI->second);
@@ -301,6 +303,14 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     }
 
     CFGBlockedLoads.clear();
+
+    for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
+
+      pass->queueOpenPush(OI->first, OI->second);
+
+    }
+
+    CFGBlockedOpens.clear();
 
   }
 
@@ -448,20 +458,42 @@ bool PeelIteration::queueImproveNextIterationPHI(Instruction* I) {
 
 }
 
-void IntegrationAttempt::queueLoadsBlockedOn(Instruction* SI) {
+void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
 
-  // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
-  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
+  if(SI->mayWriteToMemory()) {
 
-  if(it != InstBlockedLoads.end()) {
+    // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
+    DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
+    
+    if(it != InstBlockedLoads.end()) {
+      
+      for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
+	
+	pass->queueCheckLoad(LI->first, LI->second);
+	
+      }
 
-    for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
-
-      pass->queueCheckLoad(LI->first, LI->second);
-
+      InstBlockedLoads.erase(it);
+      
     }
 
-    InstBlockedLoads.erase(it);
+  }
+
+  if(isa<CallInst>(SI)) {
+
+    DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> >::iterator it = InstBlockedOpens.find(SI);
+
+    if(it != InstBlockedOpens.end()) {
+
+      for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = it->second.begin(), OE = it->second.end(); OI != OE; ++OI) {
+
+	pass->queueOpenPush(OI->first, OI->second);
+
+      }
+
+      InstBlockedOpens.erase(it);
+
+    }
 
   }
 
@@ -643,7 +675,6 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	Constant* Cond = getConstReplacement(SI->getCondition());
 	if(Cond) {
-	  ValCtx newVal;
 	  if(cast<ConstantInt>(Cond)->isZero())
 	    Improved = getDefaultVC(SI->getFalseValue());
 	  else
@@ -661,7 +692,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	const Type* DestTy = CI->getDestTy();
 	
 	ValCtx SrcVC = getReplacement(CI->getOperand(0));
-	if(isForwardableOpenCall(SrcVC) 
+	if(SrcVC.second->isForwardableOpenCall(SrcVC.first) 
 	   && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
 	   && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
 
@@ -768,8 +799,7 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
   // If it's a pointer type, find loads and stores that eventually use it and queue them/loads dependent on them for reconsideration.
   // Otherwise just consider the value.
 
-  if(UserI->mayWriteToMemory())
-    queueLoadsBlockedOn(UserI);
+  queueWorkBlockedOn(UserI);
 
   if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
@@ -922,6 +952,33 @@ void IntegrationAttempt::queueCheckAllLoads() {
     }
 
   }
+
+}
+
+void IntegrationAttempt::tryPromoteAllCalls() {
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    if(LI[&F]->getLoopFor(BB) == getLoopContext()) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	if(CallInst* CI = dyn_cast<CallInst>(II))
+	  tryPromoteOpenCall(CI);
+
+      }
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::queueInitialWork() {
+
+  queueCheckAllLoads();
+  tryPromoteAllCalls();
 
 }
 

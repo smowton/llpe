@@ -88,8 +88,8 @@ namespace llvm {
     static MemDepResult getDef(Instruction *Inst, HCFParentCallbacks* C = 0) {
       return MemDepResult(PairTy(Inst, Def), C);
     }
-    static MemDepResult getClobber(Instruction *Inst) {
-      return MemDepResult(PairTy(Inst, Clobber));
+    static MemDepResult getClobber(Instruction *Inst, HCFParentCallbacks* C = 0) {
+      return MemDepResult(PairTy(Inst, Clobber), C);
     }
     static MemDepResult getNonLocal() {
       return MemDepResult(PairTy(0, NonLocal));
