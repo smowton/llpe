@@ -871,7 +871,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
       SkipFirstBlock = false;
       for (BasicBlock **PI = PredCache->GetPreds(BB); *PI; ++PI) {
         // Verify that we haven't looked at this block yet.
-	if(parent->edgeIsDead(*PI, BB))
+	if(parent && parent->edgeIsDead(*PI, BB))
 	  continue;
         std::pair<DenseMap<BasicBlock*,Value*>::iterator, bool>
           InsertRes = Visited.insert(std::make_pair(*PI, Pointer.getAddr()));

@@ -530,6 +530,73 @@ void PeelAttempt::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, V
 
 }
 
+ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
+
+  if(CmpInt->getBitWidth() > 64) {
+    LPDEBUG("Using an int wider than int64 for an FD\n");
+    return VCNull;
+  }
+
+  CmpInst::Predicate Pred = CmpI->getPredicate();
+
+  if(flip) {
+
+    switch(Pred) {
+    case CmpInst::ICMP_SGT:
+      Pred = CmpInst::ICMP_SLT;
+      break;
+    case CmpInst::ICMP_SGE:
+      Pred = CmpInst::ICMP_SLE;
+      break;
+    case CmpInst::ICMP_SLT:
+      Pred = CmpInst::ICMP_SGT;
+      break;
+    case CmpInst::ICMP_SLE:
+      Pred = CmpInst::ICMP_SGE;
+      break;
+    default:
+      break;
+    }
+
+  }
+
+  int64_t CmpVal = (int64_t)CmpInt->getLimitedValue();
+
+  switch(Pred) {
+
+  case CmpInst::ICMP_EQ:
+    if(CmpVal < 0)
+      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+    break;
+  case CmpInst::ICMP_NE:
+    if(CmpVal < 0)
+      return const_vc(ConstantInt::getTrue(CmpI->getContext()));    
+    break;
+  case CmpInst::ICMP_SGT:
+    if(CmpVal < 0)
+      return const_vc(ConstantInt::getTrue(CmpI->getContext()));
+    break;
+  case CmpInst::ICMP_SGE:
+    if(CmpVal <= 0)
+      return const_vc(ConstantInt::getTrue(CmpI->getContext()));
+    break;
+  case CmpInst::ICMP_SLT:
+    if(CmpVal <= 0)
+      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+    break;
+  case CmpInst::ICMP_SLE:
+    if(CmpVal < 0)
+      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+    break;
+  default:
+    LPDEBUG("Failed to fold " << *CmpI << " because it compares a symbolic FD using an unsupported predicate\n");
+    break;
+  }
+
+  return VCNull;
+
+}
+
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
@@ -538,7 +605,7 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
     if(verbose)
-      DEBUG(dbgs() << "already improved\n");
+      DEBUG(dbgs() << "already improved");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {
@@ -692,7 +759,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	const Type* DestTy = CI->getDestTy();
 	
 	ValCtx SrcVC = getReplacement(CI->getOperand(0));
-	if(SrcVC.second->isForwardableOpenCall(SrcVC.first) 
+	if(SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)
 	   && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
 	   && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
 
@@ -702,6 +769,32 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	else {
 
 	  tryConstFold = true;
+
+	}
+
+      }
+
+      // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
+      else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
+
+	bool flip;
+	ConstantInt* CmpInt = 0;
+	if(isForwardableOpenCall(CmpI->getOperand(0))) {
+	  flip = false;
+	  CmpInt = dyn_cast_or_null<ConstantInt>(getConstReplacement(CmpI->getOperand(1)));
+	}
+	else if(isForwardableOpenCall(CmpI->getOperand(1))) {
+	  flip = true;
+	  CmpInt = dyn_cast_or_null<ConstantInt>(getConstReplacement(CmpI->getOperand(0)));
+	}
+	else {
+	  // Open calls are not involved; try plain old constant folding.
+	  tryConstFold = true;
+	}
+
+	if(CmpInt) {
+
+	  Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
 
 	}
 
@@ -729,6 +822,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	    break;
 	  }
 	}
+
 
 	if(instOperands.size() == I->getNumOperands()) {
 	  Constant* newConst = 0;

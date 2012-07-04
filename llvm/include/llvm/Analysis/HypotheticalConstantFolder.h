@@ -32,6 +32,7 @@ class Argument;
 class CallInst;
 class StoreInst;
 class MemIntrinsic;
+class CmpInst;
 
 class HCFParentCallbacks;
 
@@ -372,6 +373,7 @@ protected:
   bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
+  ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
 
   // Tricky load forwarding (stolen from GVN)
 

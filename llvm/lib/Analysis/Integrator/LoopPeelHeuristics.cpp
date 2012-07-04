@@ -236,15 +236,16 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
     return true;
 
   if((MyScope != EdgeScope) && ((!MyScope) || MyScope->contains(EdgeScope))) {
+
     if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
       if(FinalIter->iterStatus == IterationStatusFinal) {
 	return FinalIter->edgeIsDeadWithScope(B1, B2, EdgeScope);
       }
-      else {
-	return false;
-      }
     }
+    
+    return false;
+
   }
 
   return edgeIsDeadWithScope(B1, B2, EdgeScope);
@@ -900,37 +901,41 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Resul
 
   bool instBlocked = false;
 
+  Result = VCNull;
+
   if(Res.isClobber()) {
-    Result = VCNull;
     if(Res.getInst()->getParent() == getEntryBlock()) {
       BasicBlock::iterator TestII(Res.getInst());
       if(TestII == getEntryBlock()->begin()) {
 	return true;
       }
     }
-    else {
-      // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
+    // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
 
-      IntegrationAttempt* clobberAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
-      ValCtx clobberResolution = clobberAttempt->tryResolveClobber(LFAQ.getQueryInst(), LoadAddr, make_vc(Res.getInst(), clobberAttempt));
+    IntegrationAttempt* clobberAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
+    ValCtx clobberResolution = clobberAttempt->tryResolveClobber(LFAQ.getQueryInst(), LoadAddr, make_vc(Res.getInst(), clobberAttempt));
 
-      if(clobberResolution != VCNull) {
+    if(clobberResolution != VCNull) {
 
-	Result = clobberResolution;
+      Result = clobberResolution;
 	
-      }
-      else {
-	instBlocked = true;
-      }
+    }
+    else {
+      instBlocked = true;
     }
     ResultInst = Res.getInst();
   }
   else if(Res.isDef()) {
     Result = getDefn(Res);
-    if(!shouldForwardValue(Result)) {
-      LPDEBUG("Load resolved successfully, but " << Res << " is not a forwardable value\n");
+    if(Result != VCNull) {
+      if(!shouldForwardValue(Result)) {
+	LPDEBUG("Load resolved successfully, but " << Res << " is not a forwardable value\n");
+	instBlocked = true;
+      }
+    }
+    else {
+      LPDEBUG("Load resolved successfully, but we couldn't retrieve a value from the defining instruction\n");
       instBlocked = true;
-      Result = VCNull;
     }
     ResultInst = Res.getInst();
   }
@@ -1206,8 +1211,6 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  bool FDEscapes = false;
 	  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); (!FDEscapes) && (UI != UE); ++UI) {
 
-	    
-
 	    if(Instruction* I = dyn_cast<Instruction>(*UI)) {
 
 	      if(I->mayWriteToMemory()) {
@@ -1225,6 +1228,9 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, FDEscapes);
 
 	  pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
+
+	  // Also investigate users, since we now know it'll emit a non-negative FD.
+	  investigateUsers(CI);
       
 	}
 	else {

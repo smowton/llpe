@@ -777,7 +777,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       // is impossible to alias the pointer we're checking.  If not, we have to
       // assume that the call could touch the pointer, even though it doesn't
       // escape.
-      if (!isNoAlias(cast<Value>(CI), UnknownSize, P, UnknownSize)) {
+      if (!isNoAlias(cast<Value>(CI), UnknownSize, P, UnknownSize, Pa)) {
         PassedAsArg = true;
         break;
       }
@@ -799,8 +799,8 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
         Len = LenCI->getZExtValue();
       Value *Dest = II->getArgOperand(0);
       Value *Src = II->getArgOperand(1);
-      if (isNoAlias(Dest, Len, P, Size)) {
-        if (isNoAlias(Src, Len, P, Size))
+      if (isNoAlias(Dest, Len, P, Size, Pa)) {
+        if (isNoAlias(Src, Len, P, Size, Pa))
           return NoModRef;
         return Ref;
       }
@@ -812,7 +812,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       if (ConstantInt *LenCI = dyn_cast<ConstantInt>(II->getArgOperand(2))) {
         unsigned Len = LenCI->getZExtValue();
         Value *Dest = II->getArgOperand(0);
-        if (isNoAlias(Dest, Len, P, Size))
+        if (isNoAlias(Dest, Len, P, Size, Pa))
           return NoModRef;
       }
       break;
@@ -831,7 +831,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       if (TD) {
         Value *Op1 = II->getArgOperand(0);
         unsigned Op1Size = TD->getTypeStoreSize(Op1->getType());
-        if (isNoAlias(Op1, Op1Size, P, Size))
+        if (isNoAlias(Op1, Op1Size, P, Size, Pa))
           return NoModRef;
       }
       break;
@@ -840,14 +840,14 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::invariant_start: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
-      if (isNoAlias(II->getArgOperand(1), PtrSize, P, Size))
+      if (isNoAlias(II->getArgOperand(1), PtrSize, P, Size, Pa))
         return NoModRef;
       break;
     }
     case Intrinsic::invariant_end: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
-      if (isNoAlias(II->getArgOperand(2), PtrSize, P, Size))
+      if (isNoAlias(II->getArgOperand(2), PtrSize, P, Size, Pa))
         return NoModRef;
       break;
     }

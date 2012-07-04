@@ -149,12 +149,8 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(const Type *LoadTy, Val
 ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset) {
 
   Operator *PtrOp = dyn_cast<Operator>(Ptr);
-  if (PtrOp == 0) {
-    ValCtx NewVC = PtrCtx->getReplacement(Ptr);
-    if(NewVC == make_vc(Ptr, PtrCtx))
-      return NewVC;
-    else
-      return GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+  if(PtrOp == 0) {
+    return make_vc(Ptr, PtrCtx);
   }
   
   // Just look through bitcasts.
@@ -163,7 +159,13 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, HCFParentCallba
   
   // If this is a GEP with constant indices, we can look through it.
   GEPOperator *GEP = dyn_cast<GEPOperator>(PtrOp);
-  if (GEP == 0) return make_vc(Ptr, PtrCtx);
+  if (GEP == 0) {
+    ValCtx NewVC = PtrCtx->getReplacement(Ptr);
+    if(NewVC == make_vc(Ptr, PtrCtx))
+      return NewVC;
+    else
+      return GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+  }
   
   gep_type_iterator GTI = gep_type_begin(GEP);
   for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
@@ -172,6 +174,8 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, HCFParentCallba
     if(!OpC)
       return make_vc(Ptr, PtrCtx);
   }
+  
+  GTI = gep_type_begin(GEP);
   for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
        ++I, ++GTI) {
     ConstantInt *OpC = cast<ConstantInt>(PtrCtx->getConstReplacement(*I));
@@ -286,6 +290,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
     int Offset = AnalyzeLoadFromClobberingStore(LI->getType(), Address, DepSI, Clobber.second);
     if (Offset != -1) {
 
+      LPDEBUG("Salvaged a clobbering store (load is defined by offset " << Offset << ")\n");
+
       // Only deal with integer types handled this way for now.
       Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
       if(!StoreC) {
@@ -341,6 +347,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
     int Offset = AnalyzeLoadFromClobberingMemInst(LI->getType(), Address, DepMI, Clobber.second);
     if (Offset != -1) {
 
+      LPDEBUG("Salvaged a clobbering memory intrinsic (load is defined by offset " << Offset << ")\n");
+
       const Type* LoadTy = LI->getType();
 
       uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
@@ -386,8 +394,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
       MemTransferInst *MTI = cast<MemTransferInst>(Clobber.first);
       Constant *Src = getConstReplacement(MTI->getSource());
 
-      // Otherwise, see if we can constant fold a load from the constant with the
-      // offset applied as appropriate.
+      // See if we can constant fold a load from the constant with the offset applied as appropriate.
       Src = ConstantExpr::getBitCast(Src, llvm::Type::getInt8PtrTy(Src->getContext()));
 
       Constant *OffsetCst = 
@@ -443,6 +450,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
 	    break;
 	  bytes_read += this_read;
 	}
+
+	close(fd);
 
 	if(bytes_read != RF->readSize) {
 	  LPDEBUG("Short read on " << RF->openArg->Name << ": could only read " << bytes_read << " bytes out of " << RF->readSize << " needed at offset " << RF->incomingOffset << "\n");

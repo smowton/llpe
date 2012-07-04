@@ -123,7 +123,7 @@ public:
     if(Pa == 0)
       return alias(V1, V1Size, V2, V2Size) == NoAlias;
     else
-      return aliasHypothetical(V1, V1Size, V2, V2Size, Pa);
+      return aliasHypothetical(V1, V1Size, V2, V2Size, Pa) == NoAlias;
   }
 
   /// pointsToConstantMemory - If the specified pointer is known to point into
