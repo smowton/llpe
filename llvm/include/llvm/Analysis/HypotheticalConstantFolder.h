@@ -180,6 +180,10 @@ class HCFParentCallbacks {
   virtual bool isForwardableOpenCall(Value*) = 0;
   virtual int64_t tryGetIncomingOffset(Value*) = 0;
   virtual ReadFile* tryGetReadFile(CallInst* CI) = 0;
+  virtual void setReplacement(Value*, ValCtx) = 0;
+  virtual void investigateUsers(Value* V) = 0;
+  virtual void resolveReadCall(CallInst*, struct ReadFile) = 0;
+  virtual void resolveSeekCall(CallInst*, struct SeekFile) = 0;
 
 };
 
@@ -303,7 +307,7 @@ protected:
 
   // Simple state-tracking helpers:
 
-  void setReplacement(Value*, ValCtx);
+  virtual void setReplacement(Value*, ValCtx);
   void eraseReplacement(Value*);
   bool isUnresolved(Value*);
   void setEdgeDead(BasicBlock*, BasicBlock*);
@@ -319,7 +323,7 @@ protected:
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   void tryEvaluate(Value*);
   virtual ValCtx tryEvaluateResult(Value*);
-  void investigateUsers(Value* V);
+  virtual void investigateUsers(Value* V);
 
   virtual void queueTryEvalExitPHI(Instruction* UserI);
   virtual bool queueImproveNextIterationPHI(Instruction* I);
@@ -372,8 +376,10 @@ protected:
   void tryPushOpen(CallInst*, ValCtx);
   bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
-  bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
+  bool vfsCallBlocksOpen(CallInst*, HCFParentCallbacks*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
+  virtual void resolveReadCall(CallInst*, struct ReadFile);
+  virtual void resolveSeekCall(CallInst*, struct SeekFile);
 
   // Tricky load forwarding (stolen from GVN)
 

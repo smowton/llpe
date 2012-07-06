@@ -223,7 +223,7 @@ const Loop* IntegrationAttempt::getValueScope(Value* V) {
 
 bool IntegrationAttempt::isUnresolved(Value* V) {
 
-  return (!isa<Constant>(V)) && (getDefaultVC(V) == getReplacement(V));
+  return (!shouldForwardValue(make_vc(V, this))) && (getDefaultVC(V) == getReplacement(V));
 
 }
 
@@ -1300,7 +1300,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
       if(CallInst* CI = dyn_cast<CallInst>(BI)) {
 
 	bool isVFSCall, shouldRequeue;
-	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
+	if(vfsCallBlocksOpen(CI, Start.second, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
 	  if(shouldRequeue) {
 	    // Queue to retry when we know more about the call.
 	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
@@ -1529,7 +1529,7 @@ ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
 
 }
 
-bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
+bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, HCFParentCallbacks* CallCtx, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
 
   // Call to read() or close()?
 
@@ -1557,12 +1557,14 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     Value* readFD = VFSCall->getArgOperand(0);
     if(isUnresolved(readFD)) {
 
+      LPDEBUG("Can't forward open because FD argument of " << *VFSCall << " is unresolved\n");
       shouldRequeue = true;
       return true;
 
     }
     else if(getReplacement(readFD) != OpenInst) {
 
+      LPDEBUG("Ignoring " << *VFSCall << " which references a different file\n");
       return false;
 
     }
@@ -1602,18 +1604,20 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
 
-    resolvedReadCalls[VFSCall] = ReadFile(&OS, incomingOffset, cBytes);
+    LPDEBUG("Successfully forwarded to " << *VFSCall << " which reads " << cBytes << " bytes\n");
+
+    CallCtx->resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
     ValCtx thisReader = make_vc(VFSCall, this);
     OS.LatestResolvedUser = thisReader;
     pass->queueOpenPush(OpenInst, thisReader);
 
     // Investigate anyone that refs the buffer
-    investigateUsers(VFSCall->getArgOperand(1));
+    CallCtx->investigateUsers(VFSCall->getArgOperand(1));
 
     // The number of bytes read is also the return value of read.
-    setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt32Ty(VFSCall->getContext()), cBytes)));
-    investigateUsers(VFSCall);
-
+    CallCtx->setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt64Ty(VFSCall->getContext()), cBytes)));
+    CallCtx->investigateUsers(VFSCall);
+    
     return true;
 
   }
@@ -1634,6 +1638,8 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     else if(getReplacement(closeFD) != OpenInst) {
       return false;
     }
+
+    LPDEBUG("Successfully forwarded to " << *VFSCall << " which closes the file\n");
 
     OS.LatestResolvedUser = make_vc(VFSCall, this);
     return true;
@@ -1657,15 +1663,57 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     else if(getReplacement(seekFD) != OpenInst) {
       return false;
     }
-    
+
+    Constant* whence = getConstReplacement(VFSCall->getArgOperand(2));
     Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
-    if(!newOffset) {
-      LPDEBUG("Unable to push " << OpenInst << " further due to uncertainty of " << *VFSCall << " seek offset");
+    
+    if((!newOffset) || (!whence)) {
+      LPDEBUG("Unable to push " << OpenInst << " further due to uncertainty of " << *VFSCall << " seek offset or whence");
       shouldRequeue = true;
       return true;
     }
 
-    resolvedSeekCalls[VFSCall] = SeekFile(&OS, cast<ConstantInt>(newOffset)->getLimitedValue());
+    uint64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
+    int32_t seekWhence = (int32_t)cast<ConstantInt>(whence)->getSExtValue();
+
+    switch(seekWhence) {
+    case SEEK_CUR:
+      {
+	int64_t incomingOffset;
+	if(LastReadInst == OpenInst)
+	  incomingOffset = 0;
+	else {
+	  incomingOffset = LastReadInst.second->tryGetIncomingOffset(LastReadInst.first);
+	}      
+	intOffset += incomingOffset;
+      }
+      break;
+    case SEEK_END:
+      {
+	struct stat file_stat;
+	if(::stat(OS.Name.c_str(), &file_stat) == -1) {
+	  
+	  LPDEBUG("Failed to stat " << OS.Name << "\n");
+	  return true;
+	  
+	}
+	intOffset += file_stat.st_size;
+	break;
+      }  
+    case SEEK_SET:
+      break;
+    default:
+      LPDEBUG("Seek whence parameter is unknown value " << seekWhence << "!");
+      return true;
+    }
+
+    LPDEBUG("Successfully forwarded to " << *VFSCall << " which seeks to offset " << intOffset << "\n");
+
+    // Seek's return value is the new offset.
+    CallCtx->setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
+    CallCtx->investigateUsers(VFSCall);
+
+    CallCtx->resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
 
     ValCtx seekCall = make_vc(VFSCall, this);
     OS.LatestResolvedUser = seekCall;
@@ -1676,6 +1724,18 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   }
 
   return false;
+
+}
+
+void IntegrationAttempt::resolveReadCall(CallInst* CI, struct ReadFile RF) {
+
+  resolvedReadCalls[CI] = RF;
+
+}
+
+void IntegrationAttempt::resolveSeekCall(CallInst* CI, struct SeekFile SF) {
+
+  resolvedSeekCalls[CI] = SF;
 
 }
 

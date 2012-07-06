@@ -264,11 +264,21 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
       if(CallInst* CI = dyn_cast<CallInst>(BI)) {
 
-	getOrCreateInlineAttempt(CI);
+	if(!getOrCreateInlineAttempt(CI))
+	  tryPromoteOpenCall(CI);
 
       }
 
     }
+
+    // Re-check all open calls, as they are dependent on following a chain of certain blocks
+    for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
+
+      pass->queueOpenPush(OI->first, OI->second);
+
+    }
+
+    CFGBlockedOpens.clear();
 
   }
 
@@ -295,7 +305,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   else {
 
-    // Queue all loads and opens for reconsideration which are blocked due to CFG issues at this scope.
+    // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
     for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
 
       pass->queueCheckLoad(LI->first, LI->second);
@@ -303,14 +313,6 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     }
 
     CFGBlockedLoads.clear();
-
-    for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
-
-      pass->queueOpenPush(OI->first, OI->second);
-
-    }
-
-    CFGBlockedOpens.clear();
 
   }
 
@@ -560,7 +562,7 @@ ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bo
 
   }
 
-  int64_t CmpVal = (int64_t)CmpInt->getLimitedValue();
+  int64_t CmpVal = CmpInt->getSExtValue();
 
   switch(Pred) {
 
@@ -779,13 +781,15 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	bool flip;
 	ConstantInt* CmpInt = 0;
-	if(isForwardableOpenCall(CmpI->getOperand(0))) {
+	ValCtx op0 = getReplacement(CmpI->getOperand(0));
+	ValCtx op1 = getReplacement(CmpI->getOperand(1));
+	if(op0.second && op0.second->isForwardableOpenCall(op0.first)) {
 	  flip = false;
-	  CmpInt = dyn_cast_or_null<ConstantInt>(getConstReplacement(CmpI->getOperand(1)));
+	  CmpInt = dyn_cast<ConstantInt>(op1.first);
 	}
-	else if(isForwardableOpenCall(CmpI->getOperand(1))) {
+	else if(op1.second && op1.second->isForwardableOpenCall(op1.first)) {
 	  flip = true;
-	  CmpInt = dyn_cast_or_null<ConstantInt>(getConstReplacement(CmpI->getOperand(0)));
+	  CmpInt = dyn_cast<ConstantInt>(op0.first);
 	}
 	else {
 	  // Open calls are not involved; try plain old constant folding.
@@ -795,6 +799,12 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	if(CmpInt) {
 
 	  Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
+	  if(Improved.first) {
+	    LPDEBUG("Comparison against file descriptor resolves to " << *Improved.first << "\n");
+	  }
+	  else {
+	    LPDEBUG("Comparison against file descriptor inconclusive\n");
+	  }
 
 	}
 
@@ -925,6 +935,9 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
       }
 
+    }
+    else {
+      tryPromoteOpenCall(CI);
     }
 
   }
@@ -1072,7 +1085,6 @@ void IntegrationAttempt::tryPromoteAllCalls() {
 void IntegrationAttempt::queueInitialWork() {
 
   queueCheckAllLoads();
-  tryPromoteAllCalls();
 
 }
 

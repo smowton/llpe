@@ -442,8 +442,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
 	}
 
 	unsigned bytes_read = 0;
-	while(bytes_read < RF->readSize) {
-	  int this_read = pread(fd, ((char*)read_buf) + bytes_read, RF->readSize - bytes_read, RF->incomingOffset + bytes_read);
+	while(bytes_read < loadSize) {
+	  int this_read = pread(fd, ((char*)read_buf) + bytes_read, loadSize - bytes_read, RF->incomingOffset + loadOffset + bytes_read);
 	  if(this_read == 0)
 	    break;
 	  else if(this_read == -1 && errno != EINTR)
@@ -453,7 +453,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
 
 	close(fd);
 
-	if(bytes_read != RF->readSize) {
+	if(bytes_read != loadSize) {
 	  LPDEBUG("Short read on " << RF->openArg->Name << ": could only read " << bytes_read << " bytes out of " << RF->readSize << " needed at offset " << RF->incomingOffset << "\n");
 	  return VCNull;
 	}
