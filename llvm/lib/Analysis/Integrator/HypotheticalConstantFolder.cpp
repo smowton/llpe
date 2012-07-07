@@ -78,7 +78,7 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
 
   }
 
-  if(isForwardableOpenCall(V.first))
+  if(V.second->isForwardableOpenCall(V.first))
     return true;
 
   return false;

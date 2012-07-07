@@ -223,7 +223,7 @@ const Loop* IntegrationAttempt::getValueScope(Value* V) {
 
 bool IntegrationAttempt::isUnresolved(Value* V) {
 
-  return (!shouldForwardValue(make_vc(V, this))) && (getDefaultVC(V) == getReplacement(V));
+  return (!shouldForwardValue(getDefaultVC(V))) && (getDefaultVC(V) == getReplacement(V));
 
 }
 
@@ -1280,13 +1280,15 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
   ValCtx NextStart = OpenProgress;
   bool skipFirst = true;
 
-  while(tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst)) {
+  while(NextStart.second->tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst)) {
     LPDEBUG("Continuing from " << NextStart << "\n");
     skipFirst = false;
   }
 
 }
 
+// Called in the context of Start.second. OpenInst is the open instruction we're pursuing, and the context where OS is stored.
+// ReadInst is the entry in the chain of VFS operations that starts at OpenInst.
 bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
 
   Instruction* StartI = cast<Instruction>(Start.first);
@@ -1300,7 +1302,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
       if(CallInst* CI = dyn_cast<CallInst>(BI)) {
 
 	bool isVFSCall, shouldRequeue;
-	if(vfsCallBlocksOpen(CI, Start.second, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
+	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
 	  if(shouldRequeue) {
 	    // Queue to retry when we know more about the call.
 	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
@@ -1380,7 +1382,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
 	if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start)) {
 	  if(Start == VCNull) {
-	    CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	    addBlockedOpen(OpenInst, ReadInst);
 	    return false;
 	  }
 	  else
@@ -1402,7 +1404,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	    else {
 	      
 	      LPDEBUG("Open forwarding blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
-	      CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	      addBlockedOpen(OpenInst, ReadInst);
 	      return false;
 
 	    }
@@ -1421,7 +1423,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	  if(!certainBlocks.count(UniqueSuccessor)) {
 
 	    LPDEBUG("Open forwarding blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
-	    CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	    addBlockedOpen(OpenInst, ReadInst);
 	    return false;
 
 	  }
@@ -1453,7 +1455,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	}
 
 	LPDEBUG("Open forwarding blocked because block " << BB->getName() << " has no unique successor\n");
-	CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
+	addBlockedOpen(OpenInst, ReadInst);
 	return false;
 
       }
@@ -1529,7 +1531,7 @@ ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
 
 }
 
-bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, HCFParentCallbacks* CallCtx, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
+bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
 
   // Call to read() or close()?
 
@@ -1606,17 +1608,17 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, HCFParentCallbacks
 
     LPDEBUG("Successfully forwarded to " << *VFSCall << " which reads " << cBytes << " bytes\n");
 
-    CallCtx->resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
+    resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
     ValCtx thisReader = make_vc(VFSCall, this);
     OS.LatestResolvedUser = thisReader;
     pass->queueOpenPush(OpenInst, thisReader);
 
     // Investigate anyone that refs the buffer
-    CallCtx->investigateUsers(VFSCall->getArgOperand(1));
+    investigateUsers(VFSCall->getArgOperand(1));
 
     // The number of bytes read is also the return value of read.
-    CallCtx->setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt64Ty(VFSCall->getContext()), cBytes)));
-    CallCtx->investigateUsers(VFSCall);
+    setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt64Ty(VFSCall->getContext()), cBytes)));
+    investigateUsers(VFSCall);
     
     return true;
 
@@ -1710,10 +1712,10 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, HCFParentCallbacks
     LPDEBUG("Successfully forwarded to " << *VFSCall << " which seeks to offset " << intOffset << "\n");
 
     // Seek's return value is the new offset.
-    CallCtx->setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
-    CallCtx->investigateUsers(VFSCall);
+    setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
+    investigateUsers(VFSCall);
 
-    CallCtx->resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
+    resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
 
     ValCtx seekCall = make_vc(VFSCall, this);
     OS.LatestResolvedUser = seekCall;
@@ -1736,6 +1738,12 @@ void IntegrationAttempt::resolveReadCall(CallInst* CI, struct ReadFile RF) {
 void IntegrationAttempt::resolveSeekCall(CallInst* CI, struct SeekFile SF) {
 
   resolvedSeekCalls[CI] = SF;
+
+}
+
+void IntegrationAttempt::addBlockedOpen(ValCtx OpenInst, ValCtx ReadInst) {
+
+  CFGBlockedOpens.push_back(std::make_pair(OpenInst, ReadInst));
 
 }
 

@@ -184,6 +184,8 @@ class HCFParentCallbacks {
   virtual void investigateUsers(Value* V) = 0;
   virtual void resolveReadCall(CallInst*, struct ReadFile) = 0;
   virtual void resolveSeekCall(CallInst*, struct SeekFile) = 0;
+  virtual void addBlockedOpen(ValCtx, ValCtx) = 0;
+  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool) = 0;
 
 };
 
@@ -374,12 +376,13 @@ protected:
   void tryPromoteAllCalls();
   void queueInitialWork();
   void tryPushOpen(CallInst*, ValCtx);
-  bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
+  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
-  bool vfsCallBlocksOpen(CallInst*, HCFParentCallbacks*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
+  bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
+  virtual void addBlockedOpen(ValCtx, ValCtx);
 
   // Tricky load forwarding (stolen from GVN)
 
