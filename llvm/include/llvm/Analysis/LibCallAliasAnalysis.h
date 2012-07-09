@@ -64,7 +64,8 @@ namespace llvm {
   private:
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
                                        ImmutableCallSite CS,
-                                       const Value *P, unsigned Size);
+                                       const Value *P, unsigned Size,
+				       HCFParentCallbacks* Pa);
   };
 }  // End of llvm namespace
 

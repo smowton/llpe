@@ -111,38 +111,52 @@ bool instructionCounts(Instruction* I) {
 
 }
 
-// Implement HCFParentCallbacks, except for tryForwardLoad which comes later
+AliasAnalysis* IntegrationAttempt::getAA() {
 
-ValCtx IntegrationAttempt::getReplacement(Value* V) {
+  return this->AA;
 
-  if(Constant* C = dyn_cast<Constant>(V))
-    return const_vc(C);
+}
+
+ValCtx IntegrationAttempt::getLocalReplacement(Value* V) {
 
   DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
   if(it == improvedValues.end())
     return make_vc(V, this);
   else
-    return it->second;
+    return it->second;  
 
 }
 
-ValCtx PeelIteration::getReplacement(Value* V) {
+// Implement HCFParentCallbacks, except for tryForwardLoad which comes later
+
+ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
   // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
   // or an invariant belonging to one of my parent loops, or the root function.
+  // One exception: it's a variant, but we're being asked in the context of trying to load-forward through an unpeeled loop.
+  // In that case it's never valid to resolve a variant so I just return the unresolved answer. The same applies to getDefaultVC.
+  // The case for reading an exit PHI is taken care of by the PHI resolution code.
+
+  if(Constant* C = dyn_cast<Constant>(V))
+    return const_vc(C);
 
   const Loop* evalScope = getValueScope(V);
-  if(evalScope != L)
-    return parent->getReplacementUsingScope(V, evalScope);
-  else
-    return IntegrationAttempt::getReplacement(V);
+  const Loop* L = getLoopContext();
+
+  if(L != evalScope && ((!L) || L->contains(evalScope))) {
+    // The load-forwarding case mentioned above.
+    return make_vc(V, this);
+  }
+  else {
+    return getReplacementUsingScope(V, evalScope);
+  }
 
 }
 
 ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope) {
 
   if(LScope == getLoopContext())
-    return IntegrationAttempt::getReplacement(V); // Non-virtual call
+    return getLocalReplacement(V);
   else
     return parent->getReplacementUsingScope(V, LScope);
 
@@ -153,17 +167,15 @@ ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
   if(Constant* C = dyn_cast<Constant>(V))
     return const_vc(C);
   
-  return make_vc(V, this);
-
-}
-
-ValCtx PeelIteration::getDefaultVC(Value* V) {
-
   const Loop* evalScope = getValueScope(V);
-  if(evalScope != L)
-    return parent->getDefaultVCWithScope(V, evalScope);
-  else
-    return IntegrationAttempt::getDefaultVC(V);
+  const Loop* L = getLoopContext();
+
+  if(L != evalScope && ((!L) || L->contains(evalScope))) {
+    return make_vc(V, this);
+  }
+  else {
+    return getDefaultVCWithScope(V, evalScope);
+  }
 
 }
 
@@ -1747,6 +1759,18 @@ void IntegrationAttempt::addBlockedOpen(ValCtx OpenInst, ValCtx ReadInst) {
 
 }
 
+bool IntegrationAttempt::isResolvedVFSCall(const Instruction* I) {
+  
+  if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {
+
+    return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI);
+
+  }
+
+  return false;
+
+}
+
 void PeelIteration::describe(raw_ostream& Stream) const {
 
   Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << ")";
@@ -1979,6 +2003,10 @@ bool LoadForwardAttempt::buildSymExpr() {
     else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
       Expr.push_back((new SymCast(C->getType())));
       Ptr = make_vc(C->getOperand(0), Ptr.second);
+    }
+    else if (isa<Constant>(Ptr.first)) {
+      Expr.push_back(new SymThunk(Ptr));
+      break;
     }
     else {
       ValCtx Repl = Ptr.second->getReplacement(Ptr.first);

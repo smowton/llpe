@@ -186,6 +186,8 @@ class HCFParentCallbacks {
   virtual void resolveSeekCall(CallInst*, struct SeekFile) = 0;
   virtual void addBlockedOpen(ValCtx, ValCtx) = 0;
   virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool) = 0;
+  virtual bool isResolvedVFSCall(const Instruction*) = 0;
+  virtual AliasAnalysis* getAA() = 0;
 
 };
 
@@ -274,6 +276,8 @@ protected:
 
   ~IntegrationAttempt();
 
+  virtual AliasAnalysis* getAA();
+
   // Implement HCFParentCallbacks (partially):
 
   virtual ValCtx getDefaultVC(Value*);
@@ -284,6 +288,7 @@ protected:
   // Helpers for the above:
 
   const Loop* getValueScope(Value*);
+  ValCtx getLocalReplacement(Value*);
   ValCtx getReplacementUsingScope(Value*, const Loop*);
   ValCtx getDefaultVCWithScope(Value*, const Loop*);
 
@@ -384,6 +389,7 @@ protected:
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   virtual void addBlockedOpen(ValCtx, ValCtx);
   void queueCFGBlockedOpens();
+  virtual bool isResolvedVFSCall(const Instruction*);
 
   // Tricky load forwarding (stolen from GVN)
 
@@ -434,9 +440,6 @@ public:
     { }
 
   IterationStatus iterStatus;
-
-  virtual ValCtx getReplacement(Value* V);
-  virtual ValCtx getDefaultVC(Value* V);
 
   virtual Instruction* getEntryInstruction();
   virtual BasicBlock* getEntryBlock();

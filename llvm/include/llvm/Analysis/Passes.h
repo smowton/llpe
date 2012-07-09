@@ -72,6 +72,8 @@ namespace llvm {
   ///
   FunctionPass *createLibCallAliasAnalysisPass(LibCallInfo *LCI);
 
+  FunctionPass *createVFSCallAliasAnalysisPass();
+
   //===--------------------------------------------------------------------===//
   //
   // createScalarEvolutionAliasAnalysisPass - This pass implements a simple

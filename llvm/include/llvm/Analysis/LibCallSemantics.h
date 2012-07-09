@@ -19,6 +19,8 @@
 
 namespace llvm {
 
+  class HCFParentCallbacks;
+
   /// LibCallLocationInfo - This struct describes a set of memory locations that
   /// are accessed by libcalls.  Identification of a location is doing with a
   /// simple callback function.
@@ -48,7 +50,8 @@ namespace llvm {
       Yes, No, Unknown
     };
     LocResult (*isLocation)(ImmutableCallSite CS,
-                            const Value *Ptr, unsigned Size);
+			    const Value *Ptr, unsigned Size, HCFParentCallbacks*);
+
   };
   
   /// LibCallFunctionInfo - Each record in the array of FunctionInfo structs

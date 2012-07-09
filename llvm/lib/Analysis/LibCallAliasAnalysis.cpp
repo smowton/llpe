@@ -44,7 +44,7 @@ void LibCallAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
                                             ImmutableCallSite CS, const Value *P,
-                                            unsigned Size) {
+                                            unsigned Size, HCFParentCallbacks* Pa) {
   // If we have a function, check to see what kind of mod/ref effects it
   // has.  Start by including any info globally known about the function.
   AliasAnalysis::ModRefResult MRInfo = FI->UniversalBehavior;
@@ -66,7 +66,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
     for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
       const LibCallLocationInfo &Loc =
       LCI->getLocationInfo(Details[i].LocationID);
-      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size);
+      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, Pa);
       if (Res != LibCallLocationInfo::Yes) continue;
       
       // If we find a match against a location that we 'do not' interact with,
@@ -87,7 +87,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
     const LibCallLocationInfo &Loc =
     LCI->getLocationInfo(Details[i].LocationID);
-    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size);
+    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, Pa);
     if (Res == LibCallLocationInfo::No) continue;
     
     // If we don't know if this pointer points to the location, then we have to
@@ -126,7 +126,7 @@ LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   if (LCI) {
     if (const Function *F = CS.getCalledFunction()) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
-        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size));
+        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, Pa));
         if (MRInfo == NoModRef) return NoModRef;
       }
     }

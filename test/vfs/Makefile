@@ -1,7 +1,7 @@
 
 include Makefile.config
 
-TARGETS = read
+TARGETS = read read-indirect-fd
 
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
 LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))
