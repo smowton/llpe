@@ -383,6 +383,7 @@ protected:
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   virtual void addBlockedOpen(ValCtx, ValCtx);
+  void queueCFGBlockedOpens();
 
   // Tricky load forwarding (stolen from GVN)
 

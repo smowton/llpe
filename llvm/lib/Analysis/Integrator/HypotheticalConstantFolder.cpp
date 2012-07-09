@@ -98,6 +98,8 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
   if(isSpecialEdge) {
     // I *think* this is necessarily an immediate child of this loop.
 
+    queueCFGBlockedOpens();
+
     if(!getOrCreatePeelAttempt(L)) {
 
       if(edgeIsDead(FromBB, ToBB)) {
@@ -143,8 +145,10 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
       checkFinalIteration();
   }
 
-  if(isSpecialBranchTarget)
+  if(isSpecialBranchTarget) {
+    queueCFGBlockedOpens();
     return true;
+  }
   else
     return IntegrationAttempt::checkLoopSpecialEdge(FromBB, ToBB);
 
@@ -186,6 +190,18 @@ void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, 
     }
   }
 
+}
+
+void IntegrationAttempt::queueCFGBlockedOpens() {
+
+  for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
+
+    pass->queueOpenPush(OI->first, OI->second);
+
+  }
+
+  CFGBlockedOpens.clear();
+    
 }
 
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
@@ -257,6 +273,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   
   if(isCertain) {
+
     LPDEBUG("Block is certain to execute. Queueing successors and calls.\n");
     certainBlocks.insert(BB);
     
@@ -271,19 +288,12 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     }
 
-    // Re-check all open calls, as they are dependent on following a chain of certain blocks
-    for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
-
-      pass->queueOpenPush(OI->first, OI->second);
-
-    }
-
-    CFGBlockedOpens.clear();
+    queueCFGBlockedOpens();
 
   }
 
   if(isDead || isCertain) {
-    
+
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
       
       if(isDead)
