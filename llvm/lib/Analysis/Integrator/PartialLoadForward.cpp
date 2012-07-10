@@ -207,13 +207,17 @@ bool IntegrationAttempt::CanCoerceMustAliasedValueToLoad(Value *StoredVal, const
   // to transform them.  We need to be able to bitcast to integer.
   if (LoadTy->isStructTy() || LoadTy->isArrayTy() ||
       StoredVal->getType()->isStructTy() ||
-      StoredVal->getType()->isArrayTy())
+      StoredVal->getType()->isArrayTy()) {
+    LPDEBUG("Won't execute a load forwarding operation over aggregate types\n");
     return false;
+  }
   
   // The store has to be at least as big as the load.
   if (TD->getTypeSizeInBits(StoredVal->getType()) <
-      TD->getTypeSizeInBits(LoadTy))
+      TD->getTypeSizeInBits(LoadTy)) {
+    LPDEBUG("Won't forward a load from a smaller type\n");
     return false;
+  }
   
   return true;
 }
@@ -226,7 +230,6 @@ bool IntegrationAttempt::CanCoerceMustAliasedValueToLoad(Value *StoredVal, const
 /// If we can't do it, return null.
 Constant* IntegrationAttempt::CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy) {
   if (!CanCoerceMustAliasedValueToLoad(StoredVal, LoadedTy)) {
-    LPDEBUG("Won't execute a load forwarding operation over aggregate types");
     return 0;
   }
 
@@ -295,8 +298,6 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, ValCtx Clobber) {
     int Offset = AnalyzeLoadFromClobberingStore(LI->getType(), LI->getPointerOperand(), DepSI, Clobber.second);
     if (Offset != -1) {
 
-      LPDEBUG("Salvaged a clobbering store (load is defined by offset " << Offset << ")\n");
-
       // Only deal with integer types handled this way for now.
       Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
       if(!StoreC) {
@@ -328,14 +329,19 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, ValCtx Clobber) {
 	ShiftAmt = (StoreSize-LoadSize-Offset)*8;
   
       if (ShiftAmt)
-	StoreC = ConstantExpr::getLShr(StoreC, ConstantInt::get(IntegerType::get(Ctx, 32), ShiftAmt));
+	StoreC = ConstantExpr::getLShr(StoreC, ConstantInt::get(StoreC->getType(), ShiftAmt));
   
       if (LoadSize != StoreSize)
 	StoreC = ConstantExpr::getTrunc(StoreC, IntegerType::get(Ctx, LoadSize*8));
   
       StoreC = CoerceConstExprToLoadType(StoreC, LoadTy);
-      if(StoreC)
-	StoreC = ConstantFoldLoadFromConstPtr(StoreC, TD);
+      if(ConstantExpr* CE = dyn_cast<ConstantExpr>(StoreC)) {
+	StoreC = ConstantFoldConstantExpression(CE, TD);
+      }
+
+      if(StoreC) {
+	LPDEBUG("Salvaged a clobbering store (load is defined by offset " << Offset << ", resolved to " << *StoreC << ")\n");
+      }
 
       return make_vc(StoreC, 0);
 

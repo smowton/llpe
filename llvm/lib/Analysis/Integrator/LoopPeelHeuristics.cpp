@@ -809,7 +809,31 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     Result = tryResolveClobber(LoadI, make_vc(Res.getInst(), ResAttempt));
   }
   else if(Res.isDef()) {
+
     Result = getDefn(Res);
+
+    if(Result.first && Result.first->getType() != LoadI->getType()) {
+
+      Constant* ResultC;
+      if(LoadI->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
+
+	Result = const_vc(CoerceConstExprToLoadType(ResultC, LoadI->getType()));
+	if(Result.first) {
+
+	  LPDEBUG("Successfully coerced value to " << Result << " to match load type\n");
+
+	}
+
+      }
+      else {
+
+	LPDEBUG("Unable to use the definition because its type doesn't match the load and the def isn't an integer constant\n");
+	Result = VCNull;
+
+      }
+
+    }
+
   }
 
   if(Result == VCNull || !shouldForwardValue(Result)) {
