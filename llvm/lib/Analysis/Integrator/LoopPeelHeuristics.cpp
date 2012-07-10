@@ -398,6 +398,9 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
 	IA->queueInitialWork();
 
+	// Recheck any loads that were clobbered by this call
+	queueWorkBlockedOn(CI);
+
 	return IA;
 
       }
@@ -451,6 +454,9 @@ void PeelIteration::checkFinalIteration() {
     }
     
     iterStatus = IterationStatusFinal;
+
+    // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
+    parent->queueCFGBlockedLoads();
 
   }
 
@@ -557,9 +563,11 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
-    LPDEBUG("Considering inlining loop with header " << NewL->getHeader()->getName() << "\n");
+    LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
     PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, TD, AA, invariantInsts, invariantEdges, invariantBlocks, NewL, nesting_depth + 1);
     peelChildren[NewL] = LPA;
+
+    queueCFGBlockedLoads();
 
     return LPA;
 
@@ -673,7 +681,7 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
     return VCNull;
   }
 
-  if(improved.first != Res.getInst() || improved.second != this) {
+  if(improved.first != Res.getInst() || improved.second != QueryCtx) {
     LPDEBUG("Definition improved to " << improved << "\n");
     return improved;
   }
@@ -685,7 +693,7 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 }
 
 // Find the unique definer or clobberer for a given Load.
-MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, Value*& Address) {
+MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 
   MemoryDependenceAnalyser MD;
   MD.init(AA, this, &(LFA.getLFA()));
@@ -720,7 +728,6 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, Value*& 
       else if(Res == Seen)
 	continue;
       else if(Seen == MemDepResult()) { // Nothing seen yet
-	Address = NLResults[i].getAddress();
 	Seen = Res;
       }
       else {
@@ -734,7 +741,6 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, Value*& 
 
   }
   else {
-    Address = QueryInst->getPointerOperand();
     LPDEBUG(*OriginalInst << " locally defined by " << Seen << "\n");
   }
 
@@ -768,8 +774,6 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   LPDEBUG("Trying to forward load: " << *LoadI << "\n");
 
-  ValCtx Result;
-
   if(Constant* C = getConstReplacement(LoadI->getPointerOperand())) {
 
     // Try ordinary constant folding first! Might not work because globals constitute constant expressions.
@@ -796,26 +800,62 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   }
 
-  Instruction* Ignored;
+  MemDepResult Res = tryResolveLoad(LoadI);
+  IntegrationAttempt* ResAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
+  ValCtx Result = VCNull;
+
+  if(Res.isClobber()) {
+    // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
+    Result = tryResolveClobber(LoadI, make_vc(Res.getInst(), ResAttempt));
+  }
+  else if(Res.isDef()) {
+    Result = getDefn(Res);
+  }
+
+  if(Result == VCNull || !shouldForwardValue(Result)) {
+
+    if(Result == VCNull) {
+      if(Res.isDef())
+	LPDEBUG("Load resolved successfully, but we couldn't retrieve a value from the defining instruction\n");
+    }
+    else {
+      LPDEBUG("Load resolved successfully, but " << Result << " is not a forwardable value\n");
+    }
+
+    if(Res.getInst() && Res.getInst()->mayWriteToMemory())
+      ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
+    // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
+    return VCNull;
+
+  }
+  else {
+    return Result;
+  }
+
+}
+
+MemDepResult IntegrationAttempt::tryResolveLoad(LoadInst* LoadI) {
+
+  MemDepResult Result;
   LoadForwardAttempt Attempt(LoadI, this);
-  if(forwardLoadIsNonLocal(Attempt, Result, Ignored)) {
+
+  if(forwardLoadIsNonLocal(Attempt, Result)) {
 
     if(!parent)
-      return VCNull;
+      return MemDepResult();
 
     if(!Attempt.canBuildSymExpr())
-      return VCNull; 
+      return MemDepResult();
 
     LPDEBUG("Will resolve ");
     DEBUG(Attempt.describeSymExpr(dbgs()));
     DEBUG(dbgs() << "\n");
 
-    ValCtx SubcallResult = tryForwardExprFromParent(Attempt);
-   
-    return SubcallResult;
+    return tryForwardExprFromParent(Attempt);
+
   }
   else {
-    if(Result != VCNull) {
+    if(Result != MemDepResult()) {
       LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
     }
     return Result;
@@ -824,11 +864,11 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 }
 
 // Pursue a load further. Current context is a function body; ask our caller to pursue further.
-ValCtx InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
+MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
-    return VCNull;
+    return MemDepResult();
   }
   else {
     LPDEBUG("Resolving load at call site\n");
@@ -837,7 +877,7 @@ ValCtx InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 }
 
-bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, Instruction*& resultInst, ValCtx& VC, int& resultIter) {
+bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, MemDepResult& Result) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of the LFA for all of these checks, since the instructions are always the same.
@@ -850,17 +890,13 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 
     LPDEBUG("Trying to resolve in iteration " << iter << "\n");
 
-    ValCtx Result;
-    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, resultInst))) {
+    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
-      resultIter = iter;
-      if(Result.first) {
+      if(Result.isDef()) {
 	LPDEBUG("Resolved to " << Result << "\n");
-	VC = Result;
       }
       else {
 	LPDEBUG("Resolution failed\n");
-	VC = VCNull;
       }
       return false;
     }
@@ -870,7 +906,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 
     if(LFA.getBaseContext() == Iterations[iter]) {
       LPDEBUG("Abandoning resolution: " << LFA.getBaseVC() << " is out of scope\n");
-      VC = VCNull;
+      Result = MemDepResult();
       return false;
     }
 
@@ -882,13 +918,11 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 
 // Pursue a load further. Current context is a loop body -- try resolving it in previous iterations,
 // then ask our enclosing loop or function body to look further.
-ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
+MemDepResult PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int originIter) {
 
-  ValCtx VC;
-  int resultIter;
-  Instruction* resultInst;
-  if(!tryForwardExprFromIter(LFA, originIter, resultInst, VC, resultIter)) {
-    return VC;
+  MemDepResult Result;
+  if(!tryForwardExprFromIter(LFA, originIter, Result)) {
+    return Result;
   }
   else {
     LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
@@ -898,7 +932,7 @@ ValCtx PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int origin
 }
 
 // Helper: loop iterations defer the resolution process to the abstract loop.
-ValCtx PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
+MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   return parentPA->tryForwardExprFromParent(LFA, this->iterationCount);
 
@@ -906,93 +940,59 @@ ValCtx PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, ValCtx& Result, Instruction*& ResultInst) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result) {
 
-  Value* LoadAddr;
-  MemDepResult Res = getUniqueDependency(LFAQ, LoadAddr);
+  Result = getUniqueDependency(LFAQ);
 
-  bool instBlocked = false;
-
-  Result = VCNull;
-
-  if(Res.isClobber()) {
-    if(Res.getInst()->getParent() == getEntryBlock()) {
-      BasicBlock::iterator TestII(Res.getInst());
+  if(Result == MemDepResult()) {
+    // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
+    CFGBlockedLoads.push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
+  }
+  else if(Result.isClobber()) {
+    if(Result.getInst()->getParent() == getEntryBlock()) {
+      BasicBlock::iterator TestII(Result.getInst());
       if(TestII == getEntryBlock()->begin()) {
 	return true;
       }
     }
-    // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
-
-    IntegrationAttempt* clobberAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
-    ValCtx clobberResolution = clobberAttempt->tryResolveClobber(LFAQ.getQueryInst(), LoadAddr, make_vc(Res.getInst(), clobberAttempt));
-
-    if(clobberResolution != VCNull) {
-
-      Result = clobberResolution;
-	
-    }
-    else {
-      instBlocked = true;
-    }
-    ResultInst = Res.getInst();
-  }
-  else if(Res.isDef()) {
-    Result = getDefn(Res);
-    if(Result != VCNull) {
-      if(!shouldForwardValue(Result)) {
-	LPDEBUG("Load resolved successfully, but " << Res << " is not a forwardable value\n");
-	instBlocked = true;
-      }
-    }
-    else {
-      LPDEBUG("Load resolved successfully, but we couldn't retrieve a value from the defining instruction\n");
-      instBlocked = true;
-    }
-    ResultInst = Res.getInst();
-  }
-  else if(Res == MemDepResult()) {
-    // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
-    CFGBlockedLoads.push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
   }
 
-  if(instBlocked) {
-    if(Res.getInst()->mayWriteToMemory())
-      InstBlockedLoads[Res.getInst()].push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
-    // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
+  if(Result != MemDepResult() && (!Result.getCookie())) {
+    // This result is generated by MD, not one of our callbacks for handling child contexts
+    // Tag it as originating here
+    Result.setCookie(this);
   }
 
   return false;
 
 }
 
-bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& ResultInst) {
+bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result) {
 
   LFARMapping LFARM(LFAR, this);
 
-  return forwardLoadIsNonLocal(LFAR, Result, ResultInst);
+  return forwardLoadIsNonLocal(LFAR, Result);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& ResultInst) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result) {
 
   LFARealization LFAR(LFA, this, Where);
   
-  return tryResolveExprUsing(LFAR, Result, ResultInst);
+  return tryResolveExprUsing(LFAR, Result);
 
 }
 
 // Entry point for a child loop or function that wishes us to continue pursuing a load.
 // Find the instruction before the child begins (so loop preheader or call site), realise the given symbolic
 // expression, and try ordinary load forwarding from there.
-ValCtx IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt& LFA) {
+MemDepResult IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt& LFA) {
 
-  ValCtx Result;
+  MemDepResult Result;
 
   LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
 
-  Instruction* Ignored;
-  if(tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result, Ignored)) {
+  if(tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result)) {
     LPDEBUG("Still nonlocal, passing to our parent scope\n");
     return tryForwardExprFromParent(LFA);
   }
@@ -1014,19 +1014,12 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
 
   }
 
-  ValCtx VCResult;
-  Instruction* ResultInst;
-
-  if(tryResolveExprFrom(LFA, RetBB->getTerminator(), VCResult, ResultInst)) {
+  if(tryResolveExprFrom(LFA, RetBB->getTerminator(), Result)) {
     Result = MemDepResult::getNonLocal();
     return true;
   }
-  else if(VCResult == VCNull) {
-    return false;
-  }
   else {
-    Result = MemDepResult::getDef(ResultInst, this);
-    return true;
+    return Result.isDef();
   }
 
 }
@@ -1091,20 +1084,15 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
   else {
     LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
 
-    ValCtx VCResult;
-    Instruction* ResultInst;
-
-    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), VCResult, ResultInst)) {
+    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult)) {
       LastIterResult = MemDepResult::getNonLocal();
     }
     else {
-      if(VCResult == VCNull) {
+      if(LastIterResult.isClobber()) {
 	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
-	LastIterResult = MemDepResult::getClobber(ResultInst, Iterations.back());
       }
       else {
 	LPDEBUG(*(LFA.getOriginalInst()) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
-	LastIterResult = MemDepResult::getDef(ResultInst, Iterations.back());
       }
       Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
       return true;
@@ -1123,21 +1111,16 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
     }
   }
   else {
-    ValCtx VC;
-    int resultIter;
-    Instruction* resultInst;
     LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << "\n");
-    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, resultInst, VC, resultIter)) {
+    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult)) {
       OtherItersResult = MemDepResult::getNonLocal();
     }
     else {
-      if(VC == VCNull) {
+      if(OtherItersResult.isClobber()) {
 	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
-	OtherItersResult = MemDepResult::getClobber(resultInst, Iterations[resultIter]);
       }
       else {
 	LPDEBUG(*(LFA.getOriginalInst()) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
-	OtherItersResult = MemDepResult::getDef(resultInst, Iterations[resultIter]);
       }
       Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
       return true;
@@ -1173,6 +1156,12 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
   else {
     return false;
   }
+
+}
+
+void IntegrationAttempt::addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
+
+  InstBlockedLoads[BlockedOn].push_back(std::make_pair(RetryCtx, RetryLI));
 
 }
 

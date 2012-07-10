@@ -357,19 +357,23 @@ protected:
 
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
-  bool forwardLoadIsNonLocal(LFAQueryable&, ValCtx& Result, llvm::Instruction*& DefInst);
+  MemDepResult tryResolveLoad(LoadInst*);
+  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result);
   ValCtx getDefn(const MemDepResult& Res);
-  MemDepResult getUniqueDependency(LFAQueryable&, Value*& Address);
+  MemDepResult getUniqueDependency(LFAQueryable&);
 
-  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&) = 0;
-  ValCtx tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, ValCtx& Result, Instruction*& DefInst);
-  bool tryResolveExprUsing(LFARealization& LFAR, ValCtx& Result, Instruction*& DefInst);
+  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
+  MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result);
+  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result);
 
   bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
+  void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
+
   void queueWorkBlockedOn(Instruction* SI);
+  void queueCFGBlockedLoads();
   void queueCheckAllLoads();
 
   // VFS call forwarding:
@@ -401,7 +405,7 @@ protected:
   ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
   Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
-  ValCtx tryResolveClobber(LoadInst *LI, Value* Address, ValCtx Clobber);
+  ValCtx tryResolveClobber(LoadInst *LI, ValCtx Clobber);
 
   // Stat collection and printing:
 
@@ -455,7 +459,7 @@ public:
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
 
-  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&);
+  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
 
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
@@ -501,8 +505,8 @@ class PeelAttempt {
 
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
-   ValCtx tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
-   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, Instruction*& defInst, ValCtx& VC, int& defIter);
+   MemDepResult tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
+   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
@@ -535,7 +539,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual BasicBlock* getEntryBlock();
   virtual const Loop* getLoopContext();
   
-  virtual ValCtx tryForwardExprFromParent(LoadForwardAttempt&);
+  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
   bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&);
 
   virtual void queueTryEvaluateOwnCall();

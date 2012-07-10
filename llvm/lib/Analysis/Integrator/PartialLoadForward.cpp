@@ -104,7 +104,7 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingStore(const Type *LoadTy, Value
 
 int IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(const Type *LoadTy, Value *LoadPtr, MemIntrinsic *MI, HCFParentCallbacks* MICtx) {
   // If the mem operation is a non-constant size, we can't handle it.
-  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
+  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(MICtx->getConstReplacement(MI->getLength()));
   if (SizeCst == 0) return -1;
   uint64_t MemSizeInBits = SizeCst->getZExtValue()*8;
 
@@ -277,17 +277,22 @@ Constant* IntegrationAttempt::CoerceConstExprToLoadType(Constant *StoredVal, con
 // * It's defined by a memcpy in similar fashion
 // * It's defined by a VFS read operation, similar to a memcpy
 // Return the result of forwarding, or VCNull if none.
-ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCtx Clobber) {
+ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, ValCtx Clobber) {
 
-  // The address being loaded in this non-local block may not be the same as
-  // the pointer operand of the load if PHI translation occurs.  Make sure
-  // to consider the right address: use Address not LI->getPointerOperand()
+  // The GVN code I swiped this from contained the comment:
+  // "The address being loaded in this non-local block may not be the same as
+  // "the pointer operand of the load if PHI translation occurs.  Make sure
+  // "to consider the right address: use Address not LI->getPointerOperand()"
+
+  // I think I can ignore that because my replacement logic will root both stores on the same underlying
+  // object with constant integer offsets if we can analyse this at all.
+  // That condition is required for the trickier cases (e.g. crossing call boundaries) in any case.
       
   // If the dependence is to a store that writes to a superset of the bits
   // read by the load, we can extract the bits we need for the load from the
   // stored value.
   if (StoreInst *DepSI = dyn_cast<StoreInst>(Clobber.first)) {
-    int Offset = AnalyzeLoadFromClobberingStore(LI->getType(), Address, DepSI, Clobber.second);
+    int Offset = AnalyzeLoadFromClobberingStore(LI->getType(), LI->getPointerOperand(), DepSI, Clobber.second);
     if (Offset != -1) {
 
       LPDEBUG("Salvaged a clobbering store (load is defined by offset " << Offset << ")\n");
@@ -344,7 +349,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadInst *LI, Value* Address, ValCt
   // forward a value on from it.
   if (MemIntrinsic *DepMI = dyn_cast<MemIntrinsic>(Clobber.first)) {
 
-    int Offset = AnalyzeLoadFromClobberingMemInst(LI->getType(), Address, DepMI, Clobber.second);
+    int Offset = AnalyzeLoadFromClobberingMemInst(LI->getType(), LI->getPointerOperand(), DepMI, Clobber.second);
     if (Offset != -1) {
 
       LPDEBUG("Salvaged a clobbering memory intrinsic (load is defined by offset " << Offset << ")\n");

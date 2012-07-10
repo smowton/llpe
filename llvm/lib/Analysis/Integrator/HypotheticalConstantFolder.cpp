@@ -192,6 +192,19 @@ void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, 
 
 }
 
+void IntegrationAttempt::queueCFGBlockedLoads() {
+
+  // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
+  for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
+
+    pass->queueCheckLoad(LI->first, LI->second);
+
+  }
+
+  CFGBlockedLoads.clear();
+
+}
+
 void IntegrationAttempt::queueCFGBlockedOpens() {
 
   for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
@@ -315,14 +328,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   else {
 
-    // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
-    for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
-
-      pass->queueCheckLoad(LI->first, LI->second);
-
-    }
-
-    CFGBlockedLoads.clear();
+    queueCFGBlockedLoads();
 
   }
 

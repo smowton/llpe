@@ -113,6 +113,7 @@ namespace llvm {
     Instruction *getInst() const { return Value.getPointer(); }
 
     HCFParentCallbacks* getCookie() const { return Cookie; }
+    void setCookie(HCFParentCallbacks* Ctx) { Cookie = Ctx; }
     
     bool operator==(const MemDepResult &M) const { return Value == M.Value; }
     bool operator!=(const MemDepResult &M) const { return Value != M.Value; }
