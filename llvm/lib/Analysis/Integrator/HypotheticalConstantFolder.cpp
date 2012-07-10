@@ -1165,7 +1165,11 @@ namespace llvm {
       else if(MDR.isDef()) {
 	Stream << "Def(";
       }
-      Stream << *MDR.getInst() << ")";
+      Stream << *MDR.getInst();
+      if(HCFParentCallbacks* P = MDR.getCookie()) {
+	Stream << "@" << *P;
+      }
+      Stream << ")";
     }
 
     return Stream;

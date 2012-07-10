@@ -5,7 +5,7 @@ int main(int argc, char** argv) {
 
   char buf[4];
 
-  for(int i = 0; i < 4; ++i) {
+  for(int i = 3; i >= 0; --i) {
 
     buf[i] = (char)i;
 
