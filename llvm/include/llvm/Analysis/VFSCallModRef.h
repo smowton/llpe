@@ -23,11 +23,9 @@ public:
 
 class VFSCallAliasAnalysis : public LibCallAliasAnalysis {
 
-  VFSCallModRef VFSCalls;
-
  public:
   static char ID;
- VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, &VFSCalls) { }
+ VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, new VFSCallModRef()) { }
 
 };
 

@@ -25,7 +25,8 @@ static StringMap<const LibCallFunctionInfo*> *getMap(void *Ptr) {
 }
 
 LibCallInfo::~LibCallInfo() {
-  delete getMap(Impl);
+  if(Impl)
+    delete getMap(Impl);
 }
 
 const LibCallLocationInfo &LibCallInfo::getLocationInfo(unsigned LocID) const {

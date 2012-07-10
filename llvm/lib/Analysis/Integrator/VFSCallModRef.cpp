@@ -102,7 +102,7 @@ const LibCallFunctionInfo* VFSCallModRef::getFunctionInfoArray() const {
 
 }
 
-FunctionPass *createVFSCallAliasAnalysisPass() {
+ModulePass *createVFSCallAliasAnalysisPass() {
 
   return new VFSCallAliasAnalysis();
 

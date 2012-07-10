@@ -22,16 +22,16 @@ namespace llvm {
   struct LibCallFunctionInfo;
   
   /// LibCallAliasAnalysis - Alias analysis driven from LibCallInfo.
-  struct LibCallAliasAnalysis : public FunctionPass, public AliasAnalysis {
+  struct LibCallAliasAnalysis : public ModulePass, public AliasAnalysis {
     static char ID; // Class identification
     
     LibCallInfo *LCI;
     
     explicit LibCallAliasAnalysis(LibCallInfo *LC = 0)
-      : FunctionPass(ID), LCI(LC) {
+      : ModulePass(ID), LCI(LC) {
     }
     explicit LibCallAliasAnalysis(char &ID, LibCallInfo *LC)
-      : FunctionPass(ID), LCI(LC) {
+      : ModulePass(ID), LCI(LC) {
     }
     ~LibCallAliasAnalysis();
     
@@ -46,7 +46,7 @@ namespace llvm {
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
     
-    virtual bool runOnFunction(Function &F) {
+    virtual bool runOnModule(Module &M) {
       InitializeAliasAnalysis(this);                 // set up super class
       return false;
     }
