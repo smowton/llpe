@@ -37,6 +37,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/IRBuilder.h"
+#include "llvm/Support/GetElementPtrTypeIterator.h"
 
 #include <string>
 #include <algorithm>
@@ -767,21 +768,18 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
 
 }
 
-// Main load forwarding entry point:
-// Try to forward the load locally (within this loop or function), or otherwise build a symbolic expression
-// and ask our parent to continue resolving the load.
-ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
-
-  LPDEBUG("Trying to forward load: " << *LoadI << "\n");
+bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Result) {
 
   if(Constant* C = getConstReplacement(LoadI->getPointerOperand())) {
 
     // Try ordinary constant folding first! Might not work because globals constitute constant expressions.
     // For them we should do the ordinary alias analysis task.
     Constant* ret = ConstantFoldLoadFromConstPtr(C, this->TD);
-    LPDEBUG("Resolved load as a constant expression\n");
-    if(ret)
-      return const_vc(ret);
+    if(ret) {
+      LPDEBUG("Resolved load as a constant expression\n");
+      Result = const_vc(ret);
+      return true;
+    }
 
   }
 
@@ -795,18 +793,58 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
     if(GV->isConstant()) {
       LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
-      return VCNull;
+      Result = VCNull;
+      return true;
     }
 
   }
 
-  MemDepResult Res = tryResolveLoad(LoadI);
+  return false;
+
+}
+
+// Main load forwarding entry point:
+// Try to forward the load locally (within this loop or function), or otherwise build a symbolic expression
+// and ask our parent to continue resolving the load.
+ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
+
+  LPDEBUG("Trying to forward load: " << *LoadI << "\n");
+
+  LoadForwardAttempt Attempt(LoadI, this, TD);
+  
+  ValCtx ConstResult;
+  if(tryResolveLoadFromConstant(LoadI, ConstResult))
+    return ConstResult;
+
+  MemDepResult Res = tryResolveLoad(Attempt);
+  return getForwardedValue(Attempt, Res);
+
+}
+
+// Alternative entry point for users who've pre-created a symbolic expression
+ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* StartBefore) {
+
+  ValCtx ConstVC = VCNull;
+  MemDepResult Res = tryResolveLoad(LFA, StartBefore, ConstVC);
+
+  if(ConstVC != VCNull && Res == MemDepResult()) {
+    return ConstVC;
+  }
+  else {
+    return getForwardedValue(LFA, Res);
+  }
+
+}
+
+ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResult Res) {
+
+  LoadInst* LoadI = LFA.getOriginalInst();
   IntegrationAttempt* ResAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
   ValCtx Result = VCNull;
 
   if(Res.isClobber()) {
     // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
-    Result = tryResolveClobber(LoadI, make_vc(Res.getInst(), ResAttempt));
+    Result = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt));
   }
   else if(Res.isDef()) {
 
@@ -849,6 +887,13 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     if(Res.getInst() && Res.getInst()->mayWriteToMemory())
       ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
     // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
+
+    if(Res.getInst() && Res.getCookie()) {
+      
+      Res.getCookie()->queueLoopExpansionBlockedLoad(Res.getInst(), this, LoadI);
+
+    }
+
     return VCNull;
 
   }
@@ -858,10 +903,9 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
 }
 
-MemDepResult IntegrationAttempt::tryResolveLoad(LoadInst* LoadI) {
+MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt) {
 
   MemDepResult Result;
-  LoadForwardAttempt Attempt(LoadI, this);
 
   if(forwardLoadIsNonLocal(Attempt, Result)) {
 
@@ -880,8 +924,24 @@ MemDepResult IntegrationAttempt::tryResolveLoad(LoadInst* LoadI) {
   }
   else {
     if(Result != MemDepResult()) {
-      LPDEBUG("Forwarded " << *LoadI << " locally: got " << Result << "\n");
+      LPDEBUG("Forwarded " << *(Attempt.getOriginalInst()) << " locally: got " << Result << "\n");
     }
+    return Result;
+  }
+
+}
+
+// Alternative entry point for users which externally prepare a symbolic expression
+// and specify a start point.
+
+MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt, Instruction* StartBefore, ValCtx& ConstVC) {
+
+  MemDepResult Result;
+
+  if(tryResolveExprFrom(Attempt, StartBefore, Result, ConstVC)) {
+    return tryForwardExprFromParent(Attempt);
+  }
+  else {
     return Result;
   }
 
@@ -970,10 +1030,10 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult&
 
   if(Result == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
-    CFGBlockedLoads.push_back(std::make_pair(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst()));
+    addCFGBlockedLoad(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst());
   }
   else if(Result.isClobber()) {
-    if(Result.getInst()->getParent() == getEntryBlock()) {
+    if(parent && (Result.getInst()->getParent() == getEntryBlock())) {
       BasicBlock::iterator TestII(Result.getInst());
       if(TestII == getEntryBlock()->begin()) {
 	return true;
@@ -1003,6 +1063,19 @@ bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction
 
   LFARealization LFAR(LFA, this, Where);
   
+  return tryResolveExprUsing(LFAR, Result);
+
+}
+
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult) {
+
+  LFARealization LFAR(LFA, this, Where);
+  
+  if(tryResolveLoadFromConstant(LFA.getQueryInst(), ConstResult)) {
+    Result = MemDepResult();
+    return false;
+  }
+
   return tryResolveExprUsing(LFAR, Result);
 
 }
@@ -1186,6 +1259,25 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
 void IntegrationAttempt::addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
 
   InstBlockedLoads[BlockedOn].push_back(std::make_pair(RetryCtx, RetryLI));
+
+}
+
+void IntegrationAttempt::addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
+
+  CFGBlockedLoads.push_back(std::make_pair(RetryCtx, RetryLI));
+
+}
+
+// Consider whether the forwarding of a given load might have failed due to the need to expand a loop.
+// If so, queue it.
+void IntegrationAttempt::queueLoopExpansionBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
+
+  if(getLoopContext() != getValueScope(BlockedOn)) {
+
+    LPDEBUG("Looks like this failure might be due to not having expanded a loop yet. Queueing.\n");
+    addCFGBlockedLoad(RetryCtx, RetryLI);
+
+  }
 
 }
 
@@ -1967,7 +2059,7 @@ std::string PeelAttempt::nestingIndent() const {
 
 // Implement LoadForwardAttempt
 
-LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C) : LI(_LI), originalCtx(C), ExprValid(false) { }
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD) : LI(_LI), originalCtx(C), ExprValid(false), TD(_TD) { }
 
 void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
   
@@ -1984,9 +2076,12 @@ void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
 
 // Make a symbolic expression for a given load instruction if it depends solely on one pointer
 // with many constant offsets.
-bool LoadForwardAttempt::buildSymExpr() {
+bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
 
-  ValCtx Ptr = originalCtx->getDefaultVC(LI->getPointerOperand());
+  if(!RootPtr)
+    RootPtr = LI->getPointerOperand();
+  
+  ValCtx Ptr = originalCtx->getDefaultVC(RootPtr);
 
   LPDEBUG("Trying to describe " << Ptr << " as a simple symbolic expression\n");
 
@@ -1994,16 +2089,32 @@ bool LoadForwardAttempt::buildSymExpr() {
   // build a symbolic expression representing the derived expression if so.
  
   bool success = true;
+  int64_t Offset = 0;
+
+  unsigned PtrSize = TD->getPointerSizeInBits();
 
   while(1) {
 
     if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr.first)) {
       SmallVector<Value*, 4> idxs;
-      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
+      gep_type_iterator GTI = gep_type_begin(GEP);
+      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i, ++GTI) {
 	Value* idx = GEP->getOperand(i);
-	Constant* Cidx = getConstReplacement(idx, Ptr.second);
-	if(Cidx)
+	ConstantInt* Cidx = cast_or_null<ConstantInt>(getConstReplacement(idx, Ptr.second));
+	if(Cidx) {
 	  idxs.push_back(Cidx);
+	  if(!Cidx->isZero()) {
+	    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	      Offset += TD->getStructLayout(STy)->getElementOffset(Cidx->getZExtValue());
+	    } else {
+	      uint64_t Size = TD->getTypeAllocSize(GTI.getIndexedType());
+	      Offset += Cidx->getSExtValue()*Size;
+	    }
+	    // Re-extend the pointer if we really should be using a type other than int64 to measure offset.
+	    if (PtrSize < 64)
+	      Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
+	  }
+	}
 	else {
 	  LPDEBUG("Can't describe pointer with non-const offset " << *idx << "\n");
 	  success = false; 
@@ -2039,26 +2150,30 @@ bool LoadForwardAttempt::buildSymExpr() {
     
   }
 
+  if(success) {
+    ExprOffset = Offset;
+  }
+
   return success;
 
 }
 
-bool LoadForwardAttempt::tryBuildSymExpr() {
+bool LoadForwardAttempt::tryBuildSymExpr(Value* Ptr) {
 
   if(ExprValid)
     return (Expr.size() > 0);
   else {
-    bool ret = buildSymExpr();
+    bool ret = buildSymExpr(Ptr);
     ExprValid = true;
     return ret;
   }
 
 }
 
-bool LoadForwardAttempt::canBuildSymExpr() {
+bool LoadForwardAttempt::canBuildSymExpr(Value* Ptr) {
 
   // Perhaps we could do some quickier checks than just making the thing right away?
-  return tryBuildSymExpr();
+  return tryBuildSymExpr(Ptr);
 
 }
 
@@ -2121,6 +2236,22 @@ std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> LoadForwardAttemp
   return otherItersCache.insert(std::make_pair(L, MemDepResult()));
 }
 
+int64_t LoadForwardAttempt::getSymExprOffset() {
+
+  if(ExprValid)
+    return ExprOffset;
+  else
+    return -1;
+
+}
+
+void LoadForwardAttempt::setSymExprOffset(int64_t newOffset) {
+
+  assert(ExprValid);
+  ExprOffset = newOffset;
+
+}
+
 // Implement LFARealisation
 
 // Realise a symbolic expression at a given location. 
@@ -2172,7 +2303,7 @@ LFARealization::LFARealization(LoadForwardAttempt& _LFA, IntegrationAttempt* IA,
     else {
       assert(0 && "Investigated expression should only contain GEPs and Casts except at the end\n");
     }
-    //LPDEBUG("Created temporary instruction: " << *lastPtr << "\n");
+    //    LPDEBUG("Created temporary instruction: " << *lastPtr << "\n");
     tempInstructions.push_back(cast<Instruction>(lastPtr));
   }
 
@@ -2181,7 +2312,7 @@ LFARealization::LFARealization(LoadForwardAttempt& _LFA, IntegrationAttempt* IA,
   tempInstructions.push_back(QueryInst);
 
   //  LPDEBUG("Temporarily augmented parent block:\n");
-  //  DEBUG(dbgs() << *Where->getParent());
+  //  DEBUG(dbgs() << *InsertPoint->getParent());
 
 }
 

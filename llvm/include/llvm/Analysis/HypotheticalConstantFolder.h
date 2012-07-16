@@ -162,6 +162,8 @@ SeekFile() : openArg(0), newOffset(0) { }
 
 };
 
+class IntegrationAttempt;
+
 // Interface exposed to Memory Dependence Analysis and other external analyses that the integrator uses.
 class HCFParentCallbacks {
 
@@ -188,12 +190,12 @@ class HCFParentCallbacks {
   virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool) = 0;
   virtual bool isResolvedVFSCall(const Instruction*) = 0;
   virtual AliasAnalysis* getAA() = 0;
+  virtual void queueLoopExpansionBlockedLoad(Instruction*, IntegrationAttempt*, LoadInst*) = 0;
 
 };
 
 class InlineAttempt;
 class PeelAttempt;
-class IntegrationAttempt;
 class IntegrationHeuristicsPass;
 
 class Function;
@@ -357,7 +359,12 @@ protected:
 
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
-  MemDepResult tryResolveLoad(LoadInst*);
+  ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore);
+  MemDepResult tryResolveLoad(LoadForwardAttempt&);
+  MemDepResult tryResolveLoad(LoadForwardAttempt&, Instruction* StartBefore, ValCtx& ConstResult);
+  ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
+  bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
+  
   bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result);
   ValCtx getDefn(const MemDepResult& Res);
   MemDepResult getUniqueDependency(LFAQueryable&);
@@ -365,12 +372,15 @@ protected:
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
   bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult);
   bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result);
 
   bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
   void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
+  void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
+  virtual void queueLoopExpansionBlockedLoad(Instruction*, IntegrationAttempt*, LoadInst*);
 
   void queueWorkBlockedOn(Instruction* SI);
   void queueCFGBlockedLoads();
@@ -397,15 +407,21 @@ protected:
 
   // Tricky load forwarding (stolen from GVN)
 
-  int AnalyzeLoadFromClobberingWrite(const Type *LoadTy, Value *LoadPtr,
+  int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
 				     uint64_t WriteSizeInBits);
-  int AnalyzeLoadFromClobberingStore(const Type *LoadTy, Value *LoadPtr, StoreInst *DepSI, HCFParentCallbacks* DepSICtx);
-  int AnalyzeLoadFromClobberingMemInst(const Type *LoadTy, Value *LoadPtr, MemIntrinsic *MI, HCFParentCallbacks* MICtx);
+
+  int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
+				     ValCtx StoreBase, int64_t StoreOffset,
+				     uint64_t WriteSizeInBits);
+				     
+  int AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx);
+  int AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx);
+  Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
   Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
-  ValCtx tryResolveClobber(LoadInst *LI, ValCtx Clobber);
+  ValCtx tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber);
 
   // Stat collection and printing:
 
@@ -576,11 +592,14 @@ class LoadForwardAttempt : public LFAQueryable {
   IntegrationAttempt* originalCtx;
   SmallVector<SymExpr*, 4> Expr;
   bool ExprValid;
+  int64_t ExprOffset;
 
   DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult> lastIterCache;
   DenseMap<const Loop*, MemDepResult> otherItersCache;
 
-  bool buildSymExpr();
+  TargetData* TD;
+
+  bool buildSymExpr(Value* Ptr);
 
  public:
 
@@ -590,8 +609,10 @@ class LoadForwardAttempt : public LFAQueryable {
   virtual LoadForwardAttempt& getLFA();  
 
   void describeSymExpr(raw_ostream& Str);
-  bool tryBuildSymExpr();
-  bool canBuildSymExpr();
+  bool tryBuildSymExpr(Value* Ptr = 0);
+  bool canBuildSymExpr(Value* Ptr = 0);
+  int64_t getSymExprOffset();
+  void setSymExprOffset(int64_t);
 
   SmallVector<SymExpr*, 4>* getSymExpr();
 
@@ -601,7 +622,7 @@ class LoadForwardAttempt : public LFAQueryable {
   std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> getLastIterCache(BasicBlock* FromBB, const Loop* L);
   std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> getOtherItersCache(const Loop* L);
 
-  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C);
+  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*);
   ~LoadForwardAttempt();
 
   void printDebugHeader(raw_ostream& Str) { 

@@ -133,5 +133,5 @@ LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo | AliasAnalysis::getModRefInfo(CS, P, Size, Pa));
+  return (ModRefResult)(MRInfo & AliasAnalysis::getModRefInfo(CS, P, Size, Pa));
 }
