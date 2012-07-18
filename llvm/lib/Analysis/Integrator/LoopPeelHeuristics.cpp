@@ -861,6 +861,11 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 	  LPDEBUG("Successfully coerced value to " << Result << " to match load type\n");
 
 	}
+	else {
+
+	  Result = handlePartialDefn(LFA, 0, TD->getTypeSizeInBits(ResultC->getType()) / 8, ResultC, make_vc(Res.getInst(), ResAttempt));
+
+	}
 
       }
       else {
@@ -980,7 +985,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 	LPDEBUG("Resolved to " << Result << "\n");
       }
       else {
-	LPDEBUG("Resolution failed\n");
+	LPDEBUG("Clobbered by " << Result << "\n");
       }
       return false;
     }
@@ -2059,7 +2064,7 @@ std::string PeelAttempt::nestingIndent() const {
 
 // Implement LoadForwardAttempt
 
-LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD) : LI(_LI), originalCtx(C), ExprValid(false), TD(_TD) { }
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD) : LI(_LI), originalCtx(C), ExprValid(false), partialBuf(0), partialValidBuf(0), TD(_TD) { }
 
 void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
   
@@ -2210,11 +2215,43 @@ LoadInst* LoadForwardAttempt::getQueryInst() {
 
 }
 
+unsigned char* LoadForwardAttempt::getPartialBuf(uint64_t nbytes) {
+
+  if(partialBuf) {
+    assert(partialBufBytes == nbytes);
+  }
+  else {
+
+    uint64_t nqwords = (nbytes + 7) / 8;
+    partialBuf = new uint64_t[nqwords];
+    partialValidBuf = new bool[nbytes];
+    for(int i = 0; i < nbytes; ++i)
+      partialValidBuf[i] = false;
+    partialBufBytes = nbytes;
+
+  }
+
+  return (unsigned char*)partialBuf;
+
+}
+
+bool* LoadForwardAttempt::getBufValid() {
+
+  assert(partialValidBuf);
+  return partialValidBuf;
+
+}
+
 LoadForwardAttempt::~LoadForwardAttempt() {
 
   for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
     delete (*it);
   }
+
+  if(partialBuf)
+    delete[] partialBuf;
+  if(partialValidBuf)
+    delete[] partialValidBuf;
 
 }
 

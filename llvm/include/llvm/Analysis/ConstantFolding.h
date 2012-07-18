@@ -19,6 +19,8 @@
 #ifndef LLVM_ANALYSIS_CONSTANTFOLDING_H
 #define LLVM_ANALYSIS_CONSTANTFOLDING_H
 
+#include <stdint.h>
+
 namespace llvm {
   class Constant;
   class ConstantExpr;
@@ -76,6 +78,12 @@ bool canConstantFoldCallTo(const Function *F);
 /// with the specified arguments, returning null if unsuccessful.
 Constant *
 ConstantFoldCall(Function *F, Constant *const *Operands, unsigned NumOperands);
+
+
+bool ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
+			unsigned char *CurPtr, unsigned BytesLeft,
+			const TargetData &TD);
+
 }
 
 #endif

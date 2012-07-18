@@ -33,7 +33,8 @@ using namespace llvm;
 /// value of the piece that feeds the load.
 int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 						       Value *WritePtr, HCFParentCallbacks* WriteCtx,
-						       uint64_t WriteSizeInBits) {
+						       uint64_t WriteSizeInBits, 
+						       uint64_t* FirstDef, uint64_t* FirstNotDef) {
   const Type* LoadTy = LFA.getOriginalInst()->getType();
 
   // If the loaded or stored value is an first class array or struct, don't try
@@ -44,14 +45,15 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
   int64_t StoreOffset = 0;
   ValCtx StoreBase = GetBaseWithConstantOffset(WritePtr, WriteCtx, StoreOffset);
 
-  return AnalyzeLoadFromClobberingWrite(LFA, StoreBase, StoreOffset, WriteSizeInBits);
+  return AnalyzeLoadFromClobberingWrite(LFA, StoreBase, StoreOffset, WriteSizeInBits, FirstDef, FirstNotDef);
 
 }
 
 int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 						       ValCtx StoreBase,
 						       int64_t StoreOffset,
-						       uint64_t WriteSizeInBits) {
+						       uint64_t WriteSizeInBits,
+						       uint64_t* FirstDef, uint64_t* FirstNotDef) {
 
   const Type* LoadTy = LFA.getOriginalInst()->getType();
 
@@ -81,7 +83,6 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
   uint64_t StoreSize = WriteSizeInBits >> 3;  // Convert to bytes.
   LoadSize >>= 3;
   
-  
   bool isAAFailure = false;
   if (StoreOffset < LoadOffset)
     isAAFailure = StoreOffset+int64_t(StoreSize) <= LoadOffset;
@@ -100,12 +101,34 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
     return -1;
   }
   
+  bool insufficient = false;
   // If the Load isn't completely contained within the stored bits, we don't
-  // have all the bits to feed it.  We could do something crazy in the future
-  // (issue a smaller load then merge the bits in) but this seems unlikely to be
-  // valuable.
-  if (StoreOffset > LoadOffset ||
-      StoreOffset+StoreSize < LoadOffset+LoadSize)
+  // have all the bits to feed it.
+  if(StoreOffset > LoadOffset) {
+    
+    if(FirstDef)
+      *FirstDef = (StoreOffset - LoadOffset);
+    insufficient = true;
+
+  }
+  else {
+    if(FirstDef)
+      *FirstDef = 0;
+  }
+
+  if (StoreOffset+StoreSize < LoadOffset+LoadSize) {
+
+    if(FirstNotDef)
+      *FirstNotDef = LoadSize - ((LoadOffset+LoadSize) - (StoreOffset+StoreSize));
+    insufficient = true;
+
+  }
+  else {
+    if(FirstNotDef)
+      *FirstNotDef = LoadSize;
+  }
+
+  if(insufficient)
     return -1;
   
   // Okay, we can do this transformation.  Return the number of bytes into the
@@ -115,7 +138,7 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 
 /// AnalyzeLoadFromClobberingStore - This function is called when we have a
 /// memdep query of a load that ends up being a clobbering store.
-int IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, HCFParentCallbacks* DepSICtx) {
+int IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, HCFParentCallbacks* DepSICtx, uint64_t* FirstDef, uint64_t* FirstNotDef) {
   // Cannot handle reading from store of first-class aggregate yet.
   if (DepSI->getOperand(0)->getType()->isStructTy() ||
       DepSI->getOperand(0)->getType()->isArrayTy())
@@ -123,17 +146,17 @@ int IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, 
 
   Value *StorePtr = DepSI->getPointerOperand();
   uint64_t StoreSize = TD->getTypeSizeInBits(DepSI->getOperand(0)->getType());
-  return AnalyzeLoadFromClobberingWrite(LFA, StorePtr, DepSICtx, StoreSize);
+  return AnalyzeLoadFromClobberingWrite(LFA, StorePtr, DepSICtx, StoreSize, FirstDef, FirstNotDef);
 }
 
-int IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, HCFParentCallbacks* MICtx) {
+int IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, HCFParentCallbacks* MICtx, uint64_t* FirstDef, uint64_t* FirstNotDef) {
 
   // If the mem operation is a non-constant size, we can't handle it.
   ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(MICtx->getConstReplacement(MI->getLength()));
   if (SizeCst == 0) return -1;
   uint64_t MemSizeInBits = SizeCst->getZExtValue()*8;
 
-  return AnalyzeLoadFromClobberingWrite(LFA, MI->getDest(), MICtx, MemSizeInBits);
+  return AnalyzeLoadFromClobberingWrite(LFA, MI->getDest(), MICtx, MemSizeInBits, FirstDef, FirstNotDef);
   
 }
                                             
@@ -298,6 +321,63 @@ Constant* IntegrationAttempt::offsetConstantInt(Constant* SourceC, int64_t Offse
 
 }
 
+Constant* IntegrationAttempt::intFromBytes(const uint64_t* data, unsigned data_length, unsigned data_bits, LLVMContext& Context) {
+
+  APInt AP(data_bits, data_length, data);
+  return ConstantInt::get(Context, AP);
+
+}
+
+ValCtx IntegrationAttempt::handlePartialDefn(LoadForwardAttempt& LFA, uint64_t FirstDef, uint64_t FirstNotDef, Constant* StoreC, ValCtx Defn) {
+
+  LoadInst* LI = LFA.getOriginalInst();
+  uint64_t LoadSize = TD->getTypeSizeInBits(LI->getType()) / 8;
+
+  LPDEBUG("This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
+
+  // Store defined some of the bytes we need! Grab those, and either reissue the load to keep
+  // chasing after the other bytes, or perhaps complete an existing attempt of this kind.
+  unsigned char* partialBuf = LFA.getPartialBuf(LoadSize);
+  bool* bufValid = LFA.getBufValid(); // Same size as partialBuf
+
+  uint64_t StoreSize = TD->getTypeSizeInBits(StoreC->getType()) / 8;
+  uint64_t StartOffset = StoreSize - (FirstNotDef - FirstDef);
+
+  if(!ReadDataFromGlobal(StoreC, StartOffset, partialBuf + FirstDef, LoadSize - FirstDef, *TD)) {
+    LPDEBUG("ReadDataFromGlobal failed\n");
+    return VCNull;
+  }
+
+  bool loadFinished = true;
+  // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
+  // and there's no hope we've finished.
+  for(uint64_t i = 0; i < LoadSize && (loadFinished || i < FirstNotDef); ++i) {
+
+    if(i >= FirstDef && i < FirstNotDef) {
+      bufValid[i] = true;
+    }
+    else {
+      if(!bufValid[i]) {
+	loadFinished = false;
+      }
+    }
+
+  }
+
+  if(loadFinished) {
+    ValCtx Ret = const_vc(intFromBytes((const uint64_t*)partialBuf, (LoadSize + 7) / 8, LoadSize * 8, LI->getContext()));
+    LPDEBUG("This store completes the load (final value: " << Ret << ")\n");
+    return Ret;
+  }
+  else {
+    // Issue a subquery to try to get the other bytes! Reuse the same LFA, since it owns the partialBuf.
+    // Start from right before the clobber, like with memcpy forwarding.
+    LPDEBUG("This does not complete the load: requerying starting at " << Defn << "\n");
+    return ((IntegrationAttempt*)Defn.second)->tryForwardLoad(LFA, cast<Instruction>(Defn.first));
+  }
+
+}
+
 // Try to improve a load which got clobbered. Cope with cases where:
 // * It's defined by a store that subsumes but is not identical to the load
 // * It's defined by a memcpy in similar fashion
@@ -318,6 +398,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
   // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
   // passing through a memcpy.
   LoadInst* LI = LFA.getOriginalInst();
+  const Type* LoadTy = LI->getType();
+  uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
 
   if((!this->parent) && F.getName() == "main") {
 
@@ -381,25 +463,26 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
   // read by the load, we can extract the bits we need for the load from the
   // stored value.
   if (StoreInst *DepSI = dyn_cast<StoreInst>(Clobber.first)) {
-    int Offset = AnalyzeLoadFromClobberingStore(LFA, DepSI, Clobber.second);
-    if (Offset != -1) {
 
-      // Only deal with integer types handled this way for now.
-      Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
-      if(!StoreC) {
+    uint64_t FirstDef = 0, FirstNotDef = 0;
+
+    // Only deal with integer types handled this way for now.
+    Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
+    if(!StoreC) {
 	
-	LPDEBUG("Can't resolve clobber of " << *LI << " by " << Clobber << " because the store's value is unknown");
-	return VCNull;
+      LPDEBUG("Can't resolve clobber of " << *LI << " by " << Clobber << " because the store's value is unknown");
+      return VCNull;
 
-      }
+    }
+
+    int Offset = AnalyzeLoadFromClobberingStore(LFA, DepSI, Clobber.second, &FirstDef, &FirstNotDef);
+    if (Offset != -1) {
 
       if (!StoreC->getType()->isIntegerTy()) {
 	LPDEBUG("Can't resolve clobber of " << *LI << " by " << Clobber << " because the store has a non-integer type");
 	return VCNull;
       }
 	  
-      const Type* LoadTy = LI->getType();
-
       StoreC = offsetConstantInt(StoreC, Offset, LoadTy);
 
       if(StoreC) {
@@ -407,6 +490,12 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
       }
 
       return make_vc(StoreC, 0);
+
+    }
+    else {
+
+      if(FirstDef != FirstNotDef)
+	return handlePartialDefn(LFA, FirstDef, FirstNotDef, StoreC, Clobber);
 
     }
     
@@ -422,10 +511,6 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
     if (Offset != -1) {
 
       LPDEBUG("Salvaged a clobbering memory intrinsic (load is defined by offset " << Offset << ")\n");
-
-      const Type* LoadTy = LI->getType();
-
-      uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
 
       // For now this means we have a memset or memcpy from constant data. Just read it.
       if (MemSetInst *MSI = dyn_cast<MemSetInst>(Clobber.first)) {
@@ -587,7 +672,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
       else {
 	
 	unsigned int read_buf_size = (loadSize + 7) / 8;
-	uint64_t read_buf[(loadSize + 7) / 8];
+	uint64_t read_buf[read_buf_size];
 	int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
 	if(fd == -1) {
 	  LPDEBUG("Failed to open " << RF->openArg->Name << "\n");
@@ -611,8 +696,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	  return VCNull;
 	}
 
-	APInt AP(TD->getTypeSizeInBits(loadTy), read_buf_size, (const uint64_t*)read_buf);
-	return make_vc(ConstantInt::get(loadTy->getContext(), AP), 0);
+	return const_vc(intFromBytes(read_buf, read_buf_size, TD->getTypeSizeInBits(loadTy), LoadTy->getContext()));
 
       }
 

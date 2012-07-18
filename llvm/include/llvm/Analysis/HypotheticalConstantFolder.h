@@ -407,16 +407,24 @@ protected:
 
   // Tricky load forwarding (stolen from GVN)
 
+  ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, Constant*, ValCtx);
+
   int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
-				     uint64_t WriteSizeInBits);
+				     uint64_t WriteSizeInBits,
+				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
 
   int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     ValCtx StoreBase, int64_t StoreOffset,
-				     uint64_t WriteSizeInBits);
+				     uint64_t WriteSizeInBits,
+				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
 				     
-  int AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx);
-  int AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx);
+  int AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx,
+				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
+  int AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx,
+				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
+
+  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
   Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
@@ -597,6 +605,10 @@ class LoadForwardAttempt : public LFAQueryable {
   DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult> lastIterCache;
   DenseMap<const Loop*, MemDepResult> otherItersCache;
 
+  uint64_t* partialBuf;
+  bool* partialValidBuf;
+  uint64_t partialBufBytes;
+
   TargetData* TD;
 
   bool buildSymExpr(Value* Ptr);
@@ -621,6 +633,9 @@ class LoadForwardAttempt : public LFAQueryable {
 
   std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> getLastIterCache(BasicBlock* FromBB, const Loop* L);
   std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> getOtherItersCache(const Loop* L);
+
+  unsigned char* getPartialBuf(uint64_t nbytes);
+  bool* getBufValid();
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*);
   ~LoadForwardAttempt();
