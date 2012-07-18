@@ -839,6 +839,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* 
 ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResult Res) {
 
   LoadInst* LoadI = LFA.getOriginalInst();
+  const Type* targetType = LFA.getTargetTy();
   IntegrationAttempt* ResAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
   ValCtx Result = VCNull;
 
@@ -850,12 +851,12 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
     Result = getDefn(Res);
 
-    if(Result.first && Result.first->getType() != LoadI->getType()) {
+    if(Result.first && Result.first->getType() != targetType) {
 
       Constant* ResultC;
-      if(LoadI->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
+      if(targetType->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
 
-	Result = const_vc(CoerceConstExprToLoadType(ResultC, LoadI->getType()));
+	Result = const_vc(CoerceConstExprToLoadType(ResultC, targetType));
 	if(Result.first) {
 
 	  LPDEBUG("Successfully coerced value to " << Result << " to match load type\n");
@@ -863,7 +864,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 	}
 	else {
 
-	  Result = handlePartialDefn(LFA, 0, TD->getTypeSizeInBits(ResultC->getType()) / 8, ResultC, make_vc(Res.getInst(), ResAttempt));
+	  Result = handlePartialDefnByConst(LFA, 0, TD->getTypeSizeInBits(ResultC->getType()) / 8, ResultC, make_vc(Res.getInst(), ResAttempt));
 
 	}
 
@@ -2064,7 +2065,20 @@ std::string PeelAttempt::nestingIndent() const {
 
 // Implement LoadForwardAttempt
 
-LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD) : LI(_LI), originalCtx(C), ExprValid(false), partialBuf(0), partialValidBuf(0), TD(_TD) { }
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), partialBuf(0), partialValidBuf(0), TD(_TD) {
+
+  if(!target)
+    targetType = _LI->getType();
+  else
+    targetType = target;
+
+}
+
+const Type* LoadForwardAttempt::getTargetTy() {
+
+  return targetType;
+  
+}
 
 void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
   
@@ -2225,7 +2239,7 @@ unsigned char* LoadForwardAttempt::getPartialBuf(uint64_t nbytes) {
     uint64_t nqwords = (nbytes + 7) / 8;
     partialBuf = new uint64_t[nqwords];
     partialValidBuf = new bool[nbytes];
-    for(int i = 0; i < nbytes; ++i)
+    for(uint64_t i = 0; i < nbytes; ++i)
       partialValidBuf[i] = false;
     partialBufBytes = nbytes;
 

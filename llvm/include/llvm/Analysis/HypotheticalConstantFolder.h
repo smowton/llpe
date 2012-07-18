@@ -407,7 +407,8 @@ protected:
 
   // Tricky load forwarding (stolen from GVN)
 
-  ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, Constant*, ValCtx);
+  ValCtx handlePartialDefnByConst(LoadForwardAttempt&, uint64_t, uint64_t, Constant*, ValCtx);
+  ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, ValCtx);
 
   int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
@@ -609,6 +610,8 @@ class LoadForwardAttempt : public LFAQueryable {
   bool* partialValidBuf;
   uint64_t partialBufBytes;
 
+  const Type* targetType;
+
   TargetData* TD;
 
   bool buildSymExpr(Value* Ptr);
@@ -637,7 +640,11 @@ class LoadForwardAttempt : public LFAQueryable {
   unsigned char* getPartialBuf(uint64_t nbytes);
   bool* getBufValid();
 
-  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*);
+  // This might not equal the type of the original load!
+  // This happens when we're making proxy or sub-queries.
+  const Type* getTargetTy();
+
+  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
   ~LoadForwardAttempt();
 
   void printDebugHeader(raw_ostream& Str) { 
