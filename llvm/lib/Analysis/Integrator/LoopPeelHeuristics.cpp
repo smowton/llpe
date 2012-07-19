@@ -854,7 +854,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     if(Result.first && Result.first->getType() != targetType) {
 
       Constant* ResultC;
-      if(targetType->isIntegerTy() && ResultC->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
+      if(targetType->isIntegerTy() && Result.first->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
 
 	Result = const_vc(CoerceConstExprToLoadType(ResultC, targetType));
 	if(Result.first) {
