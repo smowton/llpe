@@ -4,7 +4,8 @@ include Makefile.config
 TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inline-siblings \
 	  nested_loops nonconstarrayloop partial_nested_loops pass-pointer-in nonconstglobal \
           invariants def-function def-skip-function defloop defskiploop loadundef memops \
-	  small-write-large-load large-write-small-load nonconstmemcpy
+	  small-write-large-load large-write-small-load nonconstmemcpy memcpy-cases \
+	  memcpy-cases-nonconst
 
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
 LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))

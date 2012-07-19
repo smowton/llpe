@@ -703,7 +703,10 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
     SymExpr->insert(SymExpr->begin(), new SymGEP(GEPOffsets));
 
     // Cast back to Load type
-    SymExpr->insert(SymExpr->begin(), new SymCast(PointerType::get(subTargetType, 0)));
+    const Type* castTarget = PointerType::get(subTargetType, 0);
+    if(castTarget != byteArrayType) {
+      SymExpr->insert(SymExpr->begin(), new SymCast(PointerType::get(subTargetType, 0)));
+    }
 
     // Adjust the offset-from-symbolic-expression-base if the memcpy does so:
     SubLFA.setSymExprOffset(SubLFA.getSymExprOffset() + Offset);
