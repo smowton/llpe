@@ -705,7 +705,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
     // Cast back to Load type
     const Type* castTarget = PointerType::get(subTargetType, 0);
     if(castTarget != byteArrayType) {
-      SymExpr->insert(SymExpr->begin(), new SymCast(PointerType::get(subTargetType, 0)));
+      SymExpr->insert(SymExpr->begin(), new SymCast(castTarget));
     }
 
     // Adjust the offset-from-symbolic-expression-base if the memcpy does so:
