@@ -329,6 +329,26 @@ Constant* IntegrationAttempt::intFromBytes(const uint64_t* data, unsigned data_l
 
 }
 
+ValCtx IntegrationAttempt::handleTotalDefn(LoadForwardAttempt& LFA, ValCtx StoreC) {
+
+  return handleTotalDefn(LFA, cast<Constant>(StoreC.first));
+
+}
+
+ValCtx IntegrationAttempt::handleTotalDefn(LoadForwardAttempt& LFA, Constant* StoreC) {
+
+  bool* bufValid = LFA.tryGetBufValid();
+
+  if(!bufValid)
+    return const_vc(StoreC);
+
+  uint64_t LoadSize = TD->getTypeSizeInBits(LFA.getTargetTy()) / 8;
+
+  // Pass VCNull since this will either fail outright or complete the load.
+  return handlePartialDefnByConst(LFA, 0, LoadSize, StoreC, VCNull);
+
+}
+
 ValCtx IntegrationAttempt::handlePartialDefnByConst(LoadForwardAttempt& LFA, uint64_t FirstDef, uint64_t FirstNotDef, Constant* StoreC, ValCtx Defn) {
 
   uint64_t LoadSize = TD->getTypeSizeInBits(LFA.getTargetTy()) / 8;
@@ -338,17 +358,25 @@ ValCtx IntegrationAttempt::handlePartialDefnByConst(LoadForwardAttempt& LFA, uin
   // Store defined some of the bytes we need! Grab those, and either reissue the load to keep
   // chasing after the other bytes, or perhaps complete an existing attempt of this kind.
   unsigned char* partialBuf = LFA.getPartialBuf(LoadSize);
+  bool* bufValid = LFA.getBufValid(); // Same size as partialBuf
 
   uint64_t StoreSize = TD->getTypeSizeInBits(StoreC->getType()) / 8;
   uint64_t StartOffset = 0;
   if(FirstDef == 0)
     StartOffset = StoreSize - (FirstNotDef - FirstDef);
 
-  if(!ReadDataFromGlobal(StoreC, StartOffset, partialBuf + FirstDef, LoadSize - FirstDef, *TD)) {
+  unsigned char* tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
+
+  if(!ReadDataFromGlobal(StoreC, StartOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
     LPDEBUG("ReadDataFromGlobal failed\n");
     return VCNull;
   }
   else {
+    // Avoid rewriting bytes which have already been defined
+    for(uint64_t i = 0; i < (FirstNotDef - FirstDef); ++i) {
+      if(!bufValid[FirstDef + i])
+	partialBuf[FirstDef + i] = tempBuf[i];
+    }
     return handlePartialDefn(LFA, FirstDef, FirstNotDef, Defn);
   }
 
@@ -438,7 +466,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	      int Offset = AnalyzeLoadFromClobberingWrite(LFA, const_vc(GV), 0, TD->getTypeSizeInBits(GVC->getType()));
 	      if(Offset == 0) {
 		GVC = CoerceConstExprToLoadType(GVC, LoadTy);
-		return const_vc(GVC);
+		return handleTotalDefn(LFA, GVC);
 	      }
 	      else if(Offset == -1) {
 		return VCNull;
@@ -453,7 +481,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 		  else
 		    LPDEBUG("Failed to adjust initializer (tried offset " << Offset << ")\n");
 
-		  return const_vc(adjC);
+		  return handleTotalDefn(LFA, adjC);
 
 		}
 
@@ -503,7 +531,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	LPDEBUG("Salvaged a clobbering store (load is defined by offset " << Offset << ", resolved to " << *StoreC << ")\n");
       }
 
-      return make_vc(StoreC, 0);
+      return handleTotalDefn(LFA, StoreC);
 
     }
     else {
@@ -524,15 +552,19 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
     uint64_t FirstDef = 0, FirstNotDef = 0;
     int Offset = AnalyzeLoadFromClobberingMemInst(LFA, DepMI, Clobber.second, &FirstDef, &FirstNotDef);
     unsigned char* targetBuf;
-    if (Offset != -1) {
-      FirstDef = 0; 
-      FirstNotDef = LoadSize;
-      targetBuf = (unsigned char*)alloca(((LoadSize + 7) / 8) * 8);
-    }
-    else if(FirstDef != FirstNotDef) {
+    bool* targetBufValid = LFA.tryGetBufValid();
+    if(targetBufValid) {
       targetBuf = LFA.getPartialBuf(LoadSize);
     }
     else {
+      targetBuf = (unsigned char*)alloca(((LoadSize + 7) / 8) * 8);
+    }
+
+    if (Offset != -1) {
+      FirstDef = 0; 
+      FirstNotDef = LoadSize;
+    }
+    else if(FirstDef == FirstNotDef) {
       return VCNull;
     }
 
@@ -553,10 +585,12 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 
       uint8_t ValI = (uint8_t)Val->getLimitedValue();
 
-      for(uint64_t i = FirstDef; i < FirstNotDef; ++i)
-	targetBuf[i] = ValI;
+      for(uint64_t i = FirstDef; i < FirstNotDef; ++i) {
+	if((!targetBufValid) || (!targetBufValid[i]))
+	  targetBuf[i] = ValI;
+      }
 
-      if(Offset == 0) {
+      if(Offset >= 0) {
 	// Completely defined
 	Constant* C = intFromBytes((uint64_t*)targetBuf, (LoadSize + 7) / 8, LoadSize * 8, Val->getContext());
 	return const_vc(CoerceConstExprToLoadType(C, LoadTy));
@@ -576,7 +610,6 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 
     bool isPartial;
     const Type* byteArrayType = Type::getInt8PtrTy(LI->getContext());
-    ConstantInt* OffsetCI = ConstantInt::get(Type::getInt32Ty(LI->getContext()), (unsigned)Offset);
     const Type* subTargetType;
 
     if(Offset == -1) {
@@ -593,6 +626,8 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
       isPartial = false;
       subTargetType = LoadTy;
     }
+
+    ConstantInt* OffsetCI = ConstantInt::get(Type::getInt32Ty(LI->getContext()), (unsigned)Offset);
 
     // First of all check for an easy case: the memcpy is from a constant.
     // Then we can just treat the memcpy as a GEP, augment the constant expression
@@ -615,7 +650,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 
       if(MTISourceC->getType() != subTargetType) {
 
-	MTISourceC = ConstantExpr::getBitCast(MTISourceC, subTargetType);
+	MTISourceC = ConstantExpr::getBitCast(MTISourceC, PointerType::get(subTargetType, 0));
 
       }
 
@@ -634,7 +669,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	return handlePartialDefnByConst(LFA, FirstDef, FirstNotDef, Result, Clobber);
       }
       else {
-	return const_vc(Result);
+	return handleTotalDefn(LFA, Result);
       }
 
     }
@@ -693,7 +728,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
       }
     }
     else {
-      return MTIResult;
+      return handleTotalDefn(LFA, MTIResult);
     }
 
   }
@@ -755,7 +790,7 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
     }
 
     if(!isPartial)
-      return const_vc(intFromBytes((uint64_t*)read_buf, read_buf_size, TD->getTypeSizeInBits(LoadTy), LoadTy->getContext()));
+      return handleTotalDefn(LFA, intFromBytes((uint64_t*)read_buf, read_buf_size, TD->getTypeSizeInBits(LoadTy), LoadTy->getContext()));
     else
       return handlePartialDefn(LFA, FirstDef, FirstNotDef, Clobber);
 

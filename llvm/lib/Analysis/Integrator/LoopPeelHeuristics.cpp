@@ -854,16 +854,18 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     if(Result.first && Result.first->getType() != targetType) {
 
       Constant* ResultC;
-      if(targetType->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
+      if(targetType->isIntegerTy() && ResultC->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
 
 	Result = const_vc(CoerceConstExprToLoadType(ResultC, targetType));
 	if(Result.first) {
 
 	  LPDEBUG("Successfully coerced value to " << Result << " to match load type\n");
+	  Result = handleTotalDefn(LFA, Result);
 
 	}
 	else {
 
+	  // Given we know the source and target types are integers and coercion failed we must have a partial def.
 	  Result = handlePartialDefnByConst(LFA, 0, TD->getTypeSizeInBits(ResultC->getType()) / 8, ResultC, make_vc(Res.getInst(), ResAttempt));
 
 	}
@@ -876,6 +878,9 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
       }
 
+    }
+    else {
+      Result = handleTotalDefn(LFA, Result);
     }
 
   }
@@ -2253,6 +2258,15 @@ bool* LoadForwardAttempt::getBufValid() {
 
   assert(partialValidBuf);
   return partialValidBuf;
+
+}
+
+bool* LoadForwardAttempt::tryGetBufValid() {
+
+  if(partialBuf)
+    return partialValidBuf;
+  else
+    return 0;
 
 }
 

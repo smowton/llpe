@@ -409,6 +409,8 @@ protected:
 
   ValCtx handlePartialDefnByConst(LoadForwardAttempt&, uint64_t, uint64_t, Constant*, ValCtx);
   ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, ValCtx);
+  ValCtx handleTotalDefn(LoadForwardAttempt&, ValCtx);
+  ValCtx handleTotalDefn(LoadForwardAttempt&, Constant*);
 
   int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
@@ -639,6 +641,7 @@ class LoadForwardAttempt : public LFAQueryable {
 
   unsigned char* getPartialBuf(uint64_t nbytes);
   bool* getBufValid();
+  bool* tryGetBufValid();
 
   // This might not equal the type of the original load!
   // This happens when we're making proxy or sub-queries.

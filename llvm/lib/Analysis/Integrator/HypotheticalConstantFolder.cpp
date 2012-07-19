@@ -623,13 +623,13 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
     if(verbose)
-      DEBUG(dbgs() << "already improved");
+      DEBUG(dbgs() << (*ArgV) << " already improved\n");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {
     if(blockIsDead(I->getParent())) {
       if(verbose)
-	DEBUG(dbgs() << "already eliminated (in dead block)");
+	DEBUG(dbgs() << (*ArgV) << " already eliminated (in dead block)\n");
       return false;
     }
     return true;
@@ -647,13 +647,8 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
 ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
   
-  LPDEBUG("Try-improve " << *ArgV << ": ");
   if(!shouldTryEvaluate(ArgV)) {
-    DEBUG(dbgs() << "\n");
     return VCNull;
-  }
-  else {
-    DEBUG(dbgs() << "\n");
   }
 
   Instruction* I;
