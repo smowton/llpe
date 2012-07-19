@@ -754,7 +754,11 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
   ValCtx Ultimate = getDefaultVC(V);
   while(!isIdentifiedObject(Ultimate.first)) {
 
-    ValCtx New = Ultimate.second->getReplacement(Ultimate.first);
+    ValCtx New;
+    if(Ultimate.second)
+      New = Ultimate.second->getReplacement(Ultimate.first);
+    else
+      New = Ultimate;
     New = make_vc(New.first->getUnderlyingObject(), New.second);
   
     if(New == Ultimate)
@@ -880,7 +884,8 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
     }
     else {
-      Result = handleTotalDefn(LFA, Result);
+      if(Result != VCNull && shouldForwardValue(Result))
+	Result = handleTotalDefn(LFA, Result);
     }
 
   }
