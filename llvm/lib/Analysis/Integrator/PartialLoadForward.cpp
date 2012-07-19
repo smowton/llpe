@@ -459,12 +459,38 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	    if(GV->hasDefinitiveInitializer()) {
 
 	      LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << *(GV->getInitializer()) << "\n");
-	      
+
 	      Constant* GVC = GV->getInitializer();
+
 	      // Use const_vc to describe the global variable because all GVs are constants
 	      // (i.e. they're constant *pointers*)
 	      int Offset = AnalyzeLoadFromClobberingWrite(LFA, const_vc(GV), 0, TD->getTypeSizeInBits(GVC->getType()));
+	      if(Offset >= 0) {
+		// Load fully defined by the stored value
+
+		// First try to use existing code to catch a simple case:
+		SmallVector<SymExpr*, 4>& Expr = *(LFA.getSymExpr());
+		SymGEP* GEP;
+		if(Expr.size() == 2 && (GEP = dyn_cast<SymGEP>(Expr[0]))) {
+
+		  // Foundation of this CE doesn't actually matter
+		  ConstantExpr* CE = cast<ConstantExpr>(ConstantExpr::getGetElementPtr(GV, &*(GEP->Offsets.begin()), GEP->Offsets.size()));
+		  LPDEBUG("Trying to fold a load from " << *CE << " using CFLTGEPCE\n");
+		  Constant* Result = ConstantFoldLoadThroughGEPConstantExpr(GVC, CE);
+		  if(Result) {
+		    LPDEBUG("GFLTGEPCE Success: got " << *Result << "\n");
+		    return handleTotalDefn(LFA, Result);
+		  }
+		  else {
+		    LPDEBUG("GFLTGEPCE Failed\n");
+		  }
+
+		}
+
+	      }
+
 	      if(Offset == 0) {
+		
 		GVC = CoerceConstExprToLoadType(GVC, LoadTy);
 		return handleTotalDefn(LFA, GVC);
 	      }
@@ -490,8 +516,11 @@ ValCtx IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clo
 	    }
 
 	  }
+	  else {
 
 	  LPDEBUG("Load is clobbered by the first instruction in main(), but the pointer was not a global variable\n");
+
+	  }
 	  
 	}
 
