@@ -65,6 +65,46 @@ inline ValCtx const_vc(Constant* C) {
 
 }
 
+// Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a ValCtx
+// or partially with a Constant plus a byte extent and offset from which that Constant should be read.
+
+enum PartialValType {
+
+  PVInvalid,
+  PVTotal,
+  PVPartial
+
+};
+
+struct PartialVal {
+
+  PartialValType type;
+  ValCtx TotalVC;
+  uint64_t FirstDef;
+  uint64_t FirstNotDef;
+  Constant* C;
+  uint64_t ReadOffset;
+
+ PartialVal(ValCtx Total) : 
+  type(PVTotal), TotalVC(Total), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0) { }
+ PartialVal(uint64_t FD, uint64_t FND, Constant* _C, uint64_t Off) : 
+  type(PVPartial), TotalVC(VCNull), FirstDef(FD), FirstNotDef(FND), C(_C), ReadOffset(Off) { }
+ PartialVal() :
+  type(PVInvalid), TotalVC(VCNull), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0) { }
+
+  bool isPartial() { return type == PVPartial; }
+  bool isTotal() { return type == PVTotal; }
+  
+  static PartialVal getPartial(uint64_t FD, uint64_t FND, Constant* _C, uint64_t Off) {
+    return PartialVal(FD, FND, _C, Off);
+  }
+
+  static PartialVal getTotal(ValCtx VC) {
+    return PartialVal(VC);
+  }
+
+};
+
 enum SymSubclasses {
 
   SThunk,
@@ -427,7 +467,6 @@ protected:
   int AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx,
 				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
 
-  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
   Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
@@ -608,9 +647,11 @@ class LoadForwardAttempt : public LFAQueryable {
   DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult> lastIterCache;
   DenseMap<const Loop*, MemDepResult> otherItersCache;
 
+  ValCtx Result;
   uint64_t* partialBuf;
   bool* partialValidBuf;
   uint64_t partialBufBytes;
+  bool mayBuildFromBytes;
 
   const Type* targetType;
 
@@ -646,6 +687,15 @@ class LoadForwardAttempt : public LFAQueryable {
   // This might not equal the type of the original load!
   // This happens when we're making proxy or sub-queries.
   const Type* getTargetTy();
+
+  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
+  bool addPartialVal(PartialVal&);
+  bool isComplete();
+  ValCtx getResult();
+
+  Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target);
+  Constant* constFromBytes(char*, const Type*);
+  uint64_t markPaddingBytes(bool*, const Type*);
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
   ~LoadForwardAttempt();
@@ -808,6 +858,8 @@ class IntegrationHeuristicsPass : public ModulePass {
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, HCFParentCallbacks*);
+ Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
+ bool containsPointerTypes(const Type*);
 
 } // Namespace LLVM
 

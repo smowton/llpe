@@ -846,50 +846,48 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
   const Type* targetType = LFA.getTargetTy();
   IntegrationAttempt* ResAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
   ValCtx Result = VCNull;
+  PartialVal PV = PVNull;
 
   if(Res.isClobber()) {
-    // See if we can do better for clobbers by large stores, memcpy, read calls, etc.
-    Result = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt));
+    // See if we can do better for clobbers by misaligned stores, memcpy, read calls, etc.
+    PV = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt));
   }
   else if(Res.isDef()) {
+    ValCtx DefResult = getDefn(Res);
+    PV = PartialVal::getTotal(DefResult);
+  }
 
-    Result = getDefn(Res);
+  // Might fail if it turns out the constant is unreadable,
+  // for example because it contains global variable of function pointers.
+  if(!LFA.addPartialVal(PV)) {
 
-    if(Result.first && Result.first->getType() != targetType) {
+    return VCNull;
 
-      Constant* ResultC;
-      if(targetType->isIntegerTy() && Result.first->getType()->isIntegerTy() && (ResultC = dyn_cast<Constant>(Result.first))) {
+  }
 
-	Result = const_vc(CoerceConstExprToLoadType(ResultC, targetType));
-	if(Result.first) {
+  if(LFA.isComplete()) {
+      
+    // Extract the bytes and try to bitcast to the appropriate type
+    Result = LFA.getResult();
 
-	  LPDEBUG("Successfully coerced value to " << Result << " to match load type\n");
-	  Result = handleTotalDefn(LFA, Result);
+  }
+  else {
 
-	}
-	else {
+    BasicBlock* ResBB = Res.getInst()->getParent();
+    if(ResBB == ResBB->getParent()->getEntryBlock() && Res.getInst() == ResBB->begin() && !ResAttempt->hasParent()) {
 
-	  // Given we know the source and target types are integers and coercion failed we must have a partial def.
-	  Result = handlePartialDefnByConst(LFA, 0, TD->getTypeSizeInBits(ResultC->getType()) / 8, ResultC, make_vc(Res.getInst(), ResAttempt));
-
-	}
-
-      }
-      else {
-
-	LPDEBUG("Unable to use the definition because its type doesn't match the load and the def isn't an integer constant\n");
-	Result = VCNull;
-
-      }
+      LPDEBUG("This does not complete the load, and there are no further predecessors\n");
+      return VCNull;
 
     }
     else {
-      if(Result != VCNull && shouldForwardValue(Result))
-	Result = handleTotalDefn(LFA, Result);
+
+      LPDEBUG("This does not complete the load: requerying starting at " << Defn << "\n");
+      return ResAttempt->tryForwardLoad(LFA, Res.getInst());
+
     }
 
   }
-
   if(Result == VCNull || !shouldForwardValue(Result)) {
 
     if(Result == VCNull) {
@@ -2075,12 +2073,30 @@ std::string PeelAttempt::nestingIndent() const {
 
 // Implement LoadForwardAttempt
 
-LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), partialBuf(0), partialValidBuf(0), TD(_TD) {
+ LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD) {
 
   if(!target)
     targetType = _LI->getType();
   else
     targetType = target;
+
+  mayBuildFromBytes = !containsPointerTypes(targetType);
+
+}
+
+bool containsPointerTypes(const Type* Ty) {
+
+  if(Ty->isPointerTy())
+    return true;
+
+  for(Type::subtype_iterator it = Ty->subtype_begin(), it2 = Ty->subtype_end(); it != it2; ++it) {
+
+    if(containsPointerTypes(it))
+      return true;
+
+  }
+
+  return false;
 
 }
 
@@ -2239,6 +2255,53 @@ LoadInst* LoadForwardAttempt::getQueryInst() {
 
 }
 
+uint64_t LoadForwardAttempt::markPaddingBytes(bool* validBuf, const Type* Ty) {
+
+  uint64_t marked = 0;
+
+  if(StructType* STy = dyn_cast<StructType>(Ty)) {
+    
+    StructLayout* SL = TD->getStructLayout(STy);
+    if(!SL) {
+      LPDEBUG("Couldn't get struct layout for type " << *SL << "\n");
+      return 0;
+    }
+
+    uint64_t EIdx = 0;
+    for(StructType::element_iterator EI = STy->element_begin(), EE = STy->element_end(); EI != EE; ++EI, ++EIdx) {
+
+      marked += markPaddingBytes(&(validBuf[SL->getElementOffset(EIdx)]), EI);
+      uint64_t ThisEStart = SL->getElementOffset(EIdx);
+      uint64_t ESize = (TD->getTypeSizeInBits(EI) + 7) / 8;
+      uint64_t NextEStart = (EIdx + 1 == STy->getNumElements()) ? SL->getSizeInBytes() : SL->getElementOffset(EIdx + 1);
+      for(uint64_t i = ThisEStart + ESize; i < NextEStart; ++i, ++marked) {
+	
+	validBuf[i] = true;
+
+      }
+
+    }
+
+  }
+  else if(ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
+
+    uint64_t ECount = ATy->getNumElements();
+    const Type* EType = ATy->getElementType();
+    uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
+
+    uint64_t Offset = 0;
+    for(uint64_t i = 0; i < ECount; ++i, Offset += ESize) {
+
+      marked += markPaddingBytes(&(validBuf[Offset]), EType);
+
+    }
+
+  }
+
+  return marked;
+
+}
+
 unsigned char* LoadForwardAttempt::getPartialBuf(uint64_t nbytes) {
 
   if(partialBuf) {
@@ -2251,6 +2314,10 @@ unsigned char* LoadForwardAttempt::getPartialBuf(uint64_t nbytes) {
     partialValidBuf = new bool[nbytes];
     for(uint64_t i = 0; i < nbytes; ++i)
       partialValidBuf[i] = false;
+    uint64_t marked = markPaddingBytes(partialValidBuf, targetType);
+    if(marked != 0) {
+      LPDEBUG("Marked " << marked << " bytes of struct padding\n");
+    }
     partialBufBytes = nbytes;
 
   }
@@ -2319,6 +2386,293 @@ void LoadForwardAttempt::setSymExprOffset(int64_t newOffset) {
 
   assert(ExprValid);
   ExprOffset = newOffset;
+
+}
+
+bool LoadForwardAttempt::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
+
+  if(From == To)
+    return true;
+
+  if(From->isPointerTy() && To->isPointerTy())
+    return true;
+
+  return false;
+
+}
+
+Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize) {
+
+  uint64_t StartE, StartOff, EndE, EndOff;
+  bool mightWork = false;
+
+  if(ConstantArray* CA = dyn_cast<ConstantArray>(FromC)) {
+
+    mightWork = true;
+    
+    const Type* EType = CA->getType()->getElementType();
+    uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
+    
+    StartE = Offset / ESize;
+    StartOff = Offset % ESize;
+    EndE = (Offset + TargetSize) / ESize;
+    EndOff = (Offset + TargetSize) % ESize;
+
+  }
+  else if(ConstantStruct* CS = dyn_cast<ConstantStruct>(FromC)) {
+
+    mightWork = true;
+
+    StructLayout* SL = TD->getStructLayout(STy);
+    if(!SL) {
+      LPDEBUG("Couldn't get struct layout for type " << *SL << "\n");
+      return 0;
+    }
+
+    StartE = SL->getElementContainingOffset(Offset);
+    StartOff = Offset - SL->getElementOffset(StartE);
+    EndE = SL->getElementContainingOffset(Offset + TargetSize);
+    EndOff = Offset - SL->getElementOffset(StartE);
+
+  }
+
+  if(mightWork) {
+    if(StartE == EndE) {
+      // This is a sub-access within this element.
+      return extractAggregateMemberAt(FromC->getOperand(StartE), StartOff, Target, TargetSize);
+    }
+    else if(StartE + 1 == EndE && !EndOff) {
+      if(!StartOff) {
+	// This is accessing the entire element
+	Constant* R = CA->getOperand(StartE);
+	const Type* RType = R->getType();
+	if(allowTotalDefnImplicitCast(Target, RType)) {
+	  return R;
+	}
+	else {
+	  LPDEBUG("Can't use simple element extraction because implies cast from " << (*RType) << " to " << (*Taret) << "\n");
+	}
+      }
+      else {
+	return extractAggregateMemberAt(FromC->getOperand(StartE), StartOff, Target, TargetSize);
+      }
+    }
+    LPDEBUG("Can't use simple element extraction because load spans multiple elements\n");
+  }
+  else {
+    LPDEBUG("Can't use simple element extraction because load requires sub-field access\n");
+  }
+
+  return 0;
+
+}
+
+bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
+
+  if(PV.isTotal() && allowTotalDefnImplicitCast(targetType, PV.TotalVC.first.getType()) && !partialBuf) {
+    LPDEBUG("Accepting " << PV.TotalVC << " as a total definition\n");
+    Result = PV.TotalVC;
+    return true;
+  }
+
+  // Try to salvage a total definition from a partial if this is a load clobbered by a store
+  // of a larger aggregate type. This is to permit pointers and other non-constant forwardable values
+  // to be moved about. In future ValCtx needs to get richer to become a recursive type like
+  // ConstantStruct et al.
+
+  // Note that because you can't write an LLVM struct literal featuring a non-constant,
+  // the only kinds of pointers this permits to be moved around are globals, since they are constant pointers.
+
+  Constant* SalvageC = PV.isTotal() ? dyn_cast<Constant>(PV.TotalVC.first) : PV.C;
+  uint64_t LoadSize = (TD->getTypeSizeInBits(targetType) + 7) / 8;
+
+  if(SalvageC && (PV.isTotal() || (PV.FirstDef == 0 && PV.FirstNotDef == LoadSize)) && !partialBuf) {
+    uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
+    if(Constant* Extracted = extractAggregateMemberAt(SalvageC, Offset, targetType, LoadSize)) {
+      LPDEBUG("Successfully extracted a whole aggregate element: " << *Extracted << "\n");
+      Result = const_vc(Extracted);
+      return true;
+    }
+  }
+
+  if(!mayBuildFromBytes) {
+    LPDEBUG("Won't accept partial definition because target type " << *targetType << " contains pointers\n");
+    return false;
+  }
+
+  // Otherwise we need to build our result byte-wise.
+  if(PV.isTotal()) {
+    Constant* TotalC = dyn_cast<Constant>(PV.TotalVC.first);
+    if(!TotalC) {
+      LPDEBUG("Unable to use total definition " << PV.TotalVC << " because it is not constant but we need to perform byte operations on it\n");
+      return false;
+    }
+    PV.C = TotalC;
+  }
+
+  uint64_t StoreSize = (TD->getTypeSizeInBits(PV.C->getType()) + 7) / 8;
+
+  if(PV.isTotal()) {
+    PV.FirstDef = 0;
+    PV.FirstNotDef = std::min(LoadSize, StoreSize);
+    PV.ReadOffset = 0;
+  }
+
+  // Fall through to the partial definition case.
+
+  LPDEBUG("This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
+
+  // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
+  unsigned char* partialBuf = getPartialBuf(LoadSize);
+  bool* bufValid = getBufValid(); // Same size as partialBuf
+
+  unsigned char* tempBuf = (unsigned char*)alloca(PV.FirstNotDef - PV.FirstDef);
+
+  if(!ReadDataFromGlobal(PV.C, PV.ReadOffset, tempBuf, PV.FirstNotDef - PV.FirstDef, *TD)) {
+    LPDEBUG("ReadDataFromGlobal failed; perhaps the source " << *(PV.C) << " can't be bitcast?\n");
+    return false;
+  }
+  else {
+    // Avoid rewriting bytes which have already been defined
+    for(uint64_t i = 0; i < (PV.FirstNotDef - PV.FirstDef); ++i) {
+      if(!bufValid[PV.FirstDef + i])
+	partialBuf[PV.FirstDef + i] = tempBuf[i];
+    }
+  }
+
+  bool loadFinished = true;
+  // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
+  // and there's no hope we've finished.
+  for(uint64_t i = 0; i < LoadSize && (loadFinished || i < PV.FirstNotDef); ++i) {
+
+    if(i >= PV.FirstDef && i < PV.FirstNotDef) {
+      bufValid[i] = true;
+    }
+    else {
+      if(!bufValid[i]) {
+	loadFinished = false;
+      }
+    }
+
+  }
+
+  if(loadFinished) {
+
+    Result = const_vc(constFromBytes(partialBuf, targetType));
+    if(Result == VCNull) {
+      LPDEBUG("Failed to convert result to target type " << *targetType << "\n");
+      return false;
+    }
+    else {
+      LPDEBUG("This store completes the load (final value: " << Ret << ")\n");
+      return true;
+    }
+
+  }
+
+}
+
+bool LoadForwardAttempt::isComplete() {
+
+  return Result != VCNull;
+
+}
+
+ValCtx LoadForwardAttempt::getResult() {
+
+  return Result;
+
+}
+
+Constant* LoadForwardAttempt::constFromBytes(char* Bytes, const Type* Ty) {
+
+  if(Ty->isVectorTy() || Ty->isFloatingPointTy() || Ty->isIntegerTy()) {
+
+    uint64_t TyBits = TD->getTypeSizeInBits(Ty);
+    uint64_t TySize = TyBits / 8;
+    Constant* IntResult = intFromBytes((const uint64_t*)Bytes, (TySize + 7) / 8, TyBits, LI->getContext());
+      
+    if(Ty->isIntegerTy()) {
+      assert(Ty == IntResult->getType());
+      return IntResult;
+    }
+    else {
+      assert(TD->getTypeSizeInBits(IntResult->getType()) == TD->getTypeSizeInBits(Ty));
+      // We know the target type does not contain pointers
+
+      ConstantExpr* CE = cast<ConstantExpr>(ConstantExpr::getBitCast(IntResult, Ty));
+      Constant* Result = ConstantFoldConstantExpression(CE, TD);
+      if(!Result) {
+	LPDEBUG("Failed to fold casting constant expression " << *CE << "\n");
+	return 0;
+      }
+      else {
+	return Result;
+      }
+    }
+	
+  }
+  else if(ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
+
+    uint64_t ECount = ATy->getNumElements();
+    if(ECount == 0) {
+      LPDEBUG("Can't produce a constant array of 0 length\n");
+      return 0;
+    }
+
+    // I *think* arrays are always dense, i.e. it's for the child type to specify padding.
+    const Type* EType = ATy->getElementType();
+    uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
+    std::vector<Constant*> Elems;
+    Elems.reserve(ECount);
+
+    uint64_t Offset = 0;
+    for(uint64_t i = 0; i < ECount; ++i, Offset += ESize) {
+
+      Constant* NextE = constFromBytes(&(Bytes[Offset]), EType);
+      if(!NextE)
+	return 0;
+      Elems.push_back(NextE);
+
+    }
+
+    return ConstantArray::get(ATy, Elems);
+    
+  }
+  else if(StructType* STy = dyn_cast<StructType>(Ty)) {
+
+    StructLayout* SL = TD->getStructLayout(STy);
+    if(!SL) {
+      LPDEBUG("Couldn't get struct layout for type " << *SL << "\n");
+      return 0;
+    }
+    
+    uint64_t ECount = STy->getNumElements();
+    std::vector<Constant*> Elems;
+    Elems.reserve(ECount);
+
+    uint64_t EIdx = 0;
+    for(StructType::element_iterator EI = STy->element_begin(), EE = STy->element_end(); EI != EE; ++EI, ++EIdx) {
+
+      const Type* EType = EI;
+      uint64_t EOffset = getElementOffset(EIdx);
+      uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
+      Constant* NextE = constFromBytes(&(Bytes[EOffset]), EType);
+      if(!NextE)
+	return 0;
+      Elems.push_back(NextE);
+
+    }
+
+    return ConstantStruct::get(STy, Elems);
+
+  }
+  else {
+
+    LPDEBUG("Can't build a constant containing unhandled type " << (*Ty) << "\n");
+    return 0;
+
+  }
 
 }
 
