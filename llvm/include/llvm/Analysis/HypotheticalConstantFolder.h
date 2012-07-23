@@ -105,6 +105,26 @@ struct PartialVal {
 
 };
 
+#define PVNull PartialVal()
+
+inline bool operator==(PartialVal V1, PartialVal V2) {
+  if(V1.type == PVInvalid && V2.type == PVInvalid)
+    return true;
+  else if(V1.type == PVTotal && V2.type == PVTotal)
+    return V1.TotalVC == V2.TotalVC;
+  else if(V1.type == PVPartial && V2.type == PVPartial)
+    return ((V1.FirstDef == V2.FirstDef) &&
+	    (V1.FirstNotDef == V2.FirstNotDef) &&
+	    (V1.C == V2.C) &&
+	    (V1.ReadOffset == V2.ReadOffset));
+
+  return false;
+}
+
+inline bool operator!=(PartialVal V1, PartialVal V2) {
+   return !(V1 == V2);
+}
+
 enum SymSubclasses {
 
   SThunk,
@@ -231,6 +251,7 @@ class HCFParentCallbacks {
   virtual bool isResolvedVFSCall(const Instruction*) = 0;
   virtual AliasAnalysis* getAA() = 0;
   virtual void queueLoopExpansionBlockedLoad(Instruction*, IntegrationAttempt*, LoadInst*) = 0;
+  virtual bool hasParent() = 0;
 
 };
 
@@ -345,6 +366,8 @@ protected:
   bool shouldForwardValue(ValCtx);
 
   virtual ValCtx getUltimateUnderlyingObject(Value*);
+
+  virtual bool hasParent();
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
@@ -452,26 +475,35 @@ protected:
   ValCtx handleTotalDefn(LoadForwardAttempt&, ValCtx);
   ValCtx handleTotalDefn(LoadForwardAttempt&, Constant*);
 
-  int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
+  bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
 				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
 				     uint64_t WriteSizeInBits,
-				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
+				     uint64_t& FirstDef, 
+				     uint64_t& FirstNotDef, 
+				     uint64_t& ReadOffset);
 
-  int AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
-				     ValCtx StoreBase, int64_t StoreOffset,
+  bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
+				     ValCtx StoreBase, uint64_t StoreOffset,
 				     uint64_t WriteSizeInBits,
-				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
+				     uint64_t& FirstDef, 
+				     uint64_t& FirstNotDef, 
+				     uint64_t& ReadOffset);
 				     
-  int AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx,
-				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
-  int AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx,
-				     uint64_t* FirstDef = 0, uint64_t* FirstNotDef = 0);
+  bool AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx,
+				     uint64_t& FirstDef, 
+				     uint64_t& FirstNotDef, 
+				     uint64_t& ReadOffset);
+
+  bool AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx,
+				       uint64_t& FirstDef, 
+				       uint64_t& FirstNotDef, 
+				       uint64_t& ReadOffset);
 
   Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
   Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
-  ValCtx tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber);
+  PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber);
 
   // Stat collection and printing:
 
@@ -693,8 +725,8 @@ class LoadForwardAttempt : public LFAQueryable {
   bool isComplete();
   ValCtx getResult();
 
-  Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target);
-  Constant* constFromBytes(char*, const Type*);
+  Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize);
+  Constant* constFromBytes(unsigned char*, const Type*);
   uint64_t markPaddingBytes(bool*, const Type*);
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);

@@ -33,15 +33,16 @@ using namespace llvm;
 /// up.  This returns -1 if we have to give up, or a byte number in the stored
 /// value of the piece that feeds the load.
 bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
-						       Value *WritePtr, HCFParentCallbacks* WriteCtx,
-						       uint64_t WriteSizeInBits, 
-						       uint64_t* FirstDef, uint64_t* FirstNotDef) {
-  const Type* LoadTy = LFA.getOriginalInst()->getType();
-
+							Value *WritePtr, HCFParentCallbacks* WriteCtx,
+							uint64_t WriteSizeInBits,
+							/* Out params: */
+							uint64_t& FirstDef, 
+							uint64_t& FirstNotDef, 
+							uint64_t& ReadOffset) {
   int64_t StoreOffset = 0;
   ValCtx StoreBase = GetBaseWithConstantOffset(WritePtr, WriteCtx, StoreOffset);
 
-  return AnalyzeLoadFromClobberingWrite(LFA, StoreBase, StoreOffset, WriteSizeInBits, FirstDef, FirstNotDef);
+  return AnalyzeLoadFromClobberingWrite(LFA, StoreBase, StoreOffset, WriteSizeInBits, FirstDef, FirstNotDef, ReadOffset);
 
 }
 
@@ -69,7 +70,7 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
     return false;
   }
 
-  LoadOffset = LFA.getSymExprOffset(); // Succeeds if canBuildSymExpr does
+  uint64_t LoadOffset = LFA.getSymExprOffset(); // Succeeds if canBuildSymExpr does
   
   // If the load and store don't overlap at all, the store doesn't provide
   // anything to the load.  In this case, they really don't alias at all, AA
@@ -207,7 +208,7 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, HCFParentCallba
 
 }
 
-Constant* intFromBytes(const uint64_t* data, unsigned data_length, unsigned data_bits, LLVMContext& Context) {
+Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigned data_bits, LLVMContext& Context) {
 
   APInt AP(data_bits, data_length, data);
   return ConstantInt::get(Context, AP);
@@ -296,7 +297,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     if(!AnalyzeLoadFromClobberingStore(LFA, DepSI, Clobber.second, FirstDef, FirstNotDef, ReadOffset))
       return PartialVal();
 
-    return PartailVal::getPartial(FirstDef, FirstNotDef, StoreC, ReadOffset);
+    return PartialVal::getPartial(FirstDef, FirstNotDef, StoreC, ReadOffset);
 
   }
 
@@ -349,7 +350,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     const Type* byteArrayType = Type::getInt8PtrTy(LI->getContext());
     const Type* subTargetType;
 
-    uint64_t DefSize = FirstNonDef - FirstDef;
+    uint64_t DefSize = FirstNotDef - FirstDef;
 
     if(DefSize != LoadSize) {
       // This memcpy/move is partially defining the load
@@ -473,14 +474,13 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
     uint64_t FirstDef, FirstNotDef, loadOffset;
     if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(1), Clobber.second, RF->readSize * 8, FirstDef, FirstNotDef, loadOffset))
-      return false;
+      return VCNull;
 
     uint64_t nbytes = FirstNotDef - FirstDef;
     uint64_t nqwords = (nbytes + 7) / 8;
     uint64_t bufsize = nqwords * 8;
     
     uint8_t* buffer = (uint8_t*)alloca(bufsize);
-    uint64_t thisReadSize;
 
     int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
     if(fd == -1) {
@@ -489,8 +489,8 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     }
 
     unsigned bytes_read = 0;
-    while(bytes_read < thisReadSize) {
-      int this_read = pread(fd, ((char*)buffer) + bytes_read, thisReadSize - bytes_read, RF->incomingOffset + loadOffset + bytes_read);
+    while(bytes_read < nbytes) {
+      int this_read = pread(fd, ((char*)buffer) + bytes_read, nbytes - bytes_read, RF->incomingOffset + loadOffset + bytes_read);
       if(this_read == 0)
 	break;
       else if(this_read == -1 && errno != EINTR)
@@ -505,7 +505,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       return PartialVal();
     }
 
-    Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, MSI->getContext());
+    Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, CI->getContext());
     return PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
 
   }
