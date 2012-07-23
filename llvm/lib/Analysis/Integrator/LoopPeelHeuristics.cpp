@@ -859,20 +859,23 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
   }
   else if(Res.isDef()) {
     ValCtx DefResult = getDefn(Res);
-    if(DefResult == VCNull)
-      return DefResult;
+    if(DefResult == VCNull) {
+      Result = VCNull;
+      goto out;
+    }
     PV = PartialVal::getTotal(DefResult);
   }
 
-  if(PV == PVNull)
-    return VCNull;
+  if(PV == PVNull) {
+    Result = VCNull;
+    goto out;
+  }
 
   // Might fail if it turns out the constant is unreadable,
   // for example because it contains global variable of function pointers.
   if(!LFA.addPartialVal(PV)) {
-
-    return VCNull;
-
+    Result = VCNull;
+    goto out;
   }
 
   if(LFA.isComplete()) {
@@ -896,8 +899,10 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
       return ResAttempt->tryForwardLoad(LFA, Res.getInst());
 
     }
-
   }
+
+ out:
+  
   if(Result == VCNull || !shouldForwardValue(Result)) {
 
     if(Result == VCNull) {
@@ -1095,7 +1100,7 @@ bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction
 
   LFARealization LFAR(LFA, this, Where);
   
-  if(tryResolveLoadFromConstant(LFA.getQueryInst(), ConstResult)) {
+  if(tryResolveLoadFromConstant(LFAR.getQueryInst(), ConstResult)) {
     Result = MemDepResult();
     return false;
   }
@@ -2612,10 +2617,11 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
       assert(TD->getTypeSizeInBits(IntResult->getType()) == TD->getTypeSizeInBits(Ty));
       // We know the target type does not contain pointers
 
-      ConstantExpr* CE = cast<ConstantExpr>(ConstantExpr::getBitCast(IntResult, Ty));
-      Constant* Result = ConstantFoldConstantExpression(CE, TD);
+      Constant* Result = ConstantExpr::getBitCast(IntResult, Ty); // The bitcast might eval here
+      if(ConstantExpr* CE = dyn_cast_or_null<ConstantExpr>(Result))
+	Result = ConstantFoldConstantExpression(CE, TD);
       if(!Result) {
-	LPDEBUG("Failed to fold casting constant expression " << *CE << "\n");
+	LPDEBUG("Failed to fold casting " << *(IntResult) << " to " << *(Ty) << "\n");
 	return 0;
       }
       else {
