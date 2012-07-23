@@ -314,9 +314,9 @@ bool llvm::ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
       if (EltSize >= BytesLeft)
         return true;
       
+      BytesLeft -= (EltSize - Offset);
+      CurPtr += (EltSize - Offset);
       Offset = 0;
-      BytesLeft -= EltSize;
-      CurPtr += EltSize;
     }
     return true;
   }

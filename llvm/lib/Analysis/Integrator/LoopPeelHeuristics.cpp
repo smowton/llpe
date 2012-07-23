@@ -2150,57 +2150,60 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
 
   while(1) {
 
-    if(GEPOperator* GEP = dyn_cast<GEPOperator>(Ptr.first)) {
-      SmallVector<Value*, 4> idxs;
-      gep_type_iterator GTI = gep_type_begin(GEP);
-      for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i, ++GTI) {
-	Value* idx = GEP->getOperand(i);
-	ConstantInt* Cidx = cast_or_null<ConstantInt>(getConstReplacement(idx, Ptr.second));
-	if(Cidx) {
-	  idxs.push_back(Cidx);
-	  if(!Cidx->isZero()) {
-	    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
-	      Offset += TD->getStructLayout(STy)->getElementOffset(Cidx->getZExtValue());
-	    } else {
-	      uint64_t Size = TD->getTypeAllocSize(GTI.getIndexedType());
-	      Offset += Cidx->getSExtValue()*Size;
+    if(Operator* Op = dyn_cast<Operator>(Ptr.first)) {
+      if(GEPOperator* GEP = dyn_cast<GEPOperator>(Op)) {
+	SmallVector<Value*, 4> idxs;
+	gep_type_iterator GTI = gep_type_begin(GEP);
+	for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i, ++GTI) {
+	  Value* idx = GEP->getOperand(i);
+	  ConstantInt* Cidx = cast_or_null<ConstantInt>(getConstReplacement(idx, Ptr.second));
+	  if(Cidx) {
+	    idxs.push_back(Cidx);
+	    if(!Cidx->isZero()) {
+	      if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+		Offset += TD->getStructLayout(STy)->getElementOffset(Cidx->getZExtValue());
+	      } else {
+		uint64_t Size = TD->getTypeAllocSize(GTI.getIndexedType());
+		Offset += Cidx->getSExtValue()*Size;
+	      }
+	      // Re-extend the pointer if we really should be using a type other than int64 to measure offset.
+	      if (PtrSize < 64)
+		Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
 	    }
-	    // Re-extend the pointer if we really should be using a type other than int64 to measure offset.
-	    if (PtrSize < 64)
-	      Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
+	  }
+	  else {
+	    LPDEBUG("Can't describe pointer with non-const offset " << *idx << "\n");
+	    success = false; 
+	    break;
 	  }
 	}
-	else {
-	  LPDEBUG("Can't describe pointer with non-const offset " << *idx << "\n");
-	  success = false; 
-	  break;
-	}
+	Expr.push_back((new SymGEP(idxs)));
+	Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
+	continue;
       }
-      Expr.push_back((new SymGEP(idxs)));
-      Ptr = make_vc(GEP->getPointerOperand(), Ptr.second);
-    }
-    else if(BitCastInst* C = dyn_cast<BitCastInst>(Ptr.first)) {
-      Expr.push_back((new SymCast(C->getType())));
-      Ptr = make_vc(C->getOperand(0), Ptr.second);
+      else if(Op->getOpcode() == Instruction::BitCast) {
+	Expr.push_back((new SymCast(Op->getType())));
+	Ptr = make_vc(Op->getOperand(0), Ptr.second);
+	continue;
+      }
     }
     else if (isa<Constant>(Ptr.first)) {
       Expr.push_back(new SymThunk(Ptr));
       break;
     }
+
+    ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
+    if(isIdentifiedObject(Repl.first)) {
+      Expr.push_back((new SymThunk(Repl)));
+      break;
+    }
+    else if(Repl == Ptr) {
+      LPDEBUG("Can't describe due to unresolved pointer " << Ptr << "\n");
+      success = false; 
+      break;
+    }
     else {
-      ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
-      if(isIdentifiedObject(Repl.first)) {
-	Expr.push_back((new SymThunk(Repl)));
-	break;
-      }
-      else if(Repl == Ptr) {
-	LPDEBUG("Can't describe due to unresolved pointer " << Ptr << "\n");
-	success = false; 
-	break;
-      }
-      else {
-	Ptr = Repl; // Must continue resolving!
-      }
+      Ptr = Repl; // Must continue resolving!
     }
     
   }
