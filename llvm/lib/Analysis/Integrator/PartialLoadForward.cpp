@@ -413,7 +413,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     if(!SubLFA.tryBuildSymExpr(MTI->getSource())) {
 
       LPDEBUG("Can't try harder to forward over a memcpy because the source address " << *(MTI->getSource()) << " is not fully resolved\n");
-      return VCNull;
+      return PVNull;
 
     }
 
@@ -469,12 +469,12 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     ReadFile* RF = Clobber.second->tryGetReadFile(CI);
     if(!RF) {
       LPDEBUG("Can't improve load " << *LI << " clobbered by " << *CI << ": call does not appear to be a read()\n");
-      return VCNull;
+      return PVNull;
     }
 
     uint64_t FirstDef, FirstNotDef, loadOffset;
     if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(1), Clobber.second, RF->readSize * 8, FirstDef, FirstNotDef, loadOffset))
-      return VCNull;
+      return PVNull;
 
     uint64_t nbytes = FirstNotDef - FirstDef;
     uint64_t nqwords = (nbytes + 7) / 8;
@@ -485,7 +485,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
     if(fd == -1) {
       LPDEBUG("Failed to open " << RF->openArg->Name << "\n");
-      return VCNull;
+      return PVNull;
     }
 
     unsigned bytes_read = 0;

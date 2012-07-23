@@ -859,6 +859,8 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
   }
   else if(Res.isDef()) {
     ValCtx DefResult = getDefn(Res);
+    if(DefResult == VCNull)
+      return DefResult;
     PV = PartialVal::getTotal(DefResult);
   }
 
