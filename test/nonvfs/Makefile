@@ -8,12 +8,18 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  memcpy-cases-nonconst struct-const struct-global reinterpret fp fpreinterpret \
 	  fpalign
 
+LLVM_TARGETS = load-struct load-array
+
+LLVM_TARGETS_SOURCE = $(patsubst %,%.lls,$(LLVM_TARGETS))
+LLVM_TARGETS_ASM = $(patsubst %,%.s,$(LLVM_TARGETS))
+LLVM_TARGETS_OBJ = $(patsubst %,%.o,$(LLVM_TARGETS))
+
 BC_TARGETS = $(patsubst %,%.bc,$(TARGETS))
 LL_TARGETS = $(patsubst %,%.ll,$(TARGETS))
 
 .PHONY: all clean
 
-all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS)
+all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS) $(LLVM_TARGETS)
 
 % : %.c
 	gcc -std=c99 $< -o $@
@@ -26,6 +32,15 @@ all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS)
 
 %.ll : %.bc
 	llvm-dis $<
+
+% : %.o
+	gcc $< -o $@
+
+%.s : %.lls
+	llc $< -o $@
+
+%.o : %.s
+	as $< -o $@
 
 clean:
 	-rm -f $(TARGETS)

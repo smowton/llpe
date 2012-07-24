@@ -130,14 +130,11 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 /// AnalyzeLoadFromClobberingStore - This function is called when we have a
 /// memdep query of a load that ends up being a clobbering store.
 bool IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, HCFParentCallbacks* DepSICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
-  // Cannot handle reading from store of first-class aggregate yet.
-  if (DepSI->getOperand(0)->getType()->isStructTy() ||
-      DepSI->getOperand(0)->getType()->isArrayTy())
-    return -1;
 
   Value *StorePtr = DepSI->getPointerOperand();
   uint64_t StoreSize = TD->getTypeSizeInBits(DepSI->getOperand(0)->getType());
   return AnalyzeLoadFromClobberingWrite(LFA, StorePtr, DepSICtx, StoreSize, FirstDef, FirstNotDef, LoadOffset);
+
 }
 
 bool IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, HCFParentCallbacks* MICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
