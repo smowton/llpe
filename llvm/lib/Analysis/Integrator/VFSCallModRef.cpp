@@ -13,9 +13,9 @@ using namespace llvm;
 // 1. errno, modelled here as __errno_location, which is likely to be pretty brittle.
 // 2. an abstract location representing the buffer that's passed to a read call.
 
-static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, const Value* Ptr, unsigned Size, HCFParentCallbacks* Ctx) {
+static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PtrCtx) {
 
-  if(Ctx && Ctx->isResolvedVFSCall(CS.getInstruction())) {
+  if(CSCtx && CSCtx->isResolvedVFSCall(CS.getInstruction())) {
 
     // Resolved VFS calls definitely do not write to errno, so ignore any potential alias.
     return LibCallLocationInfo::No;
@@ -37,7 +37,7 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
 
   }
 
-  ValCtx VC = Ctx->getUltimateUnderlyingObject(const_cast<Value*>(Ptr));
+  ValCtx VC = PtrCtx->getUltimateUnderlyingObject(const_cast<Value*>(Ptr));
 
   if(isIdentifiedObject(VC.first))
     return LibCallLocationInfo::No;
@@ -46,11 +46,11 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
 
 }
 
-static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, HCFParentCallbacks* Ctx) {
+static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
-  ConstantInt* ReadSize = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(2))));
+  ConstantInt* ReadSize = cast_or_null<ConstantInt>(CSCtx->getConstReplacement(const_cast<Value*>(CS.getArgument(2))));
 
-  AliasAnalysis::AliasResult AR = Ctx->getAA()->aliasHypothetical(Ptr, Size, CS.getArgument(1), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize, Ctx);
+  AliasAnalysis::AliasResult AR = CSCtx->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr), PCtx), Size, make_vc(const_cast<Value*>(CS.getArgument(1)), CSCtx), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize);
 
   switch(AR) {
   case AliasAnalysis::MustAlias:

@@ -128,8 +128,6 @@ ValCtx IntegrationAttempt::getLocalReplacement(Value* V) {
 
 }
 
-// Implement HCFParentCallbacks, except for tryForwardLoad which comes later
-
 ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
   // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
@@ -189,7 +187,7 @@ ValCtx IntegrationAttempt::getDefaultVCWithScope(Value* V, const Loop* LScope) {
 
 }
 
-Constant* llvm::getConstReplacement(Value* V, HCFParentCallbacks* Ctx) {
+Constant* llvm::getConstReplacement(Value* V, IntegrationAttempt* Ctx) {
 
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
@@ -1433,6 +1431,95 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
 
 }
 
+ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
+
+  BasicBlock* UniqueSuccessor = 0;
+  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+
+    if(edgeIsDead(BB, *SI))
+      continue;
+    else if(UniqueSuccessor) {
+      UniqueSuccessor = 0;
+      break;
+    }
+    else {
+      UniqueSuccessor = *SI;
+    }
+
+  }
+
+  if(UniqueSuccessor) {
+
+    ValCtx Start;
+    if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start))
+      return Start;
+
+    Loop* SuccLoop = LI[&F]->getLoopFor(UniqueSuccessor);
+    if(SuccLoop != getLoopContext()) {
+
+      if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
+
+	if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
+
+	  assert(SuccLoop->getHeader() == UniqueSuccessor);
+	  return make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
+
+	}
+	else {
+	      
+	  LPDEBUG("Progress blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
+	  return VCNull;
+
+	}
+
+      }
+      else {
+
+	return make_vc(UniqueSuccessor->begin(), parent);
+
+      }
+
+    }
+    else {
+	  
+      if(!certainBlocks.count(UniqueSuccessor)) {
+
+	LPDEBUG("Progress blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
+	return VCNull;
+
+      }
+      else {
+
+	return make_vc(UniqueSuccessor->begin(), this);
+
+      }
+
+    }
+
+  }
+  else {
+
+    if(isa<ReturnInst>(BB->getTerminator())) {
+
+      if(!parent) {
+
+	LPDEBUG("Instruction chain reaches end of main!\n");
+	return VCNull;
+
+      }
+      BasicBlock::iterator CallIt(getEntryInstruction());
+      ++CallIt;
+      return make_vc(CallIt, parent);
+
+    }
+
+    LPDEBUG("Progress blocked because block " << BB->getName() << " has no unique successor\n");
+    return VCNull;
+
+  }
+
+}
+
 // Called in the context of Start.second. OpenInst is the open instruction we're pursuing, and the context where OS is stored.
 // ReadInst is the entry in the chain of VFS operations that starts at OpenInst.
 bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
@@ -1508,101 +1595,25 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
     ++BI;
     if(BI == BB->end()) {
-      
-      BasicBlock* UniqueSuccessor = 0;
-      for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-	if(edgeIsDead(BB, *SI))
-	  continue;
-	else if(UniqueSuccessor) {
-	  UniqueSuccessor = 0;
-	  break;
-	}
-	else {
-	  UniqueSuccessor = *SI;
-	}
+      Start = getSuccessorVC(BB);
+
+      if(Start == VCNull) {
+
+	addBlockedOpen(OpenInst, ReadInst);
+	return false;
 
       }
+      else if(Start.second != this) {
 
-      if(UniqueSuccessor) {
-
-	if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start)) {
-	  if(Start == VCNull) {
-	    addBlockedOpen(OpenInst, ReadInst);
-	    return false;
-	  }
-	  else
-	    return true;
-	}
-
-	Loop* SuccLoop = LI[&F]->getLoopFor(UniqueSuccessor);
-	if(SuccLoop != getLoopContext()) {
-
-	  if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
-
-	    if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
-
-	      assert(SuccLoop->getHeader() == UniqueSuccessor);
-	      Start = make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
-	      return true;
-
-	    }
-	    else {
-	      
-	      LPDEBUG("Open forwarding blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
-	      addBlockedOpen(OpenInst, ReadInst);
-	      return false;
-
-	    }
-
-	  }
-	  else {
-
-	    Start = make_vc(UniqueSuccessor->begin(), parent);
-	    return true;
-
-	  }
-
-	}
-	else {
-	  
-	  if(!certainBlocks.count(UniqueSuccessor)) {
-
-	    LPDEBUG("Open forwarding blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
-	    addBlockedOpen(OpenInst, ReadInst);
-	    return false;
-
-	  }
-	  else {
-
-	    BB = UniqueSuccessor;
-	    BI = BB->begin();
-
-	  }
-
-	}
+	return true;
 
       }
       else {
 
-	if(isa<ReturnInst>(BB->getTerminator())) {
-
-	  if(!parent) {
-
-	    LPDEBUG("VFS instruction chain reaches end of main!\n");
-	    return false;
-
-	  }
-	  BasicBlock::iterator CallIt(getEntryInstruction());
-	  ++CallIt;
-	  Start = make_vc(CallIt, parent);
-	  return true;
-
-	}
-
-	LPDEBUG("Open forwarding blocked because block " << BB->getName() << " has no unique successor\n");
-	addBlockedOpen(OpenInst, ReadInst);
-	return false;
+	StartI = cast<Instruction>(Start.first);
+	BB = StartI->getParent();
+	BI = BasicBlock::iterator(StartI);
 
       }
 
@@ -2379,7 +2390,7 @@ ValCtx LoadForwardAttempt::getBaseVC() {
   return (cast<SymThunk>(Expr.back()))->RealVal; 
 }
 
-HCFParentCallbacks* LoadForwardAttempt::getBaseContext() { 
+IntegrationAttempt* LoadForwardAttempt::getBaseContext() { 
   return getBaseVC().second; 
 }
 
@@ -3151,6 +3162,63 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
       }
 
     }
+
+    /*
+    DEBUG(dbgs() << "Finding dead pointers and stores\n");
+
+    SmallVector<ValCtx, 64>* consumeDSEQueue = &dseQueue1;
+    produceDSEQueue = &dseQueue2;
+
+    IA->queueAllLivePointers();
+    for(Module::global_iterator MI = M.global_begin(), ME = M.global_end(); MI != ME; ++MI)
+      queueDSE(0, *MI);
+
+    while(dseQueue1.size() || dseQueue2.size()) {
+
+      for(SmallVector<ValCtx, 64>::iterator it = consumeDSEQueue->begin(), it2 = consumeDSEQueue->end(); it != it2; ++it) {
+
+	if(!it->second) {
+	  
+	  GlobalVariable* GV = cast<GlobalVariable>(it->first);
+	  if(globalIsDead(GV))
+	    continue;
+
+	}
+	else {
+
+	  if(it->second->instructionIsDead(cast<Instruction>(it->first)))
+	    continue;
+
+	}
+
+	DEBUG(dbgs() << "Consider: " << *it << "\n");
+
+	if(!it->second) {
+
+	  tryKillGlobal(cast<GlobalVariable>(it->first));
+
+	}
+	else {
+	  
+	  it->second->tryKillInstruction(cast<Instruction>(it->first));
+
+	}
+
+      }
+
+    }
+    */
+
+    DEBUG(dbgs() << "Finding dead MTIs\n");
+    IA->tryKillAllMTIs();
+
+    DEBUG(dbgs() << "Finding dead stores\n");
+    IA->tryKillAllStores();
+
+    DEBUG(dbgs() << "Finding dead allocations\n");
+    IA->tryKillAllAllocs();
+
+    // TODO: Find dead address calculations etc.
     
     IA->collectStats();
     

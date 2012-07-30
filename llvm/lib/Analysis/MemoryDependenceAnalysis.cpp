@@ -83,7 +83,7 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, HCFParentCallbacks* P, LoadForwardAttempt* LFA) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA) {
 
   this->AA = AA;
   this->parent = P;
@@ -249,7 +249,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       // If alias analysis can tell that this store is guaranteed to not modify
       // the query pointer, ignore it.  Use getModRefInfo to handle cases where
       // the query pointer points to constant memory etc.
-      if (AA->getModRefInfo(SI, MemPtr, MemSize, parent) == AliasAnalysis::NoModRef)
+      if (AA->getModRefInfo(SI, MemPtr, MemSize, parent, parent) == AliasAnalysis::NoModRef)
         continue;
 
       // Ok, this store might clobber the query pointer.  Check to see if it is
@@ -287,7 +287,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
     }
 
     // See if this instruction (e.g. a call or vaarg) mod/ref's the pointer.
-    switch (AA->getModRefInfo(Inst, MemPtr, MemSize, parent)) {
+    switch (AA->getModRefInfo(Inst, MemPtr, MemSize, parent, parent)) {
     case AliasAnalysis::NoModRef:
       // If the call has no effect on the queried pointer, just ignore it.
       continue;

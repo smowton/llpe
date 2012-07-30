@@ -158,7 +158,12 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  HCFParentCallbacks* parent) {
+					  IntegrationAttempt* parent) {
+      return MayAlias;
+    }
+
+    virtual AliasResult aliasHypothetical(ValCtx V1, unsigned V1Size,
+					  ValCtx V2, unsigned V2Size) {
       return MayAlias;
     }
 
@@ -171,11 +176,11 @@ namespace {
 
     virtual bool pointsToConstantMemory(const Value *P) { return false; }
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                       const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
+                                       const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0) {
       return ModRef;
     }
-    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                       ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
+				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
       return ModRef;
     }
 
@@ -297,30 +302,40 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  HCFParentCallbacks* parent) {
+					  IntegrationAttempt* parent) {
       
       assert(Visited.empty() && "Visited must be cleared after use!");
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
-      this->parent = parent;
       AliasResult Alias;
       if(parent)
 	Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
       else
 	Alias = aliasCheck(make_vc(const_cast<Value*>(V1), 0), V1Size, make_vc(const_cast<Value*>(V2), 0), V2Size);
       Visited.clear();
-      this->parent = 0;
       return Alias;      
 
     }
 
-    virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                       const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
+    virtual AliasResult aliasHypothetical(ValCtx V1, unsigned V1Size,
+					  ValCtx V2, unsigned V2Size) {
 
-    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                       ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
+      // I think I can ignore the not-different assertion!
+      assert(Visited.empty() && "Visited must be cleared after use!");
+      AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
+      Visited.clear();
+      return Alias;
+
+    }
+
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
+                                       const Value *P, unsigned Size, 
+				       IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0);
+
+    virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
+				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
       // The AliasAnalysis base class has some smarts, lets use them.
-      return AliasAnalysis::getModRefInfo(CS1, CS2, Pa);
+      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx);
     }
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
@@ -349,8 +364,6 @@ namespace {
     // Visited - Track instructions visited by a aliasPHI, aliasSelect(), and aliasGEP().
     SmallPtrSet<const Value*, 16> Visited;
     
-    HCFParentCallbacks* parent;
-
     // aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP
     // instruction against another.
     AliasResult aliasGEP(const ValCtx V1, unsigned V1Size,
@@ -373,22 +386,19 @@ namespace {
 					SmallVectorImpl<VariableGEPIndex> &VarIndices,
 					const TargetData *TD);
 
-    bool GEPHasAllZeroIndices(const GEPOperator*);
+    bool GEPHasAllZeroIndices(ValCtx GEPOp);
 
     ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset);
 
-    Value* getUnderlyingObject(Value* VIn, bool& isOffset);
+    Value* getUnderlyingObject(ValCtx VIn, bool& isOffset);
 
-    ValCtx getReplacement(const Value*);
     ValCtx getReplacement(const ValCtx);
-    Constant* getConstReplacement(const Value*);
     Constant* getConstReplacement(const ValCtx);
-    Value* tryConstReplacement(const Value*);
     ValCtx tryConstReplacement(const ValCtx);
 
     Value* GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
 			       ExtensionKind &Extension,
-			       const TargetData &TD, unsigned Depth, HCFParentCallbacks* Ctx);
+			       const TargetData &TD, unsigned Depth, IntegrationAttempt* Ctx);
 
   };
 }  // End of anonymous namespace
@@ -403,10 +413,11 @@ ImmutablePass *llvm::createBasicAliasAnalysisPass() {
   return new BasicAliasAnalysis();
 }
 
-bool BasicAliasAnalysis::GEPHasAllZeroIndices(const GEPOperator* GEP) {
+bool BasicAliasAnalysis::GEPHasAllZeroIndices(ValCtx GEPOp) {
+  const GEPOperator* GEP = cast<GEPOperator>(GEPOp.first);
   for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
-    Value* V = tryConstReplacement(GEP->getOperand(i));
-    if (ConstantInt *CI = dyn_cast<ConstantInt>(V)) {
+    ValCtx V = tryConstReplacement(make_vc(GEP->getOperand(i), GEPOp.second));
+    if (ConstantInt *CI = dyn_cast<ConstantInt>(V.first)) {
       if (!CI->isZero()) return false;
     } 
     else {
@@ -416,6 +427,7 @@ bool BasicAliasAnalysis::GEPHasAllZeroIndices(const GEPOperator* GEP) {
   return true;
 }
 
+/*
 ValCtx BasicAliasAnalysis::getReplacement(const Value* VConst) {
 
   Value* V = const_cast<Value*>(VConst);
@@ -426,6 +438,7 @@ ValCtx BasicAliasAnalysis::getReplacement(const Value* VConst) {
   return parent->getReplacement(V);
 
 }
+*/
 
 ValCtx BasicAliasAnalysis::getReplacement(const ValCtx VC) {
 
@@ -436,12 +449,14 @@ ValCtx BasicAliasAnalysis::getReplacement(const ValCtx VC) {
 
 }
 
+/*
 Constant* BasicAliasAnalysis::getConstReplacement(const Value* VConst) {
 
   ValCtx VC = getReplacement(VConst);
   return dyn_cast<Constant>(VC.first);
 
 }
+*/
 
 Constant* BasicAliasAnalysis::getConstReplacement(const ValCtx VC) {
 
@@ -450,6 +465,7 @@ Constant* BasicAliasAnalysis::getConstReplacement(const ValCtx VC) {
 
 }
 
+/*
 Value* BasicAliasAnalysis::tryConstReplacement(const Value* VConst) {
 
   Constant* Ret = getConstReplacement(VConst);
@@ -459,6 +475,7 @@ Value* BasicAliasAnalysis::tryConstReplacement(const Value* VConst) {
     return const_cast<Value*>(VConst);
 
 }
+*/
 
 ValCtx BasicAliasAnalysis::tryConstReplacement(const ValCtx VC) {
 
@@ -480,7 +497,7 @@ ValCtx BasicAliasAnalysis::tryConstReplacement(const ValCtx VC) {
 /// represented in the result.
 Value* BasicAliasAnalysis::GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
 					       ExtensionKind &Extension,
-					       const TargetData &TD, unsigned Depth, HCFParentCallbacks* ctx) {
+					       const TargetData &TD, unsigned Depth, IntegrationAttempt* ctx) {
   assert(V->getType()->isIntegerTy() && "Not an integer value");
 
   // Limit our recursion depth.
@@ -564,9 +581,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
 							SmallVectorImpl<VariableGEPIndex> &VarIndices,
 							const TargetData *TD) {
   // Limit recursion depth to limit compile time in crazy cases.
-  unsigned MaxLookup = 6;
-  if(parent)
-    MaxLookup = 12;
+  unsigned MaxLookup = 12;
   
   ValCtx V = FirstV;
   BaseOffs = 0;
@@ -608,7 +623,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
     // elements computed by GEPs.  However, we can handle bitcast equivalent
     // GEPs.
     if (TD == 0) {
-      if (!GEPHasAllZeroIndices(GEPOp))
+      if (!GEPHasAllZeroIndices(make_vc(const_cast<Value*>(cast<Value>(GEPOp)), V.second)))
         return V;
       V = make_vc(GEPOp->getOperand(0), V.second);
       continue;
@@ -743,9 +758,13 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 /// simple "address taken" analysis on local objects.
 AliasAnalysis::ModRefResult
 BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                  const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
-  assert(notDifferentParent(CS.getInstruction(), P) &&
+                                  const Value *P, unsigned Size, 
+				  IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+  assert((notDifferentParent(CS.getInstruction(), P) || (CSCtx && PCtx)) &&
          "AliasAnalysis query involving multiple functions!");
+
+  // Either both values have a context or neither one does.
+  assert(!!CSCtx == !!PCtx);
 
   const Value *Object = P->getUnderlyingObject();
   
@@ -777,7 +796,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       // is impossible to alias the pointer we're checking.  If not, we have to
       // assume that the call could touch the pointer, even though it doesn't
       // escape.
-      if (!isNoAlias(cast<Value>(CI), UnknownSize, P, UnknownSize, Pa)) {
+      if (!isNoAlias(make_vc(const_cast<Value*>(cast<Value>(CI)), CSCtx), UnknownSize, make_vc(const_cast<Value*>(P), PCtx), UnknownSize)) {
         PassedAsArg = true;
         break;
       }
@@ -795,12 +814,12 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::memcpy:
     case Intrinsic::memmove: {
       unsigned Len = UnknownSize;
-      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), Pa))))
+      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx))))
         Len = LenCI->getZExtValue();
       Value *Dest = II->getArgOperand(0);
       Value *Src = II->getArgOperand(1);
-      if (isNoAlias(Dest, Len, P, Size, Pa)) {
-        if (isNoAlias(Src, Len, P, Size, Pa))
+      if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size)) {
+        if (isNoAlias(make_vc(Src, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size))
           return NoModRef;
         return Ref;
       }
@@ -809,10 +828,10 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::memset:
       // Since memset is 'accesses arguments' only, the AliasAnalysis base class
       // will handle it for the variable length case.
-      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), Pa)))) {
+      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx)))) {
         unsigned Len = LenCI->getZExtValue();
         Value *Dest = II->getArgOperand(0);
-        if (isNoAlias(Dest, Len, P, Size, Pa))
+        if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size))
           return NoModRef;
       }
       break;
@@ -831,7 +850,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       if (TD) {
         Value *Op1 = II->getArgOperand(0);
         unsigned Op1Size = TD->getTypeStoreSize(Op1->getType());
-        if (isNoAlias(Op1, Op1Size, P, Size, Pa))
+        if (isNoAlias(make_vc(Op1, CSCtx), Op1Size, make_vc(const_cast<Value*>(P), PCtx), Size))
           return NoModRef;
       }
       break;
@@ -840,21 +859,21 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::invariant_start: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
-      if (isNoAlias(II->getArgOperand(1), PtrSize, P, Size, Pa))
+      if (isNoAlias(make_vc(II->getArgOperand(1), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size))
         return NoModRef;
       break;
     }
     case Intrinsic::invariant_end: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
-      if (isNoAlias(II->getArgOperand(2), PtrSize, P, Size, Pa))
+      if (isNoAlias(make_vc(II->getArgOperand(2), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size))
         return NoModRef;
       break;
     }
     }
 
   // The AliasAnalysis base class has some smarts, lets use them.
-  return AliasAnalysis::getModRefInfo(CS, P, Size, Pa);
+  return AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx);
 }
 
 
@@ -1064,7 +1083,7 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
       AliasAnalysis::AliasResult Alias = MayAlias;
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
 	BasicBlock* PredBB = PN->getIncomingBlock(i);
-	if(parent && parent->edgeIsDead(PredBB, const_cast<BasicBlock*>(PNParent)))
+	if(V1.second && V1.second->edgeIsDead(PredBB, const_cast<BasicBlock*>(PNParent)))
 	  continue;
         AliasResult ThisAlias =
           aliasCheck(make_vc(PN->getIncomingValue(i), V1.second), PNSize,
@@ -1119,12 +1138,12 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
 
 // A cowardly duplication of Value::getUnderlyingObject, to avoid potentially screwups
 // in modifying Value, which is used throughout LLVM.
-Value* BasicAliasAnalysis::getUnderlyingObject(Value* VIn, bool& isOffset) {
+Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset) {
   
   unsigned MaxLookup = 10;
-  if (!VIn->getType()->isPointerTy())
-    return VIn;
-  Value *V = VIn;
+  if (!VIn.first->getType()->isPointerTy())
+    return VIn.first;
+  Value *V = VIn.first;
   for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
     if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
       V = GEP->getPointerOperand();
@@ -1133,7 +1152,7 @@ Value* BasicAliasAnalysis::getUnderlyingObject(Value* VIn, bool& isOffset) {
       // Then we end up with two non-GEP, non-PHI, non-Select instructions and fall through to MayAlias.
       // In summary: if we're going to conclude that two things Must-Alias due to referring to the same object without an offset,
       // we must do so NOW.
-      if(!GEPHasAllZeroIndices(GEP))
+      if(!GEPHasAllZeroIndices(make_vc(GEP, VIn.second)))
 	isOffset = true;
     } else if (Operator::getOpcode(V) == Instruction::BitCast) {
       V = cast<Operator>(V)->getOperand(0);
@@ -1158,7 +1177,7 @@ BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
   while(1) {
 
     // This might set isOffset if we look through a GEP.
-    Value* O = getUnderlyingObject(CurrentV.first, isOffset);
+    Value* O = getUnderlyingObject(CurrentV, isOffset);
     // Note here: getUnderlyingObject might take us out a scope, e.g. by a loop-variant GEP referencing a loop-invariant load instruction!
     // This is okay, because Loop iterations are already expected to resolve invariants using the appropriate parent scope, so "inst at scope X"
     // is transparently proxied as "inst at scope X + n".

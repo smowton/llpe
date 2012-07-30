@@ -3,6 +3,7 @@
 #define LLVM_HYPO_CONSTFOLD_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Pass.h"
@@ -31,12 +32,13 @@ class Type;
 class Argument;
 class CallInst;
 class StoreInst;
+class MemTransferInst;
 class MemIntrinsic;
 class CmpInst;
 
-class HCFParentCallbacks;
+class IntegrationAttempt;
 
-typedef struct { Value* first; HCFParentCallbacks* second; } ValCtx;
+typedef struct { Value* first; IntegrationAttempt* second; } ValCtx;
 
 inline bool operator==(ValCtx V1, ValCtx V2) {
   return V1.first == V2.first && V1.second == V2.second;
@@ -48,11 +50,11 @@ inline bool operator!=(ValCtx V1, ValCtx V2) {
 
 raw_ostream& operator<<(raw_ostream&, const ValCtx&);
 raw_ostream& operator<<(raw_ostream&, const MemDepResult&);
-raw_ostream& operator<<(raw_ostream&, const HCFParentCallbacks&);
+raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
 
-inline ValCtx make_vc(Value* V, HCFParentCallbacks* H) {
+inline ValCtx make_vc(Value* V, IntegrationAttempt* H) {
 
   ValCtx newCtx = {V, H};
   return newCtx;
@@ -222,39 +224,6 @@ SeekFile() : openArg(0), newOffset(0) { }
 
 };
 
-class IntegrationAttempt;
-
-// Interface exposed to Memory Dependence Analysis and other external analyses that the integrator uses.
-class HCFParentCallbacks {
-
- public:
-
-  virtual ValCtx getReplacement(Value*) = 0;
-  virtual Constant* getConstReplacement(Value* V) = 0;
-  virtual bool edgeIsDead(BasicBlock*, BasicBlock*) = 0;
-  virtual bool blockIsDead(BasicBlock*) = 0;
-  virtual BasicBlock* getEntryBlock() = 0;
-  virtual ValCtx getDefaultVC(Value*) = 0;
-  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&) = 0;
-  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) = 0;
-  virtual void describe(raw_ostream&) const = 0;
-  virtual ValCtx getUltimateUnderlyingObject(Value*) = 0;
-  virtual bool isForwardableOpenCall(Value*) = 0;
-  virtual int64_t tryGetIncomingOffset(Value*) = 0;
-  virtual ReadFile* tryGetReadFile(CallInst* CI) = 0;
-  virtual void setReplacement(Value*, ValCtx) = 0;
-  virtual void investigateUsers(Value* V) = 0;
-  virtual void resolveReadCall(CallInst*, struct ReadFile) = 0;
-  virtual void resolveSeekCall(CallInst*, struct SeekFile) = 0;
-  virtual void addBlockedOpen(ValCtx, ValCtx) = 0;
-  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool) = 0;
-  virtual bool isResolvedVFSCall(const Instruction*) = 0;
-  virtual AliasAnalysis* getAA() = 0;
-  virtual void queueLoopExpansionBlockedLoad(Instruction*, IntegrationAttempt*, LoadInst*) = 0;
-  virtual bool hasParent() = 0;
-
-};
-
 class InlineAttempt;
 class PeelAttempt;
 class IntegrationHeuristicsPass;
@@ -273,7 +242,7 @@ enum IterationStatus {
 
 };
 
-class IntegrationAttempt : public HCFParentCallbacks {
+class IntegrationAttempt {
 
 protected:
 
@@ -299,6 +268,8 @@ protected:
   SmallSet<BasicBlock*, 4> deadBlocks;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 8> certainBlocks;
+
+  DenseSet<Value*> deadValues; // Used in DSE
 
   int improvableInstructions;
   int improvedInstructions;
@@ -341,7 +312,7 @@ protected:
 
   virtual AliasAnalysis* getAA();
 
-  // Implement HCFParentCallbacks (partially):
+  // Implement IntegrationAttempt (partially):
 
   virtual ValCtx getDefaultVC(Value*);
   virtual ValCtx getReplacement(Value* V);
@@ -367,6 +338,7 @@ protected:
 
   virtual ValCtx getUltimateUnderlyingObject(Value*);
 
+  virtual BasicBlock* getEntryBlock() = 0;
   virtual bool hasParent();
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
@@ -386,6 +358,8 @@ protected:
   void setBlockDead(BasicBlock*);
 
   virtual Constant* getConstReplacement(Value* V);
+  
+  virtual IntegrationAttempt* getFunctionRoot() = 0;
 
   // Constant propagation:
 
@@ -438,8 +412,8 @@ protected:
   bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult);
   bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result);
 
-  bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
-  bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
+  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
+  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
   void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
   void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
@@ -459,6 +433,7 @@ protected:
   void queueInitialWork();
   void tryPushOpen(CallInst*, ValCtx);
   virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
+  ValCtx getSuccessorVC(BasicBlock* BB);
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
@@ -476,34 +451,53 @@ protected:
   ValCtx handleTotalDefn(LoadForwardAttempt&, Constant*);
 
   bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
-				     Value *WritePtr, HCFParentCallbacks* WriteCtx,
+				     Value *WritePtr, IntegrationAttempt* WriteCtx,
 				     uint64_t WriteSizeInBits,
 				     uint64_t& FirstDef, 
 				     uint64_t& FirstNotDef, 
 				     uint64_t& ReadOffset);
 
   bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
-				     ValCtx StoreBase, uint64_t StoreOffset,
+				     ValCtx StoreBase, int64_t StoreOffset,
 				     uint64_t WriteSizeInBits,
 				     uint64_t& FirstDef, 
 				     uint64_t& FirstNotDef, 
 				     uint64_t& ReadOffset);
 				     
-  bool AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, HCFParentCallbacks* DepSICtx,
+  bool AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, IntegrationAttempt* DepSICtx,
 				     uint64_t& FirstDef, 
 				     uint64_t& FirstNotDef, 
 				     uint64_t& ReadOffset);
 
-  bool AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, HCFParentCallbacks* MICtx,
+  bool AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, IntegrationAttempt* MICtx,
 				       uint64_t& FirstDef, 
 				       uint64_t& FirstNotDef, 
 				       uint64_t& ReadOffset);
 
   Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
-  ValCtx GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset);
+  ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
   bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
   Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
+  bool GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
+		       ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
+		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
   PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber);
+
+  // Dead store and allocation elim:
+
+  void tryKillStore(StoreInst* SI);
+  void tryKillMTI(MemTransferInst* MTI);
+  void tryKillAlloc(Instruction* Alloc);
+  void tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
+  bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes);
+  bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
+  virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
+  bool CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs);
+  void tryKillAllMTIs();
+  bool tryKillAllStoresFrom(ValCtx& Start);
+  void tryKillAllStores();
+  bool tryKillAllAllocsFrom(ValCtx& Start);
+  void tryKillAllAllocs();
 
   // Stat collection and printing:
 
@@ -513,6 +507,8 @@ protected:
   void print(raw_ostream& OS) const;
   // Callable from GDB
   void dump() const;
+
+  virtual void describe(raw_ostream& Stream) const = 0;
 
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
@@ -560,6 +556,8 @@ public:
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
 
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+
+  virtual IntegrationAttempt* getFunctionRoot();
 
   virtual void describe(raw_ostream& Stream) const;
 
@@ -647,6 +645,8 @@ class InlineAttempt : public IntegrationAttempt {
   ValCtx getImprovedCallArgument(Argument* A);
 
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+
+  virtual IntegrationAttempt* getFunctionRoot();
   
   virtual void describe(raw_ostream& Stream) const;
   
@@ -707,7 +707,7 @@ class LoadForwardAttempt : public LFAQueryable {
   SmallVector<SymExpr*, 4>* getSymExpr();
 
   ValCtx getBaseVC();
-  HCFParentCallbacks* getBaseContext();
+  IntegrationAttempt* getBaseContext();
 
   std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> getLastIterCache(BasicBlock* FromBB, const Loop* L);
   std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> getOtherItersCache(const Loop* L);
@@ -831,6 +831,11 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<IntegratorWQItem, 64>* produceQueue;
 
+   SmallVector<ValCtx, 64> dseQueue1;
+   SmallVector<ValCtx, 64> dseQueue2;
+
+   SmallVector<ValCtx, 64>* produceDSEQueue;
+
  public:
 
    static char ID;
@@ -866,6 +871,11 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    }
 
+   void queueDSE(IntegrationAttempt* ctx, Value* val) {
+     assert(val && "Queued a null value");
+     produceDSEQueue->push_back(make_vc(val, ctx));
+   }
+
    void print(raw_ostream &OS, const Module* M) const {
      for(SmallVector<InlineAttempt*, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
        (*II)->print(OS);
@@ -889,7 +899,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
- Constant* getConstReplacement(Value*, HCFParentCallbacks*);
+ Constant* getConstReplacement(Value*, IntegrationAttempt*);
  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
  bool containsPointerTypes(const Type*);
 

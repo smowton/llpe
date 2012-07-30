@@ -34,7 +34,7 @@ namespace llvm {
   class PredIteratorCache;
   class DominatorTree;
   class PHITransAddr;
-  class HCFParentCallbacks;
+  class IntegrationAttempt;
   class LoadForwardAttempt;
   class LoadInst;
   
@@ -78,17 +78,17 @@ namespace llvm {
     };
     typedef PointerIntPair<Instruction*, 2, DepType> PairTy;
     PairTy Value;
-    HCFParentCallbacks* Cookie;
-    explicit MemDepResult(PairTy V, HCFParentCallbacks* C = 0) : Value(V), Cookie(C) {}
+    IntegrationAttempt* Cookie;
+    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0) : Value(V), Cookie(C) {}
   public:
     MemDepResult() : Value(0, Invalid), Cookie(0) {}
     
     /// get methods: These are static ctor methods for creating various
     /// MemDepResult kinds.
-    static MemDepResult getDef(Instruction *Inst, HCFParentCallbacks* C = 0) {
+    static MemDepResult getDef(Instruction *Inst, IntegrationAttempt* C = 0) {
       return MemDepResult(PairTy(Inst, Def), C);
     }
-    static MemDepResult getClobber(Instruction *Inst, HCFParentCallbacks* C = 0) {
+    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0) {
       return MemDepResult(PairTy(Inst, Clobber), C);
     }
     static MemDepResult getNonLocal() {
@@ -112,8 +112,8 @@ namespace llvm {
     /// is depended on.  Otherwise, return null.
     Instruction *getInst() const { return Value.getPointer(); }
 
-    HCFParentCallbacks* getCookie() const { return Cookie; }
-    void setCookie(HCFParentCallbacks* Ctx) { Cookie = Ctx; }
+    IntegrationAttempt* getCookie() const { return Cookie; }
+    void setCookie(IntegrationAttempt* Ctx) { Cookie = Ctx; }
     
     bool operator==(const MemDepResult &M) const { return Value == M.Value; }
     bool operator!=(const MemDepResult &M) const { return Value != M.Value; }
@@ -265,7 +265,7 @@ namespace llvm {
     /// Current AA implementation, just a cache.
     AliasAnalysis *AA;
     TargetData *TD;
-    HCFParentCallbacks* parent;
+    IntegrationAttempt* parent;
 
     LoadForwardAttempt* LFA;
 
@@ -275,7 +275,7 @@ namespace llvm {
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, HCFParentCallbacks* parent = 0, LoadForwardAttempt* LFA = 0);
+    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0);
 
     /// Clean up memory in between runs
     void releaseMemory();

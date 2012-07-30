@@ -110,10 +110,10 @@ namespace {
     AliasResult alias(const Value *V1, unsigned V1Size,
                       const Value *V2, unsigned V2Size);
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
+                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0);
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0) {
-      return AliasAnalysis::getModRefInfo(CS1, CS2, Pa);
+                               ImmutableCallSite CS2, IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
+      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx);
     }
 
     /// getModRefBehavior - Return the behavior of the specified function if
@@ -542,7 +542,7 @@ GlobalsModRef::alias(const Value *V1, unsigned V1Size,
 
 AliasAnalysis::ModRefResult
 GlobalsModRef::getModRefInfo(ImmutableCallSite CS,
-                             const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+                             const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
   unsigned Known = ModRef;
 
   DEBUG(dbgs() << "ModRef query: does " << *(CS.getCalledFunction()) << " affect " << *P << "?\n");
@@ -573,7 +573,7 @@ GlobalsModRef::getModRefInfo(ImmutableCallSite CS,
     return NoModRef; // No need to query other mod/ref analyses
   }
   else {
-    AliasAnalysis::ModRefResult r = ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, P, Size, Pa));
+    AliasAnalysis::ModRefResult r = ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx));
     DEBUG(dbgs() << "\nAnswer: not NoModRef\n");
     return r;
   }

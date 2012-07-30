@@ -31,6 +31,7 @@
 #include "llvm/System/IncludeFile.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include <vector>
 
 namespace llvm {
@@ -41,7 +42,7 @@ class VAArgInst;
 class TargetData;
 class Pass;
 class AnalysisUsage;
-class HCFParentCallbacks;
+class IntegrationAttempt;
 
 class AliasAnalysis {
 protected:
@@ -101,7 +102,10 @@ public:
   // as specified.
   virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					const Value *V2, unsigned V2Size,
-					HCFParentCallbacks*);
+					IntegrationAttempt*);
+
+  virtual AliasResult aliasHypothetical(ValCtx V1, unsigned V1Size,
+					ValCtx V2, unsigned V2Size);
 
   /// alias - The main low level interface to the alias analysis implementation.
   /// Returns a Result indicating whether the two pointers are aliased to each
@@ -119,11 +123,16 @@ public:
   /// isNoAlias - A trivial helper function to check to see if the specified
   /// pointers are no-alias.
   bool isNoAlias(const Value *V1, unsigned V1Size,
-                 const Value *V2, unsigned V2Size, HCFParentCallbacks* Pa = 0) {
+                 const Value *V2, unsigned V2Size, IntegrationAttempt* Pa = 0) {
     if(Pa == 0)
       return alias(V1, V1Size, V2, V2Size) == NoAlias;
     else
       return aliasHypothetical(V1, V1Size, V2, V2Size, Pa) == NoAlias;
+  }
+
+  bool isNoAlias(const ValCtx V1, unsigned V1Size,
+		 const ValCtx V2, unsigned V2Size) {
+    return aliasHypothetical(V1, V1Size, V2, V2Size) == NoAlias;
   }
 
   /// pointsToConstantMemory - If the specified pointer is known to point into
@@ -240,35 +249,36 @@ public:
   /// pointer.
   ///
   virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                     const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
+                                     const Value *P, unsigned Size, 
+				     IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0);
 
   /// getModRefInfo - Return information about whether two call sites may refer
   /// to the same set of memory locations.  See 
   ///   http://llvm.org/docs/AliasAnalysis.html#ModRefInfo
   /// for details.
-  virtual ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                                     ImmutableCallSite CS2, HCFParentCallbacks* Pa = 0);
+  virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
+				     IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0);
 
 public:
   /// Convenience functions...
-  ModRefResult getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
-  ModRefResult getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0);
-  ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, unsigned Size, HCFParentCallbacks* Pa = 0);
-  ModRefResult getModRefInfo(const CallInst *C, const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
-    return getModRefInfo(ImmutableCallSite(C), P, Size, Pa);
+  ModRefResult getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, IntegrationAttempt* LCtx = 0, IntegrationAttempt* PCtx = 0);
+  ModRefResult getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, IntegrationAttempt* SCtx = 0, IntegrationAttempt* PCtx = 0);
+  ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0);
+  ModRefResult getModRefInfo(const CallInst *C, const Value *P, unsigned Size, IntegrationAttempt* CCtx = 0, IntegrationAttempt* PCtx = 0) {
+    return getModRefInfo(ImmutableCallSite(C), P, Size, CCtx, PCtx);
   }
   ModRefResult getModRefInfo(const InvokeInst *I,
-                             const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
-    return getModRefInfo(ImmutableCallSite(I), P, Size, Pa);
+                             const Value *P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0) {
+    return getModRefInfo(ImmutableCallSite(I), P, Size, ICtx, PCtx);
   }
   ModRefResult getModRefInfo(const Instruction *I,
-                             const Value *P, unsigned Size, HCFParentCallbacks* Pa = 0) {
+                             const Value *P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0) {
     switch (I->getOpcode()) {
-    case Instruction::VAArg:  return getModRefInfo((const VAArgInst*)I, P,Size, Pa);
-    case Instruction::Load:   return getModRefInfo((const LoadInst*)I, P, Size, Pa);
-    case Instruction::Store:  return getModRefInfo((const StoreInst*)I, P,Size, Pa);
-    case Instruction::Call:   return getModRefInfo((const CallInst*)I, P, Size, Pa);
-    case Instruction::Invoke: return getModRefInfo((const InvokeInst*)I,P,Size, Pa);
+    case Instruction::VAArg:  return getModRefInfo((const VAArgInst*)I, P,Size, ICtx, PCtx);
+    case Instruction::Load:   return getModRefInfo((const LoadInst*)I, P, Size, ICtx, PCtx);
+    case Instruction::Store:  return getModRefInfo((const StoreInst*)I, P,Size, ICtx, PCtx);
+    case Instruction::Call:   return getModRefInfo((const CallInst*)I, P, Size, ICtx, PCtx);
+    case Instruction::Invoke: return getModRefInfo((const InvokeInst*)I,P,Size, ICtx, PCtx);
     default:                  return NoModRef;
     }
   }

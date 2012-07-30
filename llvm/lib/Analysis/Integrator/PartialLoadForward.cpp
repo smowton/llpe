@@ -33,7 +33,7 @@ using namespace llvm;
 /// up.  This returns -1 if we have to give up, or a byte number in the stored
 /// value of the piece that feeds the load.
 bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
-							Value *WritePtr, HCFParentCallbacks* WriteCtx,
+							Value *WritePtr, IntegrationAttempt* WriteCtx,
 							uint64_t WriteSizeInBits,
 							/* Out params: */
 							uint64_t& FirstDef, 
@@ -51,7 +51,7 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 // Return true if this store contributes anything at all to the load.
 bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 							ValCtx StoreBase,
-							uint64_t StoreOffset,
+							int64_t StoreOffset,
 							uint64_t WriteSizeInBits,
 							/* Out params: */
 							uint64_t& FirstDef, 
@@ -64,38 +64,61 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
     LPDEBUG("Can't build a symbolic expression regarding " << *(LFA.getOriginalInst()) << " so it isn't a known base plus constant offset\n");
     return false;
   }
+
   ValCtx LoadBase = LFA.getBaseVC();
-  if (StoreBase != LoadBase) {
-    LPDEBUG("Write to " << StoreBase << " and load from " << LoadBase << " do not share a base\n");
+  uint64_t LoadOffset = LFA.getSymExprOffset(); // Succeeds if canBuildSymExpr does
+  
+  uint64_t LoadSize = TD->getTypeSizeInBits(LoadTy);
+
+  return GetDefinedRange(LoadBase, LoadOffset, LoadSize, 
+			 StoreBase, StoreOffset, WriteSizeInBits,
+			 FirstDef, FirstNotDef, ReadOffset);
+
+}
+
+// Given a defining instruction "definer" and a defined instruction "defined", each of which access an offset
+// from a base at a given size, find the offset FROM THE DEFINER which should be accessed to satisfy
+// the defined instruction, and the byte offsets of the defined which is satisfies.
+
+// For example, suppose Defined acesses X + (0-3) and Definer accesses X + (1-2), then the answer will be:
+// ReadOffset: 0 (start reading Definer's operand at offset 0)
+// FirstDef: 1 (The read satisfies Defined's offset 1...
+// FirstNotDef: 3 (to 2 (i.e. 3 is outside the range).
+
+// Returns false if there is no overlap at all.
+
+bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
+					 ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
+					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
+
+  if (DefinerBase != DefinedBase) {
+    LPDEBUG("Definer " << DefinerBase << " against target " << DefinedBase << " do not share a base\n");
     return false;
   }
 
-  uint64_t LoadOffset = LFA.getSymExprOffset(); // Succeeds if canBuildSymExpr does
-  
   // If the load and store don't overlap at all, the store doesn't provide
   // anything to the load.  In this case, they really don't alias at all, AA
   // must have gotten confused.
   // FIXME: Investigate cases where this bails out, e.g. rdar://7238614. Then
   // remove this check, as it is duplicated with what we have below.
-  uint64_t LoadSize = TD->getTypeSizeInBits(LoadTy);
   
-  if ((WriteSizeInBits & 7) | (LoadSize & 7))
+  if ((DefinerSizeBits & 7) | (DefinedSizeBits & 7))
     return -1;
-  uint64_t StoreSize = WriteSizeInBits >> 3;  // Convert to bytes.
-  LoadSize >>= 3;
+  uint64_t DefinerSize = DefinerSizeBits >> 3;  // Convert to bytes.
+  uint64_t DefinedSize = DefinedSizeBits >> 3;
   
   bool isAAFailure = false;
-  if (StoreOffset < LoadOffset)
-    isAAFailure = StoreOffset+int64_t(StoreSize) <= LoadOffset;
+  if (DefinerOffset < DefinedOffset)
+    isAAFailure = DefinerOffset+int64_t(DefinerSize) <= DefinedOffset;
   else
-    isAAFailure = LoadOffset+int64_t(LoadSize) <= StoreOffset;
+    isAAFailure = DefinedOffset+int64_t(DefinedSize) <= DefinerOffset;
 
   if (isAAFailure) {
 #if 0
     dbgs() << "STORE LOAD DEP WITH COMMON BASE:\n"
-    << "Base       = " << *StoreBase << "\n"
+    << "Base       = " << *DefinerBase << "\n"
     << "Store Ptr  = " << *WritePtr << "\n"
-    << "Store Offs = " << StoreOffset << "\n"
+    << "Store Offs = " << DefinerOffset << "\n"
     << "Load Ptr   = " << *LoadPtr << "\n";
     abort();
 #endif
@@ -103,24 +126,24 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
     return false;
   }
   
-  if(StoreOffset > LoadOffset) {
+  if(DefinerOffset > DefinedOffset) {
     
-    FirstDef = (StoreOffset - LoadOffset);
+    FirstDef = (DefinerOffset - DefinedOffset);
     ReadOffset = 0;
 
   }
   else {
 
     FirstDef = 0;
-    ReadOffset = LoadOffset-StoreOffset;
+    ReadOffset = DefinedOffset-DefinerOffset;
 
   }
 
-  if (StoreOffset+StoreSize < LoadOffset+LoadSize) {
-    FirstNotDef = LoadSize - ((LoadOffset+LoadSize) - (StoreOffset+StoreSize));
+  if (DefinerOffset+DefinerSize < DefinedOffset+DefinedSize) {
+    FirstNotDef = DefinedSize - ((DefinedOffset+DefinedSize) - (DefinerOffset+DefinerSize));
   }
   else {
-    FirstNotDef = LoadSize;
+    FirstNotDef = DefinedSize;
   }
 
   return true;
@@ -129,7 +152,7 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
 
 /// AnalyzeLoadFromClobberingStore - This function is called when we have a
 /// memdep query of a load that ends up being a clobbering store.
-bool IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, HCFParentCallbacks* DepSICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
+bool IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, IntegrationAttempt* DepSICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
 
   Value *StorePtr = DepSI->getPointerOperand();
   uint64_t StoreSize = TD->getTypeSizeInBits(DepSI->getOperand(0)->getType());
@@ -137,7 +160,7 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA,
 
 }
 
-bool IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, HCFParentCallbacks* MICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
+bool IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, IntegrationAttempt* MICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
 
   // If the mem operation is a non-constant size, we can't handle it.
   ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(MICtx->getConstReplacement(MI->getLength()));
@@ -151,25 +174,27 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LF
 /// GetBaseWithConstantOffset - Analyze the specified pointer to see if it can
 /// be expressed as a base pointer plus a constant offset.  Return the base and
 /// offset to the caller.
-ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, HCFParentCallbacks* PtrCtx, int64_t &Offset) {
+ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset) {
 
   Operator *PtrOp = dyn_cast<Operator>(Ptr);
-  if(PtrOp == 0) {
-    return make_vc(Ptr, PtrCtx);
-  }
   
   // Just look through bitcasts.
-  if (PtrOp->getOpcode() == Instruction::BitCast)
+  if (PtrOp && PtrOp->getOpcode() == Instruction::BitCast)
     return GetBaseWithConstantOffset(PtrOp->getOperand(0), PtrCtx, Offset);
   
   // If this is a GEP with constant indices, we can look through it.
-  GEPOperator *GEP = dyn_cast<GEPOperator>(PtrOp);
+  GEPOperator *GEP = dyn_cast_or_null<GEPOperator>(PtrOp);
   if (GEP == 0) {
-    ValCtx NewVC = PtrCtx->getReplacement(Ptr);
-    if(NewVC == make_vc(Ptr, PtrCtx))
-      return NewVC;
-    else
-      return GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+    if(PtrCtx) {
+      ValCtx NewVC = PtrCtx->getReplacement(Ptr);
+      if(NewVC == make_vc(Ptr, PtrCtx))
+	return NewVC;
+      else
+	return GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+    }
+    else {
+      return make_vc(Ptr, PtrCtx);
+    }
   }
   
   gep_type_iterator GTI = gep_type_begin(GEP);

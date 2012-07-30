@@ -54,12 +54,19 @@ AliasAnalysis::alias(const Value *V1, unsigned V1Size,
 AliasAnalysis::AliasResult
 AliasAnalysis::aliasHypothetical(const Value *V1, unsigned V1Size,
 				 const Value *V2, unsigned V2Size,
-				 HCFParentCallbacks* P) {
+				 IntegrationAttempt* P) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   if(!P)
     return alias(V1, V1Size, V2, V2Size);
   else
     return AA->aliasHypothetical(V1, V1Size, V2, V2Size, P);
+}
+
+AliasAnalysis::AliasResult
+AliasAnalysis::aliasHypothetical(ValCtx V1, unsigned V1Size,
+				 ValCtx V2, unsigned V2Size) {
+  assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
+  return AA->aliasHypothetical(V1, V1Size, V2, V2Size);
 }
 
 bool AliasAnalysis::pointsToConstantMemory(const Value *P) {
@@ -79,7 +86,10 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 
 AliasAnalysis::ModRefResult
 AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                             const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+                             const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  assert(!!CSCtx == !!PCtx);
+
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
 
@@ -94,7 +104,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     bool doesAlias = false;
     for (ImmutableCallSite::arg_iterator AI = CS.arg_begin(), AE = CS.arg_end();
          AI != AE; ++AI)
-      if (!isNoAlias(*AI, ~0U, P, Size, Pa)) {
+      if (!isNoAlias(make_vc(*AI, CSCtx), ~0U, make_vc(const_cast<Value*>(P), PCtx), Size)) {
         doesAlias = true;
         break;
       }
@@ -113,13 +123,15 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS, P, Size, Pa) & Mask);
+  return ModRefResult(AA->getModRefInfo(CS, P, Size, CSCtx, PCtx) & Mask);
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, HCFParentCallbacks* Pa) {
+AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, IntegrationAttempt* CS1Ctx, IntegrationAttempt* CS2Ctx) {
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
+
+  assert(!!CS1Ctx == !!CS2Ctx);
 
   // If CS1 or CS2 are readnone, they don't interact.
   ModRefBehavior CS1B = getModRefBehavior(CS1);
@@ -146,7 +158,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, HCFPa
     AliasAnalysis::ModRefResult R = NoModRef;
     for (ImmutableCallSite::arg_iterator
          I = CS2.arg_begin(), E = CS2.arg_end(); I != E; ++I) {
-      R = ModRefResult((R | getModRefInfo(CS1, *I, UnknownSize, Pa)) & Mask);
+      R = ModRefResult((R | getModRefInfo(CS1, *I, UnknownSize, CS1Ctx, CS2Ctx)) & Mask);
       if (R == Mask)
         break;
     }
@@ -159,7 +171,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, HCFPa
     AliasAnalysis::ModRefResult R = NoModRef;
     for (ImmutableCallSite::arg_iterator
          I = CS1.arg_begin(), E = CS1.arg_end(); I != E; ++I)
-      if (getModRefInfo(CS2, *I, UnknownSize, Pa) != NoModRef) {
+      if (getModRefInfo(CS2, *I, UnknownSize, CS2Ctx, CS1Ctx) != NoModRef) {
         R = Mask;
         break;
       }
@@ -172,7 +184,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, HCFPa
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS1, CS2, Pa) & Mask);
+  return ModRefResult(AA->getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx) & Mask);
 }
 
 AliasAnalysis::ModRefBehavior
@@ -207,14 +219,17 @@ AliasAnalysis::getModRefBehavior(const Function *F) {
 //===----------------------------------------------------------------------===//
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, IntegrationAttempt* LCtx, IntegrationAttempt* PCtx) {
+
+  assert(!!LCtx == !!PCtx);
+
   // Be conservative in the face of volatile.
   if (L->isVolatile())
     return ModRef;
 
   // If the load address doesn't alias the given address, it doesn't read
   // or write the specified memory.
-  if (!aliasHypothetical(L->getOperand(0), getTypeStoreSize(L->getType()), P, Size, Pa))
+  if (!aliasHypothetical(make_vc(L->getOperand(0), LCtx), getTypeStoreSize(L->getType()), make_vc(const_cast<Value*>(P), PCtx), Size))
     return NoModRef;
 
   // Otherwise, a load just reads.
@@ -222,15 +237,18 @@ AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, H
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, IntegrationAttempt* SCtx, IntegrationAttempt* PCtx) {
+
+  assert(!!SCtx == !!PCtx);
+
   // Be conservative in the face of volatile.
   if (S->isVolatile())
     return ModRef;
 
   // If the store address cannot alias the pointer in question, then the
   // specified memory cannot be modified by the store.
-  if (!aliasHypothetical(S->getOperand(1),
-             getTypeStoreSize(S->getOperand(0)->getType()), P, Size, Pa))
+  if (!aliasHypothetical(make_vc(const_cast<Value*>(S->getOperand(1)), SCtx),
+			 getTypeStoreSize(S->getOperand(0)->getType()), make_vc(const_cast<Value*>(P), PCtx), Size))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
@@ -243,10 +261,13 @@ AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, 
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const VAArgInst *V, const Value *P, unsigned Size, HCFParentCallbacks* Pa) {
+AliasAnalysis::getModRefInfo(const VAArgInst *V, const Value *P, unsigned Size, IntegrationAttempt* VCtx, IntegrationAttempt* PCtx) {
+
+  assert(!!VCtx == !!PCtx);
+
   // If the va_arg address cannot alias the pointer in question, then the
   // specified memory cannot be accessed by the va_arg.
-  if (!aliasHypothetical(V->getOperand(0), UnknownSize, P, Size, Pa))
+  if (!aliasHypothetical(make_vc(const_cast<Value*>(V->getOperand(0)), VCtx), UnknownSize, make_vc(const_cast<Value*>(P), PCtx), Size))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been

@@ -1025,12 +1025,9 @@ void IntegrationAttempt::investigateUsers(Value* V) {
       }
       else {
 
-	const Loop* outermostChildLoop = L;
+	if((!MyL) || MyL->contains(L)) {
 
-	while(outermostChildLoop && (outermostChildLoop->getParentLoop() != MyL))
-	  outermostChildLoop = outermostChildLoop->getParentLoop();
-
-	if(outermostChildLoop) {
+	  const Loop* outermostChildLoop = immediateChildLoop(MyL, L);
 	  // Used in a child loop. Check if that child exists at all (having just setReplacement'd it might make it so!) and defer to it.
 
 	  PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
@@ -1052,6 +1049,378 @@ void IntegrationAttempt::investigateUsers(Value* V) {
   }
 
 }
+
+/*
+ 
+bool IntegrationAttempt::localValueIsDead(Value* V) {
+
+  Instruction* I = dyn_cast<Instruction>(V);
+
+  if(I && blockIsDead(I->getParent()))
+    return true;
+  if(getConstReplacement(V))
+    return true;
+  if(deadValues.count(V))
+    return true;
+
+  return false;
+
+}
+
+bool PeelAttempt::variantInstructionIsDead(Instruction* I, const Loop* IL) {
+
+  if(Iterations[Iterations.size() - 1]->iterStatus != IterationStatusFinal) {
+    LPDEBUG("Must assume " << *I << " is alive due to use in unfinished loop " << L->getHeader()->getName() << "\n");
+    return false;
+  }
+
+  BasicBlock* IBB = I->getParent();
+  if(IBB == L->getHeader() && isa<PHINode>(I)) {
+    // Header PHI
+    return Iterations[0]->localValueIsDead(I);
+  }
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); ++it) {
+    if(!(*it)->variantInstructionIsDead(I, IL))
+      return false;
+  }
+
+  return true;
+
+}
+
+bool IntegrationAttempt::variantInstructionIsDead(Instruction* I, const Loop* IL) {
+
+  const Loop* L = getLoopContext();
+
+  if(IL == L) {
+
+    return localValueIsDead(I);
+
+  }
+  else {
+
+    const Loop* ChildL = immediateChildLoop(L, IL);
+    PeelAttempt* LPA = getPeelAttempt(IL);
+    if(LPA)
+      return LPA->variantInstructionIsDead(I, IL);
+    else {
+      LPDEBUG("Must assume user " << *I << " is alive as context loop is unexpanded\n");
+      return false;
+    }
+
+  }
+
+}
+
+bool IntegrationAttempt::valueIsDead(Value* V) {
+
+  // Defer if necessary:
+  const Loop* L = getValueScope(V);
+  const Loop* MyL = getLoopContext();
+
+  if(MyL == L) {
+    
+    return localValueIsDead(V);
+
+  }
+  else if((!MyL) || MyL->contains(L)) {
+    
+    Instruction* I = cast<Instruction>(V);
+    return variantInstructionIsDead(I, L);
+
+  }
+  else {
+
+    assert(isa<PHINode>(V) && L == MyL->getParentLoop());
+    return parent->localValueIsDead();
+
+  }
+
+}
+
+void IntegrationAttempt::queueKillValueWithScope(Value* V, const Loop* ScopeL) {
+
+  if(ScopeL == getLoopContext()) {
+
+    if(!localValueIsDead(V))
+      pass->queueDSE(this, V);
+
+  }
+  else {
+
+    parent->queueKillValueWithScope(V, ScopeL);
+
+  }
+
+}
+
+void IntegrationAttempt::queueKillValue(Value* V) {
+
+  const Loop* IL = getValueScope(V);
+  return queueKillValueWithScope(V, IL);
+
+}
+
+bool InlineAttempt::killHeaderPHI(PHINode* PN) {
+
+  return false;
+
+}
+
+bool PeelIteration::killHeaderPHI(PHINode* PN) {
+
+  BasicBlock* PNBB = PN->getParent();
+  if(PNBB == L->getHeader()) {
+    // Header PHI. Have the preheader or latch do the reconsider.
+    if(this == parentPA->Iterations[0]) {
+      pass->queueDSE(parent, PN->getIncomingValueForBlock(L->getLoopPreheader()));
+    }
+    else {
+      std::vector<PeelIteration*>::iterator it = std::find(parentPA->Iterations.begin(), parentPA->Iterations.end(), this);
+      it--;
+      pass->queueDSE(parent, PN->getIncomingValueForBlock(L->getLoopLatch()));
+    }
+    return true;
+  }
+
+  return false;
+
+}
+
+void InlineAttempt::killValue(Value* V) {
+
+  // Special cases: if we're an argument, have our parent reconsider values used by the call.
+
+  if(Argument* A = dyn_cast<Argument>(V)) {
+
+    deadValues.insert(V);
+    pass->queueDSE(parent, CI->getArgOperand(A->getArgNo()));
+
+  }
+  else {
+
+    IntegrationAttempt::killValue(V);
+
+  }
+
+}
+
+void IntegrationAttempt::killValue(Value* V) {
+
+  deadValues.insert(V);
+
+  // If we're a header PHI, have our dynamic predecessor (previous iteration / predecessor)
+  // reconsider values that we use.
+  // If we're an exit PHI, have the last iteration of the relevant loop do the reconsider.
+
+  const Loop* MyL = getLoopContext();
+
+  if(PHINode* PN = dyn_cast<PHINode>(V)) {
+    
+    if(killHeaderPHI(PN))
+      return;
+
+    for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
+
+      Value* V = PN->getIncomingValue(i);
+      const Loop* L = getValueScope(V);
+
+      if(L != MyL && ((!MyL) || MyL->contains(L))) {
+
+	// Exit PHI.
+	PeelAttempt* LPA = getPeelAttempt(L);
+	if(!LPA)
+	  continue;
+
+	PeelIteration* Final = LPA->Iterations[LPA->Iterations.size() - 1];
+	if(Final->iterStatus != IterationStatusFinal)
+	  continue;
+
+	pass->queueDSE(Final, V);
+
+      }
+      else {
+
+	queueKillValue(V);
+
+      }
+
+    }
+
+  }
+  // Otherwise all operands are either our own or invariants. 
+  else if(StoreInst* SI = dyn_cast<StoreInst>(V)) {
+
+    queueKillValue(SI->getValueOperand());
+
+  }
+  else {
+
+    for(int i = 0; i < V->getNumOperands(); ++i) {
+      queueKillValue(V->getOperand(i));
+    }
+
+  }
+  
+  for(Value::use_iterator UI = I->use_begin(), UE = I->use_end(); UI != UE; ++UI) {
+
+    if(StoreInst* SI = dyn_cast<StoreInst>(UI)) {
+
+      const Loop* SScope = getValueScope(SI);
+      if(SScope != MyL) {
+
+	if((!MyL) || MyL->contains(SScope)) {
+
+	  killVariant(SI, SScope);
+	  continue;
+
+	}
+
+      }
+
+      killValueWithScope(SI, SScope);
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::killValueWithScope(Value* V, const Loop* L) {
+
+  if(getLoopContext() == L)
+    killValue(V);
+  else
+    parent->killValueWithScope(V, L);
+
+}
+
+void PeelAttempt::killVariant(Instruction* I, const Loop* IL) {
+
+  if(IL == L) {
+
+    BasicBlock* IBB = I->getParent();
+    if(IBB == L->getHeader() && isa<PHINode>(I)) {
+      // Header PHI
+      Iterations[0]->killValue(I);
+      return;
+    }
+
+  }
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); ++it) {
+    (*it)->killValue(I);
+  }
+
+}
+
+void IntegrationAttempt::killVariant(Instruction* I, const Loop* IL) {
+
+  const Loop* L = getLoopContext();
+  if(IL == L) {
+
+    killValue(I);
+
+  }
+  else {
+
+    const Loop* ChildL = immediateChildLoop(L, IL);
+    PeelAttempt* LPA = getPeelAttempt(IL);
+    if(LPA)
+      LPA->killVariant(I, IL);
+
+  }
+
+}
+
+void IntegrationAttempt::tryKillValue(Value* V) {
+
+  assert(V->getType()->isPointerTy());
+
+  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+
+    Instruction* UserI = dyn_cast<Instruction>(UI);
+    if(!UserI) {
+      LPDEBUG("Can't kill " << *V << " due to non-instruction user " << *UserI << "\n");
+      return;
+    }
+
+    if(valueIsDead(UserI))
+      continue;
+
+    if(StoreInst* SI = dyn_cast<StoreInst>(UserI)) {
+
+      if(V == SI->getValueOperand()) {
+	LPDEBUG("Can't kill " << *V << " due to store by " << *SI << "\n");
+	return;
+      }
+
+    }
+    else {
+      LPDEBUG("Can't kill " << *V << " due to non-store user " << *UserI << "\n");
+      return;
+    }
+
+  }
+
+  killValue(V);
+
+}
+
+void IntegrationAttempt::queueAllLivePointers() {
+
+  const Loop* MyL = getLoopContext();
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    if(LI[&F]->getLoopFor(BB)) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	Instruction* I = II;
+	const Loop* L = getValueScope(I);
+	if(L != MyL)
+	  continue;
+
+	if(I->getType()->isPointerTy() && !getConstReplacement(I))
+	  pass->queueDSE(this, I);
+
+      }
+
+    }
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
+    it->second->queueAllLivePointers();
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it !+ it2; ++it)
+    it->second->queueAllLivePointers();
+
+}
+
+void InlineAttempt::queueAllLivePointers() {
+
+  for(Function::arg_iterator AI = F.arg_begin, AE = F.arg_end(); AI != AE; ++AI) {
+
+    Argument* A = AI;
+    if(A->getType()->isPointerTy() && !getConstReplacement(A))
+      pass->queueDSE(this, A);
+
+  }
+
+}
+
+void PeelAttempt::queueAllLivePointers() {
+
+  for(std::vector<PeelIteration*>::iterator it = Iteration.begin(), it2 = Iterations.end(); it != it2; ++it)
+    (*it)->queueAllLivePointers();
+
+}
+
+*/
 
 void IntegrationAttempt::queueCheckAllLoads() {
 
@@ -1128,7 +1497,7 @@ void IntegrationAttempt::checkLoad(LoadInst* LI) {
 
 namespace llvm {
 
-  raw_ostream& operator<<(raw_ostream& Stream, const HCFParentCallbacks& P) {
+  raw_ostream& operator<<(raw_ostream& Stream, const IntegrationAttempt& P) {
 
     P.describe(Stream);
     return Stream;
@@ -1161,7 +1530,7 @@ namespace llvm {
 	Stream << "Def(";
       }
       Stream << *MDR.getInst();
-      if(HCFParentCallbacks* P = MDR.getCookie()) {
+      if(IntegrationAttempt* P = MDR.getCookie()) {
 	Stream << "@" << *P;
       }
       Stream << ")";
