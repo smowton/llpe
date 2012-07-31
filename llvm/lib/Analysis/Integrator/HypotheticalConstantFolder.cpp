@@ -448,34 +448,6 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
   
 }
 
-bool IntegrationAttempt::queueImproveNextIterationPHI(Instruction* I) {
-
-  return false;
-
-}
-
-bool PeelIteration::queueImproveNextIterationPHI(Instruction* I) {
-
-  if(PHINode* PN = dyn_cast<PHINode>(I)) {
-
-    if(PN->getParent() == L->getHeader()) {
-
-      if(PeelIteration* PI = getNextIteration()) {
-
-	pass->queueTryEvaluate(PI, PN);
-
-      }
-
-      return true;
-
-    }
-
-  }
-
-  return false;
-
-}
-
 void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
 
   if(SI->mayWriteToMemory()) {
@@ -512,37 +484,6 @@ void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
       InstBlockedOpens.erase(it);
 
     }
-
-  }
-
-}
-
-void PeelIteration::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used) {
-
-  const Loop* immediateChild = immediateChildLoop(L, VILoop);
-
-  PeelAttempt* LPA = getPeelAttempt(immediateChild);
-  if(LPA)
-    LPA->queueTryEvaluateVariant(VI, VILoop, Used);
-
-}
-
-void PeelAttempt::queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used) {
-
-  // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
-  if(VILoop == L && VI->getParent() == L->getHeader() && isa<PHINode>(VI)) {
-
-    Iterations[0]->queueTryEvaluateGeneric(VI, Used);
-    return;
-
-  }
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
-
-    if(VILoop == L)
-      (*it)->queueTryEvaluateGeneric(VI, Used);
-    else
-      (*it)->queueTryEvaluateVariant(VI, VILoop, Used);
 
   }
 
@@ -979,25 +920,91 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
 }
 
-void IntegrationAttempt::queueTryEvalExitPHI(Instruction* UserI) {
+// Implement a visitor that gets called for every dynamic use of an instruction.
 
-  assert(0 && "Tried to queue exit PHI in non-loop context");
+bool IntegrationAttempt::visitNextIterationPHI(Instruction* I, VisitorContext& Visitor) {
+
+  return false;
 
 }
-  
-void PeelIteration::queueTryEvalExitPHI(Instruction* UserI) {
 
-  // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI and belongs to our immediate parent.
-  if(iterStatus == IterationStatusFinal) {
-    assert(isa<PHINode>(UserI) && LI[&F]->getLoopFor(UserI->getParent()) == (L->getParentLoop()));
-    pass->queueTryEvaluate(parent, UserI);
+bool PeelIteration::visitNextIterationPHI(Instruction* I, VisitorContext& Visitor) {
+
+  if(PHINode* PN = dyn_cast<PHINode>(I)) {
+
+    if(PN->getParent() == L->getHeader()) {
+
+      if(PeelIteration* PI = getNextIteration()) {
+
+	Visitor.visit(PI, PN);
+
+      }
+      else {
+
+	Visitor.notifyUsersMissed();
+
+      }
+
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
+void PeelIteration::visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor) {
+
+  const Loop* immediateChild = immediateChildLoop(L, VILoop);
+
+  PeelAttempt* LPA = getPeelAttempt(immediateChild);
+  if(LPA)
+    LPA->visitVariant(VI, VILoop, Visitor);
+
+}
+
+void PeelAttempt::visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor) {
+
+  // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
+  if(VILoop == L && VI->getParent() == L->getHeader() && isa<PHINode>(VI)) {
+
+    Visitor.visit(Iterations[0], VI);
+    return;
+
+  }
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
+
+    if(VILoop == L)
+      Visitor.visit(*it, VI);
+    else
+      (*it)->visitVariant(VI, VILoop, Visitor);
+
   }
 
 }
 
-void IntegrationAttempt::investigateUsers(Value* V) {
+void IntegrationAttempt::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
-  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+  assert(0 && "Tried to visit exit PHI in non-loop context");
+
+}
+  
+void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
+
+  // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI and belongs to our immediate parent.
+  if(iterStatus == IterationStatusFinal) {
+    assert(isa<PHINode>(UserI) && LI[&F]->getLoopFor(UserI->getParent()) == (L->getParentLoop()));
+    Visitor.visit(parent, UserI);
+  }
+
+}
+
+void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
+
+  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE && Visitor.shouldContinue(); ++UI) {
     // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
     // a child loop (defer to it to decide what to do), or a parent loop (again defer).
     // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
@@ -1012,13 +1019,10 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 
       if(L == MyL) {
 	  
-	if(!queueImproveNextIterationPHI(UserI)) {
+	if(!visitNextIterationPHI(UserI, Visitor)) {
 
 	  // Just an ordinary user in the same iteration (or out of any loop!).
-
-	  if(shouldTryEvaluate(UserI, false)) {
-	    queueTryEvaluateGeneric(UserI, V);
-	  }
+	  Visitor.visit(this, UserI);
 
 	}
 
@@ -1028,17 +1032,22 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 	if((!MyL) || MyL->contains(L)) {
 
 	  const Loop* outermostChildLoop = immediateChildLoop(MyL, L);
-	  // Used in a child loop. Check if that child exists at all (having just setReplacement'd it might make it so!) and defer to it.
+	  // Used in a child loop. Check if that child exists at all and defer to it.
 
 	  PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
 
 	  if(LPA)
-	    LPA->queueTryEvaluateVariant(UserI, L, V);
+	    LPA->visitVariant(UserI, L, Visitor);
+	  else {
+
+	    Visitor.notifyUsersMissed();
+
+	  }
 
 	}
 	else {
 
-	  queueTryEvalExitPHI(UserI);
+	  visitExitPHI(UserI, Visitor);
 
 	}
 
@@ -1050,136 +1059,252 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 
 }
 
-/*
- 
+class InvestigateVisitor : public VisitorContext {
+
+  Value* V;
+
+public:
+
+  InvestigateVisitor(Value* _V) : V(_V) { }
+
+  virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
+
+    if(Ctx->shouldTryEvaluate(UserI, false)) {
+      Ctx->queueTryEvaluateGeneric(UserI, V);
+    }
+
+  }
+
+  virtual void notifyUsersMissed() { }
+  virtual bool shouldContinue() { return true; }
+
+};
+
+void IntegrationAttempt::investigateUsers(Value* V) {
+
+  InvestigateVisitor IV(V);
+  visitUsers(V, IV);
+
+}
+
 bool IntegrationAttempt::localValueIsDead(Value* V) {
 
   Instruction* I = dyn_cast<Instruction>(V);
 
+  if(deadValues.count(V))
+    return true;
   if(I && blockIsDead(I->getParent()))
     return true;
-  if(getConstReplacement(V))
-    return true;
-  if(deadValues.count(V))
+  if(getReplacement(V) != getDefaultVC(V))
     return true;
 
   return false;
 
 }
 
-bool PeelAttempt::variantInstructionIsDead(Instruction* I, const Loop* IL) {
+class DIVisitor : public VisitorContext {
 
-  if(Iterations[Iterations.size() - 1]->iterStatus != IterationStatusFinal) {
-    LPDEBUG("Must assume " << *I << " is alive due to use in unfinished loop " << L->getHeader()->getName() << "\n");
-    return false;
-  }
+  Value* V;
 
-  BasicBlock* IBB = I->getParent();
-  if(IBB == L->getHeader() && isa<PHINode>(I)) {
-    // Header PHI
-    return Iterations[0]->localValueIsDead(I);
-  }
+public:
 
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); ++it) {
-    if(!(*it)->variantInstructionIsDead(I, IL))
-      return false;
-  }
+  bool maybeLive;
 
-  return true;
+  DIVisitor(Value* _V) : V(_V), maybeLive(false) { }
 
-}
+  virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
-bool IntegrationAttempt::variantInstructionIsDead(Instruction* I, const Loop* IL) {
+    if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
-  const Loop* L = getLoopContext();
+      InlineAttempt* IA = Ctx->getInlineAttempt(CI);
+      if(!IA) {
+	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << *CI << "\n");
+	maybeLive = true;
+	return;
+      }
 
-  if(IL == L) {
+      if(V == CI->getCalledValue()) {
+	maybeLive = true;
+      }
+      else {
 
-    return localValueIsDead(I);
+	Function::arg_iterator it = CI->getCalledFunction()->arg_begin();
+	for(unsigned i = 0; i < CI->getNumArgOperands(); ++i, ++it) {
 
-  }
-  else {
+	  if(CI->getArgOperand(i) == V) {
 
-    const Loop* ChildL = immediateChildLoop(L, IL);
-    PeelAttempt* LPA = getPeelAttempt(IL);
-    if(LPA)
-      return LPA->variantInstructionIsDead(I, IL);
+	    if(!IA->localValueIsDead(&*it)) {
+
+	      maybeLive = true;
+	      return;
+
+	    }
+
+	  }
+
+	}
+
+      }
+    }
     else {
-      LPDEBUG("Must assume user " << *I << " is alive as context loop is unexpanded\n");
-      return false;
+      if(!Ctx->localValueIsDead(UserI))
+	maybeLive = true;
     }
 
   }
+  
+  virtual void notifyUsersMissed() {
+    maybeLive = true;
+  }
+
+  virtual bool shouldContinue() {
+    return !maybeLive;
+  }
+ 
+};
+
+bool InlineAttempt::isOwnCallUnused() {
+
+  if(!parent)
+    return true;
+  else
+    return parent->valueIsDead(CI);
 
 }
 
 bool IntegrationAttempt::valueIsDead(Value* V) {
 
-  // Defer if necessary:
-  const Loop* L = getValueScope(V);
+  if(isa<ReturnInst>(V)) {
+    
+    InlineAttempt* CallerIA = getFunctionRoot();
+    return CallerIA->isOwnCallUnused();
+
+  }
+  else {
+
+    DIVisitor DIV(V);
+    visitUsers(V, DIV);
+
+    return !DIV.maybeLive;
+
+  }
+
+}
+
+class QueueDIECallback : public Callable {
+
+  Value* V;
+
+public:
+
+  QueueDIECallback(Value* _V) : V(_V) { }
+
+  virtual void callback(IntegrationAttempt* Ctx) {
+
+    Ctx->queueDIE(V, Ctx);
+
+  }
+
+};
+
+bool IntegrationAttempt::shouldDIE(Value* V) {
+
+  if(isa<Argument>(V))
+    return true;
+
+  Instruction* I = dyn_cast<Instruction>(V);
+  
+  // Don't try to DIE blocks, functions, constants.
+  if(!I)
+    return false;
+
+  if(CallInst* CI = dyn_cast<CallInst>(V)) {
+    return !!getInlineAttempt(CI);
+  }
+
+  switch(I->getOpcode()) {
+  default:
+    return true;
+  case Instruction::VAArg:
+  case Instruction::Alloca:
+  case Instruction::Invoke:
+  case Instruction::Store:
+  case Instruction::Br:
+  case Instruction::IndirectBr:
+  case Instruction::Switch:
+  case Instruction::Unwind:
+  case Instruction::Unreachable:
+    return false;
+  }
+
+}
+
+void IntegrationAttempt::queueDIE(Value* V, IntegrationAttempt* Ctx) {
+
+  if(!shouldDIE(V))
+    return;
+  if(!Ctx->localValueIsDead(V))
+    pass->queueDIE(Ctx, V);
+
+}
+
+void IntegrationAttempt::queueDIE(Value* V) {
+
   const Loop* MyL = getLoopContext();
+  const Loop* L = getValueScope(V);
 
-  if(MyL == L) {
-    
-    return localValueIsDead(V);
+  if(L != MyL) {
 
-  }
-  else if((!MyL) || MyL->contains(L)) {
-    
-    Instruction* I = cast<Instruction>(V);
-    return variantInstructionIsDead(I, L);
+    if((!MyL) || MyL->contains(L)) {
+
+      // V is from a child loop; queue against the last iteration if we can.
+
+      PeelAttempt* LPA = getPeelAttempt(L);
+      if(!LPA)
+	return;
+
+      PeelIteration* Final = LPA->Iterations[LPA->Iterations.size() - 1];
+      if(Final->iterStatus != IterationStatusFinal)
+	return;
+
+      queueDIE(V, Final);
+
+    }
+    else {
+
+      // V is from a parent loop (or the root function).
+      QueueDIECallback QDC(V);
+      callWithScope(QDC, L);
+
+    }
 
   }
   else {
 
-    assert(isa<PHINode>(V) && L == MyL->getParentLoop());
-    return parent->localValueIsDead();
+    queueDIE(V, this);
 
   }
 
 }
 
-void IntegrationAttempt::queueKillValueWithScope(Value* V, const Loop* ScopeL) {
-
-  if(ScopeL == getLoopContext()) {
-
-    if(!localValueIsDead(V))
-      pass->queueDSE(this, V);
-
-  }
-  else {
-
-    parent->queueKillValueWithScope(V, ScopeL);
-
-  }
-
-}
-
-void IntegrationAttempt::queueKillValue(Value* V) {
-
-  const Loop* IL = getValueScope(V);
-  return queueKillValueWithScope(V, IL);
-
-}
-
-bool InlineAttempt::killHeaderPHI(PHINode* PN) {
+bool InlineAttempt::queueHeaderPHIOperands(PHINode* PN) {
 
   return false;
 
 }
 
-bool PeelIteration::killHeaderPHI(PHINode* PN) {
+bool PeelIteration::queueHeaderPHIOperands(PHINode* PN) {
 
   BasicBlock* PNBB = PN->getParent();
   if(PNBB == L->getHeader()) {
     // Header PHI. Have the preheader or latch do the reconsider.
     if(this == parentPA->Iterations[0]) {
-      pass->queueDSE(parent, PN->getIncomingValueForBlock(L->getLoopPreheader()));
+      queueDIE(PN->getIncomingValueForBlock(L->getLoopPreheader()), parent);
     }
     else {
       std::vector<PeelIteration*>::iterator it = std::find(parentPA->Iterations.begin(), parentPA->Iterations.end(), this);
       it--;
-      pass->queueDSE(parent, PN->getIncomingValueForBlock(L->getLoopLatch()));
+      queueDIE(PN->getIncomingValueForBlock(L->getLoopLatch()), *it);
     }
     return true;
   }
@@ -1188,205 +1313,161 @@ bool PeelIteration::killHeaderPHI(PHINode* PN) {
 
 }
 
-void InlineAttempt::killValue(Value* V) {
+void InlineAttempt::queueDIEOperands(Value* V) {
 
-  // Special cases: if we're an argument, have our parent reconsider values used by the call.
+  // Special case: if we're an argument, have our parent reconsider values used by the call.
 
   if(Argument* A = dyn_cast<Argument>(V)) {
 
-    deadValues.insert(V);
-    pass->queueDSE(parent, CI->getArgOperand(A->getArgNo()));
+    if(CI) {
+      queueDIE(CI->getArgOperand(A->getArgNo()), parent);
+    }
 
   }
   else {
 
-    IntegrationAttempt::killValue(V);
+    IntegrationAttempt::queueDIEOperands(V);
 
   }
 
 }
 
-void IntegrationAttempt::killValue(Value* V) {
+void IntegrationAttempt::queueDIEOperands(Value* V) {
 
-  deadValues.insert(V);
+  // If we're a header PHI, either some parent context or the previous iteration argument might have died.
+  // If we're an exit PHI, our operand in the last loop iteration might have died.
 
-  // If we're a header PHI, have our dynamic predecessor (previous iteration / predecessor)
-  // reconsider values that we use.
-  // If we're an exit PHI, have the last iteration of the relevant loop do the reconsider.
+  Instruction* I = dyn_cast<Instruction>(V);
+  if(!I)
+    return;
 
   const Loop* MyL = getLoopContext();
 
-  if(PHINode* PN = dyn_cast<PHINode>(V)) {
+  if(PHINode* PN = dyn_cast<PHINode>(I)) {
     
-    if(killHeaderPHI(PN))
+    if(MyL == getValueScope(PN) && queueHeaderPHIOperands(PN))
       return;
 
     for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
 
-      Value* V = PN->getIncomingValue(i);
-      const Loop* L = getValueScope(V);
-
-      if(L != MyL && ((!MyL) || MyL->contains(L))) {
-
-	// Exit PHI.
-	PeelAttempt* LPA = getPeelAttempt(L);
-	if(!LPA)
-	  continue;
-
-	PeelIteration* Final = LPA->Iterations[LPA->Iterations.size() - 1];
-	if(Final->iterStatus != IterationStatusFinal)
-	  continue;
-
-	pass->queueDSE(Final, V);
-
-      }
-      else {
-
-	queueKillValue(V);
-
-      }
+      Value* InV = PN->getIncomingValue(i);
+      queueDIE(InV);
 
     }
 
   }
-  // Otherwise all operands are either our own or invariants. 
-  else if(StoreInst* SI = dyn_cast<StoreInst>(V)) {
-
-    queueKillValue(SI->getValueOperand());
-
-  }
   else {
 
-    for(int i = 0; i < V->getNumOperands(); ++i) {
-      queueKillValue(V->getOperand(i));
+    for(unsigned i = 0; i < I->getNumOperands(); ++i) {
+      queueDIE(I->getOperand(i));
     }
 
   }
   
-  for(Value::use_iterator UI = I->use_begin(), UE = I->use_end(); UI != UE; ++UI) {
-
-    if(StoreInst* SI = dyn_cast<StoreInst>(UI)) {
-
-      const Loop* SScope = getValueScope(SI);
-      if(SScope != MyL) {
-
-	if((!MyL) || MyL->contains(SScope)) {
-
-	  killVariant(SI, SScope);
-	  continue;
-
-	}
-
-      }
-
-      killValueWithScope(SI, SScope);
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::killValueWithScope(Value* V, const Loop* L) {
-
-  if(getLoopContext() == L)
-    killValue(V);
-  else
-    parent->killValueWithScope(V, L);
-
-}
-
-void PeelAttempt::killVariant(Instruction* I, const Loop* IL) {
-
-  if(IL == L) {
-
-    BasicBlock* IBB = I->getParent();
-    if(IBB == L->getHeader() && isa<PHINode>(I)) {
-      // Header PHI
-      Iterations[0]->killValue(I);
-      return;
-    }
-
-  }
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); ++it) {
-    (*it)->killValue(I);
-  }
-
-}
-
-void IntegrationAttempt::killVariant(Instruction* I, const Loop* IL) {
-
-  const Loop* L = getLoopContext();
-  if(IL == L) {
-
-    killValue(I);
-
-  }
-  else {
-
-    const Loop* ChildL = immediateChildLoop(L, IL);
-    PeelAttempt* LPA = getPeelAttempt(IL);
-    if(LPA)
-      LPA->killVariant(I, IL);
-
-  }
-
 }
 
 void IntegrationAttempt::tryKillValue(Value* V) {
 
-  assert(V->getType()->isPointerTy());
+  if(deadValues.count(V))
+    return;
 
-  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+  LPDEBUG("Trying to kill " << *V << "\n");
 
-    Instruction* UserI = dyn_cast<Instruction>(UI);
-    if(!UserI) {
-      LPDEBUG("Can't kill " << *V << " due to non-instruction user " << *UserI << "\n");
-      return;
-    }
+  Instruction* I = dyn_cast<Instruction>(V);
+  if(I && I->mayHaveSideEffects()) {
+    LPDEBUG("Not eliminated because of possible side-effects\n");
 
-    if(valueIsDead(UserI))
-      continue;
+    if(CallInst* CI = dyn_cast<CallInst>(I)) {
+      if(valueIsDead(V)) {
 
-    if(StoreInst* SI = dyn_cast<StoreInst>(UserI)) {
+	LPDEBUG("Call nontheless unused, queueing return instructions\n");
 
-      if(V == SI->getValueOperand()) {
-	LPDEBUG("Can't kill " << *V << " due to store by " << *SI << "\n");
-	return;
+	// Even if we can't remove the call, its return value is unused.
+	if(InlineAttempt* IA = getInlineAttempt(CI)) {
+	  
+	  IA->queueAllReturnInsts();
+	
+	}
+
       }
-
-    }
-    else {
-      LPDEBUG("Can't kill " << *V << " due to non-store user " << *UserI << "\n");
-      return;
     }
 
+    return;
   }
 
-  killValue(V);
+  if(valueIsDead(V)) {
+
+    LPDEBUG("Success, queueing operands\n");
+
+    deadValues.insert(V);
+    queueDIEOperands(V);
+
+  }
+  else {
+    LPDEBUG("Not killed\n");
+  }
 
 }
 
-void IntegrationAttempt::queueAllLivePointers() {
+class AlwaysTrue : public UnaryPred {
+public:
+
+  virtual bool operator()(Value*) { 
+
+    return true;
+
+  }
+
+};
+
+template<class T> class MatchT : public UnaryPred {
+public:
+
+  virtual bool operator()(Value* V) {
+
+    return isa<T>(V);
+
+  }
+  
+};
+
+void IntegrationAttempt::queueAllLiveValues() {
+
+  AlwaysTrue AT;
+  queueAllLiveValuesMatching(AT);
+
+}
+
+void IntegrationAttempt::queueAllReturnInsts() {
+
+  MatchT<ReturnInst> OnlyReturns;
+  queueAllLiveValuesMatching(OnlyReturns);
+
+}
+
+void IntegrationAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
   const Loop* MyL = getLoopContext();
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    if(LI[&F]->getLoopFor(BB)) {
 
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+    if(blockIsDead(BB))
+      continue;
 
-	Instruction* I = II;
-	const Loop* L = getValueScope(I);
-	if(L != MyL)
-	  continue;
+    if(MyL && (!MyL->contains(BB)))
+      continue;
 
-	if(I->getType()->isPointerTy() && !getConstReplacement(I))
-	  pass->queueDSE(this, I);
+    for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
+      Instruction* I = II;
+      const Loop* L = getValueScope(I);
+      if(L != MyL)
+	continue;
+
+      if(P(I)) {
+	queueDIE(I, this);
       }
 
     }
@@ -1394,33 +1475,34 @@ void IntegrationAttempt::queueAllLivePointers() {
   }
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
-    it->second->queueAllLivePointers();
+    it->second->queueAllLiveValuesMatching(P);
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it !+ it2; ++it)
-    it->second->queueAllLivePointers();
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)
+    it->second->queueAllLiveValuesMatching(P);
 
 }
 
-void InlineAttempt::queueAllLivePointers() {
+void InlineAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
-  for(Function::arg_iterator AI = F.arg_begin, AE = F.arg_end(); AI != AE; ++AI) {
+  for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
 
     Argument* A = AI;
-    if(A->getType()->isPointerTy() && !getConstReplacement(A))
-      pass->queueDSE(this, A);
+    if((!localValueIsDead(A)) && P(A)) {
+      queueDIE(A, this);
+    }
 
   }
 
-}
-
-void PeelAttempt::queueAllLivePointers() {
-
-  for(std::vector<PeelIteration*>::iterator it = Iteration.begin(), it2 = Iterations.end(); it != it2; ++it)
-    (*it)->queueAllLivePointers();
+  IntegrationAttempt::queueAllLiveValuesMatching(P);
 
 }
 
-*/
+void PeelAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
+    (*it)->queueAllLiveValuesMatching(P);
+
+}
 
 void IntegrationAttempt::queueCheckAllLoads() {
 

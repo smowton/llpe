@@ -145,13 +145,13 @@ bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCt
 
 }
 
-IntegrationAttempt* PeelIteration::getFunctionRoot() {
+InlineAttempt* PeelIteration::getFunctionRoot() {
 
   return parent->getFunctionRoot();
 
 }
 
-IntegrationAttempt* InlineAttempt::getFunctionRoot() {
+InlineAttempt* InlineAttempt::getFunctionRoot() {
 
   return this;
 

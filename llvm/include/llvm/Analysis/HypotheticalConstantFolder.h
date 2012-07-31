@@ -234,6 +234,28 @@ class TargetData;
 class AliasAnalysis;
 class Loop;
 
+class Callable {
+ public:
+
+  virtual void callback(IntegrationAttempt*) = 0;
+
+};
+
+class UnaryPred {
+ public:
+  virtual bool operator()(Value*) = 0;
+
+};
+
+class VisitorContext {
+public:
+
+  virtual void visit(IntegrationAttempt* Context, Instruction* UserI) = 0;
+  virtual void notifyUsersMissed() = 0;
+  virtual bool shouldContinue() = 0;
+
+};
+
 enum IterationStatus {
 
   IterationStatusUnknown,
@@ -269,7 +291,7 @@ protected:
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 8> certainBlocks;
 
-  DenseSet<Value*> deadValues; // Used in DSE
+  DenseSet<Value*> deadValues; // Used in DSE and DIE
 
   int improvableInstructions;
   int improvedInstructions;
@@ -323,7 +345,8 @@ protected:
 
   const Loop* getValueScope(Value*);
   ValCtx getLocalReplacement(Value*);
-  ValCtx getReplacementUsingScope(Value*, const Loop*);
+  ValCtx getReplacementUsingScope(Value* V, const Loop* LScope);
+  void callWithScope(Callable& C, const Loop* LScope);
   ValCtx getDefaultVCWithScope(Value*, const Loop*);
 
   const Loop* getEdgeScope(BasicBlock*, BasicBlock*);
@@ -345,7 +368,7 @@ protected:
 
   virtual const Loop* getLoopContext() = 0;
   virtual Instruction* getEntryInstruction() = 0;
-  virtual void collectAllBlockStats() = 0;
+  virtual void collectAllLoopStats() = 0;
   virtual void printHeader(raw_ostream& OS) const = 0;
   virtual void queueTryEvaluateOwnCall() = 0;
 
@@ -359,7 +382,7 @@ protected:
 
   virtual Constant* getConstReplacement(Value* V);
   
-  virtual IntegrationAttempt* getFunctionRoot() = 0;
+  virtual InlineAttempt* getFunctionRoot() = 0;
 
   // Constant propagation:
 
@@ -371,8 +394,6 @@ protected:
   virtual ValCtx tryEvaluateResult(Value*);
   virtual void investigateUsers(Value* V);
 
-  virtual void queueTryEvalExitPHI(Instruction* UserI);
-  virtual bool queueImproveNextIterationPHI(Instruction* I);
   void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
 
   // CFG analysis:
@@ -499,8 +520,29 @@ protected:
   bool tryKillAllAllocsFrom(ValCtx& Start);
   void tryKillAllAllocs();
 
+  // User visitors:
+  
+  virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
+  virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
+  void visitUsers(Value* V, VisitorContext& Visitor);
+
+  // Dead instruction elim:
+
+  bool valueIsDead(Value* V);
+  bool shouldDIE(Value* V);
+  void queueDIE(Value* V, IntegrationAttempt* Ctx);
+  void queueDIE(Value* V);
+  bool localValueIsDead(Value* V);
+  virtual bool queueHeaderPHIOperands(PHINode* PN) = 0;
+  virtual void queueDIEOperands(Value* V);
+  void tryKillValue(Value* V);
+  virtual void queueAllLiveValuesMatching(UnaryPred& P);
+  void queueAllReturnInsts();
+  void queueAllLiveValues();
+
   // Stat collection and printing:
 
+  void collectAllBlockStats();
   void collectBlockStats(BasicBlock* BB);
   void collectLoopStats(const Loop*);
   void collectStats();
@@ -545,10 +587,7 @@ public:
 
   virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
-  virtual bool queueImproveNextIterationPHI(Instruction* I);
-  void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
   virtual void queueTryEvaluateOwnCall();
-  virtual void queueTryEvalExitPHI(Instruction* UserI);
 
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
@@ -557,11 +596,17 @@ public:
 
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
-  virtual IntegrationAttempt* getFunctionRoot();
+  virtual InlineAttempt* getFunctionRoot();
+
+  virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
+  void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
+  virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
+
+  virtual bool queueHeaderPHIOperands(PHINode* PN);
 
   virtual void describe(raw_ostream& Stream) const;
 
-  virtual void collectAllBlockStats();
+  virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;
 
 };
@@ -608,6 +653,9 @@ class PeelAttempt {
 
    bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
+   void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
+   void queueAllLiveValuesMatching(UnaryPred& P);
+
    void collectStats();
    void printHeader(raw_ostream& OS) const;
    void printDebugHeader(raw_ostream& OS) const {
@@ -646,11 +694,17 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
-  virtual IntegrationAttempt* getFunctionRoot();
+  virtual InlineAttempt* getFunctionRoot();
+
+  bool isOwnCallUnused();
+
+  virtual bool queueHeaderPHIOperands(PHINode* PN);
+  virtual void queueDIEOperands(Value* V);
+  virtual void queueAllLiveValuesMatching(UnaryPred& P);
   
   virtual void describe(raw_ostream& Stream) const;
   
-  virtual void collectAllBlockStats();
+  virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;
 
 };
@@ -831,10 +885,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<IntegratorWQItem, 64>* produceQueue;
 
-   SmallVector<ValCtx, 64> dseQueue1;
-   SmallVector<ValCtx, 64> dseQueue2;
+   SmallVector<ValCtx, 64> dieQueue1;
+   SmallVector<ValCtx, 64> dieQueue2;
 
-   SmallVector<ValCtx, 64>* produceDSEQueue;
+   SmallVector<ValCtx, 64>* produceDIEQueue;
 
  public:
 
@@ -871,9 +925,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    }
 
-   void queueDSE(IntegrationAttempt* ctx, Value* val) {
+   void queueDIE(IntegrationAttempt* ctx, Value* val) {
      assert(val && "Queued a null value");
-     produceDSEQueue->push_back(make_vc(val, ctx));
+     produceDIEQueue->push_back(make_vc(val, ctx));
    }
 
    void print(raw_ostream &OS, const Module* M) const {

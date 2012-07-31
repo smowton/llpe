@@ -152,12 +152,39 @@ ValCtx IntegrationAttempt::getReplacement(Value* V) {
 
 }
 
-ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope) {
+// Calls a given callback at the *parent* scope associated with loop LScope
+void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
   if(LScope == getLoopContext())
-    return getLocalReplacement(V);
+    C.callback(this);
   else
-    return parent->getReplacementUsingScope(V, LScope);
+    parent->callWithScope(C, LScope);
+
+}
+
+class GetReplacementCallback : public Callable {
+
+  Value* V;
+
+public:
+
+  ValCtx Result;
+
+  GetReplacementCallback(Value* _V) : V(_V) { }
+
+  virtual void callback(IntegrationAttempt* Ctx) {
+
+    Result = Ctx->getLocalReplacement(V);
+
+  }
+
+};
+
+ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope) {
+
+  GetReplacementCallback CB(V);
+  callWithScope(CB, LScope);
+  return CB.Result;
 
 }
 
@@ -1938,18 +1965,27 @@ void IntegrationAttempt::dump() const {
 
 void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
 
+  const Loop* MyL = getLoopContext();
+
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
       
+    const Loop* L = getValueScope(BI);
+    
+    if(MyL != L)
+      continue;
+
     if(instructionCounts(BI)) { 
 
-      if(BB == getEntryBlock() && isa<PHINode>(BI))
-	continue;
+      //if(BB == getEntryBlock() && isa<PHINode>(BI))
+      //  continue;
 
       improvableInstructions++;
 
       if(blockIsDead(BB))
 	improvedInstructions++;
       else if(improvedValues.find(BI) != improvedValues.end())
+	improvedInstructions++;
+      else if(deadValues.count(BI))
 	improvedInstructions++;
       else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
 	if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
@@ -1980,23 +2016,25 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
 
 }
 
-void InlineAttempt::collectAllBlockStats() {
+void IntegrationAttempt::collectAllBlockStats() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI)
-    if(!LI[&F]->getLoopFor(FI))
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+    const Loop* MyL = getLoopContext();
+    if((!MyL) || MyL->contains(FI)) {
       collectBlockStats(FI);
+    }
+  }
+
+}
+
+void InlineAttempt::collectAllLoopStats() {
 
   for(LoopInfo::iterator LoopI = LI[&F]->begin(), LoopE = LI[&F]->end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
 
 }
 
-void PeelIteration::collectAllBlockStats() {
-
-  for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
-    if(LI[&F]->getLoopFor(*BI) == L)
-      collectBlockStats(*BI);
-  }
+void PeelIteration::collectAllLoopStats() {
 
   for(Loop::iterator LoopI = L->begin(), LoopE = L->end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
@@ -2013,6 +2051,7 @@ void PeelAttempt::collectStats() {
 void IntegrationAttempt::collectStats() {
 
   collectAllBlockStats();
+  collectAllLoopStats();
 
   for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
     it->second->collectStats();
@@ -2061,6 +2100,9 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
   for(DenseMap<Value*, ValCtx>::const_iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
     OS << nestingIndent() << *(it->first) << " -> " << it->second << "\n";
+  }
+  for(DenseSet<Value*>::const_iterator it = deadValues.begin(), it2 = deadValues.end(); it != it2; ++it) {
+    OS << nestingIndent() << (**it) << ": dead\n";
   }
   if(unexploredLoops.size()) {
     OS << nestingIndent() << "Unexplored loops:\n";
@@ -3152,62 +3194,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
       }
 
       consumeQueue->clear();
-      if(consumeQueue == &workQueue1) {
-	consumeQueue = &workQueue2;
-	produceQueue = &workQueue1;
-      }
-      else {
-	consumeQueue = &workQueue1;
-	produceQueue = &workQueue2;
-      }
+      std::swap(consumeQueue, produceQueue);
 
     }
-
-    /*
-    DEBUG(dbgs() << "Finding dead pointers and stores\n");
-
-    SmallVector<ValCtx, 64>* consumeDSEQueue = &dseQueue1;
-    produceDSEQueue = &dseQueue2;
-
-    IA->queueAllLivePointers();
-    for(Module::global_iterator MI = M.global_begin(), ME = M.global_end(); MI != ME; ++MI)
-      queueDSE(0, *MI);
-
-    while(dseQueue1.size() || dseQueue2.size()) {
-
-      for(SmallVector<ValCtx, 64>::iterator it = consumeDSEQueue->begin(), it2 = consumeDSEQueue->end(); it != it2; ++it) {
-
-	if(!it->second) {
-	  
-	  GlobalVariable* GV = cast<GlobalVariable>(it->first);
-	  if(globalIsDead(GV))
-	    continue;
-
-	}
-	else {
-
-	  if(it->second->instructionIsDead(cast<Instruction>(it->first)))
-	    continue;
-
-	}
-
-	DEBUG(dbgs() << "Consider: " << *it << "\n");
-
-	if(!it->second) {
-
-	  tryKillGlobal(cast<GlobalVariable>(it->first));
-
-	}
-	else {
-	  
-	  it->second->tryKillInstruction(cast<Instruction>(it->first));
-
-	}
-
-      }
-
-    }
-    */
 
     DEBUG(dbgs() << "Finding dead MTIs\n");
     IA->tryKillAllMTIs();
@@ -3218,8 +3207,26 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     DEBUG(dbgs() << "Finding dead allocations\n");
     IA->tryKillAllAllocs();
 
-    // TODO: Find dead address calculations etc.
-    
+    DEBUG(dbgs() << "Finding remaining dead instructions\n");
+
+    SmallVector<ValCtx, 64>* consumeDIEQueue = &dieQueue1;
+    produceDIEQueue = &dieQueue2;
+
+    IA->queueAllLiveValues();
+
+    while(dieQueue1.size() || dieQueue2.size()) {
+
+      for(SmallVector<ValCtx, 64>::iterator it = consumeDIEQueue->begin(), it2 = consumeDIEQueue->end(); it != it2; ++it) {
+
+	it->second->tryKillValue(it->first);
+
+      }
+
+      consumeDIEQueue->clear();
+      std::swap(produceDIEQueue, consumeDIEQueue);
+
+    }
+
     IA->collectStats();
     
   }
