@@ -48,6 +48,22 @@ inline bool operator!=(ValCtx V1, ValCtx V2) {
    return !(V1 == V2);
 }
 
+inline bool operator<(ValCtx V1, ValCtx V2) {
+  return V1.first < V2.first || (V1.first == V2.first && V1.second < V2.second);
+}
+
+inline bool operator<=(ValCtx V1, ValCtx V2) {
+  return V1 < V2 || V1 == V2;
+}
+
+inline bool operator>(ValCtx V1, ValCtx V2) {
+  return !(V1 <= V2);
+}
+
+inline bool operator>=(ValCtx V1, ValCtx V2) {
+  return !(V1 < V2);
+}
+
 raw_ostream& operator<<(raw_ostream&, const ValCtx&);
 raw_ostream& operator<<(raw_ostream&, const MemDepResult&);
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
@@ -66,6 +82,31 @@ inline ValCtx const_vc(Constant* C) {
   return make_vc(C, 0);
 
 }
+
+// Characteristics for using ValCtxs in hashsets (DenseSet, or as keys in DenseMaps)
+template<> struct DenseMapInfo<ValCtx> {
+  
+  typedef DenseMapInfo<Value*> VInfo;
+  typedef DenseMapInfo<IntegrationAttempt*> IAInfo;
+  typedef DenseMapInfo<std::pair<Value*, IntegrationAttempt*> > PairInfo;
+
+  static inline ValCtx getEmptyKey() {
+    return make_vc(VInfo::getEmptyKey(), IAInfo::getEmptyKey());
+  }
+
+  static inline ValCtx getTombstoneKey() {
+    return make_vc(VInfo::getTombstoneKey(), IAInfo::getTombstoneKey());
+  }
+
+  static unsigned getHashValue(const ValCtx& VC) {
+    return PairInfo::getHashValue(std::make_pair(VC.first, VC.second));
+  }
+
+  static bool isEqual(const ValCtx& V1, const ValCtx& V2) {
+    return V1 == V2;
+  }
+
+ };
 
 // Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a ValCtx
 // or partially with a Constant plus a byte extent and offset from which that Constant should be read.
@@ -247,6 +288,12 @@ class UnaryPred {
 
 };
 
+class OpCallback {
+ public:
+  virtual void callback(IntegrationAttempt* Ctx, Value* V) = 0;
+
+};
+
 class VisitorContext {
 public:
 
@@ -291,7 +338,12 @@ protected:
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 8> certainBlocks;
 
-  DenseSet<Value*> deadValues; // Used in DSE and DIE
+  // Store, allocation and other instructions which, whilst they cannot be folded away, are not used
+  // when folded / forwarded instructions are discounted.
+  DenseSet<Value*> deadValues;
+  // A list of dead stores and allocations which in the course of being found dead traversed this context.
+  // These should be discounted as dead values if we are folded.
+  DenseSet<ValCtx> deadValuesTraversingThisContext;
 
   int improvableInstructions;
   int improvedInstructions;
@@ -307,6 +359,12 @@ protected:
   DenseMap<CallInst*, OpenStatus> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
   DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
+
+  // Inline attempts / peel attempts which are currently ignored because they've been opted out.
+  // These may include inlines / peels which are logically two loop levels deep, 
+  // because they were created when a parent loop was opted out but then opted in again.
+  DenseSet<CallInst*> ignoreIAs;
+  DenseSet<const Loop*> ignorePAs;
 
   std::string nestingIndent() const;
 
@@ -333,8 +391,6 @@ protected:
   ~IntegrationAttempt();
 
   virtual AliasAnalysis* getAA();
-
-  // Implement IntegrationAttempt (partially):
 
   virtual ValCtx getDefaultVC(Value*);
   virtual ValCtx getReplacement(Value* V);
@@ -442,7 +498,7 @@ protected:
 
   void queueWorkBlockedOn(Instruction* SI);
   void queueCFGBlockedLoads();
-  void queueCheckAllLoads();
+  void queueCheckAllLoadsInScope(const Loop*);
 
   // VFS call forwarding:
 
@@ -506,12 +562,14 @@ protected:
 
   // Dead store and allocation elim:
 
-  void tryKillStore(StoreInst* SI);
-  void tryKillMTI(MemTransferInst* MTI);
-  void tryKillAlloc(Instruction* Alloc);
-  void tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
+  bool tryKillStore(StoreInst* SI);
+  bool tryKillMemset(MemIntrinsic* MI);
+  bool tryKillMTI(MemTransferInst* MTI);
+  bool tryKillAlloc(Instruction* Alloc);
+  bool tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
   bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes);
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
+  void addTraversingInst(ValCtx);
   virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
   bool CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs);
   void tryKillAllMTIs();
@@ -526,6 +584,12 @@ protected:
   virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
   void visitUsers(Value* V, VisitorContext& Visitor);
 
+  // Operand visitors:
+
+  void walkOperand(Value* V, OpCallback& CB);
+  virtual bool walkHeaderPHIOperands(PHINode*, OpCallback&) = 0;
+  virtual void walkOperands(Value* V, OpCallback& CB);
+
   // Dead instruction elim:
 
   bool valueIsDead(Value* V);
@@ -533,12 +597,35 @@ protected:
   void queueDIE(Value* V, IntegrationAttempt* Ctx);
   void queueDIE(Value* V);
   bool localValueIsDead(Value* V);
-  virtual bool queueHeaderPHIOperands(PHINode* PN) = 0;
-  virtual void queueDIEOperands(Value* V);
+  void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
   void queueAllReturnInsts();
   void queueAllLiveValues();
+
+  // Enabling / disabling exploration:
+
+  void enablePeel(const Loop*);
+  void disablePeel(const Loop*);
+  bool loopIsEnabled(const Loop*);
+  void enableInline(CallInst*);
+  void disableInline(CallInst*);
+  bool inlineIsEnabled(CallInst*);
+  void revertDSEandDAE();
+  void revertDeadValue(Value*);
+  void tryKillAndQueue(Instruction*);
+  void getRetryStoresAndAllocs(std::vector<ValCtx>&);
+  void retryStoresAndAllocs(std::vector<ValCtx>&);
+
+  // DOT export:
+
+  void printRHS(Instruction* I, raw_ostream& Out);
+  void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out);
+  void describeAsDOT(raw_ostream& Out);
+  std::string getInstructionColour(Instruction* I);
+  virtual std::string getGraphPath(std::string prefix) = 0;
+  void describeTreeAsDOT(std::string path);
+  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out) = 0;
 
   // Stat collection and printing:
 
@@ -602,7 +689,10 @@ public:
   void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
   virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
 
-  virtual bool queueHeaderPHIOperands(PHINode* PN);
+  virtual bool walkHeaderPHIOperands(PHINode* PN, OpCallback& CB);
+
+  virtual std::string getGraphPath(std::string prefix);
+  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
 
   virtual void describe(raw_ostream& Stream) const;
 
@@ -610,6 +700,8 @@ public:
   virtual void printHeader(raw_ostream&) const;
 
 };
+
+class ProcessExternalCallback;
 
 class PeelAttempt {
    // Not a subclass of IntegrationAttempt -- this is just a helper.
@@ -655,6 +747,14 @@ class PeelAttempt {
 
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
+   
+   void revertDSEandDAE();
+   void revertExternalUsers();
+   void callExternalUsers(ProcessExternalCallback& PEC);
+   void retryExternalUsers();
+   void getRetryStoresAndAllocs(std::vector<llvm::ValCtx>&);
+   
+   void describeTreeAsDOT(std::string path);
 
    void collectStats();
    void printHeader(raw_ostream& OS) const;
@@ -698,9 +798,12 @@ class InlineAttempt : public IntegrationAttempt {
 
   bool isOwnCallUnused();
 
-  virtual bool queueHeaderPHIOperands(PHINode* PN);
-  virtual void queueDIEOperands(Value* V);
+  virtual bool walkHeaderPHIOperands(PHINode* PN, OpCallback& CB);
+  virtual void walkOperands(Value* V, OpCallback& CB);
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
+
+  virtual std::string getGraphPath(std::string prefix);
+  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
   
   virtual void describe(raw_ostream& Stream) const;
   
@@ -894,7 +997,13 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    static char ID;
 
-   explicit IntegrationHeuristicsPass() : ModulePass(ID) { }
+   explicit IntegrationHeuristicsPass() : ModulePass(ID) { 
+
+     produceDIEQueue = &dieQueue2;
+     produceQueue = &workQueue2;
+
+   }
+
    bool runOnModule(Module& M);
 
    void queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
@@ -946,6 +1055,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
 
    BasicBlock* getUniqueReturnBlock(Function* F);
+
+   void runQueue();
+   void runDIEQueue();
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 

@@ -53,6 +53,9 @@ bool instructionCounts(Instruction* I);
 
 char IntegrationHeuristicsPass::ID = 0;
 
+static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
+static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
+
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
 }
@@ -389,6 +392,9 @@ bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
 
 InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 
+  if(ignoreIAs.count(CI))
+    return 0;
+
   DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(const_cast<CallInst*>(CI));
   if(it != inlineChildren.end())
     return it->second;
@@ -398,6 +404,9 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 }
 
 InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
+
+  if(ignoreIAs.count(CI))
+    return 0;
 
   if(InlineAttempt* IA = getInlineAttempt(CI))
     return IA;
@@ -566,6 +575,9 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
 PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
 
+  if(ignorePAs.count(L))
+    return 0;
+
   DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(L);
   if(it != peelChildren.end())
     return it->second;
@@ -575,6 +587,9 @@ PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
 }
 
 PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
+
+  if(ignorePAs.count(NewL))
+    return 0;
 
   if(PeelAttempt* PA = getPeelAttempt(NewL))
     return PA;
@@ -1180,6 +1195,7 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
   InlineAttempt* IA = getInlineAttempt(CI);
 
   if(!IA) {
+    // Our caller is responsible for e.g. trying plain old getModRefInfo to circumvent this restriction
     LPDEBUG("Unable to pursue load through call " << *CI << " as it has not yet been explored\n");
     return false;
   }
@@ -3151,6 +3167,48 @@ DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Fu
 
 }
 
+void IntegrationHeuristicsPass::runQueue() {
+
+  SmallVector<IntegratorWQItem, 64>* consumeQueue = (produceQueue == &workQueue1) ? &workQueue2 : &workQueue1;
+
+  while(workQueue1.size() || workQueue2.size()) {
+
+    for(SmallVector<IntegratorWQItem, 64>::iterator it = consumeQueue->begin(), itend = consumeQueue->end(); it != itend; ++it) {
+
+      DEBUG(dbgs() << "Dequeue: ");
+      DEBUG(it->describe(dbgs()));
+      DEBUG(dbgs() << "\n");
+      it->execute();
+
+    }
+
+    consumeQueue->clear();
+    std::swap(consumeQueue, produceQueue);
+
+  }
+
+
+}
+
+void IntegrationHeuristicsPass::runDIEQueue() {
+
+  SmallVector<ValCtx, 64>* consumeDIEQueue = (produceDIEQueue == &dieQueue1) ? &dieQueue2 : &dieQueue1;
+
+  while(dieQueue1.size() || dieQueue2.size()) {
+
+    for(SmallVector<ValCtx, 64>::iterator it = consumeDIEQueue->begin(), it2 = consumeDIEQueue->end(); it != it2; ++it) {
+
+      it->second->tryKillValue(it->first);
+
+    }
+
+    consumeDIEQueue->clear();
+    std::swap(produceDIEQueue, consumeDIEQueue);
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
@@ -3163,74 +3221,50 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   }
 
-  for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
+  Function* FoundF = M.getFunction(RootFunctionName);
+  if((!FoundF) || FoundF->isDeclaration()) {
 
-    if(MI->isDeclaration())
-      continue;
+    errs() << "Function " << RootFunctionName << " not found or not defined in this module\n";
+    return false;
 
-    Function& F = *MI;
-
-    DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
-
-    InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, TD, AA, 0, getInstScopes(&F), getEdgeScopes(&F), getBlockScopes(&F), 0);
-
-    rootAttempts.push_back(IA);
-
-    SmallVector<IntegratorWQItem, 64>* consumeQueue = &workQueue1;
-    produceQueue = &workQueue2;
-
-    queueCheckBlock(IA, &(F.getEntryBlock()));
-    IA->queueInitialWork();
-
-    while(workQueue1.size() || workQueue2.size()) {
-
-      for(SmallVector<IntegratorWQItem, 64>::iterator it = consumeQueue->begin(), itend = consumeQueue->end(); it != itend; ++it) {
-
-	DEBUG(dbgs() << "Dequeue: ");
-	DEBUG(it->describe(dbgs()));
-	DEBUG(dbgs() << "\n");
-	it->execute();
-
-      }
-
-      consumeQueue->clear();
-      std::swap(consumeQueue, produceQueue);
-
-    }
-
-    DEBUG(dbgs() << "Finding dead MTIs\n");
-    IA->tryKillAllMTIs();
-
-    DEBUG(dbgs() << "Finding dead stores\n");
-    IA->tryKillAllStores();
-
-    DEBUG(dbgs() << "Finding dead allocations\n");
-    IA->tryKillAllAllocs();
-
-    DEBUG(dbgs() << "Finding remaining dead instructions\n");
-
-    SmallVector<ValCtx, 64>* consumeDIEQueue = &dieQueue1;
-    produceDIEQueue = &dieQueue2;
-
-    IA->queueAllLiveValues();
-
-    while(dieQueue1.size() || dieQueue2.size()) {
-
-      for(SmallVector<ValCtx, 64>::iterator it = consumeDIEQueue->begin(), it2 = consumeDIEQueue->end(); it != it2; ++it) {
-
-	it->second->tryKillValue(it->first);
-
-      }
-
-      consumeDIEQueue->clear();
-      std::swap(produceDIEQueue, consumeDIEQueue);
-
-    }
-
-    IA->collectStats();
-    
   }
 
+  Function& F = *FoundF;
+
+  DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
+
+  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, TD, AA, 0, getInstScopes(&F), getEdgeScopes(&F), getBlockScopes(&F), 0);
+
+  rootAttempts.push_back(IA);
+
+  queueCheckBlock(IA, &(F.getEntryBlock()));
+  IA->queueInitialWork();
+
+  runQueue();
+
+  DEBUG(dbgs() << "Finding dead MTIs\n");
+  IA->tryKillAllMTIs();
+
+  DEBUG(dbgs() << "Finding dead stores\n");
+  IA->tryKillAllStores();
+
+  DEBUG(dbgs() << "Finding dead allocations\n");
+  IA->tryKillAllAllocs();
+
+  DEBUG(dbgs() << "Finding remaining dead instructions\n");
+
+  IA->queueAllLiveValues();
+
+  runDIEQueue();
+
+  IA->collectStats();
+
+  if(!GraphOutputDirectory.empty()) {
+
+    IA->describeTreeAsDOT(GraphOutputDirectory);
+
+  }
+    
   return false;
 
 }

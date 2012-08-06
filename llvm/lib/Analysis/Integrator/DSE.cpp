@@ -16,14 +16,26 @@
 
 using namespace llvm;
 
-void IntegrationAttempt::tryKillStore(StoreInst* SI) {
+bool IntegrationAttempt::tryKillStore(StoreInst* SI) {
 
   uint64_t Size = (TD->getTypeSizeInBits(SI->getValueOperand()->getType()) + 7) / 8;
-  tryKillWriterTo(SI, SI->getPointerOperand(), Size);
+  return tryKillWriterTo(SI, SI->getPointerOperand(), Size);
+  
+}
+
+bool IntegrationAttempt::tryKillMemset(MemIntrinsic* MI) {
+
+  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
+  uint64_t MemSize;
+  if(SizeCst)
+    MemSize = SizeCst->getZExtValue();
+  else
+    MemSize = AliasAnalysis::UnknownSize;
+  return tryKillWriterTo(MI, MI->getDest(), MemSize);
 
 }
 
-void IntegrationAttempt::tryKillMTI(MemTransferInst* MTI) {
+bool IntegrationAttempt::tryKillMTI(MemTransferInst* MTI) {
 
   ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MTI->getLength()));
   uint64_t MISize;
@@ -32,20 +44,26 @@ void IntegrationAttempt::tryKillMTI(MemTransferInst* MTI) {
   else
     MISize = AliasAnalysis::UnknownSize;  
 
-  tryKillWriterTo(MTI, MTI->getDest(), MISize);
+  return tryKillWriterTo(MTI, MTI->getDest(), MISize);
 
 }
 
-void IntegrationAttempt::tryKillAlloc(Instruction* Alloc) {
+bool IntegrationAttempt::tryKillAlloc(Instruction* Alloc) {
 
   // The 'unknown size' thing is a bit of a hack -- it just prevents TKWT from ever
   // concluding that enough bytes have been clobbered that the allocation is pointless.
   // Rather the only way it will die is if we make it all the way to end-of-life.
-  tryKillWriterTo(Alloc, Alloc, AliasAnalysis::UnknownSize); 
+  return tryKillWriterTo(Alloc, Alloc, AliasAnalysis::UnknownSize); 
 
 }
 
-void IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
+void IntegrationAttempt::addTraversingInst(ValCtx VC) {
+
+  deadValuesTraversingThisContext.insert(VC);
+  
+}
+
+bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
 
   bool* deadBytes;
 
@@ -70,14 +88,25 @@ void IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
   bool skipFirst = true;
   bool Killed = false;
 
+  SmallVector<IntegrationAttempt*, 4> WalkCtxs;
+  WalkCtxs.push_back(this);
+
   while(NextStart.second->tryKillStoreFrom(NextStart, StorePtr, StoreBase, StoreOffset, deadBytes, Size, skipFirst, Killed)) {
     LPDEBUG("Continuing from " << NextStart << "\n");
+    WalkCtxs.push_back(NextStart.second);
     skipFirst = false;
   }
 
   if(Killed) {
     deadValues.insert(Writer);
+    for(SmallVector<IntegrationAttempt*, 4>::iterator it = WalkCtxs.begin(), it2 = WalkCtxs.end(); it != it2; ++it) {
+
+      (*it)->addTraversingInst(make_vc(Writer, this));
+
+    }
   }
+
+  return Killed;
 
 }
 
@@ -401,13 +430,7 @@ bool IntegrationAttempt::tryKillAllStoresFrom(ValCtx& Start) {
     }
     else if(MemSetInst* MI = dyn_cast<MemSetInst>(BI)) {
 
-      ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
-      uint64_t MemSize;
-      if(SizeCst)
-	MemSize = SizeCst->getZExtValue();
-      else
-	MemSize = AliasAnalysis::UnknownSize;
-      tryKillWriterTo(MI, MI->getDest(), MemSize);
+      tryKillMemset(MI);
 
     }
     else if(CallInst* CI = dyn_cast<CallInst>(BI)) {

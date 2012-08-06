@@ -1191,17 +1191,18 @@ bool IntegrationAttempt::valueIsDead(Value* V) {
 
 }
 
-class QueueDIECallback : public Callable {
+class WalkOperandCallback : public Callable {
 
   Value* V;
+  OpCallback& CB;
 
 public:
 
-  QueueDIECallback(Value* _V) : V(_V) { }
+  WalkOperandCallback(Value* _V, OpCallback& _CB) : V(_V), CB(_CB) { }
 
   virtual void callback(IntegrationAttempt* Ctx) {
 
-    Ctx->queueDIE(V, Ctx);
+    CB.callback(Ctx, V);
 
   }
 
@@ -1239,16 +1240,16 @@ bool IntegrationAttempt::shouldDIE(Value* V) {
 
 }
 
-void IntegrationAttempt::queueDIE(Value* V, IntegrationAttempt* Ctx) {
+void IntegrationAttempt::queueDIE(Value* V) {
 
   if(!shouldDIE(V))
     return;
-  if(!Ctx->localValueIsDead(V))
-    pass->queueDIE(Ctx, V);
+  if(!localValueIsDead(V))
+    pass->queueDIE(this, V);
 
 }
 
-void IntegrationAttempt::queueDIE(Value* V) {
+void IntegrationAttempt::walkOperand(Value* V, OpCallback& CB) {
 
   const Loop* MyL = getLoopContext();
   const Loop* L = getValueScope(V);
@@ -1267,44 +1268,44 @@ void IntegrationAttempt::queueDIE(Value* V) {
       if(Final->iterStatus != IterationStatusFinal)
 	return;
 
-      queueDIE(V, Final);
+      CB.callback(Final, V);
 
     }
     else {
 
       // V is from a parent loop (or the root function).
-      QueueDIECallback QDC(V);
-      callWithScope(QDC, L);
+      WalkOperandCallback WOC(V, CB);
+      callWithScope(WOC, L);
 
     }
 
   }
   else {
 
-    queueDIE(V, this);
+    CB.callback(this, V);
 
   }
 
 }
 
-bool InlineAttempt::queueHeaderPHIOperands(PHINode* PN) {
+bool InlineAttempt::walkHeaderPHIOperands(PHINode* PN, OpCallback& CB) {
 
   return false;
 
 }
 
-bool PeelIteration::queueHeaderPHIOperands(PHINode* PN) {
+bool PeelIteration::walkHeaderPHIOperands(PHINode* PN, OpCallback& CB) {
 
   BasicBlock* PNBB = PN->getParent();
   if(PNBB == L->getHeader()) {
     // Header PHI. Have the preheader or latch do the reconsider.
     if(this == parentPA->Iterations[0]) {
-      queueDIE(PN->getIncomingValueForBlock(L->getLoopPreheader()), parent);
+      CB.callback(parent, PN->getIncomingValueForBlock(L->getLoopPreheader()));
     }
     else {
       std::vector<PeelIteration*>::iterator it = std::find(parentPA->Iterations.begin(), parentPA->Iterations.end(), this);
       it--;
-      queueDIE(PN->getIncomingValueForBlock(L->getLoopLatch()), *it);
+      CB.callback(*it, PN->getIncomingValueForBlock(L->getLoopLatch()));
     }
     return true;
   }
@@ -1313,26 +1314,26 @@ bool PeelIteration::queueHeaderPHIOperands(PHINode* PN) {
 
 }
 
-void InlineAttempt::queueDIEOperands(Value* V) {
+void InlineAttempt::walkOperands(Value* V, OpCallback& CB) {
 
   // Special case: if we're an argument, have our parent reconsider values used by the call.
 
   if(Argument* A = dyn_cast<Argument>(V)) {
 
     if(CI) {
-      queueDIE(CI->getArgOperand(A->getArgNo()), parent);
+      CB.callback(parent, CI->getArgOperand(A->getArgNo()));
     }
 
   }
   else {
 
-    IntegrationAttempt::queueDIEOperands(V);
+    IntegrationAttempt::walkOperands(V, CB);
 
   }
 
 }
 
-void IntegrationAttempt::queueDIEOperands(Value* V) {
+void IntegrationAttempt::walkOperands(Value* V, OpCallback& CB) {
 
   // If we're a header PHI, either some parent context or the previous iteration argument might have died.
   // If we're an exit PHI, our operand in the last loop iteration might have died.
@@ -1345,13 +1346,13 @@ void IntegrationAttempt::queueDIEOperands(Value* V) {
 
   if(PHINode* PN = dyn_cast<PHINode>(I)) {
     
-    if(MyL == getValueScope(PN) && queueHeaderPHIOperands(PN))
+    if(MyL == getValueScope(PN) && walkHeaderPHIOperands(PN, CB))
       return;
 
     for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
 
       Value* InV = PN->getIncomingValue(i);
-      queueDIE(InV);
+      walkOperand(InV, CB);
 
     }
 
@@ -1359,11 +1360,29 @@ void IntegrationAttempt::queueDIEOperands(Value* V) {
   else {
 
     for(unsigned i = 0; i < I->getNumOperands(); ++i) {
-      queueDIE(I->getOperand(i));
+      walkOperand(I->getOperand(i), CB);
     }
 
   }
   
+}
+
+class QueueDIECallback : public OpCallback {
+public:
+
+  virtual void callback(IntegrationAttempt* Ctx, Value* V) {
+
+    Ctx->queueDIE(V);
+
+  }
+
+};
+
+void IntegrationAttempt::queueDIEOperands(Value* V) {
+
+  QueueDIECallback QDC;
+  walkOperands(V, QDC);
+
 }
 
 void IntegrationAttempt::tryKillValue(Value* V) {
@@ -1401,7 +1420,7 @@ void IntegrationAttempt::tryKillValue(Value* V) {
 
     deadValues.insert(V);
     queueDIEOperands(V);
-
+    
   }
   else {
     LPDEBUG("Not killed\n");
@@ -1467,7 +1486,7 @@ void IntegrationAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 	continue;
 
       if(P(I)) {
-	queueDIE(I, this);
+	queueDIE(I);
       }
 
     }
@@ -1488,7 +1507,7 @@ void InlineAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
     Argument* A = AI;
     if((!localValueIsDead(A)) && P(A)) {
-      queueDIE(A, this);
+      queueDIE(A);
     }
 
   }
@@ -1504,12 +1523,12 @@ void PeelAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
 }
 
-void IntegrationAttempt::queueCheckAllLoads() {
+void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    if(LI[&F]->getLoopFor(BB) == getLoopContext()) {
+    if(LI[&F]->getLoopFor(BB) == L) {
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
@@ -1546,7 +1565,7 @@ void IntegrationAttempt::tryPromoteAllCalls() {
 
 void IntegrationAttempt::queueInitialWork() {
 
-  queueCheckAllLoads();
+  queueCheckAllLoadsInScope(getLoopContext());
 
 }
 
