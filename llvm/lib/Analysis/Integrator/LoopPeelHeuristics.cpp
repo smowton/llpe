@@ -32,6 +32,7 @@
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
@@ -91,6 +92,9 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 			 DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth) 
   : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), nesting_depth(depth)
 {
+
+  this->tag.ptr = (void*)this;
+  this->tag.type = IntegratorTypePA;
   
   L->getExitEdges(ExitEdges);
   getOrCreateIteration(0);
@@ -2155,6 +2159,106 @@ std::string PeelAttempt::nestingIndent() const {
 
 }
 
+// Implement data export functions:
+
+bool IntegrationAttempt::hasChildren() {
+
+  return inlineChildren.size() || peelChildren.size();
+
+}
+
+bool PeelAttempt::hasChildren() {
+  
+  return Iterations.size() != 0;
+
+}
+
+unsigned IntegrationAttempt::getNumChildren() {
+
+  return inlineChildren.size() + peelChildren.size();
+
+}
+
+unsigned PeelAttempt::getNumChildren() {
+
+  return Iterations.size();
+
+}
+
+IntegratorTag* IntegrationAttempt::getChildTag(unsigned idx) {
+
+  if(idx < inlineChildren.size()) {
+    DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin();
+    for(unsigned i = 0; i < idx; ++i, ++it) {}
+    return &(it->second->tag);
+  }
+  else {
+    assert(idx < (inlineChildren.size() + peelChildren.size()) && "Child tag index out of range");
+    DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin();
+    for(unsigned i = 0; i < (idx - inlineChildren.size()); ++i, ++it) {}
+    return &(it->second->tag);    
+  }
+
+}
+
+IntegratorTag* PeelAttempt::getChildTag(unsigned idx) {
+
+  assert(idx < Iterations.size() && "getChildTag index out of range");
+  return &(Iterations[idx]->tag);
+
+}
+
+std::string InlineAttempt::getShortHeader() {
+  
+  std::string ret;
+  raw_string_ostream ROS(ret);
+  printHeader(ROS);
+  ROS.flush();
+  return ret;
+
+}
+
+std::string PeelIteration::getShortHeader() {
+
+  std::string ret;
+  raw_string_ostream ROS(ret);
+  ROS << "Iteration " << iterationCount;
+  ROS.flush();
+  return ret;
+
+}
+
+std::string PeelAttempt::getShortHeader() {
+
+  std::string ret;
+  raw_string_ostream ROS(ret);
+  printHeader(ROS);
+  ROS.flush();
+  return ret;
+
+}
+
+IntegratorTag* InlineAttempt::getParentTag() {
+
+  if(!parent)
+    return 0;
+  else
+    return &(parent->tag);
+
+}
+
+IntegratorTag* PeelIteration::getParentTag() {
+
+  return &(parentPA->tag);
+
+}
+
+IntegratorTag* PeelAttempt::getParentTag() {
+
+  return &(parent->tag);
+
+}
+
 // Implement LoadForwardAttempt
 
  LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD) {
@@ -3167,6 +3271,50 @@ DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Fu
 
 }
 
+void IntegrationHeuristicsPass::queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
+
+  assert(ctx && val && "Queued a null value");
+  produceQueue->push_back(IntegratorWQItem(ctx, val));
+     
+}
+
+void IntegrationHeuristicsPass::queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
+
+  assert(ctx && BB && "Queued a null block");
+  produceQueue->push_back(IntegratorWQItem(ctx, BB));
+
+}
+
+void IntegrationHeuristicsPass::queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
+
+  assert(ctx && LI && "Queued a null load");
+  produceQueue->push_back(IntegratorWQItem(ctx, LI));
+
+}
+
+void IntegrationHeuristicsPass::queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress) {
+
+  assert(OpenInst.first && OpenInst.second && OpenProgress.first && OpenProgress.second && "Queued an invalid open push");
+  produceQueue->push_back(IntegratorWQItem((IntegrationAttempt*)OpenInst.second, cast<CallInst>(OpenInst.first), OpenProgress));
+
+}
+
+void IntegrationHeuristicsPass::queueDIE(IntegrationAttempt* ctx, Value* val) {
+  assert(val && "Queued a null value");
+  produceDIEQueue->push_back(make_vc(val, ctx));
+}
+
+void IntegrationHeuristicsPass::print(raw_ostream &OS, const Module* M) const {
+  RootIA->print(OS);
+}
+
+void IntegrationHeuristicsPass::releaseMemory(void) {
+  if(RootIA) {
+    delete RootIA;
+    RootIA = 0;
+  }
+}
+
 void IntegrationHeuristicsPass::runQueue() {
 
   SmallVector<IntegratorWQItem, 64>* consumeQueue = (produceQueue == &workQueue1) ? &workQueue2 : &workQueue1;
@@ -3235,7 +3383,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, TD, AA, 0, getInstScopes(&F), getEdgeScopes(&F), getBlockScopes(&F), 0);
 
-  rootAttempts.push_back(IA);
+  RootIA = IA;
 
   queueCheckBlock(IA, &(F.getEntryBlock()));
   IA->queueInitialWork();
@@ -3273,6 +3421,7 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
 
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();
+  AU.addRequired<VFSCallAliasAnalysis>();
   AU.setPreservesAll();
   
 }

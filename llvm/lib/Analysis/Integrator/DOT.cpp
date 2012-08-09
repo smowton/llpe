@@ -17,20 +17,46 @@
 
 using namespace llvm;
 
+class CheckDeadCallback : public Callable {
+
+  Value* V;
+
+public:
+
+  bool isDead;
+  
+  CheckDeadCallback(Value* _V) : V(_V) { }
+
+  virtual void callback(IntegrationAttempt* Ctx) {
+
+    isDead = Ctx->inDeadValues(V);
+
+  }
+
+};
+
 std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
 
   // How should the instruction be coloured:
   // Bright green: defined here, i.e. it's a loop invariant.
-  // Red: killed here.
-  // Yellow: Call instruction (defined or otherwise)
+  // Red: killed here or as an invariant (including dead memops)
+  // Yellow: Expanded call instruction
+  // Pink: Unexpanded call instruction
   // Lime green: Invariant defined above.
   // Grey: part of a dead block.
 
   if(blockIsDead(I->getParent()))
     return "#aaaaaa";
 
-  if(isa<CallInst>(I))
-    return "yellow";
+  if(deadValues.count(I))
+    return "red";
+
+  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+    if(inlineChildren.find(CI) != inlineChildren.end())
+      return "yellow";
+    else
+      return "pink";
+  }
 
   const Loop* MyScope = getLoopContext();
   const Loop* IScope = getValueScope(I);
@@ -38,16 +64,25 @@ std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
   if(IScope == MyScope) {
 
     // Defined or killed here:
-    if(!isUnresolved(I))
+    if(getReplacement(I) != getDefaultVC(I))
       return "green";
-    if(deadValues.count(I))
-      return "red";
 
   }
   else if((!IScope) || IScope->contains(MyScope)) {
 
-    if(!isUnresolved(I))
+    if(getReplacement(I) != getDefaultVC(I))
       return "limegreen";
+    
+    CheckDeadCallback CDC(I);
+    callWithScope(CDC, IScope);
+    if(CDC.isDead)
+      return "red";
+
+  }
+  else {
+    
+    // Instruction is a loop variant here.
+    return "cyan";
 
   }
 
@@ -105,11 +140,26 @@ void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
   
   if(blockIsDead(I->getParent()))
     return;
+
+  const Loop* MyScope = getLoopContext();
+  const Loop* IScope = getValueScope(I);
+  bool isInvariant = (MyScope != IScope && ((!IScope) || IScope->contains(MyScope)));
   
-  if(!isUnresolved(I))
+  if(getDefaultVC(I) != getReplacement(I)) {
+    if(isInvariant)
+      Out << "(invar) ";
     Out << escapeHTMLValue(getReplacement(I));
-  else if(deadValues.count(I))
-    Out << "DEAD";
+  }
+  else if(isInvariant) {
+    CheckDeadCallback CDC(I);
+    callWithScope(CDC, IScope);
+    if(CDC.isDead)
+      Out << "(invar) DEAD";
+  }
+  else {
+    if(deadValues.count(I))
+      Out << "DEAD";
+  }
 
 }
 
@@ -253,7 +303,18 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out) {
 
     }
 						     
-    Out << "label = \"Loop " << DOT::EscapeString(it->first->getHeader()->getName()) << "\";\n}\n";
+    Out << "label = \"Loop " << DOT::EscapeString(it->first->getHeader()->getName()) << " (";
+
+    int numIters = it->second->Iterations.size();
+    PeelIteration* LastIter = it->second->Iterations[numIters-1];
+    if(LastIter->iterStatus == IterationStatusFinal) {
+      Out << "Terminated";
+    }
+    else {
+      Out << "Not terminated";
+    }
+
+    Out << ", " << numIters << " iterations)\";\n}\n";
 
     for(SmallVector<std::string, 4>::iterator it = deferredEdges.begin(), it2 = deferredEdges.end(); it != it2; ++it) {
 
@@ -283,7 +344,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out) {
 
 }
 
-std::string InlineAttempt::getGraphPath(std::string prefix) {
+std::string IntegrationAttempt::getGraphPath(std::string prefix) {
 
   std::string Ret;
   raw_string_ostream RSO(Ret);
@@ -292,20 +353,16 @@ std::string InlineAttempt::getGraphPath(std::string prefix) {
 
 }
 
-std::string PeelIteration::getGraphPath(std::string prefix) {
-
-  std::string Ret;
-  raw_string_ostream RSO(Ret);
-  RSO << prefix << "/" << iterationCount << ".dot";
-  return RSO.str();
-
-}
-
 void PeelAttempt::describeTreeAsDOT(std::string path) {
 
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
+  unsigned i = 0;
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it, ++i) {
 
-    (*it)->describeTreeAsDOT(path);
+    std::string newPath;
+    raw_string_ostream RSO(newPath);
+    RSO << path << "/iter_" << i;
+    mkdir(RSO.str().c_str(), 0777);
+    (*it)->describeTreeAsDOT(RSO.str());
 
   }
 
@@ -341,8 +398,25 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
     std::string newPath;
     raw_string_ostream RSO(newPath);
-    RSO << path << "/call_" << it->first->getName();
-    mkdir(RSO.str().c_str(), 0666);
+    RSO << path << "/call_";
+
+    if(it->first->getType()->isVoidTy()) {
+      // Name the call after a BB plus offset
+      BasicBlock::iterator BI(it->first);
+      int j;
+      for(j = 0; BI != it->first->getParent()->begin(); --BI, ++j) { }
+      RSO << it->first->getParent()->getName() << "+" << j;
+    }
+    else {
+      // Use the call's given name (pull it out of the full call printout)
+      std::string callDesc;
+      raw_string_ostream callRSO(callDesc);
+      callRSO << *(it->first);
+      callRSO.flush();
+      RSO << callDesc.substr(2, callDesc.find_first_of('=') - 3);
+    }
+
+    mkdir(RSO.str().c_str(), 0777);
     it->second->describeTreeAsDOT(RSO.str());
 
   }

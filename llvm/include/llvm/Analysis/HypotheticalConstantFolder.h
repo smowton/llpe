@@ -311,12 +311,25 @@ enum IterationStatus {
 
 };
 
+enum IntegratorType {
+
+  IntegratorTypeIA,
+  IntegratorTypePA
+
+};
+
+struct IntegratorTag {
+
+  IntegratorType type;
+  void* ptr;
+
+};
+
 class IntegrationAttempt {
 
 protected:
 
   IntegrationHeuristicsPass* pass;
-  IntegrationAttempt* parent;
 
   // Analyses created by the Pass.
   DenseMap<Function*, LoopInfo*> LI;
@@ -329,9 +342,6 @@ protected:
   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
 
-  DenseMap<CallInst*, InlineAttempt*> inlineChildren;
-  DenseMap<const Loop*, PeelAttempt*> peelChildren;
-    
   DenseMap<Value*, ValCtx> improvedValues;
 
   SmallSet<BasicBlock*, 4> deadBlocks;
@@ -370,12 +380,18 @@ protected:
 
   int nesting_depth;
 
-  public:
+ public:
 
+  struct IntegratorTag tag;
+
+  IntegrationAttempt* parent;
+
+  DenseMap<CallInst*, InlineAttempt*> inlineChildren;
+  DenseMap<const Loop*, PeelAttempt*> peelChildren;
+    
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA,
 		    DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) : 
   pass(Pass),
-    parent(P),
     LI(_LI),
     TD(_TD), 
     AA(_AA), 
@@ -385,8 +401,12 @@ protected:
     invariantBlocks(_invariantBlocks),
     improvableInstructions(0),
     improvedInstructions(0),
-    nesting_depth(depth)
-      { }
+    nesting_depth(depth),
+    parent(P)
+      { 
+	this->tag.ptr = (void*)this;
+	this->tag.type = IntegratorTypeIA;
+      }
 
   ~IntegrationAttempt();
 
@@ -597,6 +617,7 @@ protected:
   void queueDIE(Value* V, IntegrationAttempt* Ctx);
   void queueDIE(Value* V);
   bool localValueIsDead(Value* V);
+  bool inDeadValues(Value* V);
   void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
@@ -623,9 +644,16 @@ protected:
   void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out);
   void describeAsDOT(raw_ostream& Out);
   std::string getInstructionColour(Instruction* I);
-  virtual std::string getGraphPath(std::string prefix) = 0;
+  std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out) = 0;
+
+  // Data export for the Integrator pass:
+  virtual std::string getShortHeader() = 0;
+  virtual IntegratorTag* getParentTag() = 0;
+  bool hasChildren();
+  unsigned getNumChildren();
+  IntegratorTag* getChildTag(unsigned);
 
   // Stat collection and printing:
 
@@ -691,13 +719,15 @@ public:
 
   virtual bool walkHeaderPHIOperands(PHINode* PN, OpCallback& CB);
 
-  virtual std::string getGraphPath(std::string prefix);
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
 
   virtual void describe(raw_ostream& Stream) const;
 
   virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;
+
+  virtual std::string getShortHeader();
+  virtual IntegratorTag* getParentTag();
 
 };
 
@@ -724,6 +754,8 @@ class PeelAttempt {
    int debugIndent;
 
  public:
+
+  struct IntegratorTag tag;
 
    std::vector<PeelIteration*> Iterations;
 
@@ -765,6 +797,12 @@ class PeelAttempt {
 
    std::string nestingIndent() const;
 
+   std::string getShortHeader();
+   IntegratorTag* getParentTag();
+   bool hasChildren();
+   unsigned getNumChildren();
+   IntegratorTag* getChildTag(unsigned);
+
  };
 
 class InlineAttempt : public IntegrationAttempt { 
@@ -802,13 +840,15 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void walkOperands(Value* V, OpCallback& CB);
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
 
-  virtual std::string getGraphPath(std::string prefix);
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
   
   virtual void describe(raw_ostream& Stream) const;
   
   virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;
+
+  virtual std::string getShortHeader();
+  virtual IntegratorTag* getParentTag();
 
 };
 
@@ -981,8 +1021,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    TargetData* TD;
    AliasAnalysis* AA;
 
-   SmallVector<InlineAttempt*, 4> rootAttempts;
-
    SmallVector<IntegratorWQItem, 64> workQueue1;
    SmallVector<IntegratorWQItem, 64> workQueue2;
 
@@ -992,6 +1030,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallVector<ValCtx, 64> dieQueue2;
 
    SmallVector<ValCtx, 64>* produceDIEQueue;
+
+   IntegrationAttempt* RootIA;
 
  public:
 
@@ -1006,48 +1046,15 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool runOnModule(Module& M);
 
-   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
+   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val);
+   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB);
+   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI);
+   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress);
+   void queueDIE(IntegrationAttempt* ctx, Value* val);
 
-     assert(ctx && val && "Queued a null value");
-     produceQueue->push_back(IntegratorWQItem(ctx, val));
-     
-   }
+   void print(raw_ostream &OS, const Module* M) const;
 
-   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
-
-     assert(ctx && BB && "Queued a null block");
-     produceQueue->push_back(IntegratorWQItem(ctx, BB));
-
-   }
-
-   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
-
-     assert(ctx && LI && "Queued a null load");
-     produceQueue->push_back(IntegratorWQItem(ctx, LI));
-
-   }
-
-   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress) {
-
-     assert(OpenInst.first && OpenInst.second && OpenProgress.first && OpenProgress.second && "Queued an invalid open push");
-     produceQueue->push_back(IntegratorWQItem((IntegrationAttempt*)OpenInst.second, cast<CallInst>(OpenInst.first), OpenProgress));
-
-   }
-
-   void queueDIE(IntegrationAttempt* ctx, Value* val) {
-     assert(val && "Queued a null value");
-     produceDIEQueue->push_back(make_vc(val, ctx));
-   }
-
-   void print(raw_ostream &OS, const Module* M) const {
-     for(SmallVector<InlineAttempt*, 4>::const_iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
-       (*II)->print(OS);
-   }
-
-   void releaseMemory(void) {
-     for(SmallVector<InlineAttempt*, 4>::iterator II = rootAttempts.begin(), IE = rootAttempts.end(); II != IE; II++)
-       delete *II;
-   }
+   void releaseMemory(void);
 
    void createInvariantScopes(Function*, DenseMap<Instruction*, const Loop*>*&, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*&, DenseMap<BasicBlock*, const Loop*>*&);
    DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
@@ -1060,6 +1067,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void runDIEQueue();
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
+
+   IntegrationAttempt* getRoot() { return RootIA; }
 
  };
 

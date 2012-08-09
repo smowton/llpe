@@ -1087,6 +1087,12 @@ void IntegrationAttempt::investigateUsers(Value* V) {
 
 }
 
+bool IntegrationAttempt::inDeadValues(Value* V) {
+
+  return deadValues.count(V);
+
+}
+
 bool IntegrationAttempt::localValueIsDead(Value* V) {
 
   Instruction* I = dyn_cast<Instruction>(V);
@@ -1113,6 +1119,9 @@ public:
   DIVisitor(Value* _V) : V(_V), maybeLive(false) { }
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
+
+    if(Ctx->localValueIsDead(UserI))
+      return;
 
     if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
@@ -1145,10 +1154,12 @@ public:
 	}
 
       }
+
     }
     else {
-      if(!Ctx->localValueIsDead(UserI))
-	maybeLive = true;
+
+      maybeLive = true;
+
     }
 
   }
@@ -1166,7 +1177,7 @@ public:
 bool InlineAttempt::isOwnCallUnused() {
 
   if(!parent)
-    return true;
+    return false;
   else
     return parent->valueIsDead(CI);
 

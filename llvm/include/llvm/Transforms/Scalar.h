@@ -343,6 +343,8 @@ Pass *createSimpleVFSEvalPass();
 Pass *createSimpleVFSGraphsPass();
 Pass *createSimpleVFSLoopsPass();
 
+Pass *createIntegratorPass();
+
 } // End llvm namespace
 
 #endif
