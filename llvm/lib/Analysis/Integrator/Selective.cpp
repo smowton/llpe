@@ -328,3 +328,62 @@ void IntegrationAttempt::enableInline(CallInst* CI) {
 
 }
 
+bool IntegrationAttempt::loopIsEnabled(const Loop* L) {
+
+  return !ignorePAs.count(L);
+
+}
+
+bool IntegrationAttempt::inlineIsEnabled(CallInst* CI) {
+
+  return !ignoreIAs.count(CI);
+
+}
+
+bool InlineAttempt::isEnabled() {
+
+  if(!parent)
+    return true;
+  else
+    return parent->inlineIsEnabled(CI);
+
+}
+
+bool PeelIteration::isEnabled() {
+
+  return parentPA->isEnabled();
+
+}
+
+bool PeelAttempt::isEnabled() {
+
+  return parent->loopIsEnabled(L);
+
+}
+
+void InlineAttempt::setEnabled(bool en) {
+
+  if(!parent)
+    return;
+
+  if(en)
+    parent->enableInline(CI);
+  else
+    parent->disableInline(CI);
+
+}
+
+void PeelIteration::setEnabled(bool en) {
+
+  assert(0 && "Can't individually disable iterations yet");
+
+}
+
+void PeelAttempt::setEnabled(bool en) {
+
+  if(en)
+    parent->enablePeel(L);
+  else
+    parent->disablePeel(L);
+
+}

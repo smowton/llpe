@@ -632,6 +632,8 @@ protected:
   void enableInline(CallInst*);
   void disableInline(CallInst*);
   bool inlineIsEnabled(CallInst*);
+  virtual bool isEnabled() = 0;
+  virtual void setEnabled(bool) = 0;
   void revertDSEandDAE();
   void revertDeadValue(Value*);
   void tryKillAndQueue(Instruction*);
@@ -654,6 +656,9 @@ protected:
   bool hasChildren();
   unsigned getNumChildren();
   IntegratorTag* getChildTag(unsigned);
+  virtual bool canDisable() = 0;
+  unsigned getTotalInstructions();
+  unsigned getElimdInstructions();
 
   // Stat collection and printing:
 
@@ -661,6 +666,7 @@ protected:
   void collectBlockStats(BasicBlock* BB);
   void collectLoopStats(const Loop*);
   void collectStats();
+  
   void print(raw_ostream& OS) const;
   // Callable from GDB
   void dump() const;
@@ -728,6 +734,10 @@ public:
 
   virtual std::string getShortHeader();
   virtual IntegratorTag* getParentTag();
+
+  virtual bool canDisable();
+  virtual bool isEnabled();
+  virtual void setEnabled(bool);
 
 };
 
@@ -802,6 +812,8 @@ class PeelAttempt {
    bool hasChildren();
    unsigned getNumChildren();
    IntegratorTag* getChildTag(unsigned);
+   bool isEnabled();
+   void setEnabled(bool);
 
  };
 
@@ -849,6 +861,10 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual std::string getShortHeader();
   virtual IntegratorTag* getParentTag();
+
+  virtual bool canDisable();
+  virtual bool isEnabled();
+  virtual void setEnabled(bool);
 
 };
 

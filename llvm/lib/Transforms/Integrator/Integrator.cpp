@@ -110,19 +110,30 @@ public:
   IntHeuristicsModel(IntegrationAttempt* _Root): wxDataViewModel(), Root(_Root) { }
   ~IntHeuristicsModel() {}
   unsigned int GetColumnCount() const {
-    return 1;
+    return 4;
   }
   wxString GetColumnType(unsigned int column) const {
-    return "string";
+    if(column == 3)
+      return "bool";
+    else
+      return "string";
   }
   void GetValue(wxVariant& val, const wxDataViewItem& item, unsigned int column) const {
 
-    assert(column == 0);
     assert(item.IsOk());
 
     struct IntegratorTag* tag = (struct IntegratorTag*)item.GetID();
     if(!tag) {
-      val = wxEmptyString;
+      switch(column) {
+      case 0:
+      case 1:
+      case 2:
+	val = wxEmptyString;
+	break;
+      case 3:
+	val = false;
+	break;
+      }
       return;
     }
     
@@ -130,13 +141,42 @@ public:
     case IntegratorTypeIA:
       {
 	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	val = _(IA->getShortHeader());
+	switch(column) {
+	case 0:
+	  val = _(IA->getShortHeader());
+	  break;
+	case 1:
+	  val = wxString::Format(_("%u"), IA->getTotalInstructions());
+	  break;
+	case 2:
+	  val = wxString::Format(_("%u"), IA->getElimdInstructions());
+	  break;
+	case 3:
+	  if(IA->canDisable()) {
+	    val = IA->isEnabled();
+	  }
+	  else {
+	    val = false;
+	  }
+	  break;
+	}
       }
       break;
     case IntegratorTypePA:
       {
 	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
-	val = _(PA->getShortHeader());
+	switch(column) {
+	case 0:
+	  val = _(PA->getShortHeader());
+	  break;
+	case 1:
+	case 2:
+	  val = wxEmptyString;
+	  break;
+	case 3:
+	  val = PA->isEnabled();
+	  break;
+	}
       }
       break;
     default:
@@ -146,7 +186,32 @@ public:
   }
 
   bool SetValue(const wxVariant& val, const wxDataViewItem& item, unsigned int column) {
+
+    if(column != 3)
+      return false;
+
+    struct IntegratorTag* tag = (struct IntegratorTag*)item.GetID();
+    if(!tag)
+      return false;
+    
+    switch(tag->type) {
+    case IntegratorTypeIA:
+      {
+	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
+	if(IA->canDisable())
+	  IA->setEnabled(val.GetBool());
+	break;
+      }
+    case IntegratorTypePA:
+      {
+	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
+	PA->setEnabled(val.GetBool());
+	break;
+      }
+    }
+
     return true;
+
   }
 
   wxDataViewItem GetParent(const wxDataViewItem& item) const {
@@ -200,6 +265,12 @@ public:
     default:
       assert(0 && "Invalid node tag");
     }
+
+  }
+
+  bool HasContainerColumns (const wxDataViewItem&) const {
+
+    return true;
 
   }
 
@@ -285,9 +356,20 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   wxBoxSizer* menuPanelSizer = new wxBoxSizer(wxVERTICAL);
 
   wxDataViewCtrl* menuPanelData = new wxDataViewCtrl(menuPanel, ID_TreeView);
-  wxDataViewTextRenderer* col0rend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
-  wxDataViewColumn* col0 = new wxDataViewColumn("Name", col0rend, 0, 200, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+  wxDataViewTextRenderer* textColRend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
+  wxDataViewColumn* col0 = new wxDataViewColumn("Name", textColRend, 0, 300, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+
   menuPanelData->AppendColumn(col0);
+  textColRend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
+  wxDataViewColumn* col1 = new wxDataViewColumn("Inst", textColRend, 1, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+  menuPanelData->AppendColumn(col1);
+  textColRend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
+  wxDataViewColumn* col2 = new wxDataViewColumn("Elim", textColRend, 2, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+  menuPanelData->AppendColumn(col2);
+
+  wxDataViewToggleRenderer* toggleRend = new wxDataViewToggleRenderer("bool", wxDATAVIEW_CELL_ACTIVATABLE);
+  wxDataViewColumn* col3 = new wxDataViewColumn("Use?", toggleRend, 3, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+  menuPanelData->AppendColumn(col3);
 
   IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot());
   menuPanelData->AssociateModel(model);

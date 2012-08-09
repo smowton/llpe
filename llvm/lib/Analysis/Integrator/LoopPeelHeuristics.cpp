@@ -2147,6 +2147,30 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
 
 }
 
+unsigned IntegrationAttempt::getTotalInstructions() {
+
+  return improvableInstructions;
+
+}
+
+unsigned IntegrationAttempt::getElimdInstructions() {
+
+  return improvedInstructions;
+
+}
+
+bool InlineAttempt::canDisable() {
+
+  return true;
+
+}
+
+bool PeelIteration::canDisable() {
+
+  return false;
+
+}
+
 std::string IntegrationAttempt::nestingIndent() const {
 
   return ind(nesting_depth * 2);
