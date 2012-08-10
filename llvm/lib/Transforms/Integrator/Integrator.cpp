@@ -59,7 +59,8 @@ static char workdir[] = "/tmp/integrator_XXXXXX";
 
 class IntegratorFrame: public wxFrame
 {
-
+  
+  IntegrationAttempt* currentIA;
   wxBitmap* currentBitmap;
   wxStaticBitmap* image;
   wxBoxSizer* imagePanelSizer;
@@ -76,6 +77,8 @@ public:
   void OnClose(wxCloseEvent&);
   void OnQuit(wxCommandEvent& event);
   void OnSelectionChanged(wxDataViewEvent&);
+
+  void redrawImage();
 
   DECLARE_EVENT_TABLE()
 
@@ -107,9 +110,10 @@ bool IntegratorApp::OnInit() {
 class IntHeuristicsModel: public wxDataViewModel {
 
   IntegrationAttempt* Root;
+  IntegratorFrame* Parent;
 
 public:
-  IntHeuristicsModel(IntegrationAttempt* _Root): wxDataViewModel(), Root(_Root) { }
+  IntHeuristicsModel(IntegrationAttempt* _Root, IntegratorFrame* _Parent): wxDataViewModel(), Root(_Root), Parent(_Parent) { }
   ~IntHeuristicsModel() {}
   unsigned int GetColumnCount() const {
     return 4;
@@ -187,6 +191,24 @@ public:
 
   }
 
+  void notifyStatsChanged(IntegrationAttempt* IA) {
+    
+    if(!IA->isEnabled())
+      return;
+
+    ValueChanged(wxDataViewItem((void*)(&IA->tag)), 2);
+
+    for(DenseMap<CallInst*, InlineAttempt*>::iterator it = IA->inlineChildren.begin(), it2 = IA->inlineChildren.end(); it != it2; ++it)
+      notifyStatsChanged(it->second);
+    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = IA->peelChildren.begin(), it2 = IA->peelChildren.end(); it != it2; ++it) {
+      if(!it->second->isEnabled())
+	continue;
+      for(std::vector<PeelIteration*>::iterator iter = it->second->Iterations.begin(), iterend = it->second->Iterations.end(); iter != iterend; ++iter)
+	notifyStatsChanged(*iter);
+    }
+
+  }
+
   bool SetValue(const wxVariant& val, const wxDataViewItem& item, unsigned int column) {
 
     if(column != 3)
@@ -225,6 +247,11 @@ public:
       ItemsAdded(item, changed);
     else
       ItemsDeleted(item, changed);
+
+    // All other contexts will have recalculated their stats too.
+    notifyStatsChanged(Root);
+
+    Parent->redrawImage();
 
     return true;
 
@@ -388,7 +415,7 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   wxDataViewColumn* col3 = new wxDataViewColumn("Use?", toggleRend, 3, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
   menuPanelData->AppendColumn(col3);
 
-  IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot());
+  IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot(), this);
   menuPanelData->AssociateModel(model);
 
   menuPanelSizer->Add(menuPanelData, 1, wxEXPAND, 0);
@@ -433,6 +460,44 @@ void IntegratorFrame::OnClose(wxCloseEvent& WXUNUSED(event)) {
 
 }
 
+void IntegratorFrame::redrawImage() {
+
+  delete currentBitmap;
+  currentBitmap = 0;
+
+  std::string error;
+  raw_fd_ostream RFO(dotpath.c_str(), error);
+  currentIA->describeAsDOT(RFO);
+  RFO.close();
+
+  if(!error.empty()) {
+
+    errs() << "Failed to open " << dotpath << ": " << error << "\n";
+
+  }
+  else {
+
+    if(int ret = system(dotcommand.c_str()) != 0) {
+
+      errs() << "Failed to run '" << dotcommand << "' (returned " << ret << ")\n";
+	
+    }
+    else {
+
+      currentBitmap = new wxBitmap(_(pngpath), wxBITMAP_TYPE_PNG);
+
+    }
+
+  }
+
+  if(!currentBitmap)
+    currentBitmap = new wxBitmap(1, 1);
+
+  image->SetBitmap(*currentBitmap);
+  imagePanel->FitInside();
+
+}
+
 void IntegratorFrame::OnSelectionChanged(wxDataViewEvent& event) {
 
   wxDataViewItem item = event.GetItem();
@@ -440,40 +505,11 @@ void IntegratorFrame::OnSelectionChanged(wxDataViewEvent& event) {
   IntegratorTag* tag = (IntegratorTag*)item.GetID();
   if(tag && tag->type == IntegratorTypeIA) {
 
-    delete currentBitmap;
-    currentBitmap = 0;
+    currentIA = (IntegrationAttempt*)(tag->ptr);
+    redrawImage();
+ 
+    redrawImage();
 
-    std::string error;
-    raw_fd_ostream RFO(dotpath.c_str(), error);
-    ((IntegrationAttempt*)tag->ptr)->describeAsDOT(RFO);
-    RFO.close();
-
-    if(!error.empty()) {
-
-      errs() << "Failed to open " << dotpath << ": " << error << "\n";
-
-    }
-    else {
-
-      if(int ret = system(dotcommand.c_str()) != 0) {
-
-	errs() << "Failed to run '" << dotcommand << "' (returned " << ret << ")\n";
-	
-      }
-      else {
-
-	currentBitmap = new wxBitmap(_(pngpath), wxBITMAP_TYPE_PNG);
-
-      }
-
-    }
-
-    if(!currentBitmap)
-      currentBitmap = new wxBitmap(1, 1);
-
-    image->SetBitmap(*currentBitmap);
-    imagePanel->FitInside();
-   
   }
 
 }

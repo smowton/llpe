@@ -70,6 +70,8 @@ void IntegrationAttempt::disablePeel(const Loop* L) {
   
   PA->revertExternalUsers();
 
+  pass->getRoot()->collectStats();
+
 }
 
 void IntegrationAttempt::disableInline(CallInst* CI) {
@@ -91,6 +93,8 @@ void IntegrationAttempt::disableInline(CallInst* CI) {
     revertDeadValue(CI->getArgOperand(i));
 
   }
+
+  pass->getRoot()->collectStats();
 
 }
 
@@ -307,6 +311,8 @@ void IntegrationAttempt::enablePeel(const Loop* L) {
   // All of the above will have populated the DIE queue. Empty it.
   pass->runDIEQueue();
 
+  pass->getRoot()->collectStats();
+
 }
 
 void IntegrationAttempt::enableInline(CallInst* CI) {
@@ -325,6 +331,8 @@ void IntegrationAttempt::enableInline(CallInst* CI) {
   retryStoresAndAllocs(VCs);
 
   pass->runDIEQueue();
+
+  pass->getRoot()->collectStats();
 
 }
 

@@ -2070,6 +2070,11 @@ void PeelAttempt::collectStats() {
 
 void IntegrationAttempt::collectStats() {
 
+  unexploredCalls.clear();
+  unexploredLoops.clear();
+  improvedInstructions = 0;
+  improvableInstructions = 0;
+
   collectAllBlockStats();
   collectAllLoopStats();
 
