@@ -62,6 +62,8 @@ class IntegratorFrame: public wxFrame
 
   wxBitmap* currentBitmap;
   wxStaticBitmap* image;
+  wxBoxSizer* imagePanelSizer;
+  wxScrolledWindow* imagePanel;
 
   std::string dotpath;
   std::string pngpath;
@@ -193,22 +195,36 @@ public:
     struct IntegratorTag* tag = (struct IntegratorTag*)item.GetID();
     if(!tag)
       return false;
+
+    bool newState = val.GetBool();
     
+    wxDataViewItemArray changed;
+
     switch(tag->type) {
     case IntegratorTypeIA:
       {
 	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	if(IA->canDisable())
+	if(!IA->canDisable())
+	  return true;
+	if(IA->isEnabled() != newState) {
+	  GetChildren(item, changed);
 	  IA->setEnabled(val.GetBool());
+	}
 	break;
       }
     case IntegratorTypePA:
       {
 	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
+	GetChildren(item, changed);
 	PA->setEnabled(val.GetBool());
 	break;
       }
     }
+
+    if(newState)
+      ItemsAdded(item, changed);
+    else
+      ItemsDeleted(item, changed);
 
     return true;
 
@@ -254,12 +270,13 @@ public:
     case IntegratorTypeIA:
       {
 	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	return IA->hasChildren();
+	return IA->isEnabled() && IA->hasChildren();
       }
       break;
     case IntegratorTypePA:
       {
-	return true;
+	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
+	return PA->isEnabled();
       }
       break;
     default:
@@ -378,10 +395,10 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
 
   menuPanel->SetSizer(menuPanelSizer);
 
-  wxScrolledWindow* imagePanel = new wxScrolledWindow(splitter, wxID_ANY);
+  imagePanel = new wxScrolledWindow(splitter, wxID_ANY);
   imagePanel->SetScrollRate(1, 1);
   
-  wxBoxSizer* imagePanelSizer = new wxBoxSizer(wxVERTICAL);
+  imagePanelSizer = new wxBoxSizer(wxVERTICAL);
 
   currentBitmap = new wxBitmap(1, 1);
 
@@ -455,6 +472,7 @@ void IntegratorFrame::OnSelectionChanged(wxDataViewEvent& event) {
       currentBitmap = new wxBitmap(1, 1);
 
     image->SetBitmap(*currentBitmap);
+    imagePanel->FitInside();
    
   }
 

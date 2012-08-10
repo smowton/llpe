@@ -246,11 +246,11 @@ void PeelAttempt::getRetryStoresAndAllocs(std::vector<ValCtx>& storesAndAllocs) 
   std::sort(storesAndAllocs.begin(), storesAndAllocs.end());
   std::unique(storesAndAllocs.begin(), storesAndAllocs.end());
  
-  // Same sequence as for DSE/DAE/DIE in the first place: first MTIs, then stores, then memsets.
-
 }
 
 void IntegrationAttempt::retryStoresAndAllocs(std::vector<ValCtx>& storesAndAllocs) {
+
+  // Same sequence as for DSE/DAE/DIE in the first place: first MTIs, then stores, then memsets.
 
   for(std::vector<ValCtx>::iterator it = storesAndAllocs.begin(), it2 = storesAndAllocs.end(); it != it2; ++it) {
 

@@ -191,7 +191,9 @@ bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
   if(isa<AllocaInst>(Alloc.first)) {
 
     // Are we about to return from the function that defines the alloca's lifetime?
-    return isa<TerminatorInst>(I) && (Alloc.second->getFunctionRoot() == this);
+    if(TerminatorInst* TI = dyn_cast<TerminatorInst>(I)) {
+      return (TI->getNumSuccessors() == 0) && (Alloc.second->getFunctionRoot() == this);
+    }
 
   }
   else if(isMalloc(Alloc.first)) {

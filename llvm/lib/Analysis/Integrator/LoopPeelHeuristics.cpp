@@ -2161,7 +2161,7 @@ unsigned IntegrationAttempt::getElimdInstructions() {
 
 bool InlineAttempt::canDisable() {
 
-  return true;
+  return parent != 0;
 
 }
 
