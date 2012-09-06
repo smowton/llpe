@@ -666,6 +666,9 @@ protected:
   void collectBlockStats(BasicBlock* BB);
   void collectLoopStats(const Loop*);
   void collectStats();
+
+  // Saving selected results back to the program
+  void commit();
   
   void print(raw_ostream& OS) const;
   // Callable from GDB
@@ -765,8 +768,9 @@ class PeelAttempt {
 
  public:
 
-  struct IntegratorTag tag;
+   struct IntegratorTag tag;
 
+   std::vector<BasicBlock*> LoopBlocks;
    std::vector<PeelIteration*> Iterations;
 
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
@@ -1085,6 +1089,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
    IntegrationAttempt* getRoot() { return RootIA; }
+   void commit() { RootIA->commit(); }
 
  };
 

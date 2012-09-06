@@ -70,6 +70,13 @@ void IntegrationAttempt::disablePeel(const Loop* L) {
   
   PA->revertExternalUsers();
 
+  // Another reason: loads which resolved to pointers which are now folded and so unavailable may now need to
+  // be carried out for real, because e.g. if %x resolved to some instruction in a function which won't
+  // be inlined and which was then passed out by way of memory, we'd need to introduce extra out parameters
+  // to route the relevant pointer to the use site. It's simpler just to load to life.
+
+  pass->getRoot()->revertLoadsFromFoldedContexts();
+
   pass->getRoot()->collectStats();
 
 }
@@ -93,6 +100,8 @@ void IntegrationAttempt::disableInline(CallInst* CI) {
     revertDeadValue(CI->getArgOperand(i));
 
   }
+
+  pass->getRoot()->revertLoadsFromFoldedContexts();
 
   pass->getRoot()->collectStats();
 
@@ -300,6 +309,10 @@ void IntegrationAttempt::enablePeel(const Loop* L) {
   // Reverse the work done by disablePeel: store / allocation elim which once passed through
   // this scope should be retried, and dead instruction elim should be tried again for anything
   // with a user inside the loop or which was used by the stores that are re-eliminated.
+  // Relatedly some loads which resolved to pointers will once again be valid, meaning we
+  // can once again kill the stores and allocations involved.
+
+  pass->retryLoadsFromFoldedContexts();
 
   std::vector<ValCtx> VCs;
   PA->getRetryStoresAndAllocs(VCs);
@@ -325,6 +338,8 @@ void IntegrationAttempt::enableInline(CallInst* CI) {
   InlineAttempt* IA = getInlineAttempt(CI);
   if(!IA)
     return;
+
+  pass->retryLoadsFromFoldedContexts();
 
   std::vector<ValCtx> VCs;
   IA->getRetryStoresAndAllocs(VCs);
@@ -394,4 +409,75 @@ void PeelAttempt::setEnabled(bool en) {
   else
     parent->disablePeel(L);
 
+}
+
+bool IntegrationAttempt::isAvailable() {
+
+  if(parent && !parent->isAvailable())
+    return false;
+  return isEnabled();
+
+}
+
+void PeelAttempt::walkLoadsFromFoldedContexts() {
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
+
+    (*it)->walkLoadsFromFoldedContexts();
+
+  }
+
+}
+
+void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
+
+  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
+
+    LoadInst* LI = dyn_cast<LoadInst>(it->first);
+
+    if(LI && isa<Instruction>(it->second.first)) {
+
+      if(revert) {
+	if(!it->second.second->isAvailable()) {
+
+	  revertDeadValue(LI->getPointerOperand());
+
+	}
+      }
+      else {
+
+	if(it->second.second->isAvailable()) {
+
+	  queueDIEOperands(LI);
+
+	}
+
+      }
+
+    }
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    if(!ignoreIAs.count(it->first))
+      it->second->walkLoadsFromFoldedContexts();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    if(!ignorePAs.count(it->first))
+      it->second->walkLoadsFromFoldedContexts();
+
+  }
+
+}
+
+void IntegrationAttempt::revertLoadsFromFoldedContexts() {
+  walkLoadsFromFoldedContexts(true);
+}
+
+void IntegrationAttempt::retryLoadsFromFoldedContexts() {
+  walkLoadsFromFoldedContexts(false);
 }

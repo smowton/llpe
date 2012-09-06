@@ -25,6 +25,7 @@ using namespace llvm;
 // For communication with wxWidgets, since there doesn't seem to be any easy way
 // of passing a parameter to WxApp's constructor.
 static IntegrationHeuristicsPass* IHP;
+static bool IntegratorCancelled = false;
 
 namespace {
 
@@ -523,6 +524,14 @@ bool Integrator::runOnModule(Module& M) {
   int argc = 0;
   char** argv = 0;
   wxEntry(argc, argv);
+
+  // At this point the GUI will have enabled / disabled exploring some contexts.
+  // Integrate the rest of them.
+  
+  if(IntegratorCancelled)
+    return false;
+
+  IHP->commit();
 
   return false;
 

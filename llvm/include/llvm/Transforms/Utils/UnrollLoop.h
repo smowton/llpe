@@ -16,13 +16,17 @@
 #ifndef LLVM_TRANSFORMS_UTILS_UNROLLLOOP_H
 #define LLVM_TRANSFORMS_UTILS_UNROLLLOOP_H
 
+#include <map>
+
 namespace llvm {
 
 class Loop;
 class LoopInfo;
 class LPPassManager;
 
-  bool UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel = false);
+  Loop* cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap)
+
+  bool UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel = false, bool CompletelyUnroll = false, std::vector<ValueMap<const Value *, Value*> >* Iterations = 0);
 
 }
 

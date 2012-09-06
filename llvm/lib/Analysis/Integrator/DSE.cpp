@@ -242,19 +242,20 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	  if(!deadValues.count(MTI)) {
 
-	    // If it's not dead it must be regarded as a big unresolved load.
-
 	    Value* Pointer = MTI->getSource();
 	    AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), MISize, StorePtr, Size);
+
 	    if(R != AliasAnalysis::NoAlias) {
-	      
+
+	      // If it's not dead it must be regarded as a big unresolved load.
+
 	      LPDEBUG("Can't kill store to " << StorePtr << " because of unresolved MTI " << *MI << "\n");
 	      return false;
 
 	    }
 
 	  }
-
+	  
 	}
      
 	// If the size is unknown we must assume zero.
@@ -297,13 +298,14 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
       }
       else if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
 
-	if(isUnresolved(LI)) {
+	ValCtx Res = getReplacement(LI);
+	if(Res == getDefaultVC(LI) || !Res.second->isAvailable()) {
 	  
-	  Value* Pointer = LI->getPointerOperand();
-	  uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
-
 	  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
 	  if(R != AliasAnalysis::NoAlias) {
+
+	    Value* Pointer = LI->getPointerOperand();
+	    uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
 
 	    LPDEBUG("Can't kill store to " << StorePtr << " because of unresolved load " << *Pointer << "\n");
 	    return false;

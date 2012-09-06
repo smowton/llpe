@@ -97,6 +97,8 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   this->tag.type = IntegratorTypePA;
   
   L->getExitEdges(ExitEdges);
+  LoopBlocks = L->getBlocks();
+
   getOrCreateIteration(0);
 
 }

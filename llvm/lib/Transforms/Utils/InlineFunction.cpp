@@ -28,11 +28,11 @@
 #include "llvm/Support/CallSite.h"
 using namespace llvm;
 
-bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI) {
-  return InlineFunction(CallSite(CI), IFI);
+bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap) {
+  return InlineFunction(CallSite(CI), IFI, CloneMap);
 }
 bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI) {
-  return InlineFunction(CallSite(II), IFI);
+  return InlineFunction(CallSite(II), IFI, CloneMap);
 }
 
 
@@ -237,7 +237,7 @@ static void UpdateCallGraphAfterInlining(CallSite CS,
 // exists in the instruction stream.  Similiarly this will inline a recursive
 // function by one level.
 //
-bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI) {
+bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
   Instruction *TheCall = CS.getInstruction();
   LLVMContext &Context = TheCall->getContext();
   assert(TheCall->getParent() && TheCall->getParent()->getParent() &&
@@ -275,6 +275,26 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI) {
       return false;
   }
 
+  // If we've been passed LoopInfo structures, clone the child's loop structures.
+
+  std::map<Loop*, Loop*> oldToNewLoops;
+
+  if(ChildLI) {
+
+    for(LoopInfo::iterator LI = ChildLI->begin(), LE = ChildLI->end(); LI != LE; ++LI) {
+
+      Loop* L = *LI;
+      Loop* NewL = cloneLoop(L, oldToNewLoops);
+
+      if(ParentLoop)
+	ParentLoop->addChildLoop(NewL);
+      else
+	ParentLI->addTopLevelLoop(NewL);
+      
+    }
+
+  }
+
   // Get an iterator to the last basic block in the function, which will have
   // the new function inlined after it.
   //
@@ -304,7 +324,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI) {
       // by them explicit.  However, we don't do this if the callee is readonly
       // or readnone, because the copy would be unneeded: the callee doesn't
       // modify the struct.
-      if (CalledFunc->paramHasAttr(ArgNo+1, Attribute::ByVal) &&
+      if ((!ignoreByVal) && CalledFunc->paramHasAttr(ArgNo+1, Attribute::ByVal) &&
           !CalledFunc->onlyReadsMemory()) {
         const Type *AggTy = cast<PointerType>(I->getType())->getElementType();
         const Type *VoidPtrTy = 
@@ -361,13 +381,20 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI) {
       VMap[I] = ActualArg;
     }
 
-    // We want the inliner to prune the code as it copies.  We would LOVE to
-    // have no dead or constant instructions leftover after inlining occurs
-    // (which can happen, e.g., because an argument was constant), but we'll be
-    // happy with whatever the cloner can do.
-    CloneAndPruneFunctionInto(Caller, CalledFunc, VMap, 
-                              /*ModuleLevelChanges=*/false, Returns, ".i",
-                              &InlinedFunctionInfo, IFI.TD, TheCall);
+    if(CloneMap) {
+      // Avoid doing anything clever to preserve a simple mapping from original
+      // to cloned instructions.
+      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, ChildLI, ParentLI,ParentLoop, oldToNewLoops);
+    }
+    else {
+      // We want the inliner to prune the code as it copies.  We would LOVE to
+      // have no dead or constant instructions leftover after inlining occurs
+      // (which can happen, e.g., because an argument was constant), but we'll be
+      // happy with whatever the cloner can do.
+      CloneAndPruneFunctionInto(Caller, CalledFunc, VMap, 
+				/*ModuleLevelChanges=*/false, Returns, ".i",
+				&InlinedFunctionInfo, IFI.TD, TheCall);
+    }
 
     // Remember the first block that is newly cloned over.
     FirstNewBlock = LastBlock; ++FirstNewBlock;
@@ -375,6 +402,10 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI) {
     // Update the callgraph if requested.
     if (IFI.CG)
       UpdateCallGraphAfterInlining(CS, FirstNewBlock, VMap, IFI);
+
+    if(CloneMap)
+      *CloneMap = VMap;
+
   }
 
   // If there are any alloca instructions in the block that used to be the entry

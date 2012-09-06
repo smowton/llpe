@@ -101,7 +101,7 @@ struct pendingPhiFixup {
   pendingPhiFixup(PHINode* n, BasicBlock* p, Value* v) : node(n), pred(p), val(v) { }
 };
 
-Loop* cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap) {
+Loop* llvm::cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap) {
 
   DEBUG(dbgs() << "Cloning loop " << *oldLoop << "\n");
   Loop* newLoop = new Loop();
@@ -146,7 +146,7 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
 /// If doPeel is true, the loop will be peeled rather than unrolled: it will be preceded
 /// by Count copies of its own body.
 
-bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel) {
+bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, std::vector<ValueMap<const Value *, Value*> >* Iterations) {
   BasicBlock *Preheader = L->getLoopPreheader();
   if (!Preheader) {
     DEBUG(dbgs() << "  Can't unroll; loop preheader-insertion failed.\n");
@@ -171,38 +171,50 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
 
   // Notify ScalarEvolution that the loop will be substantially changed,
   // if not outright eliminated.
-  if (ScalarEvolution *SE = LPM->getAnalysisIfAvailable<ScalarEvolution>())
-    SE->forgetLoop(L);
+  if(LPM) {
+    if (ScalarEvolution *SE = LPM->getAnalysisIfAvailable<ScalarEvolution>())
+      SE->forgetLoop(L);
+  }
 
-  bool CompletelyUnroll = false;
   unsigned TripCount = 0;
   unsigned TripMultiple = 0;
   unsigned BreakoutTrip = 0;
 
   if(!doPeel) {
-    // Find trip count
-    TripCount = L->getSmallConstantTripCount();
-    // Find trip multiple if count is not available
-    TripMultiple = 1;
-    if (TripCount == 0)
-      TripMultiple = L->getSmallConstantTripMultiple();
 
-    if (TripCount != 0)
-      DEBUG(dbgs() << "  Trip Count = " << TripCount << "\n");
-    if (TripMultiple != 1)
-      DEBUG(dbgs() << "  Trip Multiple = " << TripMultiple << "\n");
+    if(CompletelyUnroll) {
 
-    // Effectively "DCE" unrolled iterations that are beyond the tripcount
-    // and will never be executed.
-    if (TripCount != 0 && Count > TripCount)
-      Count = TripCount;
+      // Suppose the loop lasts for Count iterations.
+      TripCount = Count;
 
-    assert(Count > 0);
-    assert(TripMultiple > 0);
-    assert(TripCount == 0 || TripCount % TripMultiple == 0);
+    }
+    else {
 
-    // Are we eliminating the loop control altogether?
-    CompletelyUnroll = Count == TripCount;
+      // Find trip count
+      TripCount = L->getSmallConstantTripCount();
+      // Find trip multiple if count is not available
+      TripMultiple = 1;
+      if (TripCount == 0)
+	TripMultiple = L->getSmallConstantTripMultiple();
+      
+      if (TripCount != 0)
+	DEBUG(dbgs() << "  Trip Count = " << TripCount << "\n");
+      if (TripMultiple != 1)
+	DEBUG(dbgs() << "  Trip Multiple = " << TripMultiple << "\n");
+
+      // Effectively "DCE" unrolled iterations that are beyond the tripcount
+      // and will never be executed.
+      if (TripCount != 0 && Count > TripCount)
+	Count = TripCount;
+
+      assert(Count > 0);
+      assert(TripMultiple > 0);
+      assert(TripCount == 0 || TripCount % TripMultiple == 0);
+
+      // Are we eliminating the loop control altogether?
+      CompletelyUnroll = Count == TripCount;
+
+    }
 
     // If we know the trip count, we know the multiple...
     BreakoutTrip = 0;
@@ -260,13 +272,13 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   Headers.push_back(Header);
   Latches.push_back(LatchBlock);
 
-  // Step 1: Clone loop structures such that nested loops are created to accomodate loop body duplication.
+  // Step 1: Clone loop structures such that nested loops are created to accommodate loop body duplication.
   std::vector<std::map<Loop*, Loop*> > IterLoops;
   {
     std::vector<Loop*> NewLoops;
     for (unsigned i = 1; i < Count; i++) {
       DEBUG(dbgs() << "Cloning outer loop " << *L << "\n");
-      // Are the newly cloned blocks to be added to the loop?
+      // Are the newly cloned blocks to be members of the original loop or its parent loop/function?
       bool newBlocksInLoop = (!CompletelyUnroll) && ((!doPeel) || i == Count - 1); 
       IterLoops.push_back(std::map<Loop*, Loop*>());
       std::map<Loop*, Loop*>& oldToNewLoops = IterLoops.back();
@@ -418,6 +430,12 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       DEBUG(dbgs() << "New block after fixups: " << **it << "\n");
     }
 
+    // If our caller wants to know the mappings from iteration to iteration, let them know.
+    // Note full copy of the map:
+
+    if(Iterations)
+      Iterations.push_back(LastValueMap);
+
   }
 
   // Fix the first (original) iteration:
@@ -498,10 +516,14 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       Term->setUnconditionalDest(target);
       // Merge adjacent basic blocks, if possible.
       // Should this be here? Shouldn't another pass do this?
-      if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
-	DEBUG(dbgs() << "Folded BB\n");
-	std::replace(Latches.begin(), Latches.end(), target, Fold);
-	std::replace(Headers.begin(), Headers.end(), target, Fold);
+      // Don't do this if our caller wants mappings from one iteration to the next
+      // since this makes the relationship more complicated.
+      if(!Iterations) {
+	if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
+	  DEBUG(dbgs() << "Folded BB\n");
+	  std::replace(Latches.begin(), Latches.end(), target, Fold);
+	  std::replace(Headers.begin(), Headers.end(), target, Fold);
+	}
       }
     }
   }
@@ -554,20 +576,29 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
     // inserted code, doing constant propagation and dead code elimination as we
     // go.
     // Should this be here? Shouldn't IC do this?
-    const std::vector<BasicBlock*> &NewLoopBlocks = L->getBlocks();
-    for (std::vector<BasicBlock*>::const_iterator BB = NewLoopBlocks.begin(),
-	   BBE = NewLoopBlocks.end(); BB != BBE; ++BB) {
-      for (BasicBlock::iterator I = (*BB)->begin(), E = (*BB)->end(); I != E; ) {
-	Instruction *Inst = I++;
+
+    // Don't do this if our caller expects a map of values to peeled values, since this
+    // complicates the situation.
+
+    if(!Iterations) {
+
+      const std::vector<BasicBlock*> &NewLoopBlocks = L->getBlocks();
+      for (std::vector<BasicBlock*>::const_iterator BB = NewLoopBlocks.begin(),
+	     BBE = NewLoopBlocks.end(); BB != BBE; ++BB) {
+	for (BasicBlock::iterator I = (*BB)->begin(), E = (*BB)->end(); I != E; ) {
+	  Instruction *Inst = I++;
 	
-	if (isInstructionTriviallyDead(Inst))
-	  (*BB)->getInstList().erase(Inst);
-	else if (Constant *C = ConstantFoldInstruction(Inst)) {
-	  Inst->replaceAllUsesWith(C);
-	  (*BB)->getInstList().erase(Inst);
+	  if (isInstructionTriviallyDead(Inst))
+	    (*BB)->getInstList().erase(Inst);
+	  else if (Constant *C = ConstantFoldInstruction(Inst)) {
+	    Inst->replaceAllUsesWith(C);
+	    (*BB)->getInstList().erase(Inst);
+	  }
 	}
       }
+
     }
+
   }
     
   NumCompletelyUnrolled += CompletelyUnroll;

@@ -75,7 +75,10 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
                              ValueToValueMapTy &VMap,
                              bool ModuleLevelChanges,
                              SmallVectorImpl<ReturnInst*> &Returns,
-                             const char *NameSuffix, ClonedCodeInfo *CodeInfo) {
+                             const char *NameSuffix, ClonedCodeInfo *CodeInfo,
+			     LoopInfo* ChildLI, LoopInfo* ParentLI,
+			     Loop* ParentDestLoop,
+			     std::map<Loop*, Loop*>* oldToNewLoops) {
   assert(NameSuffix && "NameSuffix cannot be null!");
 
 #ifndef NDEBUG
@@ -118,6 +121,28 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
 
     if (ReturnInst *RI = dyn_cast<ReturnInst>(CBB->getTerminator()))
       Returns.push_back(RI);
+
+    if(ChildLI) {
+
+      Loop* innermostLoop = ChildLI->getLoopFor(&BB);
+      if(innermostLoop) {
+
+	(*oldToNewLoops)[innermostLoop]->addBasicBlockToLoop(CBB, ParentLI);
+	if(&BB == innermostLoop->getHeader()) {
+
+	  (*oldToNewLoops)[innermostLoop]->moveToHeader(CBB);
+
+	}
+
+      }
+      else if(ParentDestLoop) {
+
+	ParentDestLoop->addBasicBlockToLoop(CBB, ParentLI);
+
+      }
+
+    }
+
   }
 
   // Loop over all of the instructions in the function, fixing up operand

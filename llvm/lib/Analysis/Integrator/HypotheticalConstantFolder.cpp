@@ -283,6 +283,15 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   if(isDead) {
     LPDEBUG("Block is dead. Killing outgoing edges and queueing successors.\n"); 
     deadBlocks.insert(BB);
+    
+    // Remove any resolutions for these instructions, since they're both a waste
+    // of memory and a trap waiting to catch us when we commit the results.
+    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+      
+      improvedValues.erase(BI);
+
+    }
+
   }
   
   if(isCertain) {
@@ -1101,7 +1110,8 @@ bool IntegrationAttempt::localValueIsDead(Value* V) {
     return true;
   if(I && blockIsDead(I->getParent()))
     return true;
-  if(getReplacement(V) != getDefaultVC(V))
+  ValCtx VC = getReplacement(V);
+  if(VC != getDefaultVC(V) && VC.second->isAvailable())
     return true;
 
   return false;
@@ -1171,7 +1181,7 @@ public:
   virtual bool shouldContinue() {
     return !maybeLive;
   }
- 
+
 };
 
 bool InlineAttempt::isOwnCallUnused() {
