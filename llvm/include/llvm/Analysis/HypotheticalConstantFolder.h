@@ -4,6 +4,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ValueMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Pass.h"
@@ -376,6 +377,9 @@ protected:
   DenseSet<CallInst*> ignoreIAs;
   DenseSet<const Loop*> ignorePAs;
 
+  // A map from the Values used in all of the above to the clones of Instructions produced at commit time
+  ValueMap<const Value*, Value*> CommittedValues;
+
   std::string nestingIndent() const;
 
   int nesting_depth;
@@ -634,11 +638,15 @@ protected:
   bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
+  bool isAvailable();
   void revertDSEandDAE();
   void revertDeadValue(Value*);
   void tryKillAndQueue(Instruction*);
   void getRetryStoresAndAllocs(std::vector<ValCtx>&);
   void retryStoresAndAllocs(std::vector<ValCtx>&);
+  void revertLoadsFromFoldedContexts();
+  void retryLoadsFromFoldedContexts();
+  void walkLoadsFromFoldedContexts(bool revert);
 
   // DOT export:
 
@@ -660,6 +668,18 @@ protected:
   unsigned getTotalInstructions();
   unsigned getElimdInstructions();
 
+  // Saving our results as a bitcode file:
+
+  void commit();
+  void commitInContext(LoopInfo* MasterLI, ValueMap<const Value*, Value*>& valMap);
+  void commitPointers();
+  void deleteInstruction(Instruction*);
+  void tryDeleteDeadBlock(BasicBlock*);
+  virtual void deleteDeadBlocks() = 0;
+  void commitLocalConstants();
+  Instruction* getCommittedValue(Value*);
+  void commitLocalPointers();
+
   // Stat collection and printing:
 
   void collectAllBlockStats();
@@ -667,9 +687,6 @@ protected:
   void collectLoopStats(const Loop*);
   void collectStats();
 
-  // Saving selected results back to the program
-  void commit();
-  
   void print(raw_ostream& OS) const;
   // Callable from GDB
   void dump() const;
@@ -742,6 +759,8 @@ public:
   virtual bool isEnabled();
   virtual void setEnabled(bool);
 
+  virtual void deleteDeadBlocks();
+
 };
 
 class ProcessExternalCallback;
@@ -799,6 +818,7 @@ class PeelAttempt {
    void callExternalUsers(ProcessExternalCallback& PEC);
    void retryExternalUsers();
    void getRetryStoresAndAllocs(std::vector<llvm::ValCtx>&);
+   void walkLoadsFromFoldedContexts(bool);
    
    void describeTreeAsDOT(std::string path);
 
@@ -869,6 +889,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool canDisable();
   virtual bool isEnabled();
   virtual void setEnabled(bool);
+
+  virtual void deleteDeadBlocks();
 
 };
 
@@ -1085,6 +1107,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void runQueue();
    void runDIEQueue();
+
+   void revertLoadsFromFoldedContexts();
+   void retryLoadsFromFoldedContexts();
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 

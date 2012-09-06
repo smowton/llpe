@@ -419,11 +419,11 @@ bool IntegrationAttempt::isAvailable() {
 
 }
 
-void PeelAttempt::walkLoadsFromFoldedContexts() {
+void PeelAttempt::walkLoadsFromFoldedContexts(bool revert) {
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
 
-    (*it)->walkLoadsFromFoldedContexts();
+    (*it)->walkLoadsFromFoldedContexts(revert);
 
   }
 
@@ -461,14 +461,14 @@ void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(!ignoreIAs.count(it->first))
-      it->second->walkLoadsFromFoldedContexts();
+      it->second->walkLoadsFromFoldedContexts(revert);
 
   }
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     if(!ignorePAs.count(it->first))
-      it->second->walkLoadsFromFoldedContexts();
+      it->second->walkLoadsFromFoldedContexts(revert);
 
   }
 

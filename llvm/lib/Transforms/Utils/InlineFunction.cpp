@@ -28,10 +28,10 @@
 #include "llvm/Support/CallSite.h"
 using namespace llvm;
 
-bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap) {
-  return InlineFunction(CallSite(CI), IFI, CloneMap);
+bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
+  return InlineFunction(CallSite(CI), IFI, CloneMap, ParentLI, ParentLoop, ChildLI);
 }
-bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI) {
+bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
   return InlineFunction(CallSite(II), IFI, CloneMap);
 }
 
@@ -237,7 +237,7 @@ static void UpdateCallGraphAfterInlining(CallSite CS,
 // exists in the instruction stream.  Similiarly this will inline a recursive
 // function by one level.
 //
-bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
   Instruction *TheCall = CS.getInstruction();
   LLVMContext &Context = TheCall->getContext();
   assert(TheCall->getParent() && TheCall->getParent()->getParent() &&
@@ -277,13 +277,13 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
 
   // If we've been passed LoopInfo structures, clone the child's loop structures.
 
-  std::map<Loop*, Loop*> oldToNewLoops;
+  std::map<const Loop*, Loop*> oldToNewLoops;
 
   if(ChildLI) {
 
     for(LoopInfo::iterator LI = ChildLI->begin(), LE = ChildLI->end(); LI != LE; ++LI) {
 
-      Loop* L = *LI;
+      const Loop* L = *LI;
       Loop* NewL = cloneLoop(L, oldToNewLoops);
 
       if(ParentLoop)

@@ -298,14 +298,14 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
       }
       else if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
 
+	Value* Pointer = LI->getPointerOperand();
+	uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
+
 	ValCtx Res = getReplacement(LI);
 	if(Res == getDefaultVC(LI) || !Res.second->isAvailable()) {
 	  
 	  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
 	  if(R != AliasAnalysis::NoAlias) {
-
-	    Value* Pointer = LI->getPointerOperand();
-	    uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
 
 	    LPDEBUG("Can't kill store to " << StorePtr << " because of unresolved load " << *Pointer << "\n");
 	    return false;

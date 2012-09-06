@@ -3388,6 +3388,18 @@ void IntegrationHeuristicsPass::runDIEQueue() {
 
 }
 
+void IntegrationHeuristicsPass::revertLoadsFromFoldedContexts() {
+
+  RootIA->revertLoadsFromFoldedContexts();
+
+}
+
+void IntegrationHeuristicsPass::retryLoadsFromFoldedContexts() {
+
+  RootIA->retryLoadsFromFoldedContexts();
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();

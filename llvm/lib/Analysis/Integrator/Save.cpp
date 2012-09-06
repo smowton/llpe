@@ -1,6 +1,18 @@
 
+#include "llvm/Function.h"
+#include "llvm/BasicBlock.h"
+#include "llvm/Instructions.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/ADT/ValueMap.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Support/Debug.h"
+
+using namespace llvm;
+
 // Root entry point for saving our results:
-void InlineAttempt::commit() {
+void IntegrationAttempt::commit() {
 
   ValueMap<const Value*, Value*> rootValMap;
 
@@ -27,7 +39,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // Values as integrated into the program for the second phase when we resolve pointers,
   // and resolve constants / dead code now.
 
-  CommittedValues = valMap;
+  CommittedValues.insert(valMap.begin(), valMap.end());
 
   // Step 1: perform local integration that doesn't use outside pointers.
   // This includes establishing any loop invariants, which will be caught up
@@ -38,7 +50,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
   // Step 2: inline each child call
 
-  for(DenseMap<CallInst*, InlineAttempt*> it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(ignoreIAs.count(it->first))
       continue;
@@ -61,14 +73,14 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     // Get my loop context as it will be written:
 
-    Loop* MyL = getLoopContext();
+    const Loop* MyL = getLoopContext();
     if(MyL) {
 
       MyL = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[MyL->getHeader()]));
 
     }
 
-    if(!InlineFunction(it->first, IFI, &childMap, MasterLI, MyL, LI[Called]))
+    if(!InlineFunction(CI, IFI, &childMap, MasterLI, MyL, LI[Called]))
       assert(0 && "Inlining failed!\n");
 
     // childMap is now a map from the instructions' "real" names to those inlined.
@@ -113,11 +125,11 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     // The loop iterations still expect the instruction to be named "%2", however.
     // Therefore we must compose the two maps.
 
-    unsigned iterLimit = completelyUnrollLoop ? unrollCount : unrollCount - 1;
+    int iterLimit = completelyUnrollLoop ? unrollCount : unrollCount - 1;
 
     // Process the loop iterations backwards to avoid altering the original blocks
 
-    for(unsigned i = iterLimit - 1; i >= 0; --i) {
+    for(int i = iterLimit - 1; i >= 0; --i) {
 
       ValueMap<const Value*, Value*>* childValues;
       
@@ -134,7 +146,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
 	for(std::vector<BasicBlock*>::iterator BI = LBlocks.begin(), BE = LBlocks.end(); BI != BE; ++BI) {
 
-	  for(BasicBlock::iterator II = BI->begin(), IE = BI->end(); II != IE; ++II) {
+	  for(BasicBlock::iterator II = (*BI)->begin(), IE = (*BI)->end(); II != IE; ++II) {
 
 	    loopValues.insert(II);
 
@@ -148,7 +160,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
 	  if(loopValues.count(VI->second)) {
 
-	    composedMap[VI->first] = thisIterValues[VI->second];
+	    composedValues[VI->first] = thisIterValues[VI->second];
 
 	  }
 
@@ -170,7 +182,7 @@ void IntegrationAttempt::commitPointers() {
 
   commitLocalPointers();
 
-  for(DenseMap<CallInst*, InlineAttempt*> it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->commitPointers();
 
@@ -211,7 +223,7 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB) {
     return;
 
   // Get the copy of the block we should actually operate on:
-  BB = cast<BasicBlock*>(it->second);
+  BB = cast<BasicBlock>(it->second);
 
   LPDEBUG("Deleting block " << BB->getName() << "\n");
   
@@ -314,11 +326,11 @@ void IntegrationAttempt::commitLocalConstants() {
 
 Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
 
-  DenseMap<Value*, ValCtx>::iterator it = CommittedValue.find(V);
-  if(it == CommittedValue.end())
+  ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(V);
+  if(it == CommittedValues.end())
     return 0;
   else
-    return cast<Instruction>(it->second.first);
+    return cast<Instruction>(it->second);
 
 }
 

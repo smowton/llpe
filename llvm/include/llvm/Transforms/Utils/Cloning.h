@@ -213,9 +213,9 @@ public:
 /// exists in the instruction stream.  Similiarly this will inline a recursive
 /// function by one level.
 ///
-bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0);
-bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0);
-bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap);
+bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, const Loop* ParentLoop = 0, LoopInfo* ChildLI = 0);
+bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, const Loop* ParentLoop = 0, LoopInfo* ChildLI = 0);
+bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI);
 
 } // End llvm namespace
 
