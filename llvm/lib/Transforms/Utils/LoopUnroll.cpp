@@ -434,7 +434,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
     // Note full copy of the map:
 
     if(Iterations)
-      Iterations.push_back(LastValueMap);
+      (*Iterations)[Iterations->size()].insert(LastValueMap.begin(), LastValueMap.end());
 
   }
 

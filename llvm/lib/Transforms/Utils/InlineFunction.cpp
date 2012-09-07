@@ -22,16 +22,18 @@
 #include "llvm/Attributes.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/DebugInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CallSite.h"
+#include "llvm/Transforms/Utils/UnrollLoop.h"
 using namespace llvm;
 
-bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
   return InlineFunction(CallSite(CI), IFI, CloneMap, ParentLI, ParentLoop, ChildLI);
 }
-bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
   return InlineFunction(CallSite(II), IFI, CloneMap);
 }
 
@@ -237,7 +239,7 @@ static void UpdateCallGraphAfterInlining(CallSite CS,
 // exists in the instruction stream.  Similiarly this will inline a recursive
 // function by one level.
 //
-bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, const Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
   Instruction *TheCall = CS.getInstruction();
   LLVMContext &Context = TheCall->getContext();
   assert(TheCall->getParent() && TheCall->getParent()->getParent() &&
@@ -277,13 +279,13 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
 
   // If we've been passed LoopInfo structures, clone the child's loop structures.
 
-  std::map<const Loop*, Loop*> oldToNewLoops;
+  std::map<Loop*, Loop*> oldToNewLoops;
 
   if(ChildLI) {
 
     for(LoopInfo::iterator LI = ChildLI->begin(), LE = ChildLI->end(); LI != LE; ++LI) {
 
-      const Loop* L = *LI;
+      Loop* L = *LI;
       Loop* NewL = cloneLoop(L, oldToNewLoops);
 
       if(ParentLoop)
@@ -324,7 +326,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
       // by them explicit.  However, we don't do this if the callee is readonly
       // or readnone, because the copy would be unneeded: the callee doesn't
       // modify the struct.
-      if ((!ignoreByVal) && CalledFunc->paramHasAttr(ArgNo+1, Attribute::ByVal) &&
+      if (CalledFunc->paramHasAttr(ArgNo+1, Attribute::ByVal) &&
           !CalledFunc->onlyReadsMemory()) {
         const Type *AggTy = cast<PointerType>(I->getType())->getElementType();
         const Type *VoidPtrTy = 
@@ -384,7 +386,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
     if(CloneMap) {
       // Avoid doing anything clever to preserve a simple mapping from original
       // to cloned instructions.
-      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, ChildLI, ParentLI,ParentLoop, oldToNewLoops);
+      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, ChildLI, ParentLI,ParentLoop, &oldToNewLoops);
     }
     else {
       // We want the inliner to prune the code as it copies.  We would LOVE to
@@ -404,7 +406,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
       UpdateCallGraphAfterInlining(CS, FirstNewBlock, VMap, IFI);
 
     if(CloneMap)
-      *CloneMap = VMap;
+      CloneMap->insert(VMap.begin(), VMap.end());
 
   }
 

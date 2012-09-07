@@ -80,7 +80,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     }
 
-    if(!InlineFunction(CI, IFI, &childMap, MasterLI, MyL, LI[Called]))
+    if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called]))
       assert(0 && "Inlining failed!\n");
 
     // childMap is now a map from the instructions' "real" names to those inlined.

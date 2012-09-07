@@ -17,6 +17,8 @@
 #define LLVM_TRANSFORMS_UTILS_UNROLLLOOP_H
 
 #include <map>
+#include <vector>
+#include "llvm/ADT/ValueMap.h"
 
 namespace llvm {
 

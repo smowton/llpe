@@ -26,6 +26,7 @@
 #include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/DebugInfo.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/ADT/SmallVector.h"
 #include <map>
 using namespace llvm;
@@ -127,7 +128,7 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
       Loop* innermostLoop = ChildLI->getLoopFor(&BB);
       if(innermostLoop) {
 
-	(*oldToNewLoops)[innermostLoop]->addBasicBlockToLoop(CBB, ParentLI);
+	(*oldToNewLoops)[innermostLoop]->addBasicBlockToLoop(CBB, ParentLI->getBase());
 	if(&BB == innermostLoop->getHeader()) {
 
 	  (*oldToNewLoops)[innermostLoop]->moveToHeader(CBB);
@@ -137,7 +138,7 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
       }
       else if(ParentDestLoop) {
 
-	ParentDestLoop->addBasicBlockToLoop(CBB, ParentLI);
+	ParentDestLoop->addBasicBlockToLoop(CBB, ParentLI->getBase());
 
       }
 
