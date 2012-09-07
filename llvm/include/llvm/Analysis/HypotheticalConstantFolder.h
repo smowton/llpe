@@ -676,7 +676,7 @@ protected:
   void deleteInstruction(Instruction*);
   void tryDeleteDeadBlock(BasicBlock*);
   virtual void deleteDeadBlocks() = 0;
-  void commitLocalConstants();
+  void commitLocalConstants(ValueMap<const Value*, Value*>& VM);
   Instruction* getCommittedValue(Value*);
   void commitLocalPointers();
 

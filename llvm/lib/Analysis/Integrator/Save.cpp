@@ -46,7 +46,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // in the loop peeling section below, as well as replacing users of calls
   // with the values they return, if we know them.
 
-  commitLocalConstants();
+  commitLocalConstants(valMap);
 
   // Step 2: inline each child call
 
@@ -270,7 +270,7 @@ void PeelIteration::deleteDeadBlocks() {
 
 }
 
-void IntegrationAttempt::commitLocalConstants() {
+void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM) {
 
   // Commit anything that's simple: commit simple constants, dead blocks and edges.
 
@@ -279,6 +279,10 @@ void IntegrationAttempt::commitLocalConstants() {
 
     Instruction* I = dyn_cast<Instruction>(*it);
     if(!I)
+      continue;
+
+    // Don't delete call instructions since they might be about to get inlined.
+    if(isa<CallInst>(I))
       continue;
 
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
@@ -312,8 +316,19 @@ void IntegrationAttempt::commitLocalConstants() {
 
     I = cast<Instruction>(VI->second);
 
+    Value* oldMapping;
+    if(isa<CallInst>(I))
+      oldMapping = VM[I];
+
     I->replaceAllUsesWith(it->second.first);
-    I->eraseFromParent();
+
+    // Keep call instructions since they might have useful side-effects.
+    if(!isa<CallInst>(I))
+      I->eraseFromParent();
+    else {
+      // Restore mapping for future use by the inliner:
+      VM[I] = oldMapping;
+    }
 
   }
 

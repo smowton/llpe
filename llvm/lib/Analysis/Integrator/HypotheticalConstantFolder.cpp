@@ -1111,7 +1111,7 @@ bool IntegrationAttempt::localValueIsDead(Value* V) {
   if(I && blockIsDead(I->getParent()))
     return true;
   ValCtx VC = getReplacement(V);
-  if(VC != getDefaultVC(V) && VC.second->isAvailable())
+  if(VC != getDefaultVC(V) && ((!VC.second) || VC.second->isAvailable()))
     return true;
 
   return false;
