@@ -107,9 +107,9 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     // Take a copy of the block list before we clone them:
     std::vector<BasicBlock*> LBlocks = L->getBlocks();
 
-    std::vector<ValueMap<const Value*, Value*> > iterValues;
+    std::vector<ValueMap<const Value*, Value*>* > iterValues;
 
-    if(!UnrollLoop(L, unrollCount, LI[&F], 0, true, completelyUnrollLoop, &iterValues)) {
+    if(!UnrollLoop(L, unrollCount, LI[&F], 0, !completelyUnrollLoop, completelyUnrollLoop, &iterValues)) {
 
       assert(0 && "Unrolling failed");
 
@@ -132,16 +132,16 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     for(int i = iterLimit - 1; i >= 0; --i) {
 
       ValueMap<const Value*, Value*>* childValues;
+      ValueMap<const Value*, Value*> composedValues;
       
       if(i == 0) {
 	childValues = &valMap;
       }
       else {
 
-	ValueMap<const Value*, Value*>& thisIterValues = iterValues[i-1];
+	ValueMap<const Value*, Value*>& thisIterValues = *(iterValues[i-1]);
 
 	DenseSet<Value*> loopValues;
-	ValueMap<const Value*, Value*> composedValues;
 	childValues = &composedValues;
 
 	for(std::vector<BasicBlock*>::iterator BI = LBlocks.begin(), BE = LBlocks.end(); BI != BE; ++BI) {
@@ -171,6 +171,12 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
       // Commit constant results to this iteration:
 
       it->second->Iterations[i]->commitInContext(MasterLI, *childValues);
+
+    }
+
+    for(std::vector<ValueMap<const Value*, Value*>* >::iterator it = iterValues.begin(), it2 = iterValues.end(); it != it2; ++it) {
+
+      delete (*it);
 
     }
 
@@ -312,7 +318,7 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(VI == CommittedValues.end())
       continue;
 
-    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first));
+    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first) << "\n");
 
     I = cast<Instruction>(VI->second);
 

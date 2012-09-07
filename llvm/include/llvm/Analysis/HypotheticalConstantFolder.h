@@ -479,6 +479,7 @@ protected:
   // CFG analysis:
 
   bool shouldCheckBlock(BasicBlock* BB);
+  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) = 0;
   void checkBlock(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
@@ -730,6 +731,8 @@ public:
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   virtual void queueTryEvaluateOwnCall();
 
+  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
+
   void queueCheckExitBlock(BasicBlock* BB);
   void checkFinalIteration();
 
@@ -856,6 +859,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual Instruction* getEntryInstruction();
   virtual BasicBlock* getEntryBlock();
   virtual const Loop* getLoopContext();
+
+  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
   
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
   bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&);

@@ -349,6 +349,32 @@ bool IntegrationAttempt::shouldCheckBlock(BasicBlock* BB) {
 
 }
 
+bool InlineAttempt::shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  return shouldCheckBlock(ToBB);
+
+}
+
+bool PeelIteration::shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  if(FromBB == L->getLoopLatch() && ToBB == L->getHeader()) {
+
+    PeelIteration* NextIter = getNextIteration();
+    if(!NextIter)
+      return true;
+    else
+      return NextIter->shouldCheckBlock(ToBB);
+
+  }
+  else {
+
+    // All other complicated cases (loop entry and exit edges) are taken care of in shouldCheckBlock -> blockIsDead.
+    return shouldCheckBlock(ToBB);
+
+  }
+  
+}
+
 bool IntegrationAttempt::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
 
   return false;
@@ -647,7 +673,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	    BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	    if(shouldCheckBlock(thisTarget)) {
+	    if(shouldCheckEdge(TI->getParent(), thisTarget)) {
 
 	      if(thisTarget != takenTarget)
 		setEdgeDead(TI->getParent(), thisTarget);

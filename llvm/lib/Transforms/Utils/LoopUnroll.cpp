@@ -146,7 +146,7 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
 /// If doPeel is true, the loop will be peeled rather than unrolled: it will be preceded
 /// by Count copies of its own body.
 
-bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, std::vector<ValueMap<const Value *, Value*> >* Iterations) {
+bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, std::vector<ValueMap<const Value *, Value*>* >* Iterations) {
   BasicBlock *Preheader = L->getLoopPreheader();
   if (!Preheader) {
     DEBUG(dbgs() << "  Can't unroll; loop preheader-insertion failed.\n");
@@ -247,6 +247,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   }
 
   std::vector<BasicBlock*> LoopBlocks = L->getBlocks();
+  std::vector<Loop*> SubLoops = L->getSubLoops();
   SmallVector<BasicBlock*, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
 
@@ -433,8 +434,10 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
     // If our caller wants to know the mappings from iteration to iteration, let them know.
     // Note full copy of the map:
 
-    if(Iterations)
-      (*Iterations)[Iterations->size()].insert(LastValueMap.begin(), LastValueMap.end());
+    if(Iterations) {
+      Iterations->push_back(new ValueMap<const Value*, Value*>());
+      Iterations->back()->insert(LastValueMap.begin(), LastValueMap.end());
+    }
 
   }
 
@@ -468,14 +471,48 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   // 3. Remove the first iteration from the Loop descriptor if it's no longer in the loop
   // (reparent with the next loop out if necessary)
   if(CompletelyUnroll || doPeel) {
+
+    Loop* parent = L->getParentLoop();
+
+    // Reparent the loops that sat directly within L:
+    for(std::vector<Loop*>::iterator it = SubLoops.begin(), it2 = SubLoops.end(); it != it2; ++it) {
+
+      Loop* SubL = *it;
+
+      Loop::iterator SubLI = L->begin();
+      while((*SubLI) != SubL)
+	++SubLI;
+
+      L->removeChildLoop(SubLI);
+      if(parent) {
+
+	parent->addChildLoop(SubL);
+
+      }
+      else {
+
+	LI->addTopLevelLoop(SubL);
+
+      }
+
+    }
+
+    // Reparent original blocks not in a subloop.
+
     for(std::vector<BasicBlock*>::iterator it = LoopBlocks.begin(); it != LoopBlocks.end(); it++) {
-      DEBUG(dbgs() << "Removed block " << **it << " from loop " << *L << "\n");
+
+      if(LI->getLoopFor(*it) != L)
+	continue;
+
+      DEBUG(dbgs() << "Removed block " << (*it)->getName() << " from loop " << *L << "\n");
       LI->removeBlock(*it);
-      if(Loop* parent = L->getParentLoop()) {
-	DEBUG(dbgs() << "Added block " << **it << " to loop " << *parent << "\n");
+      if(parent) {
+	DEBUG(dbgs() << "Added block " << (*it)->getName() << " to loop " << *parent << "\n");
 	parent->addBasicBlockToLoop(*it, LI->getBase());
       }
+
     }
+
     if(!CompletelyUnroll)
       L->moveToHeader(Headers.back());
     else

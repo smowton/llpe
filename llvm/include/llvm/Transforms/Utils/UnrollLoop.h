@@ -28,7 +28,7 @@ class LPPassManager;
 
   Loop* cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap);
 
-  bool UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel = false, bool CompletelyUnroll = false, std::vector<ValueMap<const Value *, Value*> >* Iterations = 0);
+  bool UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel = false, bool CompletelyUnroll = false, std::vector<ValueMap<const Value *, Value*>* >* Iterations = 0);
 
 }
 
