@@ -88,6 +88,18 @@ void IntegrationAttempt::localPrepareCommit() {
 
   }
 
+  // Remove any return instructions from consideration, since the inliner will take care of them for us
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+
+    TerminatorInst* TI = FI->getTerminator();
+    if(isa<ReturnInst>(TI)) {
+
+      deadValues.erase(TI);
+
+    }
+
+  }
+  
 }
 
 void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Value*, Value*>& valMap) {
@@ -313,6 +325,10 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
   bool isDead = deadBlocks.count(FromBB);
   BasicBlock* Target = 0;
+
+  // Return instructions have been replaced already by the inliner!
+  if(isa<ReturnInst>(TI))
+    return;
 
   TerminatorInst* ReplaceTI = cast<TerminatorInst>(CommittedValues[TI]);
   BasicBlock* ReplaceTarget = 0;
