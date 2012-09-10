@@ -436,6 +436,17 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
 
     if(Iterations) {
       Iterations->push_back(new ValueMap<const Value*, Value*>());
+      DEBUG(dbgs() << "Values for iteration " << It << ":\n");
+      for(ValueMap<const Value*, Value*>::iterator VI = LastValueMap.begin(), VE = LastValueMap.end(); VI != VE; ++VI) {
+
+	if(isa<Instruction>(VI->first)) {
+	  DEBUG(dbgs() << "Inst " << *(VI->first) << " -> " << *(VI->second) << "\n");
+	}
+	else {
+	  DEBUG(dbgs() << "Block " << VI->first->getName() << " -> " << VI->second->getName() << "\n");
+	}
+
+      }
       Iterations->back()->insert(LastValueMap.begin(), LastValueMap.end());
     }
 

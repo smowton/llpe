@@ -29,7 +29,64 @@ void IntegrationAttempt::commit() {
 
   }
 
+  prepareCommit();
+
   commitInContext(LI[&F], rootValMap);
+
+  commitPointers();
+
+}
+
+// Prepare for the commit: remove instruction mappings that are (a) invalid to write to the final program
+// and (b) difficult to reason about once the loop structures start to be modified by unrolling and so on.
+
+void IntegrationAttempt::prepareCommit() {
+  
+  localPrepareCommit();
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    if(ignoreIAs.count(it->first))
+      continue;
+
+    it->second->prepareCommit();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    if(ignorePAs.count(it->first))
+      continue;
+
+    unsigned iterCount = it->second->Iterations.size();
+    unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
+
+    for(unsigned i = 0; i < iterLimit; ++i) {
+
+      it->second->Iterations[i]->prepareCommit();
+
+    }
+
+  }  
+
+}
+
+void IntegrationAttempt::localPrepareCommit() {
+
+  // Remove loop header values, since these are removed by the loop unroller and are realised
+  // by RAUW'ing the PHI node with one of its arguments rather than by directly replacing it.
+  if(const Loop* L = getLoopContext()) {
+
+    BasicBlock* H = L->getHeader();
+    for(BasicBlock::iterator it = H->begin(), it2 = H->end(); it != it2 && isa<PHINode>(it); ++it) {
+
+      Value* V = it;
+      deadValues.erase(V);
+      improvedValues.erase(V);
+
+    }
+
+  }
 
 }
 
@@ -90,7 +147,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   }
 
   // Step 3: peel each child loop
-
+  
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     if(ignorePAs.count(it->first))
@@ -146,6 +203,8 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
 	for(std::vector<BasicBlock*>::iterator BI = LBlocks.begin(), BE = LBlocks.end(); BI != BE; ++BI) {
 
+	  loopValues.insert(*BI);
+
 	  for(BasicBlock::iterator II = (*BI)->begin(), IE = (*BI)->end(); II != IE; ++II) {
 
 	    loopValues.insert(II);
@@ -190,11 +249,17 @@ void IntegrationAttempt::commitPointers() {
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
+    if(ignoreIAs.count(it->first))
+      continue;
+
     it->second->commitPointers();
 
   }
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    if(ignorePAs.count(it->first))
+      continue;
 
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
@@ -234,25 +299,106 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB) {
   LPDEBUG("Deleting block " << BB->getName() << "\n");
   
   // Remove all instructions in the block first:
-  while(!isa<TerminatorInst>(BB->begin())) {
+  while(!(BB->begin() == BB->end())) {
 
-    deleteInstruction(--BasicBlock::iterator(BB->getTerminator()));
-
-  }
-
-  TerminatorInst* TI = BB->getTerminator();
-
-  for(unsigned i = 0; i < TI->getNumSuccessors(); ++i) {
-    
-    BasicBlock* Succ = TI->getSuccessor(i);
-    Succ->removePredecessor(BB);
+    deleteInstruction(--BasicBlock::iterator(BB->end()));
 
   }
 
-  deleteInstruction(TI);
-
-  // Branches aimed at this block will necessarily get simplified.
   BB->eraseFromParent();
+
+}
+
+void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* TI) {
+
+  bool isDead = deadBlocks.count(FromBB);
+  BasicBlock* Target = 0;
+
+  TerminatorInst* ReplaceTI = cast<TerminatorInst>(CommittedValues[TI]);
+  BasicBlock* ReplaceTarget = 0;
+
+  if(!isDead) {
+
+    // Careful: using ReplaceTI not TI because TI probably still belongs to a version of the blocks
+    // which is still rolled (e.g. loop 1 contains loop 2; loop 1 was unrolled to two iterations
+    // creating 2.1 and 2.2; we're now unrolling 2.2 but the original blocks reside in 2.1 and are
+    // rolled) I think all branches that aren't the loop latch will look the same as the rolled version.
+    const unsigned NumSucc = ReplaceTI->getNumSuccessors();
+
+    // Loop unrolling replaces loop latch branches with unconditionals, so this skips them too.
+    if(NumSucc <= 1)
+      return;
+
+    for (unsigned I = 0; I != NumSucc; ++I) {
+
+      // Back to using the original blocks here since our results are calculated in their terms
+      BasicBlock* thisTarget = TI->getSuccessor(I);
+      if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
+
+	if(Target)
+	  return;
+	else
+	  Target = thisTarget;
+
+      }
+
+    }
+
+    if(!Target)
+      return;
+
+    // If the target isn't in the map then it's from outside this context, leave it alone.
+    ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(Target);
+    if(it == CommittedValues.end())
+      ReplaceTarget = Target;
+    else
+      ReplaceTarget = cast<BasicBlock>(it->second);
+
+  }
+
+  if(!isDead)
+    LPDEBUG("Replace terminator " << *ReplaceTI << " with branch to " << ReplaceTarget->getName() << "\n");
+  else
+    LPDEBUG("Replace terminator " << *ReplaceTI << " with unreachable\n");
+
+  BasicBlock* ReplaceSource = ReplaceTI->getParent();
+
+  for(unsigned i = 0; i < ReplaceTI->getNumSuccessors(); ++i) {
+    
+    BasicBlock* Succ = ReplaceTI->getSuccessor(i);
+    if(Succ != ReplaceTarget)
+      Succ->removePredecessor(ReplaceSource);
+
+  }
+
+  ReplaceTI->eraseFromParent();
+
+  if(ReplaceTarget)
+    BranchInst::Create(ReplaceTarget, ReplaceSource);
+  else
+    new UnreachableInst(ReplaceSource->getParent()->getContext(), ReplaceSource);
+
+}
+
+void InlineAttempt::replaceKnownBranches() {
+
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+
+    // This should be ok because loop unrolling never replaces branch instructions, whenever
+    // it modifies one it does so in place.
+    replaceKnownBranch(FI, FI->getTerminator());
+
+  }
+
+}
+
+void PeelIteration::replaceKnownBranches() {
+
+  for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
+
+    replaceKnownBranch(*it, (*it)->getTerminator());
+
+  }
 
 }
 
@@ -318,6 +464,7 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(VI == CommittedValues.end())
       continue;
 
+    LPDEBUG("Original instruction " << *I << " -> " << *(VI->second) << "\n");
     LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first) << "\n");
 
     I = cast<Instruction>(VI->second);
@@ -341,6 +488,7 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
   // Since we delete dead blocks here, we must ensure that improvedValues does not contain
   // any keys which refer to instructions that will be deleted. This is handled in 
   // the checkBlock function.
+  replaceKnownBranches();
   deleteDeadBlocks();
 
 }

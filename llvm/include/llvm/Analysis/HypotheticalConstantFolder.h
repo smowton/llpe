@@ -36,6 +36,7 @@ class StoreInst;
 class MemTransferInst;
 class MemIntrinsic;
 class CmpInst;
+class TerminatorInst;
 
 class IntegrationAttempt;
 
@@ -677,8 +678,13 @@ protected:
   void deleteInstruction(Instruction*);
   void tryDeleteDeadBlock(BasicBlock*);
   virtual void deleteDeadBlocks() = 0;
+  void replaceKnownBranch(BasicBlock*, TerminatorInst*);
+  virtual void replaceKnownBranches() = 0;
   void commitLocalConstants(ValueMap<const Value*, Value*>& VM);
   Instruction* getCommittedValue(Value*);
+  void prepareCommit();
+  void localPrepareCommit();
+  
   void commitLocalPointers();
 
   // Stat collection and printing:
@@ -763,6 +769,7 @@ public:
   virtual void setEnabled(bool);
 
   virtual void deleteDeadBlocks();
+  virtual void replaceKnownBranches();
 
 };
 
@@ -896,6 +903,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void setEnabled(bool);
 
   virtual void deleteDeadBlocks();
+  virtual void replaceKnownBranches();
 
 };
 

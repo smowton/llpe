@@ -106,6 +106,12 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
 	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.");
 
+	for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
+
+	  deadBlocks.insert(*BI);
+
+	} 
+
 	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
 
 	L->getExitEdges(exitEdges);
