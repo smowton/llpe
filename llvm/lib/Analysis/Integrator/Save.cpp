@@ -2,12 +2,15 @@
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instructions.h"
+#include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Support/Debug.h"
+
+#include "../../VMCore/LLVMContextImpl.h"
 
 using namespace llvm;
 
@@ -71,6 +74,31 @@ void IntegrationAttempt::prepareCommit() {
 
 }
 
+void IntegrationAttempt::removeBlockFromLoops(BasicBlock* BB) {
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    std::vector<BasicBlock*>& Blocks = it->second->LoopBlocks;
+    std::vector<BasicBlock*>::iterator Found = std::find(Blocks.begin(), Blocks.end(), BB);
+    if(Found != Blocks.end()) {
+      Blocks.erase(Found);
+      it->second->removeBlockFromLoops(BB);
+    }
+
+  }
+
+}
+
+void PeelAttempt::removeBlockFromLoops(BasicBlock* BB) {
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
+
+    (*it)->removeBlockFromLoops(BB);
+
+  }
+
+}
+
 void IntegrationAttempt::localPrepareCommit() {
 
   // Remove loop header values, since these are removed by the loop unroller and are realised
@@ -99,6 +127,24 @@ void IntegrationAttempt::localPrepareCommit() {
     }
 
   }
+
+  // Remove loop blocks which are invariant dead from the list of blocks belonging to that loop
+  // This will stop the integration within that loop from considering it.
+
+  for(DenseMap<BasicBlock*, const Loop*>::iterator BI = invariantBlocks.begin(), BE = invariantBlocks.end(); BI != BE; ++BI) {
+
+    if(BI->second == getLoopContext()) {
+
+      if(deadBlocks.count(BI->first)) {
+
+	LPDEBUG("Removing invariant block " << BI->first->getName() << " from child contexts\n");
+	removeBlockFromLoops(BI->first);
+
+      }
+
+    }
+
+  }
   
 }
 
@@ -108,6 +154,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // Values as integrated into the program for the second phase when we resolve pointers,
   // and resolve constants / dead code now.
 
+  this->MasterLI = MasterLI;
   CommittedValues.insert(valMap.begin(), valMap.end());
 
   // Step 1: perform local integration that doesn't use outside pointers.
@@ -115,7 +162,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // in the loop peeling section below, as well as replacing users of calls
   // with the values they return, if we know them.
 
-  commitLocalConstants(valMap);
+  commitLocalConstants(CommittedValues);
 
   // Step 2: inline each child call
 
@@ -126,7 +173,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     // Find the call instruction we're actually inlining:
 
-    CallInst* CI = cast<CallInst>(valMap[it->first]);
+    CallInst* CI = cast<CallInst>(CommittedValues[it->first]);
 
     ValueMap<const Value*, Value*> childMap;
     // This both inputs argument values and returns a map from instructions
@@ -168,7 +215,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     // Get the loop we're actually dealing with, since we're probably dealing with a loop whose blocks have
     // been renamed many times.
 
-    Loop* L = MasterLI->getLoopFor(cast<BasicBlock>(valMap[it->first->getHeader()]));
+    Loop* L = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[it->first->getHeader()]));
 
     bool completelyUnrollLoop = it->second->Iterations.back()->iterStatus == IterationStatusFinal;
     unsigned unrollCount = it->second->Iterations.size();
@@ -204,7 +251,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
       ValueMap<const Value*, Value*> composedValues;
       
       if(i == 0) {
-	childValues = &valMap;
+	childValues = &CommittedValues;
       }
       else {
 
@@ -227,7 +274,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
 	// Now write the value side of the composed map:
 
-	for(ValueMap<const Value*, Value*>::iterator VI = valMap.begin(), VE = valMap.end(); VI != VE; ++VI) {
+	for(ValueMap<const Value*, Value*>::iterator VI = CommittedValues.begin(), VE = CommittedValues.end(); VI != VE; ++VI) {
 
 	  if(loopValues.count(VI->second)) {
 
@@ -309,6 +356,8 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB) {
   BB = cast<BasicBlock>(it->second);
 
   LPDEBUG("Deleting block " << BB->getName() << "\n");
+
+  MasterLI->removeBlock(BB);
   
   // Remove all instructions in the block first:
   while(!(BB->begin() == BB->end())) {
@@ -330,7 +379,11 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
   if(isa<ReturnInst>(TI))
     return;
 
-  TerminatorInst* ReplaceTI = cast<TerminatorInst>(CommittedValues[TI]);
+  TerminatorInst* ReplaceTI = cast_or_null<TerminatorInst>(CommittedValues[TI]);
+  // Terminators might not exist if this is an invariant branch which was replaced outside.
+  if(!ReplaceTI)
+    return;
+
   BasicBlock* ReplaceTarget = 0;
 
   if(!isDead) {
@@ -383,10 +436,11 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
     
     BasicBlock* Succ = ReplaceTI->getSuccessor(i);
     if(Succ != ReplaceTarget)
-      Succ->removePredecessor(ReplaceSource);
+      Succ->removePredecessor(ReplaceSource, true /* Don't delete 1-arg PHI nodes */);
 
   }
 
+  CommittedValues.erase(TI);
   ReplaceTI->eraseFromParent();
 
   if(ReplaceTarget)
@@ -420,9 +474,13 @@ void PeelIteration::replaceKnownBranches() {
 
 void InlineAttempt::deleteDeadBlocks() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+  std::vector<BasicBlock*> FBlocks(F.size());
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI)
+    FBlocks.push_back(FI);
 
-    tryDeleteDeadBlock(FI);
+  for(std::vector<BasicBlock*>::iterator FI = FBlocks.begin(), FE = FBlocks.end(); FI != FE; ++FI) {
+
+    tryDeleteDeadBlock(*FI);
 
   }
 
@@ -449,8 +507,9 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(!I)
       continue;
 
-    // Don't delete call instructions since they might be about to get inlined.
-    if(isa<CallInst>(I))
+    // Don't delete call instructions since they might be about to get inlined
+    // unless they're memops, in which case they were put there deliberately.
+    if(isa<CallInst>(I) && !isa<MemIntrinsic>(I))
       continue;
 
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
@@ -551,5 +610,35 @@ void IntegrationAttempt::commitLocalPointers() {
     I->eraseFromParent();
 
   }
+
+}
+
+namespace llvm {
+
+  void dumpValueMap(LLVMContext* Ctx, bool verbose);
+
+}
+
+void llvm::dumpValueMap(LLVMContext* Ctx, bool verbose) {
+
+  DenseMap<Value*, ValueHandleBase*>& Map = Ctx->pImpl->ValueHandles;
+  errs() << "Map contains " << Map.size() << " entries\n";
+  for(DenseMap<Value*, ValueHandleBase*>::iterator it = Map.begin(), it2 = Map.end(); it != it2; ++it) {
+
+    if(!verbose) {
+      errs() << it->first->getName() << "\n";
+    }
+    else {
+      if(isa<BasicBlock>(it->first)) {
+	errs() << "Block " << it->first->getName() << "\n";
+      }
+      else {
+	errs() << "Value " << *(it->first) << "\n";
+      }
+    }
+
+  }
+
+  errs() << "End dump\n";
 
 }

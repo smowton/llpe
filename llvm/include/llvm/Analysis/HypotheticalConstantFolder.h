@@ -380,6 +380,8 @@ protected:
 
   // A map from the Values used in all of the above to the clones of Instructions produced at commit time
   ValueMap<const Value*, Value*> CommittedValues;
+  // The LoopInfo belonging to the function which is being specialised
+  LoopInfo* MasterLI;
 
   std::string nestingIndent() const;
 
@@ -684,6 +686,7 @@ protected:
   Instruction* getCommittedValue(Value*);
   void prepareCommit();
   void localPrepareCommit();
+  void removeBlockFromLoops(BasicBlock*);
   
   void commitLocalPointers();
 
@@ -848,6 +851,8 @@ class PeelAttempt {
    IntegratorTag* getChildTag(unsigned);
    bool isEnabled();
    void setEnabled(bool);
+
+   void removeBlockFromLoops(BasicBlock*);
 
  };
 

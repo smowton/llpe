@@ -346,8 +346,15 @@ bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
   DenseMap<BasicBlock*, const Loop*>::iterator it = invariantBlocks.find(BB);
   if(it == invariantBlocks.end())
     return deadBlocks.count(BB);
-  else
-    return blockIsDeadWithScope(BB, it->second);
+  else {
+    const Loop* MyL = getLoopContext();
+    // If this block's context contains ours it is an invariant to us.
+    // Otherwise it is a variant and we cannot answer at this scope.
+    if((!it->second) || (MyL && it->second->contains(MyL)))
+      return blockIsDeadWithScope(BB, it->second);
+    else
+      return false;
+  }
 
 }
 
