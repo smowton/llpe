@@ -58,9 +58,23 @@ public:
   bool NeedsPHITranslationFromBlock(BasicBlock *BB) const {
     // We do need translation if one of our input instructions is defined in
     // this block.
-    for (unsigned i = 0, e = InstInputs.size(); i != e; ++i)
-      if (InstInputs[i]->getParent() == BB)
+    for (unsigned i = 0, e = InstInputs.size(); i != e; ++i) {
+      if (InstInputs[i]->getParent() == BB) {
+	if(parent) {
+	  ValCtx Repl = parent->getReplacement(InstInputs[i]);
+	  if(Repl.second != parent)
+	    continue;
+	  if(Instruction* ReplI = dyn_cast<Instruction>(Repl.first)) {
+	    if(ReplI->getParent() != BB)
+	      continue;
+	  }
+	  else {
+	    continue;
+	  }
+	}
         return true;
+      }
+    }
     return false;
   }
   
