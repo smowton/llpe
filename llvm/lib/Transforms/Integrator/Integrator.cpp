@@ -10,6 +10,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 
 #include <wx/wx.h>
 #include <wx/splitter.h>
@@ -26,6 +27,8 @@ using namespace llvm;
 // of passing a parameter to WxApp's constructor.
 static IntegrationHeuristicsPass* IHP;
 static bool IntegratorCancelled = false;
+
+static cl::opt<bool> AcceptAllInt("integrator-accept-all", cl::init(false));
 
 namespace {
 
@@ -521,15 +524,19 @@ bool Integrator::runOnModule(Module& M) {
 
   IHP = &getAnalysis<IntegrationHeuristicsPass>();
 
-  int argc = 0;
-  char** argv = 0;
-  wxEntry(argc, argv);
-
-  // At this point the GUI will have enabled / disabled exploring some contexts.
-  // Integrate the rest of them.
+  if(!AcceptAllInt) {
   
-  if(IntegratorCancelled)
-    return false;
+    int argc = 0;
+    char** argv = 0;
+    wxEntry(argc, argv);
+
+    // At this point the GUI will have enabled / disabled exploring some contexts.
+    // Integrate the rest of them.
+  
+    if(IntegratorCancelled)
+      return false;
+
+  }
 
   IHP->commit();
 
