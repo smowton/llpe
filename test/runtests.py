@@ -6,9 +6,9 @@ def isinstline(x):
 
 	return x.rstrip() != '' and x[0:2] == '  '
 
-subprocess.check_call(["/usr/bin/make", "-C", "nonvfs"])
+subprocess.check_call(["/usr/bin/make", "-C", "progs"])
 
-find_proc = subprocess.Popen(["/usr/bin/find", "nonvfs", "-type", "f", "-executable"], stdout=subprocess.PIPE)
+find_proc = subprocess.Popen(["/usr/bin/find", "progs", "-type", "f", "-executable"], stdout=subprocess.PIPE)
 
 for prog in find_proc.stdout:
 
