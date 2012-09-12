@@ -1,6 +1,8 @@
 #!/usr/bin/python
 
 import subprocess
+import os
+import os.path
 
 def isinstline(x):
 
@@ -12,15 +14,17 @@ find_proc = subprocess.Popen(["/usr/bin/find", "progs", "-type", "f", "-executab
 
 for prog in find_proc.stdout:
 
-	prog = "./%s" % prog.strip()
+	workingdir = os.path.join(os.getcwd(), "progs")
+
+	prog = "../%s" % prog.strip()
 	if prog.endswith("-opt"):
 		continue
 
 	progopt = "%s-opt" % prog
-	
-	prog_proc = subprocess.Popen(prog, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+	prog_proc = subprocess.Popen(prog, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=workingdir)
 	prog_proc.stdin.close()
-	progopt_proc = subprocess.Popen(progopt, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+	progopt_proc = subprocess.Popen(progopt, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=workingdir)
 	progopt_proc.stdin.close()
 
 	prog_out = prog_proc.stdout.read()
@@ -34,7 +38,7 @@ for prog in find_proc.stdout:
 
 	optbc = "%s.bc" % progopt
 
-	disproc = subprocess.Popen(["llvm-dis", "-o", "-", optbc], stdout=subprocess.PIPE)
+	disproc = subprocess.Popen(["/usr/bin/llvm-dis", "-o", "-", optbc], stdout=subprocess.PIPE, cwd=workingdir)
 
 	asm = disproc.stdout.read()
 	disproc.wait()
