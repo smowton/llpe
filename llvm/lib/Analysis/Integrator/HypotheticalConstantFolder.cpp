@@ -1166,11 +1166,19 @@ public:
 
     if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
-      // FD arguments to resolved calls are not needed.
       if(Ctx->isResolvedVFSCall(CI)) {
 
-	if(UserI == CI->getArgOperand(0))
+	// FD arguments to resolved calls are not needed.
+	if(V == CI->getArgOperand(0))
 	  return;
+
+	// The buffer argument isn't needed if the read call will be deleted.
+	if(Ctx->isUnusedReadCall(CI)) {
+
+	  if(V == CI->getArgOperand(1))
+	    return;
+
+	}
 
       }
 

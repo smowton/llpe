@@ -566,7 +566,8 @@ protected:
   void setNextUser(OpenStatus& OS, ValCtx U);
   virtual void addBlockedOpen(ValCtx, ValCtx);
   void queueCFGBlockedOpens();
-  virtual bool isResolvedVFSCall(const Instruction*);
+  bool isResolvedVFSCall(const Instruction*);
+  bool isUnusedReadCall(CallInst*);
   ValCtx getNextVFSUser(CallInst*);
   bool isCloseCall(CallInst*);
 

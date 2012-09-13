@@ -2032,6 +2032,21 @@ bool IntegrationAttempt::isResolvedVFSCall(const Instruction* I) {
 
 }
 
+bool IntegrationAttempt::isUnusedReadCall(CallInst* CI) {
+
+  // Return true if CI is a read instruction that won't be in the final committed program:
+  // this is true if it's zero-length or if there are no live users of the buffer it writes.
+  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+  if(it != resolvedReadCalls.end()) {
+
+    return unusedWriters.count(CI) || !it->second.readSize;
+
+  }
+
+  return false;
+
+}
+
 void PeelIteration::describe(raw_ostream& Stream) const {
 
   Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << ")";

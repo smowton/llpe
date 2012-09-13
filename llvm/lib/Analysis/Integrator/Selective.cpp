@@ -211,7 +211,7 @@ public:
 
 void IntegrationAttempt::revertDeadValue(Value* V) {
 
-  if(!deadValues.erase(V))
+  if((!unusedWriters.erase(V)) && (!deadValues.erase(V)))
     return;
 
   RevertDeadValueCallback CB;
@@ -228,6 +228,11 @@ void IntegrationAttempt::tryKillAndQueue(Instruction* I) {
     killed = tryKillMTI(MTI);
   else if(MemIntrinsic* MSI = dyn_cast<MemIntrinsic>(I))
     killed = tryKillMemset(MSI);
+  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+    assert(resolvedReadCalls.count(CI));
+    ReadFile& RF = resolvedReadCalls[CI];
+    killed = tryKillRead(CI, RF);
+  }
 
   if(killed) {
 
@@ -263,7 +268,7 @@ void PeelAttempt::getRetryStoresAndAllocs(std::vector<ValCtx>& storesAndAllocs) 
 
 void IntegrationAttempt::retryStoresAndAllocs(std::vector<ValCtx>& storesAndAllocs) {
 
-  // Same sequence as for DSE/DAE/DIE in the first place: first MTIs, then stores, then memsets.
+  // Same sequence as for DSE/DAE/DIE in the first place: first MTIs, then stores (including memsets and VFS reads), then allocations.
 
   for(std::vector<ValCtx>::iterator it = storesAndAllocs.begin(), it2 = storesAndAllocs.end(); it != it2; ++it) {
 
@@ -275,7 +280,7 @@ void IntegrationAttempt::retryStoresAndAllocs(std::vector<ValCtx>& storesAndAllo
   for(std::vector<ValCtx>::iterator it = storesAndAllocs.begin(), it2 = storesAndAllocs.end(); it != it2; ++it) {
 
     if(Instruction* I = dyn_cast<Instruction>(it->first)) {
-      if(isa<StoreInst>(I) || isa<MemSetInst>(I))
+      if(isa<StoreInst>(I) || isa<MemSetInst>(I) || isa<CallInst>(I))
 	it->second->tryKillAndQueue(I);
     }
 
