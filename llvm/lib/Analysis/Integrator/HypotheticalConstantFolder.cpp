@@ -1468,24 +1468,37 @@ void IntegrationAttempt::tryKillValue(Value* V) {
 
   Instruction* I = dyn_cast<Instruction>(V);
   if(I && I->mayHaveSideEffects()) {
-    LPDEBUG("Not eliminated because of possible side-effects\n");
+
+    bool ignoreSideEffects = false;
 
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
-      if(valueIsDead(V)) {
 
-	LPDEBUG("Call nontheless unused, queueing return instructions\n");
+      if(forwardableOpenCalls.count(CI))
+	ignoreSideEffects = true;
 
-	// Even if we can't remove the call, its return value is unused.
-	if(InlineAttempt* IA = getInlineAttempt(CI)) {
+    }
+    if(!ignoreSideEffects) {
+      LPDEBUG("Not eliminated because of possible side-effects\n");
+
+      if(CallInst* CI = dyn_cast<CallInst>(I)) {
+	if(valueIsDead(V)) {
+
+	  LPDEBUG("Call nontheless unused, queueing return instructions\n");
+
+	  // Even if we can't remove the call, its return value is unused.
+	  if(InlineAttempt* IA = getInlineAttempt(CI)) {
 	  
-	  IA->queueAllReturnInsts();
+	    IA->queueAllReturnInsts();
 	
-	}
+	  }
 
+	}
       }
+
+      return;
+
     }
 
-    return;
   }
 
   if(valueIsDead(V)) {

@@ -647,6 +647,12 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(VI == CommittedValues.end())
       continue;
 
+    // Dead calls might have side-effects. Most side-effect-causing instructions are never tested
+    // for liveness, but (at the time of writing) open() calls are, since this informs whether
+    // foldVFSCalls() can eliminate them.
+    if(isa<CallInst>(I))
+      continue;
+
     LPDEBUG("Delete instruction " << *(VI->second) << "\n");
 
     deleteInstruction(cast<Instruction>(VI->second));

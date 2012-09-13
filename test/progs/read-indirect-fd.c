@@ -40,6 +40,8 @@ int main(int argc, char** argv) {
 
   }
 
+  close(fd);
+
   printf("File sums to %d\n", total);
   return 0;
 
