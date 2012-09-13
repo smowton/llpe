@@ -48,7 +48,7 @@ std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
   if(blockIsDead(I->getParent()))
     return "#aaaaaa";
 
-  if(deadValues.count(I))
+  if(deadValues.count(I) || unusedWriters.count(I))
     return "red";
 
   if(CallInst* CI = dyn_cast<CallInst>(I)) {

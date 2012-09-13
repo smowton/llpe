@@ -1134,10 +1134,12 @@ bool IntegrationAttempt::inDeadValues(Value* V) {
 
 }
 
-bool IntegrationAttempt::localValueIsDead(Value* V) {
+bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
 
   Instruction* I = dyn_cast<Instruction>(V);
 
+  if(unusedWriters.count(V))
+    return true;
   if(deadValues.count(V))
     return true;
   if(I && blockIsDead(I->getParent()))
@@ -1162,10 +1164,15 @@ public:
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
-    if(Ctx->localValueIsDead(UserI))
-      return;
-
     if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
+
+      // FD arguments to resolved calls are not needed.
+      if(Ctx->isResolvedVFSCall(CI)) {
+
+	if(UserI == CI->getArgOperand(0))
+	  return;
+
+      }
 
       InlineAttempt* IA = Ctx->getInlineAttempt(CI);
       if(!IA) {
@@ -1184,7 +1191,7 @@ public:
 
 	  if(CI->getArgOperand(i) == V) {
 
-	    if(!IA->localValueIsDead(&*it)) {
+	    if(!IA->valueWillBeRAUWdOrDeleted(&*it)) {
 
 	      maybeLive = true;
 	      return;
@@ -1198,6 +1205,8 @@ public:
       }
 
     }
+    else if(Ctx->valueWillBeRAUWdOrDeleted(UserI))
+      return;
     else {
 
       maybeLive = true;
@@ -1273,7 +1282,11 @@ bool IntegrationAttempt::shouldDIE(Value* V) {
     return false;
 
   if(CallInst* CI = dyn_cast<CallInst>(V)) {
-    return !!getInlineAttempt(CI);
+    if(getInlineAttempt(CI))
+      return true;
+    if(forwardableOpenCalls.count(CI))
+      return true;
+    return false;
   }
 
   switch(I->getOpcode()) {
@@ -1297,7 +1310,7 @@ void IntegrationAttempt::queueDIE(Value* V) {
 
   if(!shouldDIE(V))
     return;
-  if(!localValueIsDead(V))
+  if(!valueWillBeRAUWdOrDeleted(V))
     pass->queueDIE(this, V);
 
 }
@@ -1559,7 +1572,7 @@ void InlineAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
   for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
 
     Argument* A = AI;
-    if((!localValueIsDead(A)) && P(A)) {
+    if((!valueWillBeRAUWdOrDeleted(A)) && P(A)) {
       queueDIE(A);
     }
 

@@ -1,4 +1,5 @@
 
+#include "llvm/Module.h"
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instructions.h"
@@ -323,7 +324,7 @@ void IntegrationAttempt::commitPointers() {
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
 
-    for(unsigned i = 0; i < iterLimit; ++i) {
+    for(int i = (iterLimit - 1); i >= 0; --i) {
 
       it->second->Iterations[i]->commitPointers();
 
@@ -496,6 +497,141 @@ void PeelIteration::deleteDeadBlocks() {
 
 }
 
+void IntegrationAttempt::markOrDeleteCloseCall(CallInst* CI, IntegrationAttempt* OpenCtx) {
+
+  if(commitStarted && OpenCtx != this) {
+
+    // We've already committed our local constants: zap it.
+    CI->eraseFromParent();
+
+  }
+  else {
+
+    // Mark it to be collected later:
+    resolvedCloseCalls[CI].canRemove = true;
+
+  }
+
+}
+
+void IntegrationAttempt::foldVFSCalls() {
+
+  for(DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.begin(), it2 = resolvedReadCalls.end(); it != it2; ++it) {
+
+    CallInst* CI = it->first;
+    CallInst* ReplaceCI = cast<CallInst>(CommittedValues[CI]);
+    
+    LLVMContext& Context = ReplaceCI->getContext();
+
+    if(it->second.readSize > 0 && !unusedWriters.count(CI)) {
+
+      // Create a memcpy from a constant, since someone is still using the read data.
+      std::vector<Constant*> constBytes;
+      std::string errors;
+      assert(getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors));
+      
+      const ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
+      Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
+
+      // Create a const global for the array:
+
+      GlobalVariable *ArrayGlobal = new GlobalVariable(*(ReplaceCI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::PrivateLinkage, ByteArray, "");
+
+      const Type* Int64Ty = IntegerType::get(Context, 64);
+      const Type *VoidPtrTy = Type::getInt8PtrTy(Context);
+
+      Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
+      Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
+      Constant* CopySource = ConstantExpr::getGetElementPtr(ArrayGlobal, Idxs, 2);
+      
+      Constant* MemcpySize = ConstantInt::get(Int64Ty, constBytes.size());
+
+      const Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
+      Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
+						     Intrinsic::memcpy, 
+						     Tys, 3);
+      Value *DestCast = new BitCastInst(ReplaceCI->getArgOperand(1), VoidPtrTy, "tmp", ReplaceCI);
+
+      Value *CallArgs[] = {
+	DestCast, CopySource, MemcpySize,
+	ConstantInt::get(Type::getInt32Ty(Context), 1),
+	ConstantInt::get(Type::getInt1Ty(Context), 0)
+      };
+
+      CallInst::Create(MemCpyFn, CallArgs, CallArgs+5, "", ReplaceCI);
+
+    }
+
+    // Insert a seek call if the next user isn't resolved:
+    if(it->second.NextUser == VCNull || !it->second.NextUser.second->isAvailable()) {
+
+      const Type* Int64Ty = IntegerType::get(Context, 64);
+      Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
+      const Type* Int32Ty = IntegerType::get(Context, 32);
+      Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
+
+      Constant* SeekFn = F.getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
+
+      Value* CallArgs[] = {ReplaceCI->getArgOperand(0) /* The FD */, NewOffset, SeekSet};
+
+      CallInst::Create(SeekFn, CallArgs, CallArgs+3, "", ReplaceCI);
+
+    }
+
+    // Uses of the read have been replaced already.
+    ReplaceCI->eraseFromParent();
+
+  }
+
+  for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
+
+    // Delete the seek call if the next user is known.
+    if(it->second.NextUser != VCNull && it->second.NextUser.second->isAvailable()) {
+      cast<Instruction>(CommittedValues[it->first])->eraseFromParent();
+    }
+
+  }
+
+  for(DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
+    
+    // Can't delete open if it has direct users still!
+    if(!deadValues.count(it->first))
+      continue;
+
+    ValCtx closeCall = VCNull;
+
+    // Delete an open call if its chain is entirely available and the open is dead (not directly used).
+    for(ValCtx NextUser = it->second.FirstUser; NextUser != VCNull;) {
+
+      if(!NextUser.second->isAvailable())
+	break;
+      if(NextUser.second->isCloseCall(cast<CallInst>(NextUser.first))) {
+	closeCall = NextUser;
+	break;
+      }
+
+      NextUser = NextUser.second->getNextVFSUser(cast<CallInst>(NextUser.first));
+
+    }
+
+    if(closeCall != VCNull) {
+
+      deleteInstruction(it->first);
+      closeCall.second->markOrDeleteCloseCall(cast<CallInst>(closeCall.first), this);
+
+    }
+
+  }
+
+  for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
+
+    if(it->second.canRemove)
+      it->first->eraseFromParent();
+
+  }
+
+}
+
 void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM) {
 
   // Commit anything that's simple: commit simple constants, dead blocks and edges.
@@ -505,11 +641,6 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
 
     Instruction* I = dyn_cast<Instruction>(*it);
     if(!I)
-      continue;
-
-    // Don't delete call instructions since they might be about to get inlined
-    // unless they're memops, in which case they were put there deliberately.
-    if(isa<CallInst>(I) && !isa<MemIntrinsic>(I))
       continue;
 
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
@@ -522,11 +653,25 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
 
   }
 
+  for(DenseSet<Value*>::iterator it = unusedWriters.begin(), it2 = unusedWriters.end(); it != it2; ++it) {
+
+    Instruction* I = cast<Instruction>(*it);
+    ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
+    if(VI == CommittedValues.end())
+      continue;
+
+    // Skip deleting VFS calls for now.
+    if(isa<CallInst>(I) && !isa<MemIntrinsic>(I))
+      continue;
+
+    LPDEBUG("Delete unused memop " << *(VI->second) << "\n");
+    
+    deleteInstruction(cast<Instruction>(VI->second));
+
+  }
+
   // Replace instructions that are needed with their constant results:
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-
-    if(deadValues.count(it->first))
-      continue;
 
     Instruction* I = dyn_cast<Instruction>(it->first);
     if(!I)
@@ -560,6 +705,8 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
 
   }
 
+  foldVFSCalls();
+
   // Since we delete dead blocks here, we must ensure that improvedValues does not contain
   // any keys which refer to instructions that will be deleted. This is handled in 
   // the checkBlock function.
@@ -581,9 +728,6 @@ Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
 void IntegrationAttempt::commitLocalPointers() {
 
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-
-    if(deadValues.count(it->first))
-      continue;
 
     Instruction* I = dyn_cast<Instruction>(it->first);
     if(!I)

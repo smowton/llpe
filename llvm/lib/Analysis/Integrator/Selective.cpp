@@ -109,8 +109,8 @@ void IntegrationAttempt::disableInline(CallInst* CI) {
 
 void IntegrationAttempt::revertDSEandDAE() {
 
-  for(DenseSet<ValCtx>::iterator it = deadValuesTraversingThisContext.begin(),
-	it2 = deadValuesTraversingThisContext.end(); it != it2; ++it) {
+  for(DenseSet<ValCtx>::iterator it = unusedWritersTraversingThisContext.begin(),
+	it2 = unusedWritersTraversingThisContext.end(); it != it2; ++it) {
 
     it->second->revertDeadValue(it->first);
 
@@ -239,8 +239,8 @@ void IntegrationAttempt::tryKillAndQueue(Instruction* I) {
 
 void IntegrationAttempt::getRetryStoresAndAllocs(std::vector<ValCtx>& Result) {
 
-  for(DenseSet<ValCtx>::iterator it = deadValuesTraversingThisContext.begin(),
-	it2 = deadValuesTraversingThisContext.end(); it != it2; ++it) {
+  for(DenseSet<ValCtx>::iterator it = unusedWritersTraversingThisContext.begin(),
+	it2 = unusedWritersTraversingThisContext.end(); it != it2; ++it) {
 
     Result.push_back(*it);
 

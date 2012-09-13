@@ -1744,6 +1744,41 @@ ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
 
 }
 
+void IntegrationAttempt::setNextUser(CallInst* CI, ValCtx U) {
+
+  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+  if(it != resolvedReadCalls.end()) {
+
+    it->second.NextUser = U;
+
+  }
+  else {
+
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end()) {
+
+      it->second.NextUser = U;
+
+    }
+    else {
+
+      assert(0 && "CI wasn't resolved after all?");
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::setNextUser(OpenStatus& OS, ValCtx U) {
+
+  if(OS.FirstUser == VCNull)
+    OS.FirstUser = U;
+  else
+    OS.LatestResolvedUser.second->setNextUser(cast<CallInst>(OS.LatestResolvedUser.first), U);
+
+}
+
 bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
 
   // Call to read() or close()?
@@ -1823,6 +1858,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
     ValCtx thisReader = make_vc(VFSCall, this);
+    setNextUser(OS, thisReader);
     OS.LatestResolvedUser = thisReader;
     pass->queueOpenPush(OpenInst, thisReader);
 
@@ -1856,7 +1892,10 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     LPDEBUG("Successfully forwarded to " << *VFSCall << " which closes the file\n");
 
-    OS.LatestResolvedUser = make_vc(VFSCall, this);
+    ValCtx ThisCall = make_vc(VFSCall, this);
+    setNextUser(OS, ThisCall);
+    OS.LatestResolvedUser = ThisCall;
+    resolvedCloseCalls[VFSCall] = CloseFile(&OS);
     return true;
 
   }
@@ -1931,6 +1970,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
 
     ValCtx seekCall = make_vc(VFSCall, this);
+    setNextUser(OS, seekCall);
     OS.LatestResolvedUser = seekCall;
     pass->queueOpenPush(OpenInst, seekCall);
 
@@ -1939,6 +1979,26 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   }
 
   return false;
+
+}
+
+ValCtx IntegrationAttempt::getNextVFSUser(CallInst* CI) {
+
+  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+  if(it != resolvedReadCalls.end())
+    return it->second.NextUser;
+
+  DenseMap<CallInst*, SeekFile>::iterator it2 = resolvedSeekCalls.find(CI);
+  if(it2 != resolvedSeekCalls.end())
+    return it2->second.NextUser;
+
+  return VCNull;
+
+}
+
+bool IntegrationAttempt::isCloseCall(CallInst* CI) {
+
+  return resolvedCloseCalls.count(CI);
 
 }
 
@@ -1964,7 +2024,7 @@ bool IntegrationAttempt::isResolvedVFSCall(const Instruction* I) {
   
   if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {
 
-    return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI);
+    return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI) || resolvedCloseCalls.count(CI);
 
   }
 

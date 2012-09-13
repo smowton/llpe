@@ -35,6 +35,12 @@ bool IntegrationAttempt::tryKillMemset(MemIntrinsic* MI) {
 
 }
 
+bool IntegrationAttempt::tryKillRead(CallInst* CI, ReadFile& RF) {
+
+  return tryKillWriterTo(CI, CI->getArgOperand(1), RF.readSize);
+
+}
+
 bool IntegrationAttempt::tryKillMTI(MemTransferInst* MTI) {
 
   ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MTI->getLength()));
@@ -59,7 +65,7 @@ bool IntegrationAttempt::tryKillAlloc(Instruction* Alloc) {
 
 void IntegrationAttempt::addTraversingInst(ValCtx VC) {
 
-  deadValuesTraversingThisContext.insert(VC);
+  unusedWritersTraversingThisContext.insert(VC);
   
 }
 
@@ -98,7 +104,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
   }
 
   if(Killed) {
-    deadValues.insert(Writer);
+    unusedWriters.insert(Writer);
     for(SmallVector<IntegrationAttempt*, 4>::iterator it = WalkCtxs.begin(), it2 = WalkCtxs.end(); it != it2; ++it) {
 
       (*it)->addTraversingInst(make_vc(Writer, this));
@@ -240,7 +246,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(MI)) {
 
-	  if(!deadValues.count(MTI)) {
+	  if(!unusedWriters.count(MTI)) {
 
 	    Value* Pointer = MTI->getSource();
 	    AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), MISize, StorePtr, Size);
@@ -282,6 +288,16 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	  }
 	  else {
+
+	    DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
+	    if(RI != resolvedReadCalls.end()) {
+
+	      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes)) {
+		Killed = true;
+		return false;
+	      }
+	      
+	    }
 
 	    if(MR & AliasAnalysis::Ref) {
 
@@ -444,6 +460,16 @@ bool IntegrationAttempt::tryKillAllStoresFrom(ValCtx& Start) {
 	Start = make_vc(IA->getEntryBlock()->begin(), IA);
 	return true;
 	    
+      }
+      else {
+	
+	DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+	if(it != resolvedReadCalls.end()) {
+
+	  tryKillRead(CI, it->second);
+
+	}
+	
       }
 
     }

@@ -237,8 +237,9 @@ struct OpenStatus {
   std::string Name;
   bool FDEscapes;
   ValCtx LatestResolvedUser;
+  ValCtx FirstUser;
 
-  OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O) { }
+OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O), FirstUser(VCNull) { }
 
 OpenStatus() : Name(""), FDEscapes(false), LatestResolvedUser(VCNull) {}
 
@@ -249,8 +250,9 @@ struct ReadFile {
   struct OpenStatus* openArg;
   uint64_t incomingOffset;
   uint32_t readSize;
+  ValCtx NextUser;
 
-  ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS) { }
+ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), NextUser(VCNull) { }
 
 ReadFile() : openArg(0), incomingOffset(0), readSize(0) { }
 
@@ -260,10 +262,21 @@ struct SeekFile {
 
   struct OpenStatus* openArg;
   uint64_t newOffset;
+  ValCtx NextUser;
 
-SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off) { }
+SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), NextUser(VCNull) { }
   
 SeekFile() : openArg(0), newOffset(0) { }
+
+};
+
+struct CloseFile {
+
+  struct OpenStatus* openArg;
+  bool canRemove;
+
+CloseFile(struct OpenStatus* O) : openArg(O), canRemove(false) {}
+CloseFile() : openArg(0), canRemove(false) {}
 
 };
 
@@ -350,12 +363,14 @@ protected:
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 8> certainBlocks;
 
-  // Store, allocation and other instructions which, whilst they cannot be folded away, are not used
-  // when folded / forwarded instructions are discounted.
+  // Instructions which have no users (discounting side-effects) after discounting instructions
+  // which will be RAUW'd or deleted on commit.
   DenseSet<Value*> deadValues;
+  // Instructions which write memory, but whose results are never read. These may be deleted.
+  DenseSet<Value*> unusedWriters;
   // A list of dead stores and allocations which in the course of being found dead traversed this context.
-  // These should be discounted as dead values if we are folded.
-  DenseSet<ValCtx> deadValuesTraversingThisContext;
+  // These should be discounted as unused writes if we are folded.
+  DenseSet<ValCtx> unusedWritersTraversingThisContext;
 
   int improvableInstructions;
   int improvedInstructions;
@@ -371,6 +386,7 @@ protected:
   DenseMap<CallInst*, OpenStatus> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
   DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
+  DenseMap<CallInst*, CloseFile> resolvedCloseCalls;
 
   // Inline attempts / peel attempts which are currently ignored because they've been opted out.
   // These may include inlines / peels which are logically two loop levels deep, 
@@ -380,6 +396,7 @@ protected:
 
   // A map from the Values used in all of the above to the clones of Instructions produced at commit time
   ValueMap<const Value*, Value*> CommittedValues;
+  bool commitStarted;
   // The LoopInfo belonging to the function which is being specialised
   LoopInfo* MasterLI;
 
@@ -408,6 +425,7 @@ protected:
     invariantBlocks(_invariantBlocks),
     improvableInstructions(0),
     improvedInstructions(0),
+    commitStarted(false),
     nesting_depth(depth),
     parent(P)
       { 
@@ -544,9 +562,13 @@ protected:
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
+  void setNextUser(CallInst* CI, ValCtx U);
+  void setNextUser(OpenStatus& OS, ValCtx U);
   virtual void addBlockedOpen(ValCtx, ValCtx);
   void queueCFGBlockedOpens();
   virtual bool isResolvedVFSCall(const Instruction*);
+  ValCtx getNextVFSUser(CallInst*);
+  bool isCloseCall(CallInst*);
 
   // Tricky load forwarding (stolen from GVN)
 
@@ -594,6 +616,7 @@ protected:
   bool tryKillMemset(MemIntrinsic* MI);
   bool tryKillMTI(MemTransferInst* MTI);
   bool tryKillAlloc(Instruction* Alloc);
+  bool tryKillRead(CallInst*, ReadFile&);
   bool tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
   bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes);
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
@@ -624,7 +647,7 @@ protected:
   bool shouldDIE(Value* V);
   void queueDIE(Value* V, IntegrationAttempt* Ctx);
   void queueDIE(Value* V);
-  bool localValueIsDead(Value* V);
+  bool valueWillBeRAUWdOrDeleted(Value* V);
   bool inDeadValues(Value* V);
   void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);
@@ -687,6 +710,8 @@ protected:
   void prepareCommit();
   void localPrepareCommit();
   void removeBlockFromLoops(BasicBlock*);
+  void foldVFSCalls();
+  void markOrDeleteCloseCall(CallInst*, IntegrationAttempt*);
   
   void commitLocalPointers();
 
@@ -1141,6 +1166,9 @@ class IntegrationHeuristicsPass : public ModulePass {
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
  bool containsPointerTypes(const Type*);
+ 
+ // Implemented in Transforms/Integrator/SimpleVFSEval.cpp, so only usable with -integrator
+ bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
 
 } // Namespace LLVM
 

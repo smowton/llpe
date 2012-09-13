@@ -115,6 +115,12 @@ namespace {
 
 }
 
+namespace llvm { 
+
+  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
+  
+}
+
 // createSimpleVFSEvalPass - The public interface to this file...
 Pass *llvm::createSimpleVFSEvalPass() {
   return new SimpleVFSEval();
@@ -240,25 +246,7 @@ bool SimpleVFSGraphs::processOpenAt(CallInst* CI, VFSGraph* depGraph) {
 
 }
 
-bool SimpleVFSEval::getFileBytes(Value* fileName, Value* filePosition, ConstantInt* nBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
-
-  std::string strFileName;
-  if(!GetConstantStringInfo(fileName, strFileName)) {
-    errors = "Filename not a constant";
-    return false;
-  }
-
-  ConstantInt* filePosInt = cast<ConstantInt>(filePosition);
-  uint64_t realFilePos = filePosInt->getLimitedValue();
-
-  ConstantInt* bytesInt;
-  uint64_t realBytes;
-  if((bytesInt = dyn_cast<ConstantInt>(nBytes)))
-    realBytes = bytesInt->getLimitedValue();
-  else {
-    errors = "Read length not a constant";
-    return false;
-  }
+bool llvm::getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
 
   FILE* fp = fopen(strFileName.c_str(), "r");
   if(!fp) {
@@ -298,6 +286,30 @@ bool SimpleVFSEval::getFileBytes(Value* fileName, Value* filePosition, ConstantI
   fclose(fp);
 
   return true;
+
+}
+
+bool SimpleVFSEval::getFileBytes(Value* fileName, Value* filePosition, ConstantInt* nBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
+
+  std::string strFileName;
+  if(!GetConstantStringInfo(fileName, strFileName)) {
+    errors = "Filename not a constant";
+    return false;
+  }
+
+  ConstantInt* filePosInt = cast<ConstantInt>(filePosition);
+  uint64_t realFilePos = filePosInt->getLimitedValue();
+
+  ConstantInt* bytesInt;
+  uint64_t realBytes;
+  if((bytesInt = dyn_cast<ConstantInt>(nBytes)))
+    realBytes = bytesInt->getLimitedValue();
+  else {
+    errors = "Read length not a constant";
+    return false;
+  }
+
+  return llvm::getFileBytes(strFileName, realFilePos, realBytes, arrayBytes, Context, errors);
 
 }
 
