@@ -23,10 +23,11 @@ BUILD_ARCHIVE = 0
 LOADABLE_MODULE = 1
 
 LINK_COMPONENTS := support system
-LIBS += -llto
 
 # Because off_t is used in the public API, the largefile parts are required for
 # ABI compatibility.
-CXXFLAGS+=-I$(BINUTILS_INCDIR) -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -lLTO
+CXXFLAGS+=-I$(BINUTILS_INCDIR) -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
 
 include $(LEVEL)/Makefile.common
+
+LIBS += -lLTO

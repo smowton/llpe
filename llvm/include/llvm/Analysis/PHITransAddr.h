@@ -134,8 +134,13 @@ private:
 
   Constant* getConstReplacement(Value* V) const {
 
-    ValCtx VC = parent->getReplacement(V);
-    return dyn_cast<Constant>(VC.first);
+    if(parent) {
+      ValCtx VC = parent->getReplacement(V);
+      return dyn_cast<Constant>(VC.first);
+    }
+    else {
+      return dyn_cast<Constant>(V);
+    }
 
   }
 
