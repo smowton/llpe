@@ -814,7 +814,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::memcpy:
     case Intrinsic::memmove: {
       unsigned Len = UnknownSize;
-      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx))))
+      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx))))
         Len = LenCI->getZExtValue();
       Value *Dest = II->getArgOperand(0);
       Value *Src = II->getArgOperand(1);
@@ -828,7 +828,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::memset:
       // Since memset is 'accesses arguments' only, the AliasAnalysis base class
       // will handle it for the variable length case.
-      if (ConstantInt *LenCI = dyn_cast<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx)))) {
+      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx)))) {
         unsigned Len = LenCI->getZExtValue();
         Value *Dest = II->getArgOperand(0);
         if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size))
