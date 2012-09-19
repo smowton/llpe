@@ -1,0 +1,8 @@
+Here's an example of the incantation necessary to build a simple C program against uclibc instead of your usual libc.
+
+The designers recommend building a toolchain that's all linked against uclibc, but I do it this way since producing a complete llvm + gcc + dragonegg against uclibc sounds like a pain at the moment.
+
+gcc -nostdinc -nostdlib -I/home/chris/integ-examples/libs/libc/install/usr/include/ -I/usr/lib/gcc/x86_64-linux-gnu/4.6.1/include -I/usr/lib/gcc/x86_64-linux-gnu/4.6.1/include-fixed -std=gnu99 -L/home/chris/integ-examples/libs/libc/install/usr/lib/ -L/home/chris/integ-examples/libs/libc/install/lib/ /home/chris/integ-examples/libs/libc/install/usr/lib/crt1.o /home/chris/integ-examples/libs/libc/install/usr/lib/crti.o test.c -o test -lc /home/chris/integ-examples/libs/libc/install/usr/lib/crtn.o -Wl,-dynamic-linker,/home/chris/integ-examples/libs/libc/install/lib/ld64-uClibc-0.9.33.2.so
+
+
+
