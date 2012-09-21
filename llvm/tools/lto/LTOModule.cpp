@@ -140,7 +140,7 @@ LTOModule *LTOModule::makeLTOModule(MemoryBuffer *buffer,
 
 
 const char *LTOModule::getTargetTriple() {
-  return _module->getTargetTriple().c_str();
+ return _module->getTargetTriple().c_str();
 }
 
 void LTOModule::setTargetTriple(const char *triple) {
@@ -470,6 +470,15 @@ void LTOModule::lazyParseSymbols() {
 
     // search next .globl
     pos = inlineAsm.find(glbl, pend);
+  }
+
+  // add aliases
+  for (Module::alias_iterator i = _module->alias_begin(),
+         e = _module->alias_end(); i != e; ++i) {
+    if (i->isDeclaration())
+      addPotentialUndefinedSymbol(i, mangler);
+    else
+      addDefinedDataSymbol(i, mangler);
   }
 
   // make symbols for all undefines
