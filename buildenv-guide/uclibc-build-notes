@@ -1,0 +1,103 @@
+To build uclibc as (mostly) bitcode, and build GNU coreutils against it:
+
+1. I created driver scripts for gcc, ld, as.
+
+gcc: 
+	llvm-gcc just runs gcc with the dragonegg plugin, and sets a -B (base directory) option to use the ld and as driver scripts in place of the real thing.
+	llvm-gcc-uclibc also includes -nostdinc and -nostdlib (as appropriate) and specifies some amended paths for uclibc.
+
+ld: this script just runs /usr/bin/gold (instead of ld) with the llvm gold plugin.
+
+as: this is a bit trickier: gcc will try to use the assembler whenever it's run with -c or further, but when it runs all the way to a final binary it will run gold, which in turn will use the assembler on the output of llc.
+As a result this as needs to do the right thing with both llvm and x86 assembler, and does, mostly, by trying to guess and then also trying both when it seems appropriate.
+
+
+2. uclibc needed a few small snags working out:
+
+i. Shared library support does not work yet. This is because it links its ld-uclibc.so as a shared object, but it includes assembly that makes PC-relative references to globals. As such it needs a PC32 reloc.
+It works around the illegality of that situation when building a .so by using the linker's -Bsymbolic option, which instructs it to link local symbols definitively rather than leaving them open to overrides as a reloc.
+A PC32 reloc is not allowed in a .so because it needs to load anywhere in a 64-bit address space, but it's ok if -Bsymbolic causes the reference to be knocked out at this time. Unfortunately, for some reason
+gold with llvm's plugin loaded does not seem to obey the directive, and llvmgold.o continues to contain a reloc. I haven't got to the bottom of this yet, and just disable shared lib support in menuconfig.
+
+ii. I used steps 1, 2 and 6 from klee's "how-to uclibc" document, as follows:
+
+******** STEP ONE ******** 
+1) In Rules.mak, set the vars below to the below values instead of the normal gcc toolchain:
+CC         = llvm-gcc --emit-llvm 
+AR         = llvm-ar
+LD         = llvm-ld
+NM         = llvm-nm
+STRIPTOOL  = donothing.sh  # may need to use an absolute path
+HOSTCC     = llvm-gcc 
+BUILD_CFLAGS = -O2 -Wall --emit-llvm 
+
+
+******** STEP TWO ******** 
+2) Create a executable shell script donothing.sh in the uclibc root folder which does
+   nothing and is called 'donothing.sh'.  I just echo something in mine:
+#!/bin/sh
+echo "I am doing nothing!"
+
+******** STEP SIX ******** 
+Note: Without step 6, the actual symbols are not shown listed in the object file outputs 
+      when compiling with llvm!  Instad, __GI_strcpy would be listed instead of strcpy.  
+      Compiling with gcc causes both to be listed (which seems to be the correct behavior).  
+      This may be a llvm bug (submitted to their bugzilla as bug #1655).
+
+
+6) In include/libc-symbols.h, make libc_hidden_proto etc. always translate to nop by
+   commenting out the alternate condition in #if:
+/*
+#if !defined NOT_IN_libc
+# define libc_hidden_proto(name, attrs...) hidden_proto (name, ##attrs)
+# define libc_hidden_def(name) hidden_def (name)
+# define libc_hidden_weak(name) hidden_weak (name)
+# define libc_hidden_ver(local, name) hidden_ver (local, name)
+# define libc_hidden_data_def(name) hidden_data_def (name)
+# define libc_hidden_data_weak(name) hidden_data_weak (name)
+# define libc_hidden_data_ver(local, name) hidden_data_ver (local, name)
+#else
+*/
+# define libc_hidden_proto(name, attrs...)
+# define libc_hidden_def(name)
+# define libc_hidden_weak(name)
+# define libc_hidden_ver(local, name)
+# define libc_hidden_data_def(name)
+# define libc_hidden_data_weak(name)
+# define libc_hidden_data_ver(local, name)
+/*
+#endif
+*/
+
+===
+End klee's text.
+
+This last section eliminates uclibc's use of aliases to enable it to call its own internal functions without the possibility of an override. Hopefully it doesn't make any difference if nobody is actually attempting an override, but is probably trouble if they do.
+
+It also has the convenient side-effect of stopping it from prefixing all of its symbols with \01, which appears to be a tag for "defined in assembly," though I'm not totally sure about that. This meant that
+llvm functions gained those tags as well, and consequently did not match other llvm code attempting to use libc functions, leading to lots of undefined symbols when building against the library.
+
+I think the way it should work is that gcc should emit the symbol, then the linker should permit matching regardless of it, allowing assembly to call C and vice versa. However the llvm linker doesn't do that,
+so the links remain unresolved.
+
+iii. Manually lowered memmove.os from llvm bitcode to an elf object. This is because llvm will raise memmove calls into llvm.memmove intrinsics, and therefore not link them against an llvm definition of memmove. It will then lower them back into memmove calls and hand them to the linker, which attempts second-phase linking and complains that whilst it has a definition for memmove, it is provided as IL, not ELF, and therefore should have been resolved already. The simplest solution: make sure memmove (and memcpy, and any other functions liable to dodge resolution this way) are implemented as ELF.
+
+3. Fix dragonegg-2.8:
+
+Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
+
+This patch is stored in this directory as dragonegg.diff
+
+4. Fix the llvm gold plugin (or rather, libLTO which it uses to do all the real work):
+
+Apply another patch causing objects to export alias definitions as defined symbols. This bug was causing nm to omit aliases, and consequently gold would ignore files in archives which defined interesting aliases.
+uclibc uses lots of aliases, so this was breaking applications that link against it via an alias.
+
+These changes show up as a commit against this repo.
+
+5. Patch a couple of snags in the coreutils that prevent them from building against uclibc (in general, not just with llvm):
+
+i. isascii is obsolete. Replace with a macro that checks chr & 0x7f
+ii. configure's test for utime and utimes (the former is obsolete) is broken -- it tries to use the utime.h header when checking for utimes. Fix the test, or define config.h's HAVE_WORKING_UTIMES symbol.
+
+

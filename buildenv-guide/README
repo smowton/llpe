@@ -1,0 +1,2 @@
+This directory contains scripts and notes used to produce a complete bitcode-mostly build environment, including a working libc which is primarily (but not exclusively, e.g. setjmp) implemented as bitcode.
+
