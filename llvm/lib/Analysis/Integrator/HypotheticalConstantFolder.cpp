@@ -597,6 +597,70 @@ ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bo
 
 }
 
+// Return true if this turned out to be a compare against open
+// (and so false if there's any point trying normal const folding)
+bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
+
+  bool flip;
+  ConstantInt* CmpInt = 0;
+  ValCtx op0 = getReplacement(CmpI->getOperand(0));
+  ValCtx op1 = getReplacement(CmpI->getOperand(1));
+  if(op0.second && op0.second->isForwardableOpenCall(op0.first)) {
+    flip = false;
+    CmpInt = dyn_cast<ConstantInt>(op1.first);
+  }
+  else if(op1.second && op1.second->isForwardableOpenCall(op1.first)) {
+    flip = true;
+    CmpInt = dyn_cast<ConstantInt>(op0.first);
+  }
+  else {
+    return false;
+  }
+  if(CmpInt) {
+
+    Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
+    if(Improved.first) {
+      LPDEBUG("Comparison against file descriptor resolves to " << *Improved.first << "\n");
+    }
+    else {
+      LPDEBUG("Comparison against file descriptor inconclusive\n");
+    }
+
+  }
+
+  return true;
+
+}
+
+// Return value as above: true for "we've handled it" and false for "try constant folding"
+bool IntegrationAttempt::tryFoldCmpAgainstNull(CmpInst* CmpI, ValCtx& Improved) {
+
+  // Identified objects can never be null; resolve comparisons between them and null.
+
+  Value* op0 = CmpI->getOperand(0);
+  Value* op1 = CmpI->getOperand(1);
+  Constant* op0C = dyn_cast<Constant>(op0);
+  Constant* op1C = dyn_cast<Constant>(op1);
+
+  const Type* Char = Type::getInt8Ty(CmpI->getContext());
+  Constant* zero = ConstantInt::get(Char, 0);
+  Constant* one = ConstantInt::get(Char, 1);
+
+  // Check for comparing an identified pointer against null.
+  if(op0C && op0C->isNullValue() && (!isa<Constant>(op1)) && !isUnresolved(op1)) {
+    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), zero, one, this->TD));
+  }
+  else if(op1C && op1C->isNullValue() && (!isa<Constant>(op0)) && !isUnresolved(op0)) {
+    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), one, zero, this->TD));
+  }
+  else {
+    return false;
+  }
+
+  return true;
+
+}
+
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
@@ -772,34 +836,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
       // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
       else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
-	bool flip;
-	ConstantInt* CmpInt = 0;
-	ValCtx op0 = getReplacement(CmpI->getOperand(0));
-	ValCtx op1 = getReplacement(CmpI->getOperand(1));
-	if(op0.second && op0.second->isForwardableOpenCall(op0.first)) {
-	  flip = false;
-	  CmpInt = dyn_cast<ConstantInt>(op1.first);
-	}
-	else if(op1.second && op1.second->isForwardableOpenCall(op1.first)) {
-	  flip = true;
-	  CmpInt = dyn_cast<ConstantInt>(op0.first);
-	}
-	else {
-	  // Open calls are not involved; try plain old constant folding.
-	  tryConstFold = true;
-	}
-
-	if(CmpInt) {
-
-	  Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
-	  if(Improved.first) {
-	    LPDEBUG("Comparison against file descriptor resolves to " << *Improved.first << "\n");
-	  }
-	  else {
-	    LPDEBUG("Comparison against file descriptor inconclusive\n");
-	  }
-
-	}
+	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldCmpAgainstNull(CmpI, Improved));
 
       }
 
