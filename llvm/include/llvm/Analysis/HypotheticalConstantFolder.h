@@ -464,6 +464,7 @@ protected:
 
   virtual BasicBlock* getEntryBlock() = 0;
   virtual bool hasParent();
+  bool isRootMainCall();
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 

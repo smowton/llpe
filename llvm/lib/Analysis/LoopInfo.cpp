@@ -379,10 +379,20 @@ void Loop::dump() const {
 //===----------------------------------------------------------------------===//
 // LoopInfo implementation
 //
+void LoopInfo::dump() const {
+  LI.print(dbgs());
+}
+
 bool LoopInfo::runOnFunction(Function &) {
   releaseMemory();
   LI.Calculate(getAnalysis<DominatorTree>().getBase());    // Update
   return false;
+}
+
+void LoopInfo::runOnFunction(Function& F, DominatorTree* DT) {
+
+  LI.Calculate(DT->getBase());
+
 }
 
 void LoopInfo::verifyAnalysis() const {

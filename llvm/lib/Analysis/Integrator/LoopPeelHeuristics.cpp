@@ -719,6 +719,12 @@ bool IntegrationAttempt::hasParent() {
 
 }
 
+bool IntegrationAttempt::isRootMainCall() {
+
+  return (!this->parent) && F.getName() == "main";
+
+}
+
 ValCtx InlineAttempt::getImprovedCallArgument(Argument* A) {
 
   return parent->getReplacement(CI->getArgOperand(A->getArgNo()));
@@ -3489,8 +3495,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
-    if(!MI->isDeclaration())
-      LIs[MI] = &getAnalysis<LoopInfo>(*MI);
+    if(!MI->isDeclaration()) {
+      DominatorTree* NewDT = new DominatorTree();
+      NewDT->runOnFunction(*MI);
+      LoopInfo* NewLI = new LoopInfo();
+      NewLI->runOnFunction(*MI, NewDT);
+      LIs[MI] = NewLI;
+    }
 
   }
 

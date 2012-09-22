@@ -260,40 +260,36 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
   const Type* LoadTy = LFA.getTargetTy();
   uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
 
-  if((!this->parent) && F.getName() == "main") {
+  if(Clobber.second->isRootMainCall()) {
 
-    if(Clobber.second == this) {
+    BasicBlock& ClobberEntry = cast<Instruction>(Clobber.first)->getParent()->getParent()->getEntryBlock();
+    if(ClobberEntry.begin() == Clobber.first) {
 
-      BasicBlock& Entry = F.getEntryBlock();
-      if(Entry.begin() == Clobber.first) {
-
-	if(LFA.canBuildSymExpr()) {
+      if(LFA.canBuildSymExpr()) {
 	  
-	  ValCtx PointerVC = LFA.getBaseVC();
+	ValCtx PointerVC = LFA.getBaseVC();
 
-	  if(GlobalVariable* GV = dyn_cast<GlobalVariable>(PointerVC.first)) {
+	if(GlobalVariable* GV = dyn_cast<GlobalVariable>(PointerVC.first)) {
 	    
-	    if(GV->hasDefinitiveInitializer()) {
+	  if(GV->hasDefinitiveInitializer()) {
 
-	      LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << *(GV->getInitializer()) << "\n");
+	    LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << *(GV->getInitializer()) << "\n");
 
-	      Constant* GVC = GV->getInitializer();
-	      uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
-	      uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
-	      uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
-	      return PartialVal::getPartial(0, FirstNotDef, GVC, ReadOffset);
-
-	    }
+	    Constant* GVC = GV->getInitializer();
+	    uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
+	    uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
+	    uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
+	    return PartialVal::getPartial(0, FirstNotDef, GVC, ReadOffset);
 
 	  }
-	  else {
 
-	    LPDEBUG("Load is clobbered by the first instruction in main(), but the pointer was not a global variable\n");
-
-	  }
-	  
 	}
+	else {
 
+	  LPDEBUG("Load is clobbered by the first instruction in main(), but the pointer was not a global variable\n");
+
+	}
+	  
       }
 
     }

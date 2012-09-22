@@ -929,6 +929,7 @@ public:
          << I->second->getLoopDepth() << "\n";
   #endif
   }
+
 };
 
 class LoopInfo : public FunctionPass {
@@ -981,6 +982,9 @@ public:
   ///
   virtual bool runOnFunction(Function &F);
 
+  // Run with a supplied instance of DT, to create multiple LIs in parallel
+  void runOnFunction(Function &F, DominatorTree*);
+
   virtual void verifyAnalysis() const;
 
   virtual void releaseMemory() { LI.releaseMemory(); }
@@ -1019,6 +1023,9 @@ public:
   void removeBlock(BasicBlock *BB) {
     LI.removeBlock(BB);
   }
+
+  void dump() const;
+
 };
 
 
