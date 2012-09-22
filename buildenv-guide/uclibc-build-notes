@@ -82,6 +82,8 @@ so the links remain unresolved.
 
 iii. Manually lowered memmove.os from llvm bitcode to an elf object. This is because llvm will raise memmove calls into llvm.memmove intrinsics, and therefore not link them against an llvm definition of memmove. It will then lower them back into memmove calls and hand them to the linker, which attempts second-phase linking and complains that whilst it has a definition for memmove, it is provided as IL, not ELF, and therefore should have been resolved already. The simplest solution: make sure memmove (and memcpy, and any other functions liable to dodge resolution this way) are implemented as ELF.
 
+iv. Manually renamed the x86_64 implementations of the string functions to .S-disabled, causing the build scripts to pull in generic versions. This results in a bitcode strcpy etc which the integrator can understand. I couldn't just disable uclibc's assembly functions entirely since we need an ELF memcpy, memmove, memset (the three that llvm special-cases; see above).
+
 3. Fix dragonegg-2.8:
 
 Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
