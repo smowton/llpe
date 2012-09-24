@@ -263,6 +263,9 @@ const Loop* IntegrationAttempt::getValueScope(Value* V) {
     else
       return LI[&F]->getLoopFor(I->getParent());
   }
+  else if(isa<Argument>(V)) {
+    return 0;
+  }
   else
     return getLoopContext();
 
