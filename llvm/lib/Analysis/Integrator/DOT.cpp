@@ -90,10 +90,31 @@ std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
 
 }
 
+static std::string TruncStr(std::string str, unsigned maxlen) {
+
+  if(str.size() > maxlen) {
+
+    str.resize(maxlen);
+    str.append(" ...");
+
+  }
+
+  return str;
+
+}
+
 static std::string escapeHTML(std::string Str) {
 
   for (unsigned i = 0; i != Str.length(); ++i) {
     switch (Str[i]) {
+    case '&':
+      Str.replace(i, 1, "&amp;");
+      i += 4;
+      break;
+    case '\\':
+      Str.insert(Str.begin()+i, '\\');
+      ++i;
+      break;
     case '\t':
       Str.insert(Str.begin()+i, ' ');  // Convert to two spaces
       ++i;
@@ -123,7 +144,7 @@ static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(RSO.str());
+  return escapeHTML(TruncStr(RSO.str(), 100));
 
 }
 
@@ -132,7 +153,7 @@ static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(RSO.str());
+  return escapeHTML(TruncStr(RSO.str(), 100));
 
 }
 

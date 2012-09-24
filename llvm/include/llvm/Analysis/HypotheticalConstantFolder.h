@@ -477,7 +477,7 @@ protected:
   IntegrationHeuristicsPass* pass;
 
   // Analyses created by the Pass.
-  DenseMap<Function*, LoopInfo*> LI;
+  DenseMap<Function*, LoopInfo*>& LI;
   TargetData* TD;
   AliasAnalysis* AA;
 
@@ -491,7 +491,7 @@ protected:
 
   SmallSet<BasicBlock*, 4> deadBlocks;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
-  SmallSet<BasicBlock*, 8> certainBlocks;
+  SmallSet<BasicBlock*, 4> certainBlocks;
 
   // Instructions which have no users (discounting side-effects) after discounting instructions
   // which will be RAUW'd or deleted on commit.
@@ -553,11 +553,26 @@ protected:
     invariantInsts(_invariantInsts),
     invariantEdges(_invariantEdges),
     invariantBlocks(_invariantBlocks),
+    improvedValues(4),
+    deadValues(4),
+    unusedWriters(4),
+    unusedWritersTraversingThisContext(2),
     improvableInstructions(0),
     improvedInstructions(0),
+    InstBlockedLoads(4),
+    InstBlockedOpens(2),
+    forwardableOpenCalls(2),
+    resolvedReadCalls(2),
+    resolvedSeekCalls(2),
+    resolvedCloseCalls(2),
+    ignoreIAs(2),
+    ignorePAs(2),
+    CommittedValues(2),
     commitStarted(false),
     nesting_depth(depth),
-    parent(P)
+    parent(P),
+    inlineChildren(1),
+    peelChildren(1)
       { 
 	this->tag.ptr = (void*)this;
 	this->tag.type = IntegratorTypeIA;
@@ -885,10 +900,13 @@ protected:
   void dump() const;
 
   virtual void describe(raw_ostream& Stream) const = 0;
+  virtual void describeBrief(raw_ostream& Stream) const = 0;
 
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
   }
+
+  void dumpMemoryUsage(int indent = 0);
 
 };
 
@@ -943,6 +961,7 @@ public:
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
 
   virtual void describe(raw_ostream& Stream) const;
+  virtual void describeBrief(raw_ostream& Stream) const;
 
   virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;
@@ -1037,6 +1056,8 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
 
+   void dumpMemoryUsage(int indent);
+
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
      return parent->itcache(V);
@@ -1090,6 +1111,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
   
   virtual void describe(raw_ostream& Stream) const;
+  virtual void describeBrief(raw_ostream& Stream) const;
   
   virtual void collectAllLoopStats();
   virtual void printHeader(raw_ostream&) const;

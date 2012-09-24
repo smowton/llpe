@@ -582,6 +582,12 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     return 0;
       
   }
+  else if(iterationCount > 1000) {
+
+    LPDEBUG("Won't peel loop " << L->getHeader()->getName() << ": max iterations 1000\n");
+    return 0;
+
+  }
 
   iterStatus = IterationStatusNonFinal;
   LPDEBUG("Loop known to iterate: creating next iteration\n");
@@ -2069,6 +2075,18 @@ void InlineAttempt::describe(raw_ostream& Stream) const {
 
 }
 
+void PeelIteration::describeBrief(raw_ostream& Stream) const {
+
+  Stream << iterationCount;
+
+}
+
+void InlineAttempt::describeBrief(raw_ostream& Stream) const {
+
+  Stream << F.getName();
+
+}
+
 // GDB callable:
 void IntegrationAttempt::dump() const {
 
@@ -2320,6 +2338,36 @@ IntegratorTag* IntegrationAttempt::getChildTag(unsigned idx) {
     for(unsigned i = 0; i < (idx - inlineChildren.size()); ++i, ++it) {}
     return &(it->second->tag);    
   }
+
+}
+
+void IntegrationAttempt::dumpMemoryUsage(int indent) {
+
+  errs() << ind(indent);
+  describeBrief(errs());
+  errs() << ": ";
+  errs() << "imp " << improvedValues.size() << " db " << deadBlocks.size() << " de " << deadEdges.size()
+	 << " cb " << certainBlocks.size() << " dv " << deadValues.size() << " uw " << unusedWriters.size()
+	 << " uwttc " << unusedWritersTraversingThisContext.size() << " cbl " << CFGBlockedLoads.size()
+	 << " ibl " << InstBlockedLoads.size() << " cbo " << CFGBlockedOpens.size() 
+	 << " ibo " << InstBlockedOpens.size() << " foc " << forwardableOpenCalls.size()
+	 << " rrc " << resolvedReadCalls.size() << " rsc " << resolvedSeekCalls.size()
+	 << " rcc " << resolvedCloseCalls.size() << "\n";
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
+    II->second->dumpMemoryUsage(indent+2);
+  } 
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+    PI->second->dumpMemoryUsage(indent+1);
+  }
+
+}
+
+void PeelAttempt::dumpMemoryUsage(int indent) {
+
+  errs() << ind(indent) << "Loop " << L->getHeader()->getName() << " (" << Iterations.size() << " iterations)\n";
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
+    (*it)->dumpMemoryUsage(indent+1);
 
 }
 
@@ -2837,6 +2885,8 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
   bool* bufValid = getBufValid(); // Same size as partialBuf
 
   unsigned char* tempBuf = (unsigned char*)alloca(PV.FirstNotDef - PV.FirstDef);
+  // ReadDataFromGlobal assumes a zero-initialised buffer!
+  memset(tempBuf, 0, PV.FirstNotDef - PV.FirstDef);
 
   if(!ReadDataFromGlobal(PV.C, PV.ReadOffset, tempBuf, PV.FirstNotDef - PV.FirstDef, *TD)) {
     LPDEBUG("ReadDataFromGlobal failed; perhaps the source " << *(PV.C) << " can't be bitcast?\n");

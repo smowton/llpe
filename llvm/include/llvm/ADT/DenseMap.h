@@ -279,7 +279,7 @@ private:
     // causing infinite loops in lookup.
     ++NumEntries;
     if (NumEntries*4 >= NumBuckets*3 ||
-        NumBuckets-(NumEntries+NumTombstones) < NumBuckets/8) {
+        NumBuckets-(NumEntries+NumTombstones) < (NumBuckets < 8 ? 1 : NumBuckets/8)) {
       this->grow(NumBuckets * 2);
       LookupBucketFor(Key, TheBucket);
     }

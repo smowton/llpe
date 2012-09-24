@@ -647,10 +647,10 @@ bool IntegrationAttempt::tryFoldCmpAgainstNull(CmpInst* CmpI, ValCtx& Improved) 
   Constant* one = ConstantInt::get(Char, 1);
 
   // Check for comparing an identified pointer against null.
-  if(op0C && op0C->isNullValue() && (!isa<Constant>(op1)) && !isUnresolved(op1)) {
+  if(op0C && op0C->isNullValue() && op1->getType()->isPointerTy() && !isUnresolved(op1)) {
     Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), zero, one, this->TD));
   }
-  else if(op1C && op1C->isNullValue() && (!isa<Constant>(op0)) && !isUnresolved(op0)) {
+  else if(op1C && op1C->isNullValue() && op0->getType()->isPointerTy() && !isUnresolved(op0)) {
     Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), one, zero, this->TD));
   }
   else {
@@ -714,21 +714,22 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	Condition = SI->getCondition();
       }
       
-      Constant* ConstCondition = getConstReplacement(Condition);
-      BasicBlock* takenTarget = 0;
+      ConstantInt* ConstCondition = dyn_cast<ConstantInt>(getConstReplacement(Condition));
 
       if(ConstCondition) {
 
+	BasicBlock* takenTarget = 0;
+
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  // This ought to be a boolean.
-	  if((cast<ConstantInt>(ConstCondition))->isZero())
+	  if(ConstCondition->isZero())
 	    takenTarget = BI->getSuccessor(1);
 	  else
 	    takenTarget = BI->getSuccessor(0);
 	}
 	else {
 	  SwitchInst* SI = cast<SwitchInst>(I);
-	  unsigned targetidx = SI->findCaseValue(cast<ConstantInt>(ConstCondition));
+	  unsigned targetidx = SI->findCaseValue(ConstCondition);
 	  takenTarget = SI->getSuccessor(targetidx);
 	}
 	if(takenTarget) {
@@ -1696,7 +1697,7 @@ void IntegrationAttempt::queueInitialWork() {
 void IntegrationAttempt::tryEvaluate(Value* V) {
 
   ValCtx Improved = tryEvaluateResult(V);
-
+ 
   if(Improved.first && shouldForwardValue(Improved)) {
 
     setReplacement(V, Improved);
