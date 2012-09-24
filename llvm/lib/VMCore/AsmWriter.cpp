@@ -37,6 +37,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -2092,6 +2093,32 @@ void Type::print(raw_ostream &OS) const {
     return;
   }
   TypePrinting().print(this, OS);
+}
+
+namespace llvm {
+
+  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap) {
+
+    SlotTracker SlotTable(IF);
+    formatted_raw_ostream FRSO;
+    AssemblyWriter W(FRSO, SlotTable, IF->getParent(), 0);
+
+    for(Function::const_iterator BI = IF->begin(), BE = IF->end(); BI != BE; ++BI) {
+
+      for(BasicBlock::const_iterator II = BI->begin(), IE = BI->end(); II != IE; ++II) {
+
+	std::string& IStr = IMap[II];
+	raw_string_ostream RSO(IStr);
+	FRSO.setStream(RSO);
+	W.printInstruction(*II);
+	FRSO.flush();
+	    
+      }
+
+    }
+
+  }
+
 }
 
 void Value::print(raw_ostream &ROS, AssemblyAnnotationWriter *AAW) const {

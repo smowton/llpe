@@ -118,20 +118,20 @@ static std::string escapeHTML(std::string Str) {
 
 }
 
-static std::string escapeHTMLValue(Value* V) {
+static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA) {
 
   std::string Esc;
   raw_string_ostream RSO(Esc);
-  RSO << *V;
+  IA->printWithCache(V, RSO);
   return escapeHTML(RSO.str());
 
 }
 
-static std::string escapeHTMLValue(ValCtx V) {
+static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
 
   std::string Esc;
   raw_string_ostream RSO(Esc);
-  RSO << V;
+  IA->printWithCache(V, RSO);
   return escapeHTML(RSO.str());
 
 }
@@ -148,7 +148,7 @@ void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
   if(getDefaultVC(I) != getReplacement(I)) {
     if(isInvariant)
       Out << "(invar) ";
-    Out << escapeHTMLValue(getReplacement(I));
+    Out << escapeHTMLValue(getReplacement(I), this);
   }
   else if(isInvariant) {
     CheckDeadCallback CDC(I);
@@ -202,7 +202,7 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
   if(useLabels)
     numSuccessors = TI->getNumSuccessors();
 
-  Out << "Node" << BB << " [shape=plaintext,label=<<table cellspacing=\"0\" border=\"0\"><tr><td colspan=\"" << numSuccessors << "\" border=\"1\"><table border=\"0\">\n";
+  Out << "Node" << BB << " [shape=plaintext,fontsize=10,label=<<table cellspacing=\"0\" border=\"0\"><tr><td colspan=\"" << numSuccessors << "\" border=\"1\"><table border=\"0\">\n";
 
   Out << "<tr><td border=\"0\" align=\"left\" colspan=\"2\"";
   
@@ -210,7 +210,7 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
     Out << " bgcolor=\"yellow\"";
   }
 
-  Out << "><font point-size=\"18\">";
+  Out << "><font point-size=\"14\">";
   if(BB == getEntryBlock())
     Out << "Entry block: ";
   Out << escapeHTML(BB->getName()) << "</font></td></tr>\n";
@@ -218,7 +218,7 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
   for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
     Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getInstructionColour(II) << "\">";
-    Out << escapeHTMLValue(II) << "</td><td>";
+    Out << escapeHTMLValue(II, this) << "</td><td>";
     printRHS(II, Out);
     Out << "</td></tr>\n";
 

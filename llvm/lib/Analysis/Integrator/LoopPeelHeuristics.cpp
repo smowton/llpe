@@ -433,7 +433,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 	InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
 	inlineChildren[CI] = IA;
 
-	LPDEBUG("Inlining " << FCalled->getName() << " at " << *CI << "\n");
+	LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
 
 	pass->queueCheckBlock(IA, &(FCalled->getEntryBlock()));
 	// Check every argument, for natural constants or for variables that have already been established.
@@ -453,17 +453,17 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
       }
       else {
-	LPDEBUG("Ignored " << *CI << " because it is not yet certain to execute\n");
+	LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
       }
 
     }
     else {
-      LPDEBUG("Ignored " << *CI << " because we don't know the function body, or it's vararg\n");
+      LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body, or it's vararg\n");
     }
 
   }
   else {
-    LPDEBUG("Ignored " << *CI << " because it's an uncertain indirect call\n");
+    LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
   }
 
   return 0;
@@ -672,7 +672,7 @@ ValCtx InlineAttempt::tryGetReturnValue() {
 	Value* ThisRet = RI->getReturnValue();
 	returnVal = getReplacement(ThisRet);
 	if(!returnVal.first) {
-	  LPDEBUG("Can't determine return value: live instruction " << *RI << " has non-forwardable value " << *(RI->getReturnValue()) << "\n");
+	  LPDEBUG("Can't determine return value: live instruction " << itcache(*RI) << " has non-forwardable value " << itcache(*(RI->getReturnValue())) << "\n");
 	  break;
 	}
       }
@@ -680,7 +680,7 @@ ValCtx InlineAttempt::tryGetReturnValue() {
   }
   
   if(returnVal.first) {
-    LPDEBUG("Found return value: " << returnVal << "\n");
+    LPDEBUG("Found return value: " << itcache(returnVal) << "\n");
   }
   
   return returnVal;
@@ -743,12 +743,12 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
     improved = QueryCtx->getReplacement(DefLI);
   }
   else {
-    LPDEBUG("Defined by " << *(Res.getInst()) << " which is not a simple load or store\n");
+    LPDEBUG("Defined by " << itcache(*(Res.getInst())) << " which is not a simple load or store\n");
     return VCNull;
   }
 
   if(improved.first != Res.getInst() || improved.second != QueryCtx) {
-    LPDEBUG("Definition improved to " << improved << "\n");
+    LPDEBUG("Definition improved to " << itcache(improved) << "\n");
     return improved;
   }
   else {
@@ -797,17 +797,17 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 	Seen = Res;
       }
       else {
-	LPDEBUG(*OriginalInst << " is overdefined: depends on at least " << Seen << " and " << Res << "\n");
+	LPDEBUG(itcache(*OriginalInst) << " is overdefined: depends on at least " << itcache(Seen) << " and " << itcache(Res) << "\n");
 	return MemDepResult();
       }
 
     }
 
-    LPDEBUG(*OriginalInst << " nonlocally defined by " << Seen << "\n");
+    LPDEBUG(itcache(*OriginalInst) << " nonlocally defined by " << itcache(Seen) << "\n");
 
   }
   else {
-    LPDEBUG(*OriginalInst << " locally defined by " << Seen << "\n");
+    LPDEBUG(itcache(*OriginalInst) << " locally defined by " << itcache(Seen) << "\n");
   }
 
   return Seen;
@@ -877,7 +877,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
 // and ask our parent to continue resolving the load.
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
-  LPDEBUG("Trying to forward load: " << *LoadI << "\n");
+  LPDEBUG("Trying to forward load: " << itcache(*LoadI) << "\n");
 
   LoadForwardAttempt Attempt(LoadI, this, TD);
   
@@ -954,7 +954,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     }
     else {
 
-      LPDEBUG("This does not complete the load: requerying starting at " << *(Res.getInst()) << "\n");
+      LPDEBUG("This does not complete the load: requerying starting at " << itcache(*(Res.getInst())) << "\n");
       return ResAttempt->tryForwardLoad(LFA, Res.getInst());
 
     }
@@ -969,7 +969,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 	LPDEBUG("Load resolved successfully, but we couldn't retrieve a value from the defining instruction\n");
     }
     else {
-      LPDEBUG("Load resolved successfully, but " << Result << " is not a forwardable value\n");
+      LPDEBUG("Load resolved successfully, but " << itcache(Result) << " is not a forwardable value\n");
     }
 
     if(Res.getInst() && Res.getInst()->mayWriteToMemory())
@@ -1012,7 +1012,7 @@ MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt) {
   }
   else {
     if(Result != MemDepResult()) {
-      LPDEBUG("Forwarded " << *(Attempt.getOriginalInst()) << " locally: got " << Result << "\n");
+      LPDEBUG("Forwarded " << itcache(*(Attempt.getOriginalInst())) << " locally: got " << itcache(Result) << "\n");
     }
     return Result;
   }
@@ -1065,10 +1065,10 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result))) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
       if(Result.isDef()) {
-	LPDEBUG("Resolved to " << Result << "\n");
+	LPDEBUG("Resolved to " << itcache(Result) << "\n");
       }
       else {
-	LPDEBUG("Clobbered by " << Result << "\n");
+	LPDEBUG("Clobbered by " << itcache(Result) << "\n");
       }
       return false;
     }
@@ -1077,7 +1077,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     }
 
     if(LFA.getBaseContext() == Iterations[iter]) {
-      LPDEBUG("Abandoning resolution: " << LFA.getBaseVC() << " is out of scope\n");
+      LPDEBUG("Abandoning resolution: " << itcache(LFA.getBaseVC()) << " is out of scope\n");
       Result = MemDepResult();
       return false;
     }
@@ -1175,14 +1175,14 @@ MemDepResult IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* I
 
   MemDepResult Result;
 
-  LPDEBUG("Continuing resolution from entry point " << *(IA->getEntryInstruction()) << "\n");
+  LPDEBUG("Continuing resolution from entry point " << itcache(*(IA->getEntryInstruction())) << "\n");
 
   if(tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result)) {
     LPDEBUG("Still nonlocal, passing to our parent scope\n");
     return tryForwardExprFromParent(LFA);
   }
   else {
-    LPDEBUG("Resolved at this scope: " << Result << "\n");
+    LPDEBUG("Resolved at this scope: " << itcache(Result) << "\n");
     return Result;
   }
 
@@ -1215,11 +1215,11 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
 
   if(!IA) {
     // Our caller is responsible for e.g. trying plain old getModRefInfo to circumvent this restriction
-    LPDEBUG("Unable to pursue load through call " << *CI << " as it has not yet been explored\n");
+    LPDEBUG("Unable to pursue load through call " << itcache(*CI) << " as it has not yet been explored\n");
     return false;
   }
 
-  LPDEBUG("Trying to forward load " << *(LFA.getOriginalInst()) << " through call " << *CI << ":\n");
+  LPDEBUG("Trying to forward load " << itcache(*(LFA.getOriginalInst())) << " through call " << itcache(*CI) << ":\n");
   
   bool ret;
 
@@ -1229,13 +1229,13 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
   ret = IA->tryForwardLoadFromExit(LFA, Result);
 
   if(!ret) {
-    LPDEBUG("Call " << *CI << " clobbers " << *(LFA.getOriginalInst()) << "\n");
+    LPDEBUG("Call " << itcache(*CI) << " clobbers " << itcache(*(LFA.getOriginalInst())) << "\n");
   }
   else if(Result.isNonLocal()) {
-    LPDEBUG("Call " << *CI << " doesn't affect " << *(LFA.getOriginalInst()) << "\n");
+    LPDEBUG("Call " << itcache(*CI) << " doesn't affect " << itcache(*(LFA.getOriginalInst())) << "\n");
   }
   else {
-    LPDEBUG("Call " << *CI << " defines " << *(LFA.getOriginalInst()) << "\n");
+    LPDEBUG("Call " << itcache(*CI) << " defines " << itcache(*(LFA.getOriginalInst())) << "\n");
   }
 
   return ret;
@@ -1252,7 +1252,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
   if(Iterations.back()->iterStatus != IterationStatusFinal) {
     
-    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (L->getHeader()->getName()) << " without per-iteration knowledge as it is not yet known to terminate\n");
+    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through loop " << (L->getHeader()->getName()) << " without per-iteration knowledge as it is not yet known to terminate\n");
     return false;
 
   }
@@ -1261,24 +1261,24 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
   MemDepResult& LastIterResult = LastIterEntry.first->second;
 
   if(!LastIterEntry.second) {
-    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << " (cached: " << LastIterResult << ")\n");
+    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << " (cached: " << itcache(LastIterResult) << ")\n");
     if(!LastIterResult.isNonLocal()) {
       Result.push_back(NonLocalDepResult(BB, LastIterResult, 0)); // Hack -- NLDRs should contain the true BB where a relationship was discovered and the PHI translated address.
       return true;
     }
   }
   else {
-    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
+    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
 
     if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult)) {
       LastIterResult = MemDepResult::getNonLocal();
     }
     else {
       if(LastIterResult.isClobber()) {
-	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
+	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
       }
       else {
-	LPDEBUG(*(LFA.getOriginalInst()) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
+	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
       }
       Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
       return true;
@@ -1290,23 +1290,23 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
   MemDepResult& OtherItersResult = OtherItersEntry.first->second;
 
   if(!OtherItersEntry.second) { 
-    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << " (cached: " << OtherItersResult << ")\n");
+    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through main body of " << L->getHeader()->getName() << " (cached: " << itcache(OtherItersResult) << ")\n");
     if(!OtherItersResult.isNonLocal()) {
       Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
       return true;
     }
   }
   else {
-    LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through main body of " << L->getHeader()->getName() << "\n");
+    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through main body of " << L->getHeader()->getName() << "\n");
     if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult)) {
       OtherItersResult = MemDepResult::getNonLocal();
     }
     else {
       if(OtherItersResult.isClobber()) {
-	LPDEBUG(*(LFA.getOriginalInst()) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
+	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
       }
       else {
-	LPDEBUG(*(LFA.getOriginalInst()) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
+	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
       }
       Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
       return true;
@@ -1327,12 +1327,12 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
 
     PeelAttempt* LPA = getPeelAttempt(BBL);
     if(!LPA) {
-      LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge as it has not yet been explored\n");
+      LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge as it has not yet been explored\n");
       return false;
     }
 
     if(!LFA.canBuildSymExpr()) {
-      LPDEBUG("Raising " << *(LFA.getOriginalInst()) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge because the pointer cannot be represented simply\n");
+      LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge because the pointer cannot be represented simply\n");
       return false;
     }
 
@@ -1373,12 +1373,12 @@ void IntegrationAttempt::queueLoopExpansionBlockedLoad(Instruction* BlockedOn, I
 void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
   
   if(!certainBlocks.count(CI->getParent())) {
-    LPDEBUG("Won't promote open call " << *CI << " yet: not certain to execute\n");
+    LPDEBUG("Won't promote open call " << itcache(*CI) << " yet: not certain to execute\n");
     return;
   }
 
   if(forwardableOpenCalls.count(CI)) {
-    LPDEBUG("Open call " << *CI << ": already promoted\n");
+    LPDEBUG("Open call " << itcache(*CI) << ": already promoted\n");
     return;
   }
   
@@ -1398,19 +1398,19 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  if(ConstantInt* ModeValue = dyn_cast<ConstantInt>(ModeArg.first)) {
 	    int RawMode = (int)ModeValue->getLimitedValue();
 	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
-	      LPDEBUG("Can't promote open call " << *CI << " because it is not O_RDONLY\n");
+	      LPDEBUG("Can't promote open call " << itcache(*CI) << " because it is not O_RDONLY\n");
 	      return;
 	    }
 	  }
 	  else {
-	    LPDEBUG("Can't promote open call " << *CI << " because its mode argument can't be resolved\n");
+	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its mode argument can't be resolved\n");
 	    return;
 	  }
 	  
 	  ValCtx NameArg = getReplacement(CI->getArgOperand(0));
 	  std::string Filename;
 	  if (!GetConstantStringInfo(NameArg.first, Filename)) {
-	    LPDEBUG("Can't promote open call " << *CI << " because its filename argument is unresolved\n");
+	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its filename argument is unresolved\n");
 	    return;
 	  }
 
@@ -1421,7 +1421,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 
 	      if(I->mayWriteToMemory()) {
 		
-		LPDEBUG("Marking open call " << *CI << " escaped due to user " << *I << "\n");
+		LPDEBUG("Marking open call " << itcache(*CI) << " escaped due to user " << itcache(*I) << "\n");
 		FDEscapes = true;
 
 	      }
@@ -1441,28 +1441,28 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	}
 	else {
 	  
-	  LPDEBUG("Unable to identify " << *CI << " as an open call because it calls something else\n");
+	  LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because it calls something else\n");
 
 	}
 
       }
       else {
 	
-	LPDEBUG("Unable to identify " << *CI << " as an open call because its target is unknown\n");
+	LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because its target is unknown\n");
 
       }
 
     }
     else {
 
-      LPDEBUG("Unable to identify " << *CI << " as an open call because the symbol 'open' resolves to something with inappropriate type!\n");
+      LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because the symbol 'open' resolves to something with inappropriate type!\n");
 
     }
 
   }
   else {
 
-    LPDEBUG("Unable to identify " << *CI << " as an open call because no symbol 'open' is in scope\n");
+    LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because no symbol 'open' is in scope\n");
 
   }
 
@@ -1481,13 +1481,13 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
 
   // Try to follow the trail from LastResolvedUser forwards.
 
-  LPDEBUG("Trying to extend VFS op chain for " << *OpenI << " from " << OpenProgress << "\n");
+  LPDEBUG("Trying to extend VFS op chain for " << itcache(*OpenI) << " from " << itcache(OpenProgress) << "\n");
 
   ValCtx NextStart = OpenProgress;
   bool skipFirst = true;
 
   while(NextStart.second->tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst)) {
-    LPDEBUG("Continuing from " << NextStart << "\n");
+    LPDEBUG("Continuing from " << itcache(NextStart) << "\n");
     skipFirst = false;
   }
 
@@ -1621,7 +1621,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	      if(ArgVC == OpenInst)
 		callMayUseFD = true;
 	      if(isUnresolved(CI->getArgOperand(i))) {
-		LPDEBUG("Assuming " << *CI << " may use " << OpenInst << " due to unresolved argument " << ArgVC << "\n");
+		LPDEBUG("Assuming " << itcache(*CI) << " may use " << itcache(OpenInst) << " due to unresolved argument " << itcache(ArgVC) << "\n");
 		callMayUseFD = true;
 	      }
 
@@ -1639,7 +1639,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	    }
 	    else {
 
-	      LPDEBUG("Unexpanded call " << *CI << " may affect FD from " << OpenInst << "\n");
+	      LPDEBUG("Unexpanded call " << itcache(*CI) << " may affect FD from " << itcache(OpenInst) << "\n");
 	      InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
 	      return false;
 
@@ -1813,14 +1813,14 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     Value* readFD = VFSCall->getArgOperand(0);
     if(isUnresolved(readFD)) {
 
-      LPDEBUG("Can't forward open because FD argument of " << *VFSCall << " is unresolved\n");
+      LPDEBUG("Can't forward open because FD argument of " << itcache(*VFSCall) << " is unresolved\n");
       shouldRequeue = true;
       return true;
 
     }
     else if(getReplacement(readFD) != OpenInst) {
 
-      LPDEBUG("Ignoring " << *VFSCall << " which references a different file\n");
+      LPDEBUG("Ignoring " << itcache(*VFSCall) << " which references a different file\n");
       return false;
 
     }
@@ -1829,7 +1829,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
     if(!intBytes) {
-      LPDEBUG("Can't push " << OpenInst << " further: read amount uncertain\n");
+      LPDEBUG("Can't push " << itcache(OpenInst) << " further: read amount uncertain\n");
       shouldRequeue = true;
       return true;
     }
@@ -1860,7 +1860,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
 
-    LPDEBUG("Successfully forwarded to " << *VFSCall << " which reads " << cBytes << " bytes\n");
+    LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which reads " << cBytes << " bytes\n");
 
     resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
     ValCtx thisReader = make_vc(VFSCall, this);
@@ -1881,7 +1881,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   else if(CalleeName == "close") {
     const FunctionType *FT = Callee->getFunctionType();
     if(FT->getNumParams() != 1 || !FT->getParamType(0)->isIntegerTy(32)) {
-      LPDEBUG("Assuming call to " << *Callee << " is not really 'close' due to weird signature\n");
+      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really 'close' due to weird signature\n");
       return false;
     }
 
@@ -1896,7 +1896,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
       return false;
     }
 
-    LPDEBUG("Successfully forwarded to " << *VFSCall << " which closes the file\n");
+    LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which closes the file\n");
 
     ValCtx ThisCall = make_vc(VFSCall, this);
     setNextUser(OS, ThisCall);
@@ -1909,7 +1909,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
     const FunctionType* FT = Callee->getFunctionType();
     if(FT->getNumParams() != 3 || (!FT->getParamType(0)->isIntegerTy(32)) || (!FT->getParamType(1)->isIntegerTy()) || (!FT->getParamType(2)->isIntegerTy(32))) {
-      LPDEBUG("Assuming call to " << *Callee << " is not really an [l]lseek due to weird signature\n");
+      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really an [l]lseek due to weird signature\n");
       return false;
     }
 
@@ -1928,7 +1928,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
     
     if((!newOffset) || (!whence)) {
-      LPDEBUG("Unable to push " << OpenInst << " further due to uncertainty of " << *VFSCall << " seek offset or whence");
+      LPDEBUG("Unable to push " << itcache(OpenInst) << " further due to uncertainty of " << itcache(*VFSCall) << " seek offset or whence");
       shouldRequeue = true;
       return true;
     }
@@ -1967,7 +1967,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
       return true;
     }
 
-    LPDEBUG("Successfully forwarded to " << *VFSCall << " which seeks to offset " << intOffset << "\n");
+    LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which seeks to offset " << intOffset << "\n");
 
     // Seek's return value is the new offset.
     setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
@@ -2180,7 +2180,7 @@ void InlineAttempt::printHeader(raw_ostream& OS) const {
 
   OS << (!CI ? "Root " : "") << "Function " << F.getName();
   if(CI)
-    OS << " at " << *CI;
+    OS << " at " << itcache(*CI);
 
 }
 
@@ -2214,10 +2214,10 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   printHeader(OS);
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
   for(DenseMap<Value*, ValCtx>::const_iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-    OS << nestingIndent() << *(it->first) << " -> " << it->second << "\n";
+    OS << nestingIndent() << itcache(*(it->first)) << " -> " << itcache(it->second) << "\n";
   }
   for(DenseSet<Value*>::const_iterator it = deadValues.begin(), it2 = deadValues.end(); it != it2; ++it) {
-    OS << nestingIndent() << (**it) << ": dead\n";
+    OS << nestingIndent() << itcache((**it)) << ": dead\n";
   }
   if(unexploredLoops.size()) {
     OS << nestingIndent() << "Unexplored loops:\n";
@@ -2228,7 +2228,7 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   if(unexploredCalls.size()) {
     OS << nestingIndent() << "Unexplored calls:\n";
     for(SmallVector<CallInst*, 4>::const_iterator it = unexploredCalls.begin(), it2 = unexploredCalls.end(); it != it2; ++it) {
-      OS << nestingIndent() << **it << "\n";
+      OS << nestingIndent() << itcache(**it) << "\n";
     }
   }
 
@@ -2421,7 +2421,7 @@ void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
   for(SmallVector<SymExpr*, 4>::iterator it = Expr.begin(), it2 = Expr.end(); it != it2; it++) {
     if(it != Expr.begin())
       Str << " of ";
-    (*it)->describe(Str);
+    (*it)->describe(Str, originalCtx);
   }
   
 }
@@ -2435,7 +2435,7 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
   
   ValCtx Ptr = originalCtx->getDefaultVC(RootPtr);
 
-  LPDEBUG("Trying to describe " << Ptr << " as a simple symbolic expression\n");
+  LPDEBUG("Trying to describe " << itcache(Ptr) << " as a simple symbolic expression\n");
 
   // Check that we're trying to fetch a cast-of-constGEP-of-cast-of... an identified object, and
   // build a symbolic expression representing the derived expression if so.
@@ -2469,7 +2469,7 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
 	    }
 	  }
 	  else {
-	    LPDEBUG("Can't describe pointer with non-const offset " << *idx << "\n");
+	    LPDEBUG("Can't describe pointer with non-const offset " << itcache(*idx) << "\n");
 	    success = false; 
 	    break;
 	  }
@@ -2495,7 +2495,7 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
       break;
     }
     else if(Repl == Ptr) {
-      LPDEBUG("Can't describe due to unresolved pointer " << Ptr << "\n");
+      LPDEBUG("Can't describe due to unresolved pointer " << itcache(Ptr) << "\n");
       success = false; 
       break;
     }
@@ -2776,7 +2776,7 @@ Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t
 bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
 
   if(PV.isTotal() && allowTotalDefnImplicitCast(targetType, PV.TotalVC.first->getType()) && !partialBuf) {
-    LPDEBUG("Accepting " << PV.TotalVC << " as a total definition\n");
+    LPDEBUG("Accepting " << itcache(PV.TotalVC) << " as a total definition\n");
     Result = PV.TotalVC;
     return true;
   }
@@ -2811,7 +2811,7 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
   if(PV.isTotal()) {
     Constant* TotalC = dyn_cast<Constant>(PV.TotalVC.first);
     if(!TotalC) {
-      LPDEBUG("Unable to use total definition " << PV.TotalVC << " because it is not constant but we need to perform byte operations on it\n");
+      LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
       return false;
     }
     PV.C = TotalC;
@@ -2871,7 +2871,7 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
       return false;
     }
     else {
-      LPDEBUG("This store completes the load (final value: " << Result << ")\n");
+      LPDEBUG("This store completes the load (final value: " << itcache(Result) << ")\n");
       return true;
     }
 
@@ -3125,16 +3125,19 @@ void IntegratorWQItem::describe(raw_ostream& s) {
 
   switch(type) {
   case TryEval:
-    s << "Try-eval " << *(u.V);
+    s << "Try-eval ";
+    ctx->printWithCache(u.V, s);
     break;
   case CheckBlock:
     s << "Check-BB-status " << u.BB->getName();
     break;
   case CheckLoad:
-    s << "Check-load " << make_vc(u.LI, ctx);
+    s << "Check-load ";
+    ctx->printWithCache(make_vc(u.LI, ctx), s);
     break;
   case OpenPush:
-    s << "Push-VFS-chain " << make_vc(u.OpenArgs.OpenI, ctx);
+    s << "Push-VFS-chain ";
+    ctx->printWithCache(make_vc(u.OpenArgs.OpenI, ctx), s);
   }
 
 }
@@ -3486,6 +3489,10 @@ void IntegrationHeuristicsPass::retryLoadsFromFoldedContexts() {
 
   RootIA->retryLoadsFromFoldedContexts();
 
+}
+
+void IntegrationHeuristicsPass::commit() {
+  RootIA->commit();
 }
 
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {

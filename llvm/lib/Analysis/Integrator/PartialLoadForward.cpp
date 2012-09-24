@@ -61,7 +61,7 @@ bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
   const Type* LoadTy = LFA.getTargetTy();
 
   if(!LFA.canBuildSymExpr()) {
-    LPDEBUG("Can't build a symbolic expression regarding " << *(LFA.getOriginalInst()) << " so it isn't a known base plus constant offset\n");
+    LPDEBUG("Can't build a symbolic expression regarding " << itcache(*(LFA.getOriginalInst())) << " so it isn't a known base plus constant offset\n");
     return false;
   }
 
@@ -92,7 +92,7 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
 					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
 
   if (DefinerBase != DefinedBase) {
-    LPDEBUG("Definer " << DefinerBase << " against target " << DefinedBase << " do not share a base\n");
+    LPDEBUG("Definer " << itcache(DefinerBase) << " against target " << itcache(DefinedBase) << " do not share a base\n");
     return false;
   }
 
@@ -273,7 +273,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 	    
 	  if(GV->hasDefinitiveInitializer()) {
 
-	    LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << *(GV->getInitializer()) << "\n");
+	    LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << itcache(*(GV->getInitializer())) << "\n");
 
 	    Constant* GVC = GV->getInitializer();
 	    uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
@@ -307,7 +307,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
     if(!StoreC) {
 	
-      LPDEBUG("Can't resolve clobber of " << *LI << " by " << Clobber << " because the store's value is not constant and the load is not exactly aligned\n");
+      LPDEBUG("Can't resolve clobber of " << itcache(*LI) << " by " << itcache(Clobber) << " because the store's value is not constant and the load is not exactly aligned\n");
       return PartialVal();
 
     }
@@ -328,7 +328,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     if(!AnalyzeLoadFromClobberingMemInst(LFA, DepMI, Clobber.second, FirstDef, FirstNotDef, ReadOffset))
       return PartialVal();
 
-    LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << (*DepMI) << " source + " << ReadOffset << "\n");
+    LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
 
     // For now this means we have a memset or memcpy from constant data. Just read it.
     if (MemSetInst *MSI = dyn_cast<MemSetInst>(Clobber.first)) {
@@ -338,7 +338,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getValue()));
       if(!Val) {
 
-	LPDEBUG("Won't forward load " << *LI << " from uncertain memset " << *DepMI << "\n");
+	LPDEBUG("Won't forward load " << itcache(*LI) << " from uncertain memset " << itcache(*DepMI) << "\n");
 	return PartialVal();
 
       }
@@ -430,7 +430,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     // object as per usual.
     if(!SubLFA.tryBuildSymExpr(MTI->getSource())) {
 
-      LPDEBUG("Can't try harder to forward over a memcpy because the source address " << *(MTI->getSource()) << " is not fully resolved\n");
+      LPDEBUG("Can't try harder to forward over a memcpy because the source address " << itcache(*(MTI->getSource())) << " is not fully resolved\n");
       return PVNull;
 
     }
@@ -467,15 +467,15 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       return PartialVal();
     }
     else if(FirstNotDef - FirstDef == LoadSize) {
-      LPDEBUG("Memcpy sub-forwarding yielded " << MTIResult << " (using as whole result)\n");
+      LPDEBUG("Memcpy sub-forwarding yielded " << itcache(MTIResult) << " (using as whole result)\n");
       return PartialVal::getTotal(MTIResult);
     }
     else if(Constant* C = dyn_cast<Constant>(MTIResult.first)) {
-      LPDEBUG("Memcpy sub-forwarding yielded " << MTIResult << " (using as partial)\n");
+      LPDEBUG("Memcpy sub-forwarding yielded " << itcache(MTIResult) << " (using as partial)\n");
       return PartialVal::getPartial(FirstDef, FirstNotDef, C, 0);
     }
     else {
-      LPDEBUG("Memcpy sub-forwarding yielded " << MTIResult << " but that kind of value cannot partially define a result\n");
+      LPDEBUG("Memcpy sub-forwarding yielded " << itcache(MTIResult) << " but that kind of value cannot partially define a result\n");
       return PartialVal();
     }
 
@@ -486,7 +486,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
     ReadFile* RF = Clobber.second->tryGetReadFile(CI);
     if(!RF) {
-      LPDEBUG("Can't improve load " << *LI << " clobbered by " << *CI << ": call does not appear to be a read()\n");
+      LPDEBUG("Can't improve load " << itcache(*LI) << " clobbered by " << itcache(*CI) << ": call does not appear to be a read()\n");
       return PVNull;
     }
 

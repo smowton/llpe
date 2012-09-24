@@ -37,7 +37,14 @@ class MemTransferInst;
 class MemIntrinsic;
 class CmpInst;
 class TerminatorInst;
-
+class InlineAttempt;
+class PeelAttempt;
+class IntegrationHeuristicsPass;
+class Function;
+class LoopInfo;
+class TargetData;
+class AliasAnalysis;
+class Loop;
 class IntegrationAttempt;
 
 typedef struct { Value* first; IntegrationAttempt* second; } ValCtx;
@@ -66,8 +73,141 @@ inline bool operator>=(ValCtx V1, ValCtx V2) {
   return !(V1 < V2);
 }
 
-raw_ostream& operator<<(raw_ostream&, const ValCtx&);
-raw_ostream& operator<<(raw_ostream&, const MemDepResult&);
+enum IntegratorWQItemType {
+
+   TryEval,
+   CheckBlock,
+   CheckLoad,
+   OpenPush
+
+};
+
+// A cheesy hack to make a value type that acts like a dynamic dispatch hierarchy
+class IntegratorWQItem {
+
+  IntegrationAttempt* ctx;
+  IntegratorWQItemType type;
+  union {
+    LoadInst* LI;
+    Value* V;
+    BasicBlock* BB;
+    struct {
+      CallInst* OpenI;
+      ValCtx OpenProgress;
+    } OpenArgs;
+  } u;
+
+public:
+
+ IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
+ IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
+ IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock) { u.BB = BB; }
+ IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush) { u.OpenArgs.OpenI = OpenI; u.OpenArgs.OpenProgress = OpenProgress; }
+
+  void execute();
+  void describe(raw_ostream& s);
+
+};
+
+class IntegrationHeuristicsPass : public ModulePass {
+
+   DenseMap<Function*, LoopInfo*> LIs;
+   DenseMap<Function*, DenseMap<Instruction*, const Loop*> > invariantInstScopes;
+   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
+   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
+
+   DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
+
+   TargetData* TD;
+   AliasAnalysis* AA;
+
+   SmallVector<IntegratorWQItem, 64> workQueue1;
+   SmallVector<IntegratorWQItem, 64> workQueue2;
+
+   SmallVector<IntegratorWQItem, 64>* produceQueue;
+
+   SmallVector<ValCtx, 64> dieQueue1;
+   SmallVector<ValCtx, 64> dieQueue2;
+
+   SmallVector<ValCtx, 64>* produceDIEQueue;
+
+   IntegrationAttempt* RootIA;
+
+   DenseMap<const Function*, DenseMap<const Instruction*, std::string> > functionTextCache;
+   bool cacheDisabled;
+
+ public:
+
+   static char ID;
+
+   explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
+
+     produceDIEQueue = &dieQueue2;
+     produceQueue = &workQueue2;
+
+   }
+
+   bool runOnModule(Module& M);
+
+   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val);
+   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB);
+   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI);
+   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress);
+   void queueDIE(IntegrationAttempt* ctx, Value* val);
+
+   void print(raw_ostream &OS, const Module* M) const;
+
+   void releaseMemory(void);
+
+   void createInvariantScopes(Function*, DenseMap<Instruction*, const Loop*>*&, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*&, DenseMap<BasicBlock*, const Loop*>*&);
+   DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
+   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
+   DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
+
+   BasicBlock* getUniqueReturnBlock(Function* F);
+
+   void runQueue();
+   void runDIEQueue();
+
+   void revertLoadsFromFoldedContexts();
+   void retryLoadsFromFoldedContexts();
+
+   // Caching text representations of instructions:
+
+   void printValue(raw_ostream& ROS, const Value* V);
+   void printValue(raw_ostream& ROS, ValCtx VC);
+   void printValue(raw_ostream& ROS, const MemDepResult& Res);
+   void disableValueCache();
+
+   virtual void getAnalysisUsage(AnalysisUsage &AU) const;
+
+   IntegrationAttempt* getRoot() { return RootIA; }
+   void commit();
+  
+ };
+
+// Define a wrapper class for using the IHP's instruction text cache when printing instructions:
+template<class T> class PrintCacheWrapper {
+
+  IntegrationHeuristicsPass& IHP;
+  T Val;
+
+ public:
+ 
+  PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val) : IHP(_IHP), Val(_Val) { }
+  void printTo(raw_ostream& ROS) {
+
+    IHP.printValue(ROS, Val);
+    
+  }
+
+};
+
+template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T> Wrapper) {
+  Wrapper.printTo(ROS);
+  return ROS;
+}
+
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
@@ -182,7 +322,7 @@ class SymExpr {
 
 public:
   static inline bool classof(const SymExpr*) { return true; }
-  virtual void describe(raw_ostream& OS) = 0;
+  virtual void describe(raw_ostream& OS, IntegrationAttempt*) = 0;
   virtual int getSymType() const = 0;
 
 };
@@ -195,7 +335,7 @@ public:
   ValCtx RealVal;
 
   SymThunk(ValCtx R) : RealVal(R) { }
-  void describe(raw_ostream& OS);
+  void describe(raw_ostream& OS, IntegrationAttempt*);
   int getSymType() const { return SThunk; }
 
 };
@@ -209,7 +349,7 @@ public:
 
   SymGEP(SmallVector<Value*, 4> Offs) : Offsets(Offs) { }
 
-  void describe(raw_ostream& OS);
+  void describe(raw_ostream& OS, IntegrationAttempt*);
   int getSymType() const { return SGEP; }
 
 };
@@ -223,7 +363,7 @@ public:
 
   SymCast(const Type* T) : ToType(T) { }
 
-  void describe(raw_ostream& OS);
+  void describe(raw_ostream& OS, IntegrationAttempt*);
   int getSymType() const { return SCast; }
 
 };
@@ -279,16 +419,6 @@ CloseFile(struct OpenStatus* O) : openArg(O), canRemove(false) {}
 CloseFile() : openArg(0), canRemove(false) {}
 
 };
-
-class InlineAttempt;
-class PeelAttempt;
-class IntegrationHeuristicsPass;
-
-class Function;
-class LoopInfo;
-class TargetData;
-class AliasAnalysis;
-class Loop;
 
 class Callable {
  public:
@@ -689,7 +819,31 @@ protected:
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out) = 0;
 
+  // Caching instruction text for debug and DOT export:
+  PrintCacheWrapper<const Value*> itcache(const Value& V) const {
+    return PrintCacheWrapper<const Value*>(*pass, &V);
+  }
+  PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
+    return PrintCacheWrapper<ValCtx>(*pass, VC);
+  }
+  PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
+    return PrintCacheWrapper<const MemDepResult&>(*pass, MDR);
+  }
+
+  void printWithCache(const Value* V, raw_ostream& ROS) {
+    pass->printValue(ROS, V);
+  }
+
+  void printWithCache(ValCtx VC, raw_ostream& ROS) {
+    pass->printValue(ROS, VC);
+  }
+
+  void printWithCache(const MemDepResult& Res, raw_ostream& ROS) {
+    pass->printValue(ROS, Res);
+  }
+
   // Data export for the Integrator pass:
+
   virtual std::string getShortHeader() = 0;
   virtual IntegratorTag* getParentTag() = 0;
   bool hasChildren();
@@ -883,6 +1037,17 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
 
+   // Caching instruction text for debug and DOT export:
+   PrintCacheWrapper<const Value*> itcache(const Value& V) const {
+     return parent->itcache(V);
+   }
+   PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
+     return parent->itcache(VC);
+   }
+   PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
+     return parent->itcache(MDR);
+   }
+
  };
 
 class InlineAttempt : public IntegrationAttempt { 
@@ -1018,6 +1183,17 @@ class LoadForwardAttempt : public LFAQueryable {
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
   ~LoadForwardAttempt();
 
+   // Caching instruction text for debug and DOT export:
+   PrintCacheWrapper<const Value*> itcache(const Value& V) const {
+     return originalCtx->itcache(V);
+   }
+   PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
+     return originalCtx->itcache(VC);
+   }
+   PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
+     return originalCtx->itcache(MDR);
+   }
+
   void printDebugHeader(raw_ostream& Str) { 
     originalCtx->printDebugHeader(Str);
   }
@@ -1062,109 +1238,6 @@ class LFARMapping {
 
 };
 
-enum IntegratorWQItemType {
-
-   TryEval,
-   CheckBlock,
-   CheckLoad,
-   OpenPush
-
-};
-
-// A cheesy hack to make a value type that acts like a dynamic dispatch hierarchy
-class IntegratorWQItem {
-
-  IntegrationAttempt* ctx;
-  IntegratorWQItemType type;
-  union {
-    LoadInst* LI;
-    Value* V;
-    BasicBlock* BB;
-    struct {
-      CallInst* OpenI;
-      ValCtx OpenProgress;
-    } OpenArgs;
-  } u;
-
-public:
-
- IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
- IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
- IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock) { u.BB = BB; }
- IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush) { u.OpenArgs.OpenI = OpenI; u.OpenArgs.OpenProgress = OpenProgress; }
-
-  void execute();
-  void describe(raw_ostream& s);
-
-};
-
-class IntegrationHeuristicsPass : public ModulePass {
-
-   DenseMap<Function*, LoopInfo*> LIs;
-   DenseMap<Function*, DenseMap<Instruction*, const Loop*> > invariantInstScopes;
-   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
-   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
-
-   DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
-
-   TargetData* TD;
-   AliasAnalysis* AA;
-
-   SmallVector<IntegratorWQItem, 64> workQueue1;
-   SmallVector<IntegratorWQItem, 64> workQueue2;
-
-   SmallVector<IntegratorWQItem, 64>* produceQueue;
-
-   SmallVector<ValCtx, 64> dieQueue1;
-   SmallVector<ValCtx, 64> dieQueue2;
-
-   SmallVector<ValCtx, 64>* produceDIEQueue;
-
-   IntegrationAttempt* RootIA;
-
- public:
-
-   static char ID;
-
-   explicit IntegrationHeuristicsPass() : ModulePass(ID) { 
-
-     produceDIEQueue = &dieQueue2;
-     produceQueue = &workQueue2;
-
-   }
-
-   bool runOnModule(Module& M);
-
-   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val);
-   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB);
-   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI);
-   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress);
-   void queueDIE(IntegrationAttempt* ctx, Value* val);
-
-   void print(raw_ostream &OS, const Module* M) const;
-
-   void releaseMemory(void);
-
-   void createInvariantScopes(Function*, DenseMap<Instruction*, const Loop*>*&, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*&, DenseMap<BasicBlock*, const Loop*>*&);
-   DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
-   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
-   DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
-
-   BasicBlock* getUniqueReturnBlock(Function* F);
-
-   void runQueue();
-   void runDIEQueue();
-
-   void revertLoadsFromFoldedContexts();
-   void retryLoadsFromFoldedContexts();
-
-   virtual void getAnalysisUsage(AnalysisUsage &AU) const;
-
-   IntegrationAttempt* getRoot() { return RootIA; }
-   void commit() { RootIA->commit(); }
-
- };
-
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
@@ -1173,6 +1246,9 @@ class IntegrationHeuristicsPass : public ModulePass {
  
  // Implemented in Transforms/Integrator/SimpleVFSEval.cpp, so only usable with -integrator
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
+
+ // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
+ void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap);
 
 } // Namespace LLVM
 

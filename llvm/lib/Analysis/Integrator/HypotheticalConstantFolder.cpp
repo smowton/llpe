@@ -420,7 +420,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
   if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
-    LPDEBUG("Trying to evaluate PHI " << *PN << " by standard means\n");
+    LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
     const Loop* phiLoop = getValueScope(PN);
       
     for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
@@ -446,7 +446,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 	  }
 	  else {
 	    
-	    LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop is not known to terminate yet\n");
+	    LPDEBUG("Unable to evaluate exit PHI " << itcache(*PN) << " because its loop is not known to terminate yet\n");
 	    onlyValue = VCNull;
 	    break;
 
@@ -455,7 +455,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 	}
 	else {
 
-	  LPDEBUG("Unable to evaluate exit PHI " << *PN << " because its loop has not been peeled yet\n");
+	  LPDEBUG("Unable to evaluate exit PHI " << itcache(*PN) << " because its loop has not been peeled yet\n");
 	  onlyValue = VCNull;
 	  break;
 
@@ -479,7 +479,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
     
   }
   if(onlyValue.first && shouldForwardValue(onlyValue)) {
-    LPDEBUG("Improved to " << onlyValue << "\n");
+    LPDEBUG("Improved to " << itcache(onlyValue) << "\n");
     return onlyValue;
   }
   else {
@@ -589,7 +589,7 @@ ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bo
       return const_vc(ConstantInt::getFalse(CmpI->getContext()));
     break;
   default:
-    LPDEBUG("Failed to fold " << *CmpI << " because it compares a symbolic FD using an unsupported predicate\n");
+    LPDEBUG("Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
     break;
   }
 
@@ -620,7 +620,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
 
     Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
     if(Improved.first) {
-      LPDEBUG("Comparison against file descriptor resolves to " << *Improved.first << "\n");
+      LPDEBUG("Comparison against file descriptor resolves to " << itcache(*Improved.first) << "\n");
     }
     else {
       LPDEBUG("Comparison against file descriptor inconclusive\n");
@@ -669,13 +669,13 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   ValCtx Improved = getReplacement(ArgV);
   if(Improved != getDefaultVC(ArgV)) {
     if(verbose)
-      DEBUG(dbgs() << (*ArgV) << " already improved\n");
+      DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
     return false;
   }
   if((I = dyn_cast<Instruction>(ArgV))) {
     if(blockIsDead(I->getParent())) {
       if(verbose)
-	DEBUG(dbgs() << (*ArgV) << " already eliminated (in dead block)\n");
+	DEBUG(dbgs() << itcache(*ArgV) << " already eliminated (in dead block)\n");
       return false;
     }
     return true;
@@ -685,7 +685,7 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   }
   else {
     if(verbose)
-      DEBUG(dbgs() << "Improvement candidate " << *I << " neither an instruction nor an argument!");
+      DEBUG(dbgs() << "Improvement candidate " << itcache(*I) << " neither an instruction nor an argument!");
     return false;
   }
 
@@ -858,7 +858,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	  if(Constant* C = getConstReplacement(op))
 	    instOperands.push_back(C);
 	  else {
-	    LPDEBUG("Not constant folding yet due to non-constant argument " << *op << "\n");
+	    LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(*op) << "\n");
 	    break;
 	  }
 	}
@@ -874,15 +874,15 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
 
 	  if(newConst) {
-	    LPDEBUG(*I << " now constant at " << *newConst << "\n");
+	    LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
 	    Improved = const_vc(newConst);
 	  }
 	  else {
 	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
-	      LPDEBUG("User " << *I << " may read or write global state; not propagating\n");
+	      LPDEBUG("User " << itcache(*I) << " may read or write global state; not propagating\n");
 	    }
 	    else {
-	      LPDEBUG("User " << *I << " has all-constant arguments, but couldn't be constant folded" << "\n");
+	      LPDEBUG("User " << itcache(*I) << " has all-constant arguments, but couldn't be constant folded\n");
 	    }
 	    Improved = VCNull;
 	  }
@@ -894,7 +894,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
   }
   else {
-    LPDEBUG("Improvement candidate " << *I << " neither an instruction nor an argument!\n");
+    LPDEBUG("Improvement candidate " << itcache(*I) << " neither an instruction nor an argument!\n");
     return VCNull;
   }
 
@@ -952,7 +952,7 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
       if(argNumber == -1) {
 
-	LPDEBUG("BUG: Value " << *Used << " not really used by call " << *CI << "???\n");
+	LPDEBUG("BUG: Value " << itcache(*Used) << " not really used by call " << itcache(*CI) << "???\n");
 
       }
       else {
@@ -1221,7 +1221,7 @@ public:
 
       InlineAttempt* IA = Ctx->getInlineAttempt(CI);
       if(!IA) {
-	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << *CI << "\n");
+	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << Ctx->itcache(*CI) << "\n");
 	maybeLive = true;
 	return;
       }
@@ -1501,7 +1501,7 @@ void IntegrationAttempt::tryKillValue(Value* V) {
   if(deadValues.count(V))
     return;
 
-  LPDEBUG("Trying to kill " << *V << "\n");
+  LPDEBUG("Trying to kill " << itcache(*V) << "\n");
 
   Instruction* I = dyn_cast<Instruction>(V);
   if(I && I->mayHaveSideEffects()) {
@@ -1729,6 +1729,7 @@ namespace llvm {
 
   }
 
+/*
   raw_ostream& operator<<(raw_ostream& Stream, const ValCtx& VC) {
 
     if(!VC.first)
@@ -1764,25 +1765,24 @@ namespace llvm {
     return Stream;
 
   }
+*/
 
 }
 
-void SymThunk::describe(raw_ostream& OS) {
-  
-  OS << RealVal;
-
+void SymThunk::describe(raw_ostream& OS, IntegrationAttempt* IA) {
+  IA->printWithCache(RealVal, OS);
 }
 
-void SymGEP::describe(raw_ostream& OS) {
+void SymGEP::describe(raw_ostream& OS, IntegrationAttempt* IA) {
   OS << "GEP(";
   for(SmallVector<Value*, 4>::iterator OI = Offsets.begin(), OE = Offsets.end(); OI != OE; OI++) {
     if(OI != Offsets.begin())
       OS << ", ";
-    OS << **OI;
+    IA->printWithCache(*OI, OS);
   }
   OS << ")";
 }
 
-void SymCast::describe(raw_ostream& OS) {
+void SymCast::describe(raw_ostream& OS, IntegrationAttempt* IA) {
   OS << "Cast(" << *ToType << ")";
 }

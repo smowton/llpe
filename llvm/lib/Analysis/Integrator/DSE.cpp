@@ -73,7 +73,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
 
   bool* deadBytes;
 
-  LPDEBUG("Trying to kill instruction " << *Writer << "\n");
+  LPDEBUG("Trying to kill instruction " << itcache(*Writer) << "\n");
 
   if(Size != AliasAnalysis::UnknownSize) {
     deadBytes = (bool*)alloca(Size * sizeof(bool));
@@ -98,7 +98,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
   WalkCtxs.push_back(this);
 
   while(NextStart.second->tryKillStoreFrom(NextStart, StorePtr, StoreBase, StoreOffset, deadBytes, Size, skipFirst, Killed)) {
-    LPDEBUG("Continuing from " << NextStart << "\n");
+    LPDEBUG("Continuing from " << itcache(NextStart) << "\n");
     WalkCtxs.push_back(NextStart.second);
     skipFirst = false;
   }
@@ -167,11 +167,11 @@ bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCt
     }
 
     if(Finished) {
-      LPDEBUG("Write " << Writer << " wrote bytes (" << FirstDef << "-" << FirstNotDef << "] (finished, killed)\n");
+      LPDEBUG("Write " << itcache(Writer) << " wrote bytes (" << FirstDef << "-" << FirstNotDef << "] (finished, killed)\n");
       return true;
     }
     else {
-      LPDEBUG("Write " << Writer << " wrote bytes (" << FirstDef << "-" << FirstNotDef << "] (not finished yet)\n");
+      LPDEBUG("Write " << itcache(Writer) << " wrote bytes (" << FirstDef << "-" << FirstNotDef << "] (not finished yet)\n");
     }
 
   }
@@ -230,7 +230,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
       if(isLifetimeEnd(StoreBase, BI)) {
 
-	LPDEBUG("Killed write to " << *(StorePtr.first) << " due to reaching end of lifetime for " << StoreBase << "\n");
+	LPDEBUG("Killed write to " << itcache(*(StorePtr.first)) << " due to reaching end of lifetime for " << itcache(StoreBase) << "\n");
 	Killed = true;
 	return false;
 
@@ -255,7 +255,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	      // If it's not dead it must be regarded as a big unresolved load.
 
-	      LPDEBUG("Can't kill store to " << StorePtr << " because of unresolved MTI " << *MI << "\n");
+	      LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved MTI " << itcache(*MI) << "\n");
 	      return false;
 
 	    }
@@ -301,7 +301,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	    if(MR & AliasAnalysis::Ref) {
 
-	      LPDEBUG("Unexpanded call " << *CI << " blocks DSE\n");
+	      LPDEBUG("Unexpanded call " << itcache(*CI) << " blocks DSE\n");
 	      return false;
 
 	    }
@@ -323,7 +323,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 	  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
 	  if(R != AliasAnalysis::NoAlias) {
 
-	    LPDEBUG("Can't kill store to " << StorePtr << " because of unresolved load " << *Pointer << "\n");
+	    LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(*Pointer) << "\n");
 	    return false;
 
 	  }
