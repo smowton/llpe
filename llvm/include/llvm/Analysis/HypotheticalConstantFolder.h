@@ -179,6 +179,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void printValue(raw_ostream& ROS, const MemDepResult& Res);
    void disableValueCache();
 
+   void loadEnvironment(Module&, std::string&);
+
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
    IntegrationAttempt* getRoot() { return RootIA; }

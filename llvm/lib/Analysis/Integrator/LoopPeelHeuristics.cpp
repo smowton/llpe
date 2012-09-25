@@ -56,6 +56,7 @@ char IntegrationHeuristicsPass::ID = 0;
 
 static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
+static cl::opt<std::string> EnvFile("spec-env", cl::init(""));
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -3553,6 +3554,12 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   TD = getAnalysisIfAvailable<TargetData>();
   AA = &getAnalysis<AliasAnalysis>();
   
+  if(EnvFile != "") {
+
+    loadEnvironment(M, EnvFile);
+
+  }
+
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
     if(!MI->isDeclaration()) {
