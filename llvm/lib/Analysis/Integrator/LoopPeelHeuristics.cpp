@@ -849,22 +849,40 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
 
 bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Result) {
 
-  if(Constant* C = getConstReplacement(LoadI->getPointerOperand())) {
+  int64_t Offset = 0;
+  ValCtx Base = GetBaseWithConstantOffset(LoadI->getPointerOperand(), this, Offset);
 
-    // Try ordinary constant folding first! Might not work because globals constitute constant expressions.
-    // For them we should do the ordinary alias analysis task.
-    Constant* ret = ConstantFoldLoadFromConstPtr(C, this->TD);
-    if(ret) {
-      LPDEBUG("Resolved load as a constant expression\n");
-      Result = const_vc(ret);
-      return true;
+  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(Base.first)) {
+    if(GV->isConstant()) {
+
+      uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
+      if(Constant* Extracted = extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD)) {
+	Result = const_vc(Extracted);
+	return true;
+      }
+
+      unsigned char* buf = (unsigned char*)alloca(LoadSize);
+      memset(buf, 0, LoadSize);
+      if(ReadDataFromGlobal(GV->getInitializer(), Offset, buf, LoadSize, *TD)) {
+
+	Result = const_vc(constFromBytes(buf, LoadI->getType(), TD));
+	return true;
+
+      }
+      else {
+
+	LPDEBUG("ReadDataFromGlobal failed\n");
+
+      }
+
     }
-
   }
 
   // Check whether pursuing alises is pointless -- this is true if we're certain that the ultimate underlying object is a constant.
   // If it is, our attempt above was likely foiled only by uncertainty about the specific bit of the constant (e.g. index within a const string)
   // and the only way the situation will improve is if those offsets become clear.
+  // Note this isn't as redundant as it looks, since GUUO doesn't give up when it hits an uncertain GEP,
+  // unlike GBWCO above.
 
   ValCtx Ultimate = getUltimateUnderlyingObject(LoadI->getPointerOperand());
 
@@ -2751,7 +2769,7 @@ void LoadForwardAttempt::setSymExprOffset(int64_t newOffset) {
 
 }
 
-bool LoadForwardAttempt::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
+bool llvm::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
 
   if(From == To)
     return true;
@@ -2763,7 +2781,7 @@ bool LoadForwardAttempt::allowTotalDefnImplicitCast(const Type* From, const Type
 
 }
 
-Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize) {
+Constant* llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
 
   const Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
@@ -2772,7 +2790,7 @@ Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t
     if(allowTotalDefnImplicitCast(Target, FromType))
       return FromC;
     else {
-      LPDEBUG("Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
+      DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
       return 0;
     }
   }
@@ -2799,7 +2817,7 @@ Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t
 
     const StructLayout* SL = TD->getStructLayout(CS->getType());
     if(!SL) {
-      LPDEBUG("Couldn't get struct layout for type " << *(CS->getType()) << "\n");
+      DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
       return 0;
     }
 
@@ -2813,12 +2831,12 @@ Constant* LoadForwardAttempt::extractAggregateMemberAt(Constant* FromC, uint64_t
   if(mightWork) {
     if(StartE == EndE || (StartE + 1 == EndE && !EndOff)) {
       // This is a sub-access within this element.
-      return extractAggregateMemberAt(cast<Constant>(FromC->getOperand(StartE)), StartOff, Target, TargetSize);
+      return extractAggregateMemberAt(cast<Constant>(FromC->getOperand(StartE)), StartOff, Target, TargetSize, TD);
     }
-    LPDEBUG("Can't use simple element extraction because load spans multiple elements\n");
+    DEBUG(dbgs() << "Can't use simple element extraction because load spans multiple elements\n");
   }
   else {
-    LPDEBUG("Can't use simple element extraction because load requires sub-field access\n");
+    DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
   }
 
   return 0;
@@ -2847,7 +2865,7 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
   if(SalvageC && (PV.isTotal() || (PV.FirstDef == 0 && PV.FirstNotDef == LoadSize)) && !partialBuf) {
     uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
 
-    if(Constant* Extracted = extractAggregateMemberAt(SalvageC, Offset, targetType, LoadSize)) {
+    if(Constant* Extracted = extractAggregateMemberAt(SalvageC, Offset, targetType, LoadSize, TD)) {
       LPDEBUG("Successfully extracted an entire field: " << *Extracted << "\n");
       Result = const_vc(Extracted);
       return true;
@@ -2919,7 +2937,7 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
 
   if(loadFinished) {
 
-    Result = const_vc(constFromBytes(partialBuf, targetType));
+    Result = const_vc(constFromBytes(partialBuf, targetType, TD));
     if(Result == VCNull) {
       LPDEBUG("Failed to convert result to target type " << *targetType << "\n");
       return false;
@@ -2947,13 +2965,13 @@ ValCtx LoadForwardAttempt::getResult() {
 
 }
 
-Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* Ty) {
+Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData* TD) {
 
   if(Ty->isVectorTy() || Ty->isFloatingPointTy() || Ty->isIntegerTy()) {
 
     uint64_t TyBits = TD->getTypeSizeInBits(Ty);
     uint64_t TySize = TyBits / 8;
-    Constant* IntResult = intFromBytes((const uint64_t*)Bytes, (TySize + 7) / 8, TyBits, LI->getContext());
+    Constant* IntResult = intFromBytes((const uint64_t*)Bytes, (TySize + 7) / 8, TyBits, Ty->getContext());
       
     if(Ty->isIntegerTy()) {
       assert(Ty == IntResult->getType());
@@ -2967,7 +2985,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
       if(ConstantExpr* CE = dyn_cast_or_null<ConstantExpr>(Result))
 	Result = ConstantFoldConstantExpression(CE, TD);
       if(!Result) {
-	LPDEBUG("Failed to fold casting " << *(IntResult) << " to " << *(Ty) << "\n");
+	DEBUG(dbgs() << "Failed to fold casting " << *(IntResult) << " to " << *(Ty) << "\n");
 	return 0;
       }
       else {
@@ -2980,7 +2998,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
 
     uint64_t ECount = ATy->getNumElements();
     if(ECount == 0) {
-      LPDEBUG("Can't produce a constant array of 0 length\n");
+      DEBUG(dbgs() << "Can't produce a constant array of 0 length\n");
       return 0;
     }
 
@@ -2993,7 +3011,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
     uint64_t Offset = 0;
     for(uint64_t i = 0; i < ECount; ++i, Offset += ESize) {
 
-      Constant* NextE = constFromBytes(&(Bytes[Offset]), EType);
+      Constant* NextE = constFromBytes(&(Bytes[Offset]), EType, TD);
       if(!NextE)
 	return 0;
       Elems.push_back(NextE);
@@ -3007,7 +3025,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
 
     const StructLayout* SL = TD->getStructLayout(STy);
     if(!SL) {
-      LPDEBUG("Couldn't get struct layout for type " << *STy << "\n");
+      DEBUG(dbgs() << "Couldn't get struct layout for type " << *STy << "\n");
       return 0;
     }
     
@@ -3020,7 +3038,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
 
       const Type* EType = *EI;
       uint64_t EOffset = SL->getElementOffset(EIdx);
-      Constant* NextE = constFromBytes(&(Bytes[EOffset]), EType);
+      Constant* NextE = constFromBytes(&(Bytes[EOffset]), EType, TD);
       if(!NextE)
 	return 0;
       Elems.push_back(NextE);
@@ -3032,7 +3050,7 @@ Constant* LoadForwardAttempt::constFromBytes(unsigned char* Bytes, const Type* T
   }
   else {
 
-    LPDEBUG("Can't build a constant containing unhandled type " << (*Ty) << "\n");
+    DEBUG(dbgs() << "Can't build a constant containing unhandled type " << (*Ty) << "\n");
     return 0;
 
   }

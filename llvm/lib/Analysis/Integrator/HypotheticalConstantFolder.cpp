@@ -302,6 +302,10 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     }
 
+    // If this kills a return instruction, check if our retval just became defined:
+    if(isa<ReturnInst>(BB->getTerminator()))
+      queueTryEvaluateOwnCall();
+
   }
   
   if(isCertain) {

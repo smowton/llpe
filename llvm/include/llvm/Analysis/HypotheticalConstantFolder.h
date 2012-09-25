@@ -1196,13 +1196,10 @@ class LoadForwardAttempt : public LFAQueryable {
   // This happens when we're making proxy or sub-queries.
   const Type* getTargetTy();
 
-  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
   bool addPartialVal(PartialVal&);
   bool isComplete();
   ValCtx getResult();
 
-  Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize);
-  Constant* constFromBytes(unsigned char*, const Type*);
   uint64_t markPaddingBytes(bool*, const Type*);
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
@@ -1263,6 +1260,9 @@ class LFARMapping {
 
 };
 
+ Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
+ Constant* constFromBytes(unsigned char*, const Type*, TargetData*);
+  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
