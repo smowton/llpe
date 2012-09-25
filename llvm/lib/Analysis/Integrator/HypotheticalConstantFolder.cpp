@@ -143,15 +143,19 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
   // Check if this is the latch or an exit edge.
 
-  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || !L->contains(ToBB));
-
-  if(iterStatus == IterationStatusUnknown && isSpecialBranchTarget) {
-    getOrCreateNextIteration();
-    if(iterStatus == IterationStatusUnknown)
-      checkFinalIteration();
-  }
+  bool isExitEdge = !L->contains(ToBB);
+  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || isExitEdge);
 
   if(isSpecialBranchTarget) {
+    if(iterStatus == IterationStatusUnknown) {
+      getOrCreateNextIteration();
+      if(iterStatus == IterationStatusUnknown)
+	checkFinalIteration();
+    }
+    else if(iterStatus == IterationStatusFinal && isExitEdge) {
+      checkExitEdge(FromBB, ToBB);
+    }
+
     queueCFGBlockedOpens();
     return true;
   }
@@ -635,29 +639,47 @@ bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
 // Return value as above: true for "we've handled it" and false for "try constant folding"
 bool IntegrationAttempt::tryFoldCmpAgainstNull(CmpInst* CmpI, ValCtx& Improved) {
 
+  // Check for comparing an identified pointer against null.
   // Identified objects can never be null; resolve comparisons between them and null.
 
   Value* op0 = CmpI->getOperand(0);
   Value* op1 = CmpI->getOperand(1);
-  Constant* op0C = dyn_cast<Constant>(op0);
-  Constant* op1C = dyn_cast<Constant>(op1);
+  Constant* op0C = getConstReplacement(op0);
+  Constant* op1C = getConstReplacement(op1);
 
   const Type* Char = Type::getInt8Ty(CmpI->getContext());
   Constant* zero = ConstantInt::get(Char, 0);
   Constant* one = ConstantInt::get(Char, 1);
 
-  // Check for comparing an identified pointer against null.
-  if(op0C && op0C->isNullValue() && op1->getType()->isPointerTy() && !isUnresolved(op1)) {
-    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), zero, one, this->TD));
+  Constant* op0Arg = 0, *op1Arg = 0;
+
+  if(op0C) {
+    if(op0C->isNullValue())
+      op0Arg = zero;
+    else
+      op0Arg = one;
   }
-  else if(op1C && op1C->isNullValue() && op0->getType()->isPointerTy() && !isUnresolved(op0)) {
-    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), one, zero, this->TD));
+  else if(op0->getType()->isPointerTy() && !isUnresolved(op0)) {
+    op0Arg = one;
+  }
+
+  if(op1C) {
+    if(op1C->isNullValue())
+      op1Arg = zero;
+    else
+      op1Arg = one;
+  }
+  else if(op1->getType()->isPointerTy() && !isUnresolved(op1)) {
+    op1Arg = one;
+  }
+
+  if(op0Arg && op1Arg) {
+    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
+    return true;
   }
   else {
     return false;
   }
-
-  return true;
 
 }
 

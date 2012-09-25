@@ -479,10 +479,15 @@ void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
   // Only called if the exit edge is a local variant
   pass->queueCheckBlock(parent, BB);
 
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+}
 
-    pass->queueTryEvaluate(parent, BI);
-	
+void PeelIteration::checkExitEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  if(getEdgeScope(FromBB, ToBB) == L) {
+    queueCheckExitBlock(ToBB);
+  }
+  else {
+    LPDEBUG("Ignoring exit edge " << FromBB->getName() << " -> " << ToBB->getName() << " at this scope (invariant)\n");
   }
 
 }
@@ -495,13 +500,8 @@ void PeelIteration::checkFinalIteration() {
   if(edgeIsDead(L->getLoopLatch(), L->getHeader())) {
 
     for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
-
-      if(getEdgeScope(EI->first, EI->second) == L) {
-	queueCheckExitBlock(EI->second);
-      }
-      else {
-	LPDEBUG("Ignoring exit edge " << EI->first->getName() << " -> " << EI->second->getName() << " at this scope (invariant)\n");
-      }
+      
+      checkExitEdge(EI->first, EI->second);
 
     }
     

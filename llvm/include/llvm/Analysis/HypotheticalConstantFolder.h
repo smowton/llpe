@@ -946,6 +946,7 @@ public:
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
 
   void queueCheckExitBlock(BasicBlock* BB);
+  void checkExitEdge(BasicBlock*, BasicBlock*);
   void checkFinalIteration();
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
