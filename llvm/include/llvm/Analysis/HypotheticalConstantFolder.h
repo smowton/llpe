@@ -709,7 +709,7 @@ protected:
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   bool tryFoldOpenCmp(CmpInst* CmpI, ValCtx&);
-  bool tryFoldCmpAgainstNull(CmpInst* CmpI, ValCtx&);
+  bool tryFoldPointerCmp(CmpInst* CmpI, ValCtx&);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   void setNextUser(CallInst* CI, ValCtx U);

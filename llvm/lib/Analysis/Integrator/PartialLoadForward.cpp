@@ -200,7 +200,11 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAtte
   gep_type_iterator GTI = gep_type_begin(GEP);
   for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
        ++I, ++GTI) {
-    ConstantInt *OpC = dyn_cast_or_null<ConstantInt>(PtrCtx->getConstReplacement(*I));
+    ConstantInt *OpC;
+    if(PtrCtx)
+      OpC = dyn_cast_or_null<ConstantInt>(PtrCtx->getConstReplacement(*I));
+    else
+      OpC = dyn_cast<ConstantInt>(*I);
     if(!OpC)
       return make_vc(Ptr, PtrCtx);
   }
@@ -208,7 +212,11 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAtte
   GTI = gep_type_begin(GEP);
   for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
        ++I, ++GTI) {
-    ConstantInt *OpC = cast<ConstantInt>(PtrCtx->getConstReplacement(*I));
+    ConstantInt *OpC;
+    if(PtrCtx)
+      OpC = cast<ConstantInt>(PtrCtx->getConstReplacement(*I));
+    else
+      OpC = cast<ConstantInt>(*I);
     if (OpC->isZero()) continue;
     
     // Handle a struct and array indices which add their offset to the pointer.

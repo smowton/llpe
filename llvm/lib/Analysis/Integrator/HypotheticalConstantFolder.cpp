@@ -637,49 +637,74 @@ bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
 }
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldCmpAgainstNull(CmpInst* CmpI, ValCtx& Improved) {
+bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
-  // Check for comparing an identified pointer against null.
-  // Identified objects can never be null; resolve comparisons between them and null.
+  // Check for special cases of pointer comparison that we can understand:
 
   Value* op0 = CmpI->getOperand(0);
   Value* op1 = CmpI->getOperand(1);
-  Constant* op0C = getConstReplacement(op0);
-  Constant* op1C = getConstReplacement(op1);
+ 
+  if(!(op0->getType()->isPointerTy() && op1->getType()->isPointerTy()))
+    return false;
 
-  const Type* Char = Type::getInt8Ty(CmpI->getContext());
-  Constant* zero = ConstantInt::get(Char, 0);
-  Constant* one = ConstantInt::get(Char, 1);
+  Constant* op0C = dyn_cast<Constant>(getConstReplacement(op0));
+  Constant* op1C = dyn_cast<Constant>(getConstReplacement(op1));
+  int64_t op0Off, op1Off;
+  ValCtx op0O = GetBaseWithConstantOffset(op0, this, op0Off);
+  ValCtx op1O = GetBaseWithConstantOffset(op1, this, op1Off);
+
+  const Type* I64 = Type::getInt64Ty(CmpI->getContext());
+  Constant* zero = ConstantInt::get(I64, 0);
+  Constant* one = ConstantInt::get(I64, 1);
+  
+  // 1. Comparison between two null pointers, or a null pointer and a resolved pointer:
 
   Constant* op0Arg = 0, *op1Arg = 0;
-
-  if(op0C) {
-    if(op0C->isNullValue())
-      op0Arg = zero;
-    else
-      op0Arg = one;
-  }
-  else if(op0->getType()->isPointerTy() && !isUnresolved(op0)) {
+  if(op0C && op0C->isNullValue())
+    op0Arg = zero;
+  else if(isIdentifiedObject(op0O.first))
     op0Arg = one;
-  }
-
-  if(op1C) {
-    if(op1C->isNullValue())
-      op1Arg = zero;
-    else
-      op1Arg = one;
-  }
-  else if(op1->getType()->isPointerTy() && !isUnresolved(op1)) {
+  
+  if(op1C && op1C->isNullValue())
+    op1Arg = zero;
+  else if(isIdentifiedObject(op1O.first))
     op1Arg = one;
+
+  if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
+    
+    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
+    return true;   
+
   }
 
-  if(op0Arg && op1Arg) {
+  // 2. Comparison of pointers with a common base:
+
+  if(op0O == op1O) {
+
+    op0Arg = ConstantInt::get(I64, op0Off);
+    op1Arg = ConstantInt::get(I64, op1Off);
     Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
     return true;
+
   }
-  else {
-    return false;
+
+  // 3. Restricted comparison of pointers with a differing base: we can compare for equality only
+  // as we don't know memory layout at this stage.
+
+  if(isIdentifiedObject(op0O.first) && isIdentifiedObject(op1O.first) && op0O != op1O) {
+
+    if(CmpI->getPredicate() == CmpInst::ICMP_EQ) {
+      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return true;
+    }
+    else if(CmpI->getPredicate() == CmpInst::ICMP_NE) {
+      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return true;
+    }
+
   }
+
+  return false;
 
 }
 
@@ -859,7 +884,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
       // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
       else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
-	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldCmpAgainstNull(CmpI, Improved));
+	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved));
 
       }
 
