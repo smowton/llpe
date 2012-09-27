@@ -84,6 +84,12 @@ iii. Manually lowered memmove.os from llvm bitcode to an elf object. This is bec
 
 iv. Manually renamed the x86_64 implementations of the string functions to .S-disabled, causing the build scripts to pull in generic versions. This results in a bitcode strcpy etc which the integrator can understand. I couldn't just disable uclibc's assembly functions entirely since we need an ELF memcpy, memmove, memset (the three that llvm special-cases; see above).
 
+v. Disable the optimised-but-large versions of strlen et al because they use tricky pointer arithmetic that cases on the pointer's alignment.
+
+vi. I added an alternate entry point where the environment is given separate to argv, to make it easier to specialise one but not the other. Long term the answer is specifying the argv/env with greater flexibility to allow e.g. specialising for command-lines featuring at least one '-o' flag.
+
+vii. __uClibc_init featured some silly assembly which is designed to defeat optimising compilers that assume extern functions are non-null (not true if symbols are weak). I replaced these with normal tests; if this turns out to be a problem I'll fix LLVM's miscompilation instead.
+
 3. Fix dragonegg-2.8:
 
 Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
