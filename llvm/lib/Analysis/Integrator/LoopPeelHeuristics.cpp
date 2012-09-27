@@ -666,6 +666,9 @@ ValCtx InlineAttempt::tryGetReturnValue() {
   // we know the value if all the 'ret' instructions except one are dead,
   // and we know that instruction's operand.
 
+  if(F.getReturnType()->isVoidTy())
+    return VCNull;
+
   ValCtx returnVal = VCNull;
   bool foundReturnInst = false;
 

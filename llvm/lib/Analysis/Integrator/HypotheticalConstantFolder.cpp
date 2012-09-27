@@ -24,6 +24,7 @@
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -234,6 +235,59 @@ void IntegrationAttempt::queueCFGBlockedOpens() {
     
 }
 
+void IntegrationAttempt::checkSuccessors(BasicBlock* BB) {
+
+  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+
+    checkEdge(BB, *SI);
+
+  }
+
+}
+
+void IntegrationAttempt::markBlockCertain(BasicBlock* BB) {
+
+  LPDEBUG("Block " << BB->getName() << " is certain to execute. Queueing successors and calls.\n");
+
+  certainBlocks.insert(BB);
+    
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+      
+    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	
+      if(!getOrCreateInlineAttempt(CI))
+	tryPromoteOpenCall(CI);
+	
+    }
+
+  }
+
+  checkSuccessors(BB);
+
+}
+
+PostDominatorTree* IntegrationHeuristicsPass::getPostDomTree(Function* F) {
+
+  DenseMap<Function*, PostDominatorTree*>::iterator it = PDTs.find(F);
+  if(it != PDTs.end())
+    return it->second;
+  else {
+
+    PostDominatorTree* PDT = new PostDominatorTree();
+    PDT->runOnFunction(*F);
+    PDTs[F] = PDT;
+    return PDT;
+
+  }
+
+}
+
+PostDominatorTree* IntegrationAttempt::getPostDomTree() {
+
+  return pass->getPostDomTree(&F);
+
+}
+
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
@@ -317,15 +371,12 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   
   if(isCertain) {
 
-    LPDEBUG("Block is certain to execute. Queueing successors and calls.\n");
-    certainBlocks.insert(BB);
-    
-    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+    for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 
-      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-
-	if(!getOrCreateInlineAttempt(CI))
-	  tryPromoteOpenCall(CI);
+      BasicBlock* SB = DTN->getBlock();
+      if(LI[&F]->getLoopFor(SB) == getLoopContext()) {
+	
+	markBlockCertain(SB);
 
       }
 
@@ -335,15 +386,15 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   }
 
-  if(isDead || isCertain) {
+  if(isDead) {
 
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
       
-      if(isDead)
-	deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
-      checkEdge(BB, *SI);
+      deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
 
     }
+
+    checkSuccessors(BB);
 
   }
 

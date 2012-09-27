@@ -50,6 +50,7 @@ class IntegrationAttempt;
 class PtrToIntInst;
 class IntToPtrInst;
 class BinaryOperator;
+class PostDominatorTree;
 
 typedef struct { 
 
@@ -132,6 +133,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
 
+   DenseMap<Function*, PostDominatorTree*> PDTs;
+
    DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
 
    TargetData* TD;
@@ -187,6 +190,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void revertLoadsFromFoldedContexts();
    void retryLoadsFromFoldedContexts();
+
+   PostDominatorTree* getPostDomTree(Function*);
 
    // Caching text representations of instructions:
 
@@ -671,10 +676,13 @@ protected:
   bool shouldCheckBlock(BasicBlock* BB);
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) = 0;
   void checkBlock(BasicBlock* BB);
+  void checkSuccessors(BasicBlock* BB);
+  void markBlockCertain(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
   void checkLocalEdge(BasicBlock*, BasicBlock*);
   virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
+  PostDominatorTree* getPostDomTree();
   
   // Child (inlines, peels) management
 
