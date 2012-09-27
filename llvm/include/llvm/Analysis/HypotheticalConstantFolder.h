@@ -200,7 +200,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    void printValue(raw_ostream& ROS, const MemDepResult& Res);
    void disableValueCache();
 
-   void loadEnvironment(Module&, std::string&);
+   Constant* loadEnvironment(Module&, std::string&);
+   void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
+   void parseArgs(InlineAttempt* RootIA, Function& F);
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 

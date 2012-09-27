@@ -17,7 +17,7 @@
 using namespace llvm;
 
 // Fetch an environment (newline-delimited key=value settings) from path and use it as @__environ.
-void IntegrationHeuristicsPass::loadEnvironment(Module& M, std::string& path) {
+Constant* IntegrationHeuristicsPass::loadEnvironment(Module& M, std::string& path) {
 
   std::string error;
   MemoryBuffer* MB = MemoryBuffer::getFile(path, &error);
@@ -96,13 +96,6 @@ void IntegrationHeuristicsPass::loadEnvironment(Module& M, std::string& path) {
   Constant* gepArgs[] = { Zero, Zero };
   Constant* EnvPtrsPtr = ConstantExpr::getGetElementPtr(EnvPtrsG, gepArgs, 2);
 
-  GlobalVariable* RealEnv = M.getGlobalVariable("__environ", true);
-  if(!RealEnv) {
-
-    errs() << "Source file did not contain a global __environ!\n";
-    exit(1);
-
-  }
-  RealEnv->setInitializer(EnvPtrsPtr);
+  return EnvPtrsPtr;
 
 }

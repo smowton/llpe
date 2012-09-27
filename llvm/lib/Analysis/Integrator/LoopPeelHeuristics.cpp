@@ -43,6 +43,7 @@
 #include <string>
 #include <algorithm>
 
+#include <stdlib.h>
 #include <fcntl.h> // For O_RDONLY et al
 #include <unistd.h>
 #include <sys/types.h>
@@ -56,7 +57,8 @@ char IntegrationHeuristicsPass::ID = 0;
 
 static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
-static cl::opt<std::string> EnvFile("spec-env", cl::init(""));
+static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
+static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -3579,17 +3581,151 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->commit();
 }
 
+static void dieEnvUsage() {
+
+  errs() << "--spec-env must have form N,filename where N is an integer\n";
+  exit(1);
+
+}
+
+static void dieSpecUsage() {
+
+  errs() << "--spec-param must have form N,param-spec where N is an integer\n";
+  exit(1);
+
+}
+
+static bool parseIntCommaString(const std::string& str, long& idx, std::string& rest) {
+
+  size_t splitIdx = str.find(',');
+
+  if(splitIdx == std::string::npos || splitIdx == 0 || splitIdx == EnvFileAndIdx.size() - 1) {
+    return false;
+  }
+  
+  rest = str.substr(splitIdx + 1);
+  std::string idxstr = str.substr(0, splitIdx);
+  char* IdxEndPtr;
+  idx = strtol(idxstr.c_str(), &IdxEndPtr, 10);
+  
+  if(IdxEndPtr - idxstr.c_str() != (int64_t)idxstr.size()) {
+    return false;
+  }
+  
+  return true;
+
+}
+
+void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val) {
+
+  const Type* Target = F.getFunctionType()->getParamType(Idx);
+
+  if(Val->getType() != Target) {
+
+    errs() << "Type mismatch: constant " << *Val << " supplied for parameter of type " << *Target << "\n";
+    exit(1);
+
+  }
+
+  Function::arg_iterator Arg = F.arg_begin();
+  for(long i = 0; i < Idx; ++i)
+    ++Arg;
+
+  IA->setReplacement(Arg, const_vc(Val));
+  queueTryEvaluate(IA, Arg);
+
+}
+
+void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
+
+  if(EnvFileAndIdx != "") {
+
+    long idx;
+    std::string EnvFile;
+    if(!parseIntCommaString(EnvFileAndIdx, idx, EnvFile))
+      dieEnvUsage();   
+
+    Constant* Env = loadEnvironment(*(F.getParent()), EnvFile);
+    setParam(RootIA, F, idx, Env);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = SpecialiseParams.begin(), ArgE = SpecialiseParams.end(); ArgI != ArgE; ++ArgI) {
+
+    long idx;
+    std::string Param;
+    if(!parseIntCommaString(*ArgI, idx, Param))
+      dieSpecUsage();
+
+    const Type* ArgTy = F.getFunctionType()->getParamType(idx);
+    
+    if(ArgTy->isIntegerTy()) {
+
+      char* end;
+      int64_t arg = strtoll(Param.c_str(), &end, 10);
+      if(end != (Param.c_str() + Param.size())) {
+
+	errs() << "Couldn't parse " << Param << " as in integer\n";
+	exit(1);
+
+      }
+
+      Constant* ArgC = ConstantInt::getSigned(ArgTy, arg);
+      setParam(RootIA, F, idx, ArgC);
+
+    }
+    else if(const PointerType* ArgTyP = dyn_cast<PointerType>(ArgTy)) {
+
+      const Type* StrTy = Type::getInt8PtrTy(F.getContext());
+      const Type* ElemTy = ArgTyP->getElementType();
+      
+      if(ArgTyP == StrTy) {
+
+	Constant* Str = ConstantArray::get(F.getContext(), Param);
+	Constant* GStr = new GlobalVariable(Str->getType(), true, GlobalValue::PrivateLinkage, Str, "specstr");
+	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
+	Constant* GEPArgs[] = { Zero, Zero };
+	Constant* StrPtr = ConstantExpr::getGetElementPtr(GStr, GEPArgs, 2);
+	setParam(RootIA, F, idx, StrPtr);
+
+      }
+      else if(ElemTy->isFunctionTy()) {
+
+	Function* Found = F.getParent()->getFunction(Param);
+	if(!Found) {
+
+	  errs() << "Couldn't find a function named " << Param << "\n";
+	  exit(1);
+
+	}
+
+	setParam(RootIA, F, idx, Found);
+
+      }
+      else {
+
+	errs() << "Setting pointers other than char* not supported yet\n";
+	exit(1);
+
+      }
+
+    }
+    else {
+
+      errs() << "Argument type " << *(ArgTy) << " not supported yet\n";
+      exit(1);
+
+    }
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
   AA = &getAnalysis<AliasAnalysis>();
   
-  if(EnvFile != "") {
-
-    loadEnvironment(M, EnvFile);
-
-  }
-
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
     if(!MI->isDeclaration()) {
@@ -3620,6 +3756,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   queueCheckBlock(IA, &(F.getEntryBlock()));
   IA->queueInitialWork();
+
+  parseArgs(IA, F);
 
   runQueue();
 
