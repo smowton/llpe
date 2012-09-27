@@ -229,6 +229,8 @@ Constant* llvm::getConstReplacement(Value* V, IntegrationAttempt* Ctx) {
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
   ValCtx Replacement = Ctx->getReplacement(V);
+  if(Replacement.isPtrAsInt())
+    return 0;
   if(Constant* C = dyn_cast<Constant>(Replacement.first))
     return C;
   return 0;
@@ -731,7 +733,7 @@ bool IntegrationAttempt::hasParent() {
 
 bool IntegrationAttempt::isRootMainCall() {
 
-  return (!this->parent) && F.getName() == "main";
+  return (!this->parent) && F.getName() == RootFunctionName;
 
 }
 
@@ -2793,6 +2795,13 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const
       DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
       return 0;
     }
+  }
+
+  if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
+
+    // Wholly subsumed within a zeroinitialiser:
+    return Constant::getNullValue(Target);
+
   }
 
   uint64_t StartE, StartOff, EndE, EndOff;

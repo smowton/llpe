@@ -11,6 +11,7 @@
 #include "llvm/Value.h"
 #include "llvm/Constant.h"
 
+#include <limits.h>
 #include <string>
 #include <vector>
 
@@ -46,8 +47,23 @@ class TargetData;
 class AliasAnalysis;
 class Loop;
 class IntegrationAttempt;
+class PtrToIntInst;
+class IntToPtrInst;
+class BinaryOperator;
 
-typedef struct { Value* first; IntegrationAttempt* second; } ValCtx;
+typedef struct { 
+
+  Value* first; 
+  IntegrationAttempt* second;
+  int64_t offset;
+
+  static const int64_t noOffset = LLONG_MAX;
+
+  bool isPtrAsInt() {
+    return offset != noOffset;
+  }
+
+} ValCtx;
 
 inline bool operator==(ValCtx V1, ValCtx V2) {
   return V1.first == V2.first && V1.second == V2.second;
@@ -214,9 +230,9 @@ raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
 
-inline ValCtx make_vc(Value* V, IntegrationAttempt* H) {
+inline ValCtx make_vc(Value* V, IntegrationAttempt* H, uint64_t Off = ValCtx::noOffset) {
 
-  ValCtx newCtx = {V, H};
+  ValCtx newCtx = {V, H, Off};
   return newCtx;
 
 }
@@ -645,6 +661,11 @@ protected:
 
   void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
 
+  bool tryFoldPointerCmp(CmpInst* CmpI, ValCtx&);
+  ValCtx tryFoldPtrToInt(Instruction*);
+  ValCtx tryFoldIntToPtr(Instruction*);
+  bool tryFoldPtrAsIntOp(BinaryOperator*, ValCtx&);
+
   // CFG analysis:
 
   bool shouldCheckBlock(BasicBlock* BB);
@@ -709,7 +730,6 @@ protected:
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   bool tryFoldOpenCmp(CmpInst* CmpI, ValCtx&);
-  bool tryFoldPointerCmp(CmpInst* CmpI, ValCtx&);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   void setNextUser(CallInst* CI, ValCtx U);

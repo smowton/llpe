@@ -287,6 +287,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 	    uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
 	    uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
 	    uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
+	    LPDEBUG("Read offset is " << ReadOffset << "\n");
 	    return PartialVal::getPartial(0, FirstNotDef, GVC, ReadOffset);
 
 	  }

@@ -69,11 +69,18 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
 
   if(isa<Constant>(V.first))
     return true;
+
+  if(V.isPtrAsInt())
+    return true;
   
   if(V.first->getType()->isPointerTy()) {
     
     ValCtx O = V.second->getUltimateUnderlyingObject(V.first);
-    if(isIdentifiedObject(O.first))
+    // Reject forwarding expressions based on constant pointers because this means we're something like %1 in:
+    // %0 = (some pointer-typed expression that resolves to a constant (so either null or a constexpr of a global))
+    // %1 = cast or gep of %0, ...
+    // This means %1 will evaluate to a constexpr; we should reconsider at that time.
+    if(isIdentifiedObject(O.first) && !isa<Constant>(O.first))
       return true;
 
   }
@@ -712,6 +719,152 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
 }
 
+ValCtx IntegrationAttempt::tryFoldPtrToInt(Instruction* PII) {
+
+  Value* Arg = PII->getOperand(0);
+  ValCtx ArgRep = getReplacement(Arg);
+  if(shouldForwardValue(ArgRep)) {
+   
+    return make_vc(ArgRep.first, ArgRep.second, 0);
+
+  }
+  else {
+
+    return VCNull;
+
+  }
+
+}
+
+ValCtx IntegrationAttempt::tryFoldIntToPtr(Instruction* IPI) {
+
+  Value* Arg = IPI->getOperand(0);
+  ValCtx ArgRep = getReplacement(Arg);
+  
+  if(ArgRep.offset == 0) {
+
+    return make_vc(ArgRep.first, ArgRep.second);
+
+  }
+  else {
+
+    // Could do better: search for a live GEP, or accept pointer-with-offset as a value replacement everywhere,
+    // expanding to GEPs as necessary at the output stage.
+    return VCNull;
+
+  }
+
+}
+
+bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved) {
+
+  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub)
+    return false;
+
+  ValCtx Op0 = getReplacement(BOp->getOperand(0));
+  ValCtx Op1 = getReplacement(BOp->getOperand(1));
+
+  bool Op0Ptr = Op0.isPtrAsInt();
+  bool Op1Ptr = Op1.isPtrAsInt();
+
+  if((!Op0Ptr) && (!Op1Ptr))
+    return false;
+
+  if(BOp->getOpcode() == Instruction::Add) {
+  
+    if(Op0Ptr && Op1Ptr)
+      return false;
+
+    ValCtx PtrV = Op0Ptr ? Op0 : Op1;
+    ConstantInt* NumC = dyn_cast<ConstantInt>(Op0Ptr ? Op1.first : Op0.first);
+    
+    if(!NumC)
+      return false;
+
+    Improved = make_vc(PtrV.first, PtrV.second, PtrV.offset + NumC->getSExtValue());
+    return true;
+
+  }
+  else if(BOp->getOpcode() == Instruction::Sub) {
+
+    if(!Op0Ptr)
+      return false;
+
+    if(Op1Ptr) {
+
+      int64_t Op0Off = 0, Op1Off = 0;
+      ValCtx Op0Base = GetBaseWithConstantOffset(Op0.first, Op0.second, Op0Off);
+      ValCtx Op1Base = GetBaseWithConstantOffset(Op1.first, Op1.second, Op1Off);
+
+      if(Op0Base.first == Op1Base.first && Op0Base.second == Op1Base.second) {
+
+	// Subtracting pointers with a common base.
+	Improved = const_vc(ConstantInt::getSigned(BOp->getType(), (Op0.offset + Op0Off) - (Op1.offset + Op1Off)));
+	return true;
+
+      }
+
+    }
+    else {
+
+      if(ConstantInt* Op1I = dyn_cast<ConstantInt>(Op1.first)) {
+
+	// Subtract int from pointer:
+	Improved = make_vc(Op0.first, Op0.second, Op0.offset - Op1I->getSExtValue());
+	return true;
+
+      }
+
+    }
+
+  }
+  else if(BOp->getOpcode() == Instruction::And) {
+
+    // Common technique to discover a pointer's alignment -- and it with a small integer.
+    // Answer if we can.
+
+    if((!Op0Ptr) || Op1Ptr)
+      return false;
+
+    ConstantInt* MaskC = dyn_cast<ConstantInt>(Op1.first);
+    if(!MaskC)
+      return false;
+
+    // Find the offset due to GEP instructions before inttoptr was called.
+    int64_t Offset;
+    ValCtx PtrBase = GetBaseWithConstantOffset(Op0.first, Op0.second, Offset);
+    assert((PtrBase != VCNull) && "Couldn't resolve known pointer?");
+
+    Offset += Op0.offset;
+
+    if(Offset < 0)
+      return false;
+
+    uint64_t UOff = (uint64_t)Offset;
+
+    // Try to get alignment:
+
+    unsigned Align = 0;
+    if(GlobalValue* GV = dyn_cast<GlobalValue>(PtrBase.first))
+      Align = GV->getAlignment();
+    else if(AllocaInst* AI = dyn_cast<AllocaInst>(PtrBase.first))
+      Align = AI->getAlignment();
+      
+    uint64_t Mask = MaskC->getLimitedValue();
+	
+    if(Align > Mask) {
+
+      Improved = const_vc(ConstantInt::get(BOp->getType(), Mask & UOff));
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
@@ -866,20 +1019,38 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
       else if(CastInst* CI = dyn_cast<CastInst>(I)) {
 
-	const Type* SrcTy = CI->getSrcTy();
-	const Type* DestTy = CI->getDestTy();
-	
-	ValCtx SrcVC = getReplacement(CI->getOperand(0));
-	if(SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)
-	   && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
-	   && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+	if(I->getOpcode() == Instruction::PtrToInt) {
 
-	  Improved = SrcVC;
+	  Improved = tryFoldPtrToInt(I);
+	  tryConstFold = false;
 
 	}
+
+	else if(I->getOpcode() == Instruction::IntToPtr) {
+
+	  Improved = tryFoldIntToPtr(I);
+	  tryConstFold = false;
+	  
+	}
+
 	else {
 
-	  tryConstFold = true;
+	  const Type* SrcTy = CI->getSrcTy();
+	  const Type* DestTy = CI->getDestTy();
+	
+	  ValCtx SrcVC = getReplacement(CI->getOperand(0));
+	  if(SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)
+	     && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
+	     && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+
+	    Improved = SrcVC;
+
+	  }
+	  else {
+
+	    tryConstFold = true;
+
+	  }
 
 	}
 
@@ -890,6 +1061,12 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved));
 
+      }
+
+      else if(BinaryOperator* BOp = dyn_cast<BinaryOperator>(I)) {
+
+	tryConstFold = !tryFoldPtrAsIntOp(BOp, Improved);
+	    
       }
 
       else {
