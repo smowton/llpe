@@ -1241,7 +1241,7 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
       }
       else {
 
-	Function::arg_iterator it = CI->getCalledFunction()->arg_begin();
+	Function::arg_iterator it = getCalledFunction(CI)->arg_begin();
 	for(int i = 0; i < argNumber; ++i)
 	  ++it;
 
@@ -1512,23 +1512,32 @@ public:
 
       if(V == CI->getCalledValue()) {
 	maybeLive = true;
+	return;
       }
       else {
 
-	Function::arg_iterator it = CI->getCalledFunction()->arg_begin();
-	for(unsigned i = 0; i < CI->getNumArgOperands(); ++i, ++it) {
+	Function* CalledF = Ctx->getCalledFunction(CI);
 
-	  if(CI->getArgOperand(i) == V) {
+	if(CalledF) {
+	  Function::arg_iterator it = CalledF->arg_begin();
+	  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i, ++it) {
 
-	    if(!IA->valueWillBeRAUWdOrDeleted(&*it)) {
+	    if(CI->getArgOperand(i) == V) {
 
-	      maybeLive = true;
-	      return;
+	      if(!IA->valueWillBeRAUWdOrDeleted(&*it)) {
+
+		maybeLive = true;
+		return;
+
+	      }
 
 	    }
 
 	  }
-
+	}
+	else {
+	  maybeLive = true;
+	  return;
 	}
 
       }

@@ -216,6 +216,8 @@ ModulePass *createPartialInliningPass();
 ///
 ModulePass *createRaiseOpenCallsPass();
 
+Pass* createDefineExtsPass();
+
 } // End llvm namespace
 
 #endif

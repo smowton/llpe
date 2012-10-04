@@ -29,7 +29,7 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
   
     if(Function* F = CI->getCalledFunction()) {
 
-      if(F->getName() == "__errno_location") {
+      if(F && F->getName() == "__errno_location") {
 	return LibCallLocationInfo::Yes;
       }
 

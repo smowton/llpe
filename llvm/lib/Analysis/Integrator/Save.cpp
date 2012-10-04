@@ -180,8 +180,8 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     // This both inputs argument values and returns a map from instructions
     // as we know them to instructions in the inlined function body.
 
-    Function* Called = it->first->getCalledFunction();
-    assert(Called && "Indirect call inlined?!");
+    Function* Called = getCalledFunction(it->first);
+    assert(Called && "Unresolved call inlined?!");
 
     // As we have already RAUW'd constants, a constant argument will be picked up by the inliner
     // if appropriate. Otherwise it will get caught up in the phase 2 pointer resolution.

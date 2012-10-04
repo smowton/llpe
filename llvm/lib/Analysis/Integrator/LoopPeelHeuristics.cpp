@@ -245,6 +245,12 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 
 }
 
+Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
+
+  return dyn_cast_or_null<Function>(getConstReplacement(CI->getCalledValue()));
+
+}
+
 // Only ever called on things that belong in this scope, thanks to shouldIgnoreBlock et al.
 void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
 
@@ -432,7 +438,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
   if(InlineAttempt* IA = getInlineAttempt(CI))
     return IA;
 
-  if(Function* FCalled = CI->getCalledFunction()) {
+  if(Function* FCalled = getCalledFunction(CI)) {
 
     if((!FCalled->isDeclaration()) && (!FCalled->isVarArg())) {
 
@@ -456,6 +462,9 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
 	// Recheck any loads that were clobbered by this call
 	queueWorkBlockedOn(CI);
+
+	// Try reading the return value right away, in case it's constant.
+	pass->queueTryEvaluate(this, CI);
 
 	return IA;
 
@@ -482,6 +491,9 @@ void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
 
   // Only called if the exit edge is a local variant
   pass->queueCheckBlock(parent, BB);
+
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(BI); ++BI)
+    pass->queueTryEvaluate(parent, BI);
 
 }
 
@@ -1423,8 +1435,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
         FT->getParamType(1)->isIntegerTy(32) &&
 	FT->isVarArg()) {
 
-      ValCtx VCalled = getReplacement(CI->getCalledValue());
-      if(Function* FCalled = dyn_cast<Function>(VCalled.first)) {
+      if(Function* FCalled = getCalledFunction(CI)) {
 
 	if(FCalled == SysOpen) {
 
@@ -1644,7 +1655,9 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
 	  bool callMayUseFD = false;
 
-	  if(OS.FDEscapes && !CI->getCalledFunction()->doesNotAccessMemory())
+	  Function* calledF = getCalledFunction(CI);
+
+	  if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
 	    callMayUseFD = true;
 
 	  if(!callMayUseFD) {
@@ -1826,7 +1839,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   isVfsCall = false;
   shouldRequeue = false;
 
-  Function* Callee = VFSCall->getCalledFunction();
+  Function* Callee = getCalledFunction(VFSCall);
   if (!Callee->isDeclaration() || !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage())) {
     // Call to an internal function. Our caller should handle this.
     return false;
@@ -2820,6 +2833,13 @@ ValCtx llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Ty
       return getAsPtrAsInt(const_vc(FromC), Target);
     DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
     return VCNull;
+  }
+
+  if(Offset + TargetSize > FromSize) {
+
+    DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
+    return VCNull;
+
   }
 
   if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
