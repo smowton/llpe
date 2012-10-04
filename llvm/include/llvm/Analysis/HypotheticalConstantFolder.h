@@ -1290,9 +1290,10 @@ class LFARMapping {
 
 };
 
- Constant* extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
+ ValCtx extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
  Constant* constFromBytes(unsigned char*, const Type*, TargetData*);
-  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
+ bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
+ bool allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData*);
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);

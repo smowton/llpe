@@ -863,10 +863,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     if(GV->isConstant()) {
 
       uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
-      if(Constant* Extracted = extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD)) {
-	Result = const_vc(Extracted);
+      Result = extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD);
+      if(Result != VCNull)
 	return true;
-      }
 
       unsigned char* buf = (unsigned char*)alloca(LoadSize);
       memset(buf, 0, LoadSize);
@@ -2788,24 +2787,45 @@ bool llvm::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
 
 }
 
-Constant* llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
+bool llvm::allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData* TD) {
+
+  return From->isPointerTy() && To->isIntegerTy() && TD->getTypeSizeInBits(To) >= TD->getTypeSizeInBits(From);
+
+}
+
+static ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target) {
+
+  assert(VC.first->getType()->isPointerTy());
+
+  if(Constant* C = dyn_cast<Constant>(VC.first)) {
+
+    if(C->isNullValue())
+      return const_vc(Constant::getNullValue(Target));
+
+  }
+
+  return make_vc(VC.first, VC.second, 0);
+
+}
+
+ValCtx llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
 
   const Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
 
   if(Offset == 0 && TargetSize == FromSize) {
-    if(allowTotalDefnImplicitCast(Target, FromType))
-      return FromC;
-    else {
-      DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
-      return 0;
-    }
+    if(allowTotalDefnImplicitCast(FromType, Target))
+      return const_vc(FromC);
+    else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
+      return getAsPtrAsInt(const_vc(FromC), Target);
+    DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
+    return VCNull;
   }
 
   if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
 
     // Wholly subsumed within a zeroinitialiser:
-    return Constant::getNullValue(Target);
+    return const_vc(Constant::getNullValue(Target));
 
   }
 
@@ -2832,7 +2852,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const
     const StructLayout* SL = TD->getStructLayout(CS->getType());
     if(!SL) {
       DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
-      return 0;
+      return VCNull;
     }
 
     StartE = SL->getElementContainingOffset(Offset);
@@ -2853,16 +2873,27 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const
     DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
   }
 
-  return 0;
+  return VCNull;
 
 }
 
 bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
 
-  if(PV.isTotal() && allowTotalDefnImplicitCast(targetType, PV.TotalVC.first->getType()) && !partialBuf) {
-    LPDEBUG("Accepting " << itcache(PV.TotalVC) << " as a total definition\n");
-    Result = PV.TotalVC;
-    return true;
+  if(PV.isTotal() && !partialBuf) {
+
+    const Type* sourceType = PV.TotalVC.first->getType();
+
+    if(allowTotalDefnImplicitCast(sourceType, targetType)) {
+      LPDEBUG("Accepting " << itcache(PV.TotalVC) << " as a total definition\n");
+      Result = PV.TotalVC;
+      return true;
+    }
+    else if(allowTotalDefnImplicitPtrToInt(sourceType, targetType, TD)) {
+      LPDEBUG("Accepting " << itcache(PV.TotalVC) << " implicit ptrtoint to " << *(targetType) << "\n");
+      Result = getAsPtrAsInt(PV.TotalVC, targetType);
+      return true;
+    }
+
   }
 
   // Try to salvage a total definition from a partial if this is a load clobbered by a store
@@ -2879,9 +2910,9 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
   if(SalvageC && (PV.isTotal() || (PV.FirstDef == 0 && PV.FirstNotDef == LoadSize)) && !partialBuf) {
     uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
 
-    if(Constant* Extracted = extractAggregateMemberAt(SalvageC, Offset, targetType, LoadSize, TD)) {
-      LPDEBUG("Successfully extracted an entire field: " << *Extracted << "\n");
-      Result = const_vc(Extracted);
+    Result = extractAggregateMemberAt(SalvageC, Offset, targetType, LoadSize, TD);
+    if(Result != VCNull) {
+      LPDEBUG("Successfully extracted an entire field: " << itcache(Result) << "\n");
       return true;
     }
   }
@@ -3632,7 +3663,7 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
     ++Arg;
 
   IA->setReplacement(Arg, const_vc(Val));
-  queueTryEvaluate(IA, Arg);
+  IA->investigateUsers(Arg);
 
 }
 
@@ -3691,11 +3722,22 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       }
       else if(ElemTy->isFunctionTy()) {
 
-	Function* Found = F.getParent()->getFunction(Param);
+	Constant* Found = F.getParent()->getFunction(Param);
+
 	if(!Found) {
 
-	  errs() << "Couldn't find a function named " << Param << "\n";
-	  exit(1);
+	  // Check for a zero value, indicating a null pointer.
+	  char* end;
+	  int64_t arg = strtoll(Param.c_str(), &end, 10);
+
+	  if(arg || end != Param.c_str() + Param.size()) {
+
+	    errs() << "Couldn't find a function named " << Param << "\n";
+	    exit(1);
+
+	  }
+
+	  Found = Constant::getNullValue(ArgTyP);
 
 	}
 

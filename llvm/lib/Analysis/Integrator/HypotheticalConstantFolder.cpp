@@ -706,14 +706,15 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   Value* op0 = CmpI->getOperand(0);
   Value* op1 = CmpI->getOperand(1);
  
-  if(!(op0->getType()->isPointerTy() && op1->getType()->isPointerTy()))
-    return false;
-
   Constant* op0C = dyn_cast<Constant>(getConstReplacement(op0));
   Constant* op1C = dyn_cast<Constant>(getConstReplacement(op1));
   int64_t op0Off, op1Off;
   ValCtx op0O = GetBaseWithConstantOffset(op0, this, op0Off);
   ValCtx op1O = GetBaseWithConstantOffset(op1, this, op1Off);
+
+  // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
+  // against an integer null. The code for case 1 works for these; all other cases require that both
+  // values resolved to pointers.
 
   const Type* I64 = Type::getInt64Ty(CmpI->getContext());
   Constant* zero = ConstantInt::get(I64, 0);
@@ -724,12 +725,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(isIdentifiedObject(op0O.first))
+  else if(op0O.first->getType()->isPointerTy() && isIdentifiedObject(op0O.first))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(isIdentifiedObject(op1O.first))
+  else if(op1O.first->getType()->isPointerTy() && isIdentifiedObject(op1O.first))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
@@ -739,9 +740,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
   }
 
+  if(!(op0O.first->getType()->isPointerTy() && op1O.first->getType()->isPointerTy()))
+    return false;
+
   // 2. Comparison of pointers with a common base:
 
-  if(op0O == op1O) {
+  if(op0O.first == op1O.first && op0O.second == op1O.second) {
 
     op0Arg = ConstantInt::get(I64, op0Off);
     op1Arg = ConstantInt::get(I64, op1Off);

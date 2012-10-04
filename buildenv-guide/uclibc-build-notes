@@ -86,7 +86,7 @@ iv. Manually renamed the x86_64 implementations of the string functions to .S-di
 
 v. Disable the optimised-but-large versions of strlen et al because they use tricky pointer arithmetic that cases on the pointer's alignment.
 
-vi. I added an alternate entry point where the environment is given separate to argv, to make it easier to specialise one but not the other. Long term the answer is specifying the argv/env with greater flexibility to allow e.g. specialising for command-lines featuring at least one '-o' flag.
+vi. I added an alternate entry point where the environment is given separate to argv, to make it easier to specialise one but not the other. Long term the answer is specifying the argv/env with greater flexibility to allow e.g. specialising for command-lines featuring at least one '-o' flag. The alt entry point also takes a main function with the more usual i32 (i32, i8**) type rather than the given i32 (i32, i8**, i8**) to avoid having to write support for function type puns into the integrator (this one works out in practice thanks to a caller-cleans-up convention). The entry point is called __uClibc_init_spec and must be flagged to the linker using a command-line like -Wl,--plugin-opt,also-emit-llvm -Wl,-u,__uClibc_main_spec (the -u flag marks a symbol as undefined, similar to how main() is always needed).
 
 vii. __uClibc_init featured some silly assembly which is designed to defeat optimising compilers that assume extern functions are non-null (not true if symbols are weak). I replaced these with normal tests; if this turns out to be a problem I'll fix LLVM's miscompilation instead.
 

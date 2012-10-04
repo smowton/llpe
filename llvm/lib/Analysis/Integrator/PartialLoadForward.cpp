@@ -189,8 +189,12 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAtte
       ValCtx NewVC = PtrCtx->getReplacement(Ptr);
       if(NewVC == make_vc(Ptr, PtrCtx))
 	return NewVC;
-      else
-	return GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+      else {
+	ValCtx Ret = GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
+	if(NewVC.isPtrAsInt())
+	  Offset += Ret.offset;
+	return Ret;
+      }
     }
     else {
       return make_vc(Ptr, PtrCtx);
