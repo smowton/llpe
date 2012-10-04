@@ -1003,10 +1003,10 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	    BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	    if(shouldCheckEdge(TI->getParent(), thisTarget)) {
+	    if(thisTarget != takenTarget)
+	      setEdgeDead(TI->getParent(), thisTarget);
 
-	      if(thisTarget != takenTarget)
-		setEdgeDead(TI->getParent(), thisTarget);
+	    if(shouldCheckEdge(TI->getParent(), thisTarget)) {
 
 	      checkEdge(TI->getParent(), thisTarget);
 
