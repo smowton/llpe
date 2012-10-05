@@ -680,6 +680,7 @@ protected:
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) = 0;
   void checkBlock(BasicBlock* BB);
   void checkSuccessors(BasicBlock* BB);
+  void checkBlockPHIs(BasicBlock*);
   void markBlockCertain(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);

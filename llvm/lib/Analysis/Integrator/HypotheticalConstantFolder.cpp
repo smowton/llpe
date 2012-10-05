@@ -193,6 +193,17 @@ void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
 }
 
+void IntegrationAttempt::checkBlockPHIs(BasicBlock* BB) {
+
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
+    
+    if(shouldTryEvaluate(BI))
+      pass->queueTryEvaluate(this, BI);
+
+  }
+
+}
+
 void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, const Loop* ScopeL) {
 
   const Loop* MyScope = getLoopContext();
@@ -239,7 +250,9 @@ void IntegrationAttempt::checkSuccessors(BasicBlock* BB) {
 
   for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-    checkEdge(BB, *SI);
+    if(shouldCheckEdge(BB, *SI))
+      checkEdge(BB, *SI);
+    checkBlockPHIs(*SI);
 
   }
 
@@ -300,7 +313,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     DEBUG(dbgs() << "\n");
   }
 
-  // Check whether this block has become dead or certain, and queue its PHIs for checking if appropriate.
+  // Check whether this block has become dead or certain
   
   bool isDead = true;
   bool isCertain = true;
@@ -395,19 +408,6 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     }
 
     checkSuccessors(BB);
-
-  }
-
-  if(!isDead) {
-
-    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
-
-      pass->queueTryEvaluate(this, BI);
-
-    }
-
-  }
-  else {
 
     queueCFGBlockedLoads();
 
@@ -1003,19 +1003,13 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	    BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	    if(thisTarget != takenTarget)
+	    if(thisTarget != takenTarget) {
 	      setEdgeDead(TI->getParent(), thisTarget);
+	      checkBlockPHIs(thisTarget);
+	    }
 
-	    if(shouldCheckEdge(TI->getParent(), thisTarget)) {
-
+	    if(shouldCheckEdge(TI->getParent(), thisTarget))
 	      checkEdge(TI->getParent(), thisTarget);
-
-	    }
-	    else {
-
-	      LPDEBUG("Branch/switch potential target " << thisTarget->getName() << " fate already known\n");
-
-	    }
 
 	  }
 

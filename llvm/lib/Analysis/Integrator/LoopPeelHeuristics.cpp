@@ -491,9 +491,7 @@ void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
 
   // Only called if the exit edge is a local variant
   pass->queueCheckBlock(parent, BB);
-
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(BI); ++BI)
-    pass->queueTryEvaluate(parent, BI);
+  parent->checkBlockPHIs(BB);
 
 }
 
@@ -554,6 +552,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   BasicBlock* Header = L->getHeader();
    
   pass->queueCheckBlock(NewIter, L->getHeader());
+  NewIter->checkBlockPHIs(L->getHeader());
  
   for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
@@ -1250,7 +1249,7 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
     return true;
   }
   else {
-    return Result.isDef();
+    return Result.isDef() || Result.isClobber();
   }
 
 }

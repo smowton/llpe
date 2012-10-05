@@ -388,9 +388,12 @@ namespace {
 
     bool GEPHasAllZeroIndices(ValCtx GEPOp);
 
-    ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset);
-
-    Value* getUnderlyingObject(ValCtx VIn, bool& isOffset);
+    // == getUltimateUnderlyingObject(VC, _, true)
+    ValCtx getFirstOffset(ValCtx);
+		  
+    // idOnly means that we won't walk through GEP instructions that offset the pointer.
+    ValCtx getUltimateUnderlyingObject(ValCtx, bool& isOffset, bool idOnly = false);
+    Value* getUnderlyingObject(ValCtx VIn, bool& isOffset, bool idOnly = false);
 
     ValCtx getReplacement(const ValCtx);
     Constant* getConstReplacement(const ValCtx);
@@ -1138,7 +1141,7 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
 
 // A cowardly duplication of Value::getUnderlyingObject, to avoid potentially screwups
 // in modifying Value, which is used throughout LLVM.
-Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset) {
+Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset, bool idOnly) {
   
   unsigned MaxLookup = 10;
   if (!VIn.first->getType()->isPointerTy())
@@ -1146,14 +1149,21 @@ Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset) {
   Value *V = VIn.first;
   for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
     if (GEPOperator *GEP = dyn_cast<GEPOperator>(V)) {
-      V = GEP->getPointerOperand();
-      // This check turns out to be important: otherwise we might conclude that we need to check the aliasGEP path
-      // but then strip the all-zero GEP using Value::stripPointerCasts(), which regards such pointless GEPs as casts.
+
+      // This check turns out to be important: otherwise we might conclude that we need to 
+      // check the aliasGEP path but then strip the all-zero GEP using Value::stripPointerCasts()
+      // which regards such pointless GEPs as casts.
       // Then we end up with two non-GEP, non-PHI, non-Select instructions and fall through to MayAlias.
-      // In summary: if we're going to conclude that two things Must-Alias due to referring to the same object without an offset,
-      // we must do so NOW.
-      if(!GEPHasAllZeroIndices(make_vc(GEP, VIn.second)))
+      // In summary: if we're going to conclude that two things Must-Alias due to referring 
+      // to the same object without an offset, we must do so NOW.
+      if(!GEPHasAllZeroIndices(make_vc(GEP, VIn.second))) {
 	isOffset = true;
+	if(idOnly)
+	  return V;
+      }
+
+      V = GEP->getPointerOperand();
+
     } else if (Operator::getOpcode(V) == Instruction::BitCast) {
       V = cast<Operator>(V)->getOperand(0);
     } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
@@ -1170,14 +1180,14 @@ Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset) {
 }
 
 ValCtx
-BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
+BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset, bool idOnly) {
 
   isOffset = false;
   ValCtx CurrentV = V;
   while(1) {
 
     // This might set isOffset if we look through a GEP.
-    Value* O = getUnderlyingObject(CurrentV, isOffset);
+    Value* O = getUnderlyingObject(CurrentV, isOffset, idOnly);
     // Note here: getUnderlyingObject might take us out a scope, e.g. by a loop-variant GEP referencing a loop-invariant load instruction!
     // This is okay, because Loop iterations are already expected to resolve invariants using the appropriate parent scope, so "inst at scope X"
     // is transparently proxied as "inst at scope X + n".
@@ -1187,6 +1197,14 @@ BasicAliasAnalysis::getUltimateUnderlyingObject(ValCtx V, bool& isOffset) {
     CurrentV = NewV;
 
   }
+
+}
+
+ValCtx
+BasicAliasAnalysis::getFirstOffset(ValCtx V) {
+
+  bool ignored;
+  return getUltimateUnderlyingObject(V, ignored, true);
 
 }
 
@@ -1217,9 +1235,9 @@ BasicAliasAnalysis::aliasCheck(ValCtx V1, unsigned V1Size,
   // Otherwise either the pointers are based off potentially different objects,
   // or else they're potentially different derived pointers off the same base.
 
-  // Strip off any casts if they exist.
-  V1 = make_vc(V1.first->stripPointerCasts(), V1.second);
-  V2 = make_vc(V2.first->stripPointerCasts(), V2.second);
+  // Strip off any casts and other identity operations if they exist.
+  V1 = getFirstOffset(V1);
+  V2 = getFirstOffset(V2);
 
   // Null values in the default address space don't point to any object, so they
   // don't alias any other pointer.
