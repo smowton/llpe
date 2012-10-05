@@ -1018,7 +1018,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
       LPDEBUG("Load resolved successfully, but " << itcache(Result) << " is not a forwardable value\n");
     }
 
-    if(Res.getInst() && Res.getInst()->mayWriteToMemory())
+    if(Res.getInst() && (isa<LoadInst>(Res.getInst()) || Res.getInst()->mayWriteToMemory()))
       ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
     // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
 

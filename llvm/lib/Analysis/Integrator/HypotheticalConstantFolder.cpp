@@ -557,7 +557,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
 void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
 
-  if(SI->mayWriteToMemory()) {
+  if(SI->mayWriteToMemory() || isa<LoadInst>(SI)) {
 
     // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
     DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
@@ -1062,9 +1062,9 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	Constant* Cond = getConstReplacement(SI->getCondition());
 	if(Cond) {
 	  if(cast<ConstantInt>(Cond)->isZero())
-	    Improved = getDefaultVC(SI->getFalseValue());
+	    Improved = getReplacement(SI->getFalseValue());
 	  else
-	    Improved = getDefaultVC(SI->getTrueValue());
+	    Improved = getReplacement(SI->getTrueValue());
 	}
 
       }
@@ -1444,6 +1444,8 @@ public:
 
 void IntegrationAttempt::investigateUsers(Value* V) {
 
+  if(Instruction* I = dyn_cast<Instruction>(V))
+    queueWorkBlockedOn(I);
   InvestigateVisitor IV(V);
   visitUsers(V, IV);
 
