@@ -51,6 +51,10 @@ class PtrToIntInst;
 class IntToPtrInst;
 class BinaryOperator;
 class PostDominatorTree;
+class LoopWrapper;
+template<class> class DominatorTreeBase;
+class BBWrapper;
+template<class> class DomTreeNodeBase;
 
 typedef struct { 
 
@@ -134,6 +138,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
 
    DenseMap<Function*, PostDominatorTree*> PDTs;
+   DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
 
    DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
 
@@ -192,6 +197,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void retryLoadsFromFoldedContexts();
 
    PostDominatorTree* getPostDomTree(Function*);
+   DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, BasicBlock*);
 
    // Caching text representations of instructions:
 

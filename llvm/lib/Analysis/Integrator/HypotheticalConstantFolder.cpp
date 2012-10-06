@@ -25,9 +25,13 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/PostDominators.h"
+// For elaboration of Calculate et al in Dominators.h:
+#include "llvm/Analysis/DominatorInternals.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include "PostDoms.h"
 
 #include <string>
 
@@ -301,6 +305,33 @@ PostDominatorTree* IntegrationAttempt::getPostDomTree() {
 
 }
 
+DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, BasicBlock* BB) {
+
+  std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> P;
+
+  DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> >::iterator it = LoopPDTs.find(L);
+  if(it != LoopPDTs.end()) {
+
+    P = std::make_pair(it->second.first, it->second.second);
+
+  }
+  else {
+    
+    const LoopWrapper* LW = new LoopWrapper(L);
+    DominatorTreeBase <const BBWrapper>* LPDT = new DominatorTreeBase<const BBWrapper>(true);
+    LPDT->recalculate(*LW);
+    LoopPDTs[L] = P = std::make_pair(LW, LPDT);
+
+  }
+
+  DenseMap<const BasicBlock*, BBWrapper>::const_iterator it2 = P.first->Map.find(BB);
+  if(it2 == P.first->Map.end())
+    return 0;
+  else  
+    return P.second->getNode(&it2->second);
+
+}
+
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
@@ -384,12 +415,35 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   
   if(isCertain) {
 
-    for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+    const Loop* MyL = getLoopContext();
+    if(!MyL) {
 
-      BasicBlock* SB = DTN->getBlock();
-      if(LI[&F]->getLoopFor(SB) == getLoopContext()) {
+      for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+
+	BasicBlock* SB = DTN->getBlock();
+	if(LI[&F]->getLoopFor(SB) == MyL) {
 	
-	markBlockCertain(SB);
+	  markBlockCertain(SB);
+
+	}
+
+      }
+
+    }
+    else {
+
+      for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, BB); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+	
+	const BBWrapper* BW = DTN->getBlock();
+	if(BW->BB) {
+
+	  if(LI[&F]->getLoopFor(BW->BB) == MyL) {
+
+	    markBlockCertain(const_cast<BasicBlock*>(BW->BB));
+
+	  }
+
+	}
 
       }
 
