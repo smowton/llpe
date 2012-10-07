@@ -430,6 +430,15 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 
 }
 
+static bool functionIsBlacklisted(Function* F) {
+
+  return (F->getName() == "malloc" || F->getName() == "free" ||
+	  F->getName() == "open" || F->getName() == "read" ||
+	  F->getName() == "llseek" || F->getName() == "lseek" ||
+	  F->getName() == "lseek64");
+
+}
+
 InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
   if(ignoreIAs.count(CI))
@@ -438,52 +447,50 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
   if(InlineAttempt* IA = getInlineAttempt(CI))
     return IA;
 
-  if(Function* FCalled = getCalledFunction(CI)) {
-
-    if((!FCalled->isDeclaration()) && (!FCalled->isVarArg())) {
-
-      if(certainBlocks.count(CI->getParent())) {
-
-	InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
-	inlineChildren[CI] = IA;
-
-	LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
-
-	pass->queueCheckBlock(IA, &(FCalled->getEntryBlock()));
-	// Check every argument, for natural constants or for variables that have already been established.
-      
-	for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
-	  
-	  pass->queueTryEvaluate(IA, &*AI /* Iterator to pointer */);
-
-	}
-
-	IA->queueInitialWork();
-
-	// Recheck any loads that were clobbered by this call
-	queueWorkBlockedOn(CI);
-
-	// Try reading the return value right away, in case it's constant.
-	pass->queueTryEvaluate(this, CI);
-
-	return IA;
-
-      }
-      else {
-	LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
-      }
-
-    }
-    else {
-      LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body, or it's vararg\n");
-    }
-
-  }
-  else {
+  Function* FCalled = getCalledFunction(CI);
+  if(!FCalled) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
+    return 0;
   }
 
-  return 0;
+  if(FCalled->isDeclaration() || FCalled->isVarArg()) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body, or it's vararg\n");
+    return 0;
+  }
+
+  if(!certainBlocks.count(CI->getParent())) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
+    return 0;
+  }
+
+  if(functionIsBlacklisted(FCalled)) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
+    return 0;
+  }
+
+  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
+  inlineChildren[CI] = IA;
+
+  LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
+
+  pass->queueCheckBlock(IA, &(FCalled->getEntryBlock()));
+  // Check every argument, for natural constants or for variables that have already been established.
+      
+  for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
+	  
+    pass->queueTryEvaluate(IA, &*AI /* Iterator to pointer */);
+
+  }
+
+  IA->queueInitialWork();
+
+  // Recheck any loads that were clobbered by this call
+  queueWorkBlockedOn(CI);
+
+  // Try reading the return value right away, in case it's constant.
+  pass->queueTryEvaluate(this, CI);
+
+  return IA;
 
 }
 

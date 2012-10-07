@@ -63,15 +63,31 @@ static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Valu
 
 }
 
+static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  AliasAnalysis::AliasResult AR = CSCtx->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr), PCtx), Size, make_vc(const_cast<Value*>(CS.getArgument(0)), CSCtx), AliasAnalysis::UnknownSize);
+
+  switch(AR) {
+  case AliasAnalysis::MustAlias:
+    return LibCallLocationInfo::Yes;
+  case AliasAnalysis::NoAlias:
+    return LibCallLocationInfo::No;
+  default:
+    return LibCallLocationInfo::Unknown;
+  }
+
+}
+
 static LibCallLocationInfo VFSCallLocations[] = {
   { isErrnoForLocation },
-  { isReadBuf }
+  { isReadBuf },
+  { isArg0 },
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 2;
+  return 3;
     
 }
   
@@ -86,10 +102,16 @@ static LibCallFunctionInfo::LocationMRInfo ReadMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo FreeMR[] = {
+  { 2, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
 static LibCallFunctionInfo VFSCallFunctions[] = {
 
   { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, OpenMR },
-  { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR }
+  { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR },
+  { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR }
 
 };
   
