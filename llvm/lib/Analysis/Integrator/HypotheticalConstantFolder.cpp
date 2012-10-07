@@ -305,6 +305,22 @@ PostDominatorTree* IntegrationAttempt::getPostDomTree() {
 
 }
 
+// specialise WriteAsOperand to allow printing of our special DomTree's BBWrapper nodes:
+namespace llvm {
+
+  void WriteAsOperand(raw_ostream& os, const BBWrapper* BBW, bool ign) {
+
+    if(BBW->BB) {
+      WriteAsOperand(os, BBW->BB, ign);
+    }
+    else {
+      os << "<<next iteration>>";
+    }
+
+  }
+
+}
+
 DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, BasicBlock* BB) {
 
   std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> P;
@@ -320,6 +336,10 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
     const LoopWrapper* LW = new LoopWrapper(L);
     DominatorTreeBase <const BBWrapper>* LPDT = new DominatorTreeBase<const BBWrapper>(true);
     LPDT->recalculate(*LW);
+
+    DEBUG(dbgs() << "Calculated postdom tree for loop " << (L->getHeader()->getName()) << ":\n");
+    DEBUG(LPDT->print(dbgs()));
+
     LoopPDTs[L] = P = std::make_pair(LW, LPDT);
 
   }
@@ -436,8 +456,9 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 	
 	const BBWrapper* BW = DTN->getBlock();
 	if(BW->BB) {
-
-	  if(LI[&F]->getLoopFor(BW->BB) == MyL) {
+	  
+	  const Loop* BBL = LI[&F]->getLoopFor(BW->BB);
+	  if(BBL == MyL) {
 
 	    markBlockCertain(const_cast<BasicBlock*>(BW->BB));
 

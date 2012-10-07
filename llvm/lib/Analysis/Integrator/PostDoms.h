@@ -129,8 +129,8 @@ class LoopPredIterator : public std::iterator<std::forward_iterator_tag,
 
   inline bool shouldSkipUse(const User* U) {
 
-    if(const TerminatorInst* TI = dyn_cast<TerminatorInst>(U)) {
-      return ThisBB->L->getHeader() == TI->getParent();
+    if(isa<TerminatorInst>(U)) {
+      return ThisBB->L->getHeader() == ThisBB->BB;
     }
     else {
       return true;
