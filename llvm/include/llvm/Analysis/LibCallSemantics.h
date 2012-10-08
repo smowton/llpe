@@ -19,7 +19,7 @@
 
 namespace llvm {
 
-  class HCFParentCallbacks;
+  class IntegrationAttempt;
 
   /// LibCallLocationInfo - This struct describes a set of memory locations that
   /// are accessed by libcalls.  Identification of a location is doing with a
@@ -120,6 +120,9 @@ namespace llvm {
     /// If this pointer is null, no details are known.
     ///
     const LocationMRInfo *LocationDetails;
+
+    const LocationMRInfo* (*getLocationDetailsFor)(ImmutableCallSite, IntegrationAttempt*);
+
   };
   
   

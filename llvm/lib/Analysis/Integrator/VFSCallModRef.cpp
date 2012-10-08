@@ -7,6 +7,10 @@
 #include <llvm/Analysis/LibCallSemantics.h>
 #include <llvm/Analysis/HypotheticalConstantFolder.h>
 
+// For TCGETS et al
+#include <termios.h>
+#include <sys/ioctl.h>
+
 using namespace llvm;
 
 // Two locations:
@@ -46,11 +50,9 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
 
 }
 
-static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult aliasCheckAsLCI(const Value* Ptr1, IntegrationAttempt* Ptr1C, uint64_t Ptr1Size, const Value* Ptr2, IntegrationAttempt* Ptr2C, uint64_t Ptr2Size) {
 
-  ConstantInt* ReadSize = cast_or_null<ConstantInt>(CSCtx->getConstReplacement(const_cast<Value*>(CS.getArgument(2))));
-
-  AliasAnalysis::AliasResult AR = CSCtx->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr), PCtx), Size, make_vc(const_cast<Value*>(CS.getArgument(1)), CSCtx), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize);
+  AliasAnalysis::AliasResult AR = Ptr1C->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr1), Ptr1C), Ptr1Size, make_vc(const_cast<Value*>(Ptr2), Ptr2C), Ptr2Size);
 
   switch(AR) {
   case AliasAnalysis::MustAlias:
@@ -63,18 +65,23 @@ static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Valu
 
 }
 
+static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  ConstantInt* ReadSize = cast_or_null<ConstantInt>(CSCtx->getConstReplacement(const_cast<Value*>(CS.getArgument(2))));
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize);
+
+}
+
 static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
-  AliasAnalysis::AliasResult AR = CSCtx->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr), PCtx), Size, make_vc(const_cast<Value*>(CS.getArgument(0)), CSCtx), AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, AliasAnalysis::UnknownSize);
+  
+}
 
-  switch(AR) {
-  case AliasAnalysis::MustAlias:
-    return LibCallLocationInfo::Yes;
-  case AliasAnalysis::NoAlias:
-    return LibCallLocationInfo::No;
-  default:
-    return LibCallLocationInfo::Unknown;
-  }
+static LibCallLocationInfo::LocResult isTermios(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, sizeof(struct termios));
 
 }
 
@@ -82,12 +89,13 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isErrnoForLocation },
   { isReadBuf },
   { isArg0 },
+  { isTermios },
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 3;
+  return 4;
     
 }
   
@@ -107,14 +115,37 @@ static LibCallFunctionInfo::LocationMRInfo FreeMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo TCGETSMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 3, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
+
+  if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
+
+    switch(C->getLimitedValue()) {
+    case TCGETS:
+      return TCGETSMR;
+    }
+
+  }
+
+  return 0;
+
+}
+
 static LibCallFunctionInfo VFSCallFunctions[] = {
 
-  { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, OpenMR },
-  { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR },
-  { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR }
+  { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, OpenMR, 0 },
+  { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR, 0 },
+  { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
+  { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
+  { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
 };
-  
+
 /// getFunctionInfoArray - Return an array of descriptors that describe the
 /// set of libcalls represented by this LibCallInfo object.  This array is
 /// terminated by an entry with a NULL name.

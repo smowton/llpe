@@ -53,7 +53,12 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   // If that didn't tell us that the function is 'readnone', check to see
   // if we have detailed info and if 'P' is any of the locations we know
   // about.
-  const LibCallFunctionInfo::LocationMRInfo *Details = FI->LocationDetails;
+  const LibCallFunctionInfo::LocationMRInfo *Details;
+
+  if(FI->LocationDetails)
+    Details = FI->LocationDetails;
+  else if(FI->getLocationDetailsFor)
+    Details = FI->getLocationDetailsFor(CS, CSCtx);
   if (Details == 0)
     return MRInfo;
   

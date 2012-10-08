@@ -31,6 +31,7 @@ STRIPTOOL  = donothing.sh  # may need to use an absolute path
 HOSTCC     = llvm-gcc 
 BUILD_CFLAGS = -O2 -Wall --emit-llvm 
 
+Note I actually just used my dragonegg/gold wrapper scripts for CC and LD.
 
 ******** STEP TWO ******** 
 2) Create a executable shell script donothing.sh in the uclibc root folder which does
@@ -80,7 +81,7 @@ llvm functions gained those tags as well, and consequently did not match other l
 I think the way it should work is that gcc should emit the symbol, then the linker should permit matching regardless of it, allowing assembly to call C and vice versa. However the llvm linker doesn't do that,
 so the links remain unresolved.
 
-iii. Manually lowered memmove.os from llvm bitcode to an elf object. This is because llvm will raise memmove calls into llvm.memmove intrinsics, and therefore not link them against an llvm definition of memmove. It will then lower them back into memmove calls and hand them to the linker, which attempts second-phase linking and complains that whilst it has a definition for memmove, it is provided as IL, not ELF, and therefore should have been resolved already. The simplest solution: make sure memmove (and memcpy, and any other functions liable to dodge resolution this way) are implemented as ELF.
+iii. Manually lowered memmove.os from llvm bitcode to an elf object. This is because llvm will raise memmove calls into llvm.memmove intrinsics, and therefore not link them against an llvm definition of memmove. It will then lower them back into memmove calls and hand them to the linker, which attempts second-phase linking and complains that whilst it has a definition for memmove, it is provided as IL, not ELF, and therefore should have been resolved already. The simplest solution: make sure memmove (and memcpy, and any other functions liable to dodge resolution this way) are implemented as object code not IL.
 
 iv. Manually renamed the x86_64 implementations of the string functions to .S-disabled, causing the build scripts to pull in generic versions. This results in a bitcode strcpy etc which the integrator can understand. I couldn't just disable uclibc's assembly functions entirely since we need an ELF memcpy, memmove, memset (the three that llvm special-cases; see above).
 
@@ -89,6 +90,8 @@ v. Disable the optimised-but-large versions of strlen et al because they use tri
 vi. I added an alternate entry point where the environment is given separate to argv, to make it easier to specialise one but not the other. Long term the answer is specifying the argv/env with greater flexibility to allow e.g. specialising for command-lines featuring at least one '-o' flag. The alt entry point also takes a main function with the more usual i32 (i32, i8**) type rather than the given i32 (i32, i8**, i8**) to avoid having to write support for function type puns into the integrator (this one works out in practice thanks to a caller-cleans-up convention). The entry point is called __uClibc_init_spec and must be flagged to the linker using a command-line like -Wl,--plugin-opt,also-emit-llvm -Wl,-u,__uClibc_main_spec (the -u flag marks a symbol as undefined, similar to how main() is always needed).
 
 vii. __uClibc_init featured some silly assembly which is designed to defeat optimising compilers that assume extern functions are non-null (not true if symbols are weak). I replaced these with normal tests; if this turns out to be a problem I'll fix LLVM's miscompilation instead.
+
+viii. Remove the one call to mempcpy, in tcgetattr. Since LLVM's analyses don't understand mempcpy I'd have needed to extend its llvm.memcpy intrinsic to note whether it's a memcpy or a mempcpy, lower it correctly, and so on and and so forth. Easier to just hack out the one use. Alternatively, could have supplied an IL definition that expands to memcpy; return dest + size;
 
 3. Fix dragonegg-2.8:
 
