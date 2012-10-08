@@ -116,7 +116,7 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
       if(edgeIsDead(FromBB, ToBB)) {
 
-	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.");
+	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.\n");
 
 	for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
 
@@ -131,13 +131,20 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = exitEdges.begin(), endit = exitEdges.end(); it != endit; ++it) {
 
 	  const Loop* edgeScope = getEdgeScope(it->first, it->second);
-	  if(edgeScope == getLoopContext() || edgeScope == L) {
+	  if(edgeScope == getLoopContext() || L->contains(edgeScope)) {
 	    // The edge is either invariant at our scope, or ordinarily a loop variant
+	    // Use contains(edgeScope) rather than L == edgeScope to catch edges which break
+	    // out of more than one loop.
+	    LPDEBUG("Killed edge to " << it->second->getName() << "\n");
 	    deadEdges.insert(*it);
+	  }
+	  else {
+	    LPDEBUG("Ignored edge to " << it->second->getName() << " (invariant)\n");
 	  }
 
 	  // Check regardless because certainty is always variant
 	  pass->queueCheckBlock(this, it->second);
+	  checkBlockPHIs(it->second);
 
 	}
 
@@ -337,8 +344,10 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
     DominatorTreeBase <const BBWrapper>* LPDT = new DominatorTreeBase<const BBWrapper>(true);
     LPDT->recalculate(*LW);
 
+    /*
     DEBUG(dbgs() << "Calculated postdom tree for loop " << (L->getHeader()->getName()) << ":\n");
     DEBUG(LPDT->print(dbgs()));
+    */
 
     LoopPDTs[L] = P = std::make_pair(LW, LPDT);
 
@@ -995,27 +1004,20 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved
 
 }
 
-bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
+bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose, Value* UsedV) {
 
   Instruction* I;
   Argument* A;
 
-  ValCtx Improved = getReplacement(ArgV);
-  if(Improved != getDefaultVC(ArgV)) {
-    if(verbose)
-      DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
-    return false;
-  }
   if((I = dyn_cast<Instruction>(ArgV))) {
     if(blockIsDead(I->getParent())) {
       if(verbose)
 	DEBUG(dbgs() << itcache(*ArgV) << " already eliminated (in dead block)\n");
       return false;
     }
-    return true;
   }
   else if((A = dyn_cast<Argument>(ArgV))) {
-    return true;
+    // Fall through
   }
   else {
     if(verbose)
@@ -1023,11 +1025,40 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
     return false;
   }
 
+  CallInst* CI = dyn_cast<CallInst>(ArgV);
+  InlineAttempt* IA = getInlineAttempt(CI);
+  if(CI && IA) {
+
+    assert(UsedV && "Must supply the used value unless you're sure you're not passing a CallInst!");
+
+    unsigned i = 0;
+    Function* F = getCalledFunction(CI);
+    for(Function::arg_iterator it = F->arg_begin(), it2 = F->arg_end(); it != it2; ++it, ++i) {
+
+      if(CI->getArgOperand(i) == UsedV && IA->shouldTryEvaluate(it))
+	return true;
+
+    }
+
+    return false;
+
+  }
+  else {
+    ValCtx Improved = getReplacement(ArgV);
+    if(Improved != getDefaultVC(ArgV)) {
+      if(verbose)
+	DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
+      return false;
+    }
+  }
+
+  return true;
+
 }
 
 ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
   
-  if(!shouldTryEvaluate(ArgV)) {
+  if((!isa<CallInst>(ArgV)) && (!shouldTryEvaluate(ArgV))) {
     return VCNull;
   }
 
@@ -1500,7 +1531,7 @@ public:
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
-    if(Ctx->shouldTryEvaluate(UserI, false)) {
+    if(Ctx->shouldTryEvaluate(UserI, false, V)) {
       Ctx->queueTryEvaluateGeneric(UserI, V);
     }
 

@@ -665,7 +665,7 @@ protected:
 
   // Constant propagation:
 
-  virtual bool shouldTryEvaluate(Value* ArgV, bool verbose = true);
+  virtual bool shouldTryEvaluate(Value* ArgV, bool verbose = true, Value* UsedV = 0);
 
   ValCtx getPHINodeValue(PHINode*);
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);

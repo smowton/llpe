@@ -1095,8 +1095,14 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
     return MemDepResult();
   }
   else {
-    LPDEBUG("Resolving load at call site\n");
-    return parent->tryResolveLoadAtChildSite(this, LFA);
+    if(LFA.getBaseContext() == this) {
+      LPDEBUG("Can't pursue LFA further because this is its base contex\n");
+      return MemDepResult();
+    }
+    else {
+      LPDEBUG("Resolving load at call site\n");
+      return parent->tryResolveLoadAtChildSite(this, LFA);
+    }
   }
 
 }
@@ -1158,7 +1164,13 @@ MemDepResult PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int 
 // Helper: loop iterations defer the resolution process to the abstract loop.
 MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
-  return parentPA->tryForwardExprFromParent(LFA, this->iterationCount);
+  if(LFA.getBaseContext() == this) {
+    LPDEBUG("Can't pursue LFA further because this is its base contex\n");
+    return MemDepResult();
+  }
+  else {
+    return parentPA->tryForwardExprFromParent(LFA, this->iterationCount);
+  }
 
 }
 

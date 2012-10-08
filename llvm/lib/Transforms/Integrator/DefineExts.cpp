@@ -45,22 +45,24 @@ bool DefineExtsPass::runOnModule(Module& M) {
 
   for(cl::list<std::string>::iterator it = NullSymbols.begin(), it2 = NullSymbols.end(); it != it2; ++it) {
 
-    Function* F = M.getFunction(*it);
-    if(!F) {
+    GlobalValue* GV = M.getNamedValue(*it);
+    if(!GV) {
 
-      errs() << "Warning: skipped function " << *it << " (symbol not found)\n";
+      errs() << "Warning: skipped value " << *it << " (symbol not found)\n";
       continue;
 
     }
+    
+    if(Function* F = dyn_cast<Function>(GV)) {
+      if(!F->isDeclaration()) {
 
-    if(!F->isDeclaration()) {
+	errs() << "Warning: skipped function " << *it << " because it has a definition\n";
+	continue;
 
-      errs() << "Warning: skipped function " << *it << " because it has a definition\n";
-      continue;
-
+      }
     }
 
-    F->replaceAllUsesWith(Constant::getNullValue(F->getType()));
+    GV->replaceAllUsesWith(Constant::getNullValue(GV->getType()));
     modified = true;
 
   }
