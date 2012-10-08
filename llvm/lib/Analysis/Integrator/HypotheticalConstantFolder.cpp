@@ -1004,7 +1004,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved
 
 }
 
-bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose, Value* UsedV) {
+bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
   Argument* A;
@@ -1025,11 +1025,22 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose, Value* Use
     return false;
   }
 
+  ValCtx Improved = getReplacement(ArgV);
+  if(Improved != getDefaultVC(ArgV)) {
+    if(verbose)
+      DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
+    return false;
+  }
+
+  return true;
+
+}
+
+bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value* UsedV) {
+
   CallInst* CI = dyn_cast<CallInst>(ArgV);
   InlineAttempt* IA = getInlineAttempt(CI);
   if(CI && IA) {
-
-    assert(UsedV && "Must supply the used value unless you're sure you're not passing a CallInst!");
 
     unsigned i = 0;
     Function* F = getCalledFunction(CI);
@@ -1044,21 +1055,16 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose, Value* Use
 
   }
   else {
-    ValCtx Improved = getReplacement(ArgV);
-    if(Improved != getDefaultVC(ArgV)) {
-      if(verbose)
-	DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
-      return false;
-    }
-  }
 
-  return true;
+    return shouldTryEvaluate(ArgV, verbose);
+
+  }
 
 }
 
 ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
   
-  if((!isa<CallInst>(ArgV)) && (!shouldTryEvaluate(ArgV))) {
+  if(!shouldTryEvaluate(ArgV)) {
     return VCNull;
   }
 
@@ -1531,7 +1537,7 @@ public:
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
-    if(Ctx->shouldTryEvaluate(UserI, false, V)) {
+    if(Ctx->shouldInvestigateUser(UserI, false, V)) {
       Ctx->queueTryEvaluateGeneric(UserI, V);
     }
 
