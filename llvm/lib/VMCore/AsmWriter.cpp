@@ -1750,8 +1750,9 @@ void AssemblyWriter::printInstruction(const Instruction &I, bool nameOnly) {
 
   if(nameOnly)
     return;
-
-  Out << " = ";
+  
+  if(!I.getType()->isVoidTy())
+    Out << " = ";
 
   // If this is a volatile load or store, print out the volatile marker.
   if ((isa<LoadInst>(I)  && cast<LoadInst>(I).isVolatile()) ||
