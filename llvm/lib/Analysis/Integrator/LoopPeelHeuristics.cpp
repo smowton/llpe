@@ -2256,8 +2256,8 @@ void IntegrationAttempt::collectStats() {
 void InlineAttempt::printHeader(raw_ostream& OS) const {
 
   OS << (!CI ? "Root " : "") << "Function " << F.getName();
-  if(CI)
-    OS << " at " << itcache(*CI);
+  if(CI && !CI->getType()->isVoidTy())
+    OS << " at " << itcache(*CI, true);
 
 }
 

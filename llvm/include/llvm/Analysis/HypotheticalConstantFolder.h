@@ -158,6 +158,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    IntegrationAttempt* RootIA;
 
    DenseMap<const Function*, DenseMap<const Instruction*, std::string> > functionTextCache;
+   DenseMap<const Function*, DenseMap<const Instruction*, std::string> > briefFunctionTextCache;
    bool cacheDisabled;
 
  public:
@@ -201,9 +202,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    // Caching text representations of instructions:
 
-   void printValue(raw_ostream& ROS, const Value* V);
-   void printValue(raw_ostream& ROS, ValCtx VC);
-   void printValue(raw_ostream& ROS, const MemDepResult& Res);
+   DenseMap<const Instruction*, std::string>& getFunctionCache(const Function* F, bool brief);
+   void printValue(raw_ostream& ROS, const Value* V, bool brief);
+   void printValue(raw_ostream& ROS, ValCtx VC, bool brief);
+   void printValue(raw_ostream& ROS, const MemDepResult& Res, bool brief);
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
@@ -222,13 +224,14 @@ template<class T> class PrintCacheWrapper {
 
   IntegrationHeuristicsPass& IHP;
   T Val;
+  bool brief;
 
  public:
  
-  PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val) : IHP(_IHP), Val(_Val) { }
+ PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val, bool _brief) : IHP(_IHP), Val(_Val), brief(_brief) { }
   void printTo(raw_ostream& ROS) {
 
-    IHP.printValue(ROS, Val);
+    IHP.printValue(ROS, Val, brief);
     
   }
 
@@ -876,26 +879,26 @@ protected:
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out) = 0;
 
   // Caching instruction text for debug and DOT export:
-  PrintCacheWrapper<const Value*> itcache(const Value& V) const {
-    return PrintCacheWrapper<const Value*>(*pass, &V);
+  PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) const {
+    return PrintCacheWrapper<const Value*>(*pass, &V, brief);
   }
-  PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
-    return PrintCacheWrapper<ValCtx>(*pass, VC);
+  PrintCacheWrapper<ValCtx> itcache(ValCtx VC, bool brief = false) const {
+    return PrintCacheWrapper<ValCtx>(*pass, VC, brief);
   }
-  PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
-    return PrintCacheWrapper<const MemDepResult&>(*pass, MDR);
+  PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR, bool brief = false) const {
+    return PrintCacheWrapper<const MemDepResult&>(*pass, MDR, brief);
   }
 
   void printWithCache(const Value* V, raw_ostream& ROS) {
-    pass->printValue(ROS, V);
+    pass->printValue(ROS, V, false);
   }
 
   void printWithCache(ValCtx VC, raw_ostream& ROS) {
-    pass->printValue(ROS, VC);
+    pass->printValue(ROS, VC, false);
   }
 
   void printWithCache(const MemDepResult& Res, raw_ostream& ROS) {
-    pass->printValue(ROS, Res);
+    pass->printValue(ROS, Res, false);
   }
 
   // Data export for the Integrator pass:
@@ -1313,7 +1316,7 @@ class LFARMapping {
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
 
  // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
- void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap);
+ void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
 
 } // Namespace LLVM
 

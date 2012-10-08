@@ -1272,7 +1272,7 @@ public:
   void printFunction(const Function *F);
   void printArgument(const Argument *FA, Attributes Attrs);
   void printBasicBlock(const BasicBlock *BB);
-  void printInstruction(const Instruction &I);
+  void printInstruction(const Instruction &I, bool nameOnly = false);
 
 private:
   // printInfoComment - Print a little comment after the instruction indicating
@@ -1729,24 +1729,29 @@ void AssemblyWriter::printInfoComment(const Value &V) {
 }
 
 // This member is called for each Instruction in a function..
-void AssemblyWriter::printInstruction(const Instruction &I) {
-  if (AnnotationWriter) AnnotationWriter->emitInstructionAnnot(&I, Out);
+void AssemblyWriter::printInstruction(const Instruction &I, bool nameOnly) {
+  if (AnnotationWriter && !nameOnly) AnnotationWriter->emitInstructionAnnot(&I, Out);
 
   // Print out indentation for an instruction.
-  Out << "  ";
+  if(!nameOnly)
+    Out << "  ";
 
   // Print out name if it exists...
   if (I.hasName()) {
     PrintLLVMName(Out, &I);
-    Out << " = ";
   } else if (!I.getType()->isVoidTy()) {
     // Print out the def slot taken.
     int SlotNum = Machine.getLocalSlot(&I);
     if (SlotNum == -1)
-      Out << "<badref> = ";
+      Out << "<badref>";
     else
-      Out << '%' << SlotNum << " = ";
+      Out << '%' << SlotNum;
   }
+
+  if(nameOnly)
+    return;
+
+  Out << " = ";
 
   // If this is a volatile load or store, print out the volatile marker.
   if ((isa<LoadInst>(I)  && cast<LoadInst>(I).isVolatile()) ||
@@ -2097,7 +2102,7 @@ void Type::print(raw_ostream &OS) const {
 
 namespace llvm {
 
-  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap) {
+  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefIMap) {
 
     SlotTracker SlotTable(IF);
     formatted_raw_ostream FRSO;
@@ -2111,6 +2116,11 @@ namespace llvm {
 	raw_string_ostream RSO(IStr);
 	FRSO.setStream(RSO);
 	W.printInstruction(*II);
+	FRSO.flush();
+	std::string& IStrBrief = BriefIMap[II];
+	raw_string_ostream RSOBrief(IStrBrief);
+	FRSO.setStream(RSOBrief);
+	W.printInstruction(*II, true);
 	FRSO.flush();
 	    
       }
