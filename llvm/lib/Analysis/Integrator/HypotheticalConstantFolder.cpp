@@ -1574,7 +1574,7 @@ bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
   if(I && blockIsDead(I->getParent()))
     return true;
   ValCtx VC = getReplacement(V);
-  if(VC != getDefaultVC(V) && ((!VC.second) || VC.second->isAvailable()))
+  if(VC != getDefaultVC(V) && (!VC.isPtrAsInt()) && ((!VC.second) || VC.second->isAvailable()))
     return true;
 
   return false;

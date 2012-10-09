@@ -689,6 +689,9 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(!isa<Constant>(it->second.first))
       continue;
 
+    if(it->second.isPtrAsInt())
+      continue;
+
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
     if(VI == CommittedValues.end())
       continue;
@@ -746,6 +749,9 @@ void IntegrationAttempt::commitLocalPointers() {
       continue;
 
     if(!it->second.second->isAvailable())
+      continue;
+
+    if(it->second.isPtrAsInt())
       continue;
 
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
