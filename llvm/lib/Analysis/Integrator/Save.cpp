@@ -226,7 +226,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     std::vector<ValueMap<const Value*, Value*>* > iterValues;
 
-    if(!UnrollLoop(L, unrollCount, LI[&F], 0, !completelyUnrollLoop, completelyUnrollLoop, &iterValues)) {
+    if(!UnrollLoop(L, unrollCount, MasterLI, 0, !completelyUnrollLoop, completelyUnrollLoop, true, &iterValues)) {
 
       assert(0 && "Unrolling failed");
 
@@ -395,7 +395,6 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
     // rolled) I think all branches that aren't the loop latch will look the same as the rolled version.
     const unsigned NumSucc = ReplaceTI->getNumSuccessors();
 
-    // Loop unrolling replaces loop latch branches with unconditionals, so this skips them too.
     if(NumSucc <= 1)
       return;
 
@@ -455,8 +454,6 @@ void InlineAttempt::replaceKnownBranches() {
 
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
 
-    // This should be ok because loop unrolling never replaces branch instructions, whenever
-    // it modifies one it does so in place.
     replaceKnownBranch(FI, FI->getTerminator());
 
   }
@@ -466,6 +463,12 @@ void InlineAttempt::replaceKnownBranches() {
 void PeelIteration::replaceKnownBranches() {
 
   for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
+
+    // Skip loop latch edges already dealt with:
+    if(parentPA->Iterations[parentPA->Iterations.size() - 1]->iterStatus == IterationStatusFinal) {
+      if(*it == L->getLoopLatch())
+	continue;
+    }
 
     replaceKnownBranch(*it, (*it)->getTerminator());
 

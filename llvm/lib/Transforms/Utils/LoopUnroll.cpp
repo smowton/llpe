@@ -146,7 +146,7 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
 /// If doPeel is true, the loop will be peeled rather than unrolled: it will be preceded
 /// by Count copies of its own body.
 
-bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, std::vector<ValueMap<const Value *, Value*>* >* Iterations) {
+bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, bool allowNonCondLatch, std::vector<ValueMap<const Value *, Value*>* >* Iterations) {
   BasicBlock *Preheader = L->getLoopPreheader();
   if (!Preheader) {
     DEBUG(dbgs() << "  Can't unroll; loop preheader-insertion failed.\n");
@@ -162,10 +162,18 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   BasicBlock *Header = L->getHeader();
   BranchInst *BI = dyn_cast<BranchInst>(LatchBlock->getTerminator());
   
-  if (!BI || BI->isUnconditional()) {
+  if ((!BI || BI->isUnconditional()) && !allowNonCondLatch) {
     // The loop-rotate pass can be helpful to avoid this in many cases.
     DEBUG(dbgs() <<
              "  Can't unroll/peel; loop not terminated by a conditional branch.\n");
+    return false;
+  }
+  
+  if(BI && BI->isUnconditional()) {
+    BI = 0;
+  }
+  else if(!BI) {
+    errs() << "Can't handle loops with a switch terminator yet\n";
     return false;
   }
 
@@ -251,8 +259,12 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   SmallVector<BasicBlock*, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
 
-  bool ContinueOnTrue = L->contains(BI->getSuccessor(0));
-  BasicBlock *LoopExit = BI->getSuccessor(ContinueOnTrue);
+  BasicBlock *LoopExit = 0;
+  bool ContinueOnTrue;
+  if(BI) {
+    ContinueOnTrue = L->contains(BI->getSuccessor(0));
+    LoopExit = BI->getSuccessor(ContinueOnTrue);
+  }
 
   // For the first iteration of the loop, we should use the precloned values for
   // PHI nodes.  Insert associations now.
@@ -455,7 +467,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   // Fix the first (original) iteration:
   // 1. Fix exit PHIs that draw from the first iteration's latch if we know it can't exit
   bool firstIterationCanBreak = doPeel || BreakoutTrip == 1 || TripMultiple == 1;
-  if (!firstIterationCanBreak) {
+  if ((!firstIterationCanBreak) && LoopExit) {
     for(BasicBlock::iterator I = LoopExit->begin(), IE = LoopExit->end(); I != IE && isa<PHINode>(*I); I++) {
       PHINode* PN = cast<PHINode>(I);
       PN->removeIncomingValue(LatchBlock, false);
@@ -536,7 +548,6 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   for(unsigned i = 0; i < Latches.size(); i++) {
     // Wire the previous iteration's jump to this block
     BasicBlock* thisLatch = Latches[i];
-    BranchInst *Term = cast<BranchInst>(thisLatch->getTerminator());
     bool thisLatchCouldBreak = true;
     if ((!doPeel) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0))
       thisLatchCouldBreak = false;
@@ -558,22 +569,47 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       target = Headers[i+1];
     }
 
-    if(thisLatchCouldBreak)
-      Term->setSuccessor(!ContinueOnTrue, target);
-    else {
-      Term->setUnconditionalDest(target);
-      // Merge adjacent basic blocks, if possible.
-      // Should this be here? Shouldn't another pass do this?
-      // Don't do this if our caller wants mappings from one iteration to the next
-      // since this makes the relationship more complicated.
-      if(!Iterations) {
-	if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
-	  DEBUG(dbgs() << "Folded BB\n");
-	  std::replace(Latches.begin(), Latches.end(), target, Fold);
-	  std::replace(Headers.begin(), Headers.end(), target, Fold);
+    BranchInst *Term = cast<BranchInst>(thisLatch->getTerminator());
+      
+    if(Term->isConditional()) {
+
+      if(thisLatchCouldBreak)
+	Term->setSuccessor(!ContinueOnTrue, target);
+      else {
+	Term->setUnconditionalDest(target);
+	// Merge adjacent basic blocks, if possible.
+	// Should this be here? Shouldn't another pass do this?
+	// Don't do this if our caller wants mappings from one iteration to the next
+	// since this makes the relationship more complicated.
+	if(!Iterations) {
+	  if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
+	    DEBUG(dbgs() << "Folded BB\n");
+	    std::replace(Latches.begin(), Latches.end(), target, Fold);
+	    std::replace(Headers.begin(), Headers.end(), target, Fold);
+	  }
 	}
       }
+
     }
+    else {
+
+      if(target) {
+
+	Term->setUnconditionalDest(target);
+
+      }
+      else {
+
+	// This leaves broken CFG: when working on loops without an exiting latch, our caller must make
+	// sure they route away from this block.
+	BasicBlock* TermBB = Term->getParent();
+	Term->eraseFromParent();
+	new UnreachableInst(TermBB->getContext(), TermBB);
+
+      }
+
+    }
+
   }
 
   // If we're doing loop peeling, do a name switcheroo such that the last unfolded iteration is named after the original first.
