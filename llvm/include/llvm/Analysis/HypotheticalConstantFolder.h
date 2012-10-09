@@ -662,7 +662,7 @@ protected:
   void setBlockDead(BasicBlock*);
 
   virtual Constant* getConstReplacement(Value* V);
-  Function* getCalledFunction(CallInst*);
+  virtual Function* getCalledFunction(CallInst*);
   
   virtual InlineAttempt* getFunctionRoot() = 0;
 

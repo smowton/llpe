@@ -205,6 +205,8 @@ public:
   }
 };
   
+class IntegrationAttempt;
+
 /// InlineFunction - This function inlines the called function into the basic
 /// block of the caller.  This returns false if it is not possible to inline
 /// this call.  The program is still in a well defined state if this occurs
@@ -215,9 +217,9 @@ public:
 /// exists in the instruction stream.  Similiarly this will inline a recursive
 /// function by one level.
 ///
-bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0);
-bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0);
-bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0);
+bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0, IntegrationAttempt* Ctx = 0);
+bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0, IntegrationAttempt* Ctx = 0);
+bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap = 0, LoopInfo* ParentLI = 0, Loop* ParentLoop = 0, LoopInfo* ChildLI = 0, IntegrationAttempt* Ctx = 0);
 
 } // End llvm namespace
 

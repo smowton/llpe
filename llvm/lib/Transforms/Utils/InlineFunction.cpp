@@ -23,6 +23,7 @@
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/DebugInfo.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -30,10 +31,10 @@
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 using namespace llvm;
 
-bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
-  return InlineFunction(CallSite(CI), IFI, CloneMap, ParentLI, ParentLoop, ChildLI);
+bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI, IntegrationAttempt* Ctx) {
+  return InlineFunction(CallSite(CI), IFI, CloneMap, ParentLI, ParentLoop, ChildLI, Ctx);
 }
-bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI, IntegrationAttempt* Ctx) {
   return InlineFunction(CallSite(II), IFI, CloneMap);
 }
 
@@ -239,7 +240,7 @@ static void UpdateCallGraphAfterInlining(CallSite CS,
 // exists in the instruction stream.  Similiarly this will inline a recursive
 // function by one level.
 //
-bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI) {
+bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const Value*, Value*>* CloneMap, LoopInfo* ParentLI, Loop* ParentLoop, LoopInfo* ChildLI, IntegrationAttempt* Ctx) {
   Instruction *TheCall = CS.getInstruction();
   LLVMContext &Context = TheCall->getContext();
   assert(TheCall->getParent() && TheCall->getParent()->getParent() &&
@@ -249,6 +250,13 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
   IFI.reset();
   
   const Function *CalledFunc = CS.getCalledFunction();
+
+  if((!CalledFunc) && Ctx) {
+    if(CallInst* CI = dyn_cast<CallInst>(CS.getInstruction())) {
+      CalledFunc = Ctx->getCalledFunction(CI);
+    }
+  }
+
   if (CalledFunc == 0 ||          // Can't inline external function or indirect
       CalledFunc->isDeclaration() || // call, or call to a vararg function!
       CalledFunc->getFunctionType()->isVarArg()) return false;
@@ -536,7 +544,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
   // If we cloned in _exactly one_ basic block, and if that block ends in a
   // return instruction, we splice the body of the inlined callee directly into
   // the calling basic block.
-  if (Returns.size() == 1 && std::distance(FirstNewBlock, Caller->end()) == 1) {
+  if (Returns.size() == 1 && std::distance(FirstNewBlock, Caller->end()) == 1 && !CloneMap) {
     // Move all of the instructions right before the call.
     OrigBB->getInstList().splice(TheCall, FirstNewBlock->getInstList(),
                                  FirstNewBlock->begin(), FirstNewBlock->end());
@@ -612,7 +620,9 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
   // any users of the original call/invoke instruction.
   const Type *RTy = CalledFunc->getReturnType();
 
-  if (Returns.size() > 1) {
+  // If we're asked to supply a map of old-to-new blocks, keep the return blocks around
+  // even if there's only one of them to provide a simpler mapping.
+  if (Returns.size() > 1 || CloneMap) {
     // The PHI node should go at the front of the new basic block to merge all
     // possible incoming values.
     PHINode *PHI = 0;
@@ -664,7 +674,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
     // to, which contains the code that was after the call.
     BasicBlock *ReturnBB = Returns[0]->getParent();
     AfterCallBB->getInstList().splice(AfterCallBB->begin(),
-                                      ReturnBB->getInstList());
+				      ReturnBB->getInstList());
 
     // Update PHI nodes that use the ReturnBB to use the AfterCallBB.
     ReturnBB->replaceAllUsesWith(AfterCallBB);
@@ -681,21 +691,24 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
   // Since we are now done with the Call/Invoke, we can delete it.
   TheCall->eraseFromParent();
 
-  // We should always be able to fold the entry block of the function into the
-  // single predecessor of the block...
-  assert(cast<BranchInst>(Br)->isUnconditional() && "splitBasicBlock broken!");
-  BasicBlock *CalleeEntry = cast<BranchInst>(Br)->getSuccessor(0);
+  // Again keep the original blocks if our caller wants to be able to easily refer to them.
+  if(!CloneMap) {
+    // We should always be able to fold the entry block of the function into the
+    // single predecessor of the block...
+    assert(cast<BranchInst>(Br)->isUnconditional() && "splitBasicBlock broken!");
+    BasicBlock *CalleeEntry = cast<BranchInst>(Br)->getSuccessor(0);
 
-  // Splice the code entry block into calling block, right before the
-  // unconditional branch.
-  OrigBB->getInstList().splice(Br, CalleeEntry->getInstList());
-  CalleeEntry->replaceAllUsesWith(OrigBB);  // Update PHI nodes
+    // Splice the code entry block into calling block, right before the
+    // unconditional branch.
+    OrigBB->getInstList().splice(Br, CalleeEntry->getInstList());
+    CalleeEntry->replaceAllUsesWith(OrigBB);  // Update PHI nodes
 
-  // Remove the unconditional branch.
-  OrigBB->getInstList().erase(Br);
+    // Remove the unconditional branch.
+    OrigBB->getInstList().erase(Br);
 
-  // Now we can remove the CalleeEntry block, which is now empty.
-  Caller->getBasicBlockList().erase(CalleeEntry);
+    // Now we can remove the CalleeEntry block, which is now empty.
+    Caller->getBasicBlockList().erase(CalleeEntry);
+  }
 
   return true;
 }

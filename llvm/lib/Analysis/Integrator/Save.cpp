@@ -197,7 +197,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     }
 
-    if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called]))
+    if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called], this))
       assert(0 && "Inlining failed!\n");
 
     // childMap is now a map from the instructions' "real" names to those inlined.
@@ -301,6 +301,10 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
   }
 
+  // Do this last because the loop unroller will try to add edges towards them (and then, if they're
+  // dead, commitLocalConstants->replaceKnownBranches will remove them again)
+  deleteDeadBlocks();
+
 }
 
 void IntegrationAttempt::commitPointers() {
@@ -376,14 +380,20 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
   bool isDead = deadBlocks.count(FromBB);
   BasicBlock* Target = 0;
 
+  if((!isDead) && getValueScope(TI) != getLoopContext())
+    return;
+
   // Return instructions have been replaced already by the inliner!
   if(isa<ReturnInst>(TI))
     return;
 
-  TerminatorInst* ReplaceTI = cast_or_null<TerminatorInst>(CommittedValues[TI]);
-  // Terminators might not exist if this is an invariant branch which was replaced outside.
-  if(!ReplaceTI)
+  TerminatorInst* ReplaceTI = cast<BasicBlock>(CommittedValues[FromBB])->getTerminator();
+  if(isa<UnreachableInst>(ReplaceTI)) {
+
+    // The loop unroller has already handled this branch!
     return;
+
+  }
 
   BasicBlock* ReplaceTarget = 0;
 
@@ -402,12 +412,12 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
       // Back to using the original blocks here since our results are calculated in their terms
       BasicBlock* thisTarget = TI->getSuccessor(I);
-      if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
+      if(!edgeIsDead(FromBB, thisTarget)) {
 
 	if(Target)
 	  return;
 	else
-	  Target = thisTarget;
+	  Target = ReplaceTI->getSuccessor(I);
 
       }
 
@@ -415,13 +425,6 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
     if(!Target)
       return;
-
-    // If the target isn't in the map then it's from outside this context, leave it alone.
-    ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(Target);
-    if(it == CommittedValues.end())
-      ReplaceTarget = Target;
-    else
-      ReplaceTarget = cast<BasicBlock>(it->second);
 
   }
 
@@ -466,7 +469,9 @@ void PeelIteration::replaceKnownBranches() {
 
     // Skip loop latch edges already dealt with:
     if(parentPA->Iterations[parentPA->Iterations.size() - 1]->iterStatus == IterationStatusFinal) {
-      if(*it == L->getLoopLatch())
+      // We process a dead latch regardless, because that means this is necessarily the last
+      // iteration (otherwise the latch is taken) and latch's exiting edge needs to be removed.
+      if((*it == L->getLoopLatch()) && (!blockIsDead(*it)))
 	continue;
     }
 
@@ -478,6 +483,7 @@ void PeelIteration::replaceKnownBranches() {
 
 void InlineAttempt::deleteDeadBlocks() {
 
+  // Avoid iterator invalidation
   std::vector<BasicBlock*> FBlocks(F.size());
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI)
     FBlocks.push_back(FI);
@@ -637,7 +643,7 @@ void IntegrationAttempt::foldVFSCalls() {
 
 void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM) {
 
-  // Commit anything that's simple: commit simple constants, dead blocks and edges.
+  // Commit anything that's simple: commit simple constants, known jump targets.
 
   // Delete instructions that are certainly no longer needed:
   for(DenseSet<Value*>::iterator it = deadValues.begin(), it2 = deadValues.end(); it != it2; ++it) {
@@ -723,7 +729,6 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
   // any keys which refer to instructions that will be deleted. This is handled in 
   // the checkBlock function.
   replaceKnownBranches();
-  deleteDeadBlocks();
 
 }
 
