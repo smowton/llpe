@@ -401,8 +401,6 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
   }
 
-  BasicBlock* ReplaceTarget = 0;
-
   if(!isDead) {
 
     // Careful: using ReplaceTI not TI because TI probably still belongs to a version of the blocks
@@ -435,7 +433,7 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
   }
 
   if(!isDead)
-    LPDEBUG("Replace terminator " << *ReplaceTI << " with branch to " << ReplaceTarget->getName() << "\n");
+    LPDEBUG("Replace terminator " << *ReplaceTI << " with branch to " << Target->getName() << "\n");
   else
     LPDEBUG("Replace terminator " << *ReplaceTI << " with unreachable\n");
 
@@ -444,7 +442,7 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
   for(unsigned i = 0; i < ReplaceTI->getNumSuccessors(); ++i) {
     
     BasicBlock* Succ = ReplaceTI->getSuccessor(i);
-    if(Succ != ReplaceTarget)
+    if(Succ != Target)
       Succ->removePredecessor(ReplaceSource, true /* Don't delete 1-arg PHI nodes */);
 
   }
@@ -452,8 +450,8 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
   CommittedValues.erase(TI);
   ReplaceTI->eraseFromParent();
 
-  if(ReplaceTarget)
-    BranchInst::Create(ReplaceTarget, ReplaceSource);
+  if(Target)
+    BranchInst::Create(Target, ReplaceSource);
   else
     new UnreachableInst(ReplaceSource->getParent()->getContext(), ReplaceSource);
 
