@@ -58,6 +58,7 @@ char IntegrationHeuristicsPass::ID = 0;
 static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
 static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
+static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
@@ -433,6 +434,7 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 static bool functionIsBlacklisted(Function* F) {
 
   return (F->getName() == "malloc" || F->getName() == "free" ||
+	  F->getName() == "realloc" ||
 	  F->getName() == "open" || F->getName() == "read" ||
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
 	  F->getName() == "lseek64");
@@ -1024,7 +1026,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
       LPDEBUG("Load resolved successfully, but " << itcache(Result) << " is not a forwardable value\n");
     }
 
-    if(Res.getInst() && (isa<LoadInst>(Res.getInst()) || Res.getInst()->mayWriteToMemory()))
+    if(Res.getInst() && (isa<CallInst>(Res.getInst()) || isa<LoadInst>(Res.getInst()) || Res.getInst()->mayWriteToMemory()))
       ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
     // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
 
@@ -3659,6 +3661,13 @@ static void dieEnvUsage() {
 
 }
 
+static void dieArgvUsage() {
+
+  errs() << "--spec-argv must have form M,N,filename where M and N are integers\n";
+  exit(1);
+
+}
+
 static void dieSpecUsage() {
 
   errs() << "--spec-param must have form N,param-spec where N is an integer\n";
@@ -3718,6 +3727,24 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 
     Constant* Env = loadEnvironment(*(F.getParent()), EnvFile);
     setParam(RootIA, F, idx, Env);
+
+  }
+
+  if(ArgvFileAndIdxs != "") {
+
+    long argcIdx;
+    std::string ArgvFileAndIdx;
+    if(!parseIntCommaString(ArgvFileAndIdxs, argcIdx, ArgvFileAndIdx))
+      dieArgvUsage();
+    long argvIdx;
+    std::string ArgvFile;
+    if(!parseIntCommaString(ArgvFileAndIdx, argvIdx, ArgvFile))
+      dieArgvUsage();
+
+    unsigned argc;
+    Constant* Argv = loadArgv(*(F.getParent()), ArgvFile, argc);
+    setParam(RootIA, F, argvIdx, Argv);
+    setParam(RootIA, F, argcIdx, ConstantInt::get(Type::getInt32Ty(F.getContext()), argc));
 
   }
 

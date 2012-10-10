@@ -209,6 +209,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
+   Constant* loadArgv(Module&, std::string&, unsigned& argc);
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
@@ -736,6 +737,7 @@ protected:
   void queueWorkBlockedOn(Instruction* SI);
   void queueCFGBlockedLoads();
   void queueCheckAllLoadsInScope(const Loop*);
+  void queueCheckAllInstructionsInScope(const Loop*);
 
   // VFS call forwarding:
 

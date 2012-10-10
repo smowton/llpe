@@ -79,6 +79,12 @@ static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* 
   
 }
 
+static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize);
+  
+}
+
 static LibCallLocationInfo::LocResult isTermios(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
   return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, sizeof(struct termios));
@@ -90,12 +96,13 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isReadBuf },
   { isArg0 },
   { isTermios },
+  { isReturnVal }
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 4;
+  return 5;
     
 }
   
@@ -112,6 +119,17 @@ static LibCallFunctionInfo::LocationMRInfo ReadMR[] = {
 
 static LibCallFunctionInfo::LocationMRInfo FreeMR[] = {
   { 2, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static LibCallFunctionInfo::LocationMRInfo ReallocMR[] = {
+  { 2, AliasAnalysis::Mod },
+  { 4, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static LibCallFunctionInfo::LocationMRInfo MallocMR[] = {
+  { 4, AliasAnalysis::Mod },
   { ~0U, AliasAnalysis::ModRef }
 };
 
@@ -141,6 +159,8 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, OpenMR, 0 },
   { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR, 0 },
   { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
+  { "malloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, MallocMR, 0 },
+  { "realloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReallocMR, 0 },
   { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

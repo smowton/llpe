@@ -663,7 +663,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
 void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
 
-  if(SI->mayWriteToMemory() || isa<LoadInst>(SI)) {
+  if(SI->mayWriteToMemory() || isa<LoadInst>(SI) || isa<CallInst>(SI)) {
 
     // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
     DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
@@ -1107,7 +1107,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	Condition = SI->getCondition();
       }
       
-      ConstantInt* ConstCondition = dyn_cast<ConstantInt>(getConstReplacement(Condition));
+      ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
 
       if(ConstCondition) {
 
@@ -2066,6 +2066,35 @@ void PeelAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
 }
 
+void IntegrationAttempt::queueCheckAllInstructionsInScope(const Loop* MyL) {
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    const Loop* BBL = LI[&F]->getLoopFor(BB);
+
+    if((!MyL) || MyL->contains(BBL)) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	if(BranchInst* BI = dyn_cast<BranchInst>(II)) {
+	  if(BI->isUnconditional())
+	    continue;
+	}
+	if(getValueScope(II) == MyL) {
+	  
+	  pass->queueTryEvaluate(this, II);
+
+	}
+
+      }
+
+    }
+
+  }
+
+}
+
 void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
@@ -2108,6 +2137,7 @@ void IntegrationAttempt::tryPromoteAllCalls() {
 
 void IntegrationAttempt::queueInitialWork() {
 
+  queueCheckAllInstructionsInScope(getLoopContext());
   queueCheckAllLoadsInScope(getLoopContext());
 
 }
