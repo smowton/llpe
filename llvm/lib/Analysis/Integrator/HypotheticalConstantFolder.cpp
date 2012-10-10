@@ -1572,6 +1572,12 @@ bool IntegrationAttempt::inDeadValues(Value* V) {
 }
 
 bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
+  
+  return valueWillNotUse(V, VCNull);
+  
+}
+
+bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
 
   Instruction* I = dyn_cast<Instruction>(V);
 
@@ -1582,6 +1588,9 @@ bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
   if(I && blockIsDead(I->getParent()))
     return true;
   ValCtx VC = getReplacement(V);
+  // The other value will be replaced with this V, so it will remain a user.
+  if(VC == OtherVC)
+    return false;
   if(VC != getDefaultVC(V) && (!VC.isPtrAsInt()) && ((!VC.second) || VC.second->isAvailable()))
     return true;
 
@@ -1592,12 +1601,13 @@ bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
 class DIVisitor : public VisitorContext {
 
   Value* V;
+  IntegrationAttempt* OriginCtx;
 
 public:
 
   bool maybeLive;
 
-  DIVisitor(Value* _V) : V(_V), maybeLive(false) { }
+  DIVisitor(Value* _V, IntegrationAttempt* _Ctx) : V(_V), OriginCtx(_Ctx), maybeLive(false) { }
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
@@ -1640,7 +1650,7 @@ public:
 
 	    if(CI->getArgOperand(i) == V) {
 
-	      if(!IA->valueWillBeRAUWdOrDeleted(&*it)) {
+	      if(!IA->valueWillNotUse(&*it, make_vc(V, OriginCtx))) {
 
 		maybeLive = true;
 		return;
@@ -1659,7 +1669,7 @@ public:
       }
 
     }
-    else if(Ctx->valueWillBeRAUWdOrDeleted(UserI))
+    else if(Ctx->valueWillNotUse(UserI, make_vc(V, OriginCtx)))
       return;
     else {
 
@@ -1698,7 +1708,7 @@ bool IntegrationAttempt::valueIsDead(Value* V) {
   }
   else {
 
-    DIVisitor DIV(V);
+    DIVisitor DIV(V, this);
     visitUsers(V, DIV);
 
     return !DIV.maybeLive;

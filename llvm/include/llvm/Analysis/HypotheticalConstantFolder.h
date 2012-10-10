@@ -842,6 +842,7 @@ protected:
   void queueDIE(Value* V, IntegrationAttempt* Ctx);
   void queueDIE(Value* V);
   bool valueWillBeRAUWdOrDeleted(Value* V);
+  bool valueWillNotUse(Value* V, ValCtx);
   bool inDeadValues(Value* V);
   void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);

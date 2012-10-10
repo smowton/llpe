@@ -394,7 +394,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
     if(CloneMap) {
       // Avoid doing anything clever to preserve a simple mapping from original
       // to cloned instructions.
-      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, ChildLI, ParentLI,ParentLoop, &oldToNewLoops);
+      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, ChildLI, ParentLI,ParentLoop, &oldToNewLoops, /*cloneAttributes=*/false);
     }
     else {
       // We want the inliner to prune the code as it copies.  We would LOVE to

@@ -156,7 +156,8 @@ void CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
 		       LoopInfo* ChildLI = 0,
 		       LoopInfo* ParentLI = 0,
 		       Loop* ParentDestLoop = 0,
-		       std::map<Loop*, Loop*>* oldToNewLoops = 0);
+		       std::map<Loop*, Loop*>* oldToNewLoops = 0,
+		       bool cloneAttributes = true);
 
 /// CloneAndPruneFunctionInto - This works exactly like CloneFunctionInto,
 /// except that it does some simple constant prop and DCE on the fly.  The
