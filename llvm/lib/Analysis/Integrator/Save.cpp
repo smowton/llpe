@@ -200,6 +200,8 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called], this))
       assert(0 && "Inlining failed!\n");
 
+    CommittedValues.erase(it->first);
+
     // childMap is now a map from the instructions' "real" names to those inlined.
     // Use it to commit changes known about that context:
     it->second->commitInContext(MasterLI, childMap);
@@ -220,6 +222,10 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     bool completelyUnrollLoop = it->second->Iterations.back()->iterStatus == IterationStatusFinal;
     unsigned unrollCount = it->second->Iterations.size();
+
+    // No change?
+    if((!completelyUnrollLoop) && unrollCount == 1)
+      continue;
 
     // Take a copy of the block list before we clone them:
     std::vector<BasicBlock*> LBlocks = L->getBlocks();
