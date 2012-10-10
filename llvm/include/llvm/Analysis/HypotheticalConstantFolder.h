@@ -827,6 +827,7 @@ protected:
   virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
   virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
   void visitUsers(Value* V, VisitorContext& Visitor);
+  void visitUser(Value* UI, VisitorContext& Visitor);
 
   // Operand visitors:
 

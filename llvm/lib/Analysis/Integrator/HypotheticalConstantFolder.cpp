@@ -61,6 +61,27 @@ namespace llvm {
 
 }
 
+class InvestigateVisitor : public VisitorContext {
+
+  Value* V;
+
+public:
+
+  InvestigateVisitor(Value* _V) : V(_V) { }
+
+  virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
+
+    if(Ctx->shouldInvestigateUser(UserI, false, V)) {
+      Ctx->queueTryEvaluateGeneric(UserI, V);
+    }
+
+  }
+
+  virtual void notifyUsersMissed() { }
+  virtual bool shouldContinue() { return true; }
+
+};
+
 bool IntegrationAttempt::isForwardableOpenCall(Value* V) {
 
   if(CallInst* CI = dyn_cast<CallInst>(V))
@@ -206,10 +227,11 @@ void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
 void IntegrationAttempt::checkBlockPHIs(BasicBlock* BB) {
 
+  InvestigateVisitor IV(BB);
+
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
     
-    if(shouldTryEvaluate(BI))
-      pass->queueTryEvaluate(this, BI);
+    visitUser(BI, IV);
 
   }
 
@@ -1470,54 +1492,51 @@ void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
 }
 
-void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
+void IntegrationAttempt::visitUser(Value* UI, VisitorContext& Visitor) {
 
-  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE && Visitor.shouldContinue(); ++UI) {
-    // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
-    // a child loop (defer to it to decide what to do), or a parent loop (again defer).
-    // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
+  // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
+  // a child loop (defer to it to decide what to do), or a parent loop (again defer).
+  // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
 
-    Instruction* UserI = dyn_cast<Instruction>(*UI);
+  Instruction* UserI = dyn_cast<Instruction>(UI);
 
-    if(UserI) {
+  if(UserI) {
 
-      const Loop* L = getValueScope(UserI); // The innermost loop on which the user has dependencies (distinct from the loop at actually occupies).
+    const Loop* L = getValueScope(UserI); // The innermost loop on which the user has dependencies (distinct from the loop it actually occupies).
 
-      const Loop* MyL = getLoopContext();
+    const Loop* MyL = getLoopContext();
 
-      if(L == MyL) {
+    if(L == MyL) {
 	  
-	if(!visitNextIterationPHI(UserI, Visitor)) {
+      if(!visitNextIterationPHI(UserI, Visitor)) {
 
-	  // Just an ordinary user in the same iteration (or out of any loop!).
-	  Visitor.visit(this, UserI);
+	// Just an ordinary user in the same iteration (or out of any loop!).
+	Visitor.visit(this, UserI);
+
+      }
+
+    }
+    else {
+
+      if((!MyL) || MyL->contains(L)) {
+
+	const Loop* outermostChildLoop = immediateChildLoop(MyL, L);
+	// Used in a child loop. Check if that child exists at all and defer to it.
+
+	PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
+
+	if(LPA)
+	  LPA->visitVariant(UserI, L, Visitor);
+	else {
+
+	  Visitor.notifyUsersMissed();
 
 	}
 
       }
       else {
 
-	if((!MyL) || MyL->contains(L)) {
-
-	  const Loop* outermostChildLoop = immediateChildLoop(MyL, L);
-	  // Used in a child loop. Check if that child exists at all and defer to it.
-
-	  PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
-
-	  if(LPA)
-	    LPA->visitVariant(UserI, L, Visitor);
-	  else {
-
-	    Visitor.notifyUsersMissed();
-
-	  }
-
-	}
-	else {
-
-	  visitExitPHI(UserI, Visitor);
-
-	}
+	visitExitPHI(UserI, Visitor);
 
       }
 
@@ -1527,26 +1546,15 @@ void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
 
 }
 
-class InvestigateVisitor : public VisitorContext {
+void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
 
-  Value* V;
+  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE && Visitor.shouldContinue(); ++UI) {
 
-public:
-
-  InvestigateVisitor(Value* _V) : V(_V) { }
-
-  virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
-
-    if(Ctx->shouldInvestigateUser(UserI, false, V)) {
-      Ctx->queueTryEvaluateGeneric(UserI, V);
-    }
+    visitUser(*UI, Visitor);
 
   }
 
-  virtual void notifyUsersMissed() { }
-  virtual bool shouldContinue() { return true; }
-
-};
+}
 
 void IntegrationAttempt::investigateUsers(Value* V) {
 
