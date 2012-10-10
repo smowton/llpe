@@ -466,6 +466,9 @@ void IntegratorFrame::OnClose(wxCloseEvent& WXUNUSED(event)) {
 
 void IntegratorFrame::redrawImage() {
 
+  if(!currentIA)
+    return;
+
   delete currentBitmap;
   currentBitmap = 0;
 
