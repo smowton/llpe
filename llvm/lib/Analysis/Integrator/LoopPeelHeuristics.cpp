@@ -482,10 +482,11 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 static bool functionIsBlacklisted(Function* F) {
 
   return (F->getName() == "malloc" || F->getName() == "free" ||
-	  F->getName() == "realloc" ||
+	  F->getName() == "realloc" || F->getName() == "ioctl" ||
+	  F->getName() == "gettimeofday" || F->getName() == "clock_gettime" ||
 	  F->getName() == "open" || F->getName() == "read" ||
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
-	  F->getName() == "lseek64");
+	  F->getName() == "lseek64" || F->getName() == "close");
 
 }
 

@@ -79,6 +79,12 @@ static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* 
   
 }
 
+static LibCallLocationInfo::LocResult isArg1(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, AliasAnalysis::UnknownSize);
+  
+}
+
 static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
   return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize);
@@ -96,13 +102,14 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isReadBuf },
   { isArg0 },
   { isTermios },
-  { isReturnVal }
+  { isReturnVal },
+  { isArg1 }
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 5;
+  return 6;
     
 }
   
@@ -139,6 +146,19 @@ static LibCallFunctionInfo::LocationMRInfo TCGETSMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo GettimeMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 5, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static LibCallFunctionInfo::LocationMRInfo GettimeofdayMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Mod },
+  { 5, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -162,6 +182,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "malloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, MallocMR, 0 },
   { "realloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReallocMR, 0 },
   { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
+  { "clock_gettime", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeMR, 0 },
+  { "gettimeofday", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeofdayMR, 0 },
+  // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
 };
