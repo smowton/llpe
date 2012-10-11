@@ -545,11 +545,22 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
 }
 
+class CheckBlockCallback : public Callable {
+  BasicBlock* BB;
+  IntegrationHeuristicsPass* IHP;
+public:
+  CheckBlockCallback(BasicBlock* _BB, IntegrationHeuristicsPass* _IHP) : BB(_BB), IHP(_IHP) { }
+  virtual void callback(IntegrationAttempt* Ctx) {
+    IHP->queueCheckBlock(Ctx, BB);
+    Ctx->checkBlockPHIs(BB);
+  }
+};
+
 void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
 
   // Only called if the exit edge is a local variant
-  pass->queueCheckBlock(parent, BB);
-  parent->checkBlockPHIs(BB);
+  CheckBlockCallback CBC(BB, pass);
+  callWithScope(CBC, LI[&F]->getLoopFor(BB));
 
 }
 

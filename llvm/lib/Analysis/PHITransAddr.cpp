@@ -98,6 +98,12 @@ bool PHITransAddr::Verify() const {
   
   if (!Tmp.empty()) {
     errs() << "PHITransAddr inconsistent, contains extra instructions:\n";
+    errs() << "Addr is ";
+    if(Addr)
+      errs() << *Addr;
+    else
+      errs() << "null";
+    errs() << "\n";
     for (unsigned i = 0, e = InstInputs.size(); i != e; ++i)
       errs() << "  InstInput #" << i << " is " << *InstInputs[i] << "\n";
     return false;
@@ -255,8 +261,9 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
       
       return AddAsInput(V);
     }
-    
+
     // Scan to see if we have this GEP available.
+    Value *NewGEP = 0;
     Value *APHIOp = GEPOps[0];
     for (Value::use_iterator UI = APHIOp->use_begin(), E = APHIOp->use_end();
          UI != E; ++UI) {
@@ -271,11 +278,26 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
               Mismatch = true;
               break;
             }
-          if (!Mismatch)
-            return GEPI;
+          if (!Mismatch) {
+            NewGEP = GEPI;
+	    break;
+	  }
         }
     }
-    return 0;
+
+    if(NewGEP) {
+      // If the new GEP has a replacement, disregard its arguments as they won't get used.
+      if(parent) {
+	ValCtx ReplacementVC = parent->getReplacement(NewGEP);
+	if(ReplacementVC.second != parent) {
+	  for (unsigned i = 0, e = GEPOps.size(); i != e; ++i)
+	    RemoveInstInputs(GEPOps[i], InstInputs);
+	  return AddAsInput(NewGEP);
+	}
+      }
+    }
+
+    return NewGEP;
   }
   
   // Handle add with a constant RHS.
@@ -348,7 +370,8 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
 bool PHITransAddr::PHITranslateValue(BasicBlock *CurBB, BasicBlock *PredBB,
                                      const DominatorTree *DT) {
   assert(Verify() && "Invalid PHITransAddr!");
-  Addr = PHITranslateSubExpr(Addr, CurBB, PredBB, DT);
+  Value* OldAddr = Addr;
+  Addr = PHITranslateSubExpr(OldAddr, CurBB, PredBB, DT);
   assert(Verify() && "Invalid PHITransAddr!");
 
   if (DT) {

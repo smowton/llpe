@@ -585,8 +585,6 @@ bool PeelIteration::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
 
 }
 
-
-
 ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
   BasicBlock* BB = PN->getParent();
