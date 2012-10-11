@@ -133,9 +133,9 @@ public:
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
-   DenseMap<Function*, DenseMap<Instruction*, const Loop*> > invariantInstScopes;
-   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> > invariantEdgeScopes;
-   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> > invariantBlockScopes;
+   DenseMap<Function*, DenseMap<Instruction*, const Loop*>* > invariantInstScopes;
+   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* > invariantEdgeScopes;
+   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
 
    DenseMap<Function*, PostDominatorTree*> PDTs;
    DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;

@@ -248,7 +248,11 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 
 Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
 
-  return dyn_cast_or_null<Function>(getConstReplacement(CI->getCalledValue()));
+  Constant* C = getConstReplacement(CI->getCalledValue()->stripPointerCasts());
+  if(!C)
+    return 0;
+
+  return dyn_cast<Function>(C->stripPointerCasts());
 
 }
 
@@ -3331,12 +3335,9 @@ BasicBlock* IntegrationHeuristicsPass::getUniqueReturnBlock(Function* F) {
 
 void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Instruction*, const Loop*>*& pInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*& pEdges, DenseMap<BasicBlock*, const Loop*>*& pBlocks) {
 
-  DenseMap<Instruction*, const Loop*>& Insts = invariantInstScopes[F];
-  DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& Edges = invariantEdgeScopes[F];
-  DenseMap<BasicBlock*, const Loop*>& Blocks = invariantBlockScopes[F];
-  pInsts = &Insts;
-  pEdges = &Edges;
-  pBlocks = &Blocks;
+  pInsts = invariantInstScopes[F] = new DenseMap<Instruction*, const Loop*>();
+  pEdges = invariantEdgeScopes[F] = new DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>();
+  pBlocks = invariantBlockScopes[F] = new DenseMap<BasicBlock*, const Loop*>();
 
   LoopInfo* LI = LIs[F];
 
@@ -3376,9 +3377,9 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 	  Value* Op = I->getOperand(i);
 	  if(Instruction* OpI = dyn_cast<Instruction>(Op)) {
 	    // LCSSA form means this loop must be somewhere in instLoop's ancestors (including instLoop itself), not a sibling.
-	    DenseMap<Instruction*, const Loop*>::iterator Improved = Insts.find(OpI);
+	    DenseMap<Instruction*, const Loop*>::iterator Improved = pInsts->find(OpI);
 	    const Loop* OpL;
-	    if(Improved != Insts.end())
+	    if(Improved != pInsts->end())
 	      OpL = Improved->second;
 	    else
 	      OpL = LI->getLoopFor(OpI->getParent());
@@ -3395,21 +3396,21 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 
 	if(((!innermostLoop) && instLoop) || (innermostLoop && (innermostLoop != instLoop) && innermostLoop->contains(instLoop))) {
 	  
-	  DenseMap<Instruction*, const Loop*>::iterator Existing = Insts.find(I);
-	  if(Existing != Insts.end() && Existing->second == innermostLoop)
+	  DenseMap<Instruction*, const Loop*>::iterator Existing = pInsts->find(I);
+	  if(Existing != pInsts->end() && Existing->second == innermostLoop)
 	    continue;
 	  improvedThisTime = true;
 	  // An interesting invariant! But which kind?
-	  if(Existing != Insts.end())
+	  if(Existing != pInsts->end())
 	    Existing->second = innermostLoop;
 	  else
-	    Insts[I] = innermostLoop;
+	    (*pInsts)[I] = innermostLoop;
 	  DEBUG(dbgs() << "Instruction " << *I << " loop invariant: will evaluate in scope " << (innermostLoop ? innermostLoop->getHeader()->getName() : "'root'") << "\n");
 	  if(TerminatorInst* TI = dyn_cast<TerminatorInst>(I)) {
 	    unsigned NumSucc = TI->getNumSuccessors();
 	    for (unsigned i = 0; i != NumSucc; ++i) {
 	      DEBUG(dbgs() << "\tincluding edge " << BB->getName() << " -> " << TI->getSuccessor(i)->getName() << "\n");
-	      Edges[std::make_pair(BB, TI->getSuccessor(i))] = innermostLoop;
+	      (*pEdges)[std::make_pair(BB, TI->getSuccessor(i))] = innermostLoop;
 	    }
 	  }
 	}
@@ -3426,7 +3427,7 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
   SmallVector<BasicBlock*, 4>* ConsumeQ = &WQ1;
   SmallVector<BasicBlock*, 4>* ProduceQ = &WQ2;
 
-  for(DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator it = Edges.begin(), it2 = Edges.end(); it != it2; ++it) {
+  for(DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator it = pEdges->begin(), it2 = pEdges->end(); it != it2; ++it) {
 
     ConsumeQ->push_back(it->first.second);
 
@@ -3443,8 +3444,8 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
       
       for(pred_iterator PI = pred_begin(CheckBB), PE = pred_end(CheckBB); PI != PE; ++PI) {
 
-	DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator EdgeIt = Edges.find(std::make_pair(*PI, CheckBB));
-	if(EdgeIt == Edges.end()) {
+	DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator EdgeIt = pEdges->find(std::make_pair(*PI, CheckBB));
+	if(EdgeIt == pEdges->end()) {
 	  // The edge is a plain old variant, and so the block is too.
 	  shouldSkip = true;
 	  break;
@@ -3463,17 +3464,17 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
       }
 
       if(!shouldSkip) {
-	DenseMap<BasicBlock*, const Loop*>::iterator BlockIt = Blocks.find(CheckBB);
-	if(BlockIt == Blocks.end() || BlockIt->second != innermostPred) {
-	  if(BlockIt == Blocks.end())
-	    Blocks[CheckBB] = innermostPred;
+	DenseMap<BasicBlock*, const Loop*>::iterator BlockIt = pBlocks->find(CheckBB);
+	if(BlockIt == pBlocks->end() || BlockIt->second != innermostPred) {
+	  if(BlockIt == pBlocks->end())
+	    (*pBlocks)[CheckBB] = innermostPred;
 	  else
 	    BlockIt->second = innermostPred;
 	  TerminatorInst* TI = CheckBB->getTerminator();
 	  if(BranchInst* BI = dyn_cast<BranchInst>(TI)) {
 	    if(!BI->isConditional()) {
 	      BasicBlock* Succ = BI->getSuccessor(0);
-	      Edges[std::make_pair(CheckBB, Succ)] = innermostPred;
+	      (*pEdges)[std::make_pair(CheckBB, Succ)] = innermostPred;
 	      ProduceQ->push_back(Succ);
 	    }
 	  }
@@ -3493,13 +3494,13 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 
   }
 
-  for(DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator EdgeIt = Edges.begin(), EdgeItE = Edges.end(); EdgeIt != EdgeItE; ++EdgeIt) {
+  for(DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator EdgeIt = pEdges->begin(), EdgeItE = pEdges->end(); EdgeIt != EdgeItE; ++EdgeIt) {
 
     DEBUG(dbgs() << "Edge " << EdgeIt->first.first->getName() << " -> " << EdgeIt->first.second->getName() << " is invariant; will evaluate at scope " << (EdgeIt->second ? EdgeIt->second->getHeader()->getName() : "root") << "\n");
 
   }
 
-  for(DenseMap<BasicBlock*, const Loop*>::iterator BlockIt = Blocks.begin(), BlockItE = Blocks.end(); BlockIt != BlockItE; ++BlockIt) {
+  for(DenseMap<BasicBlock*, const Loop*>::iterator BlockIt = pBlocks->begin(), BlockItE = pBlocks->end(); BlockIt != BlockItE; ++BlockIt) {
 
     DEBUG(dbgs() << "Block " << BlockIt->first->getName() << " is invariant; will evaluate at scope " << (BlockIt->second ? BlockIt->second->getHeader()->getName() : "root") << "\n");
 
@@ -3509,9 +3510,9 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 
 DenseMap<Instruction*, const Loop*>& IntegrationHeuristicsPass::getInstScopes(Function* F) {
 
-  DenseMap<Function*, DenseMap<Instruction*, const Loop*> >::iterator it = invariantInstScopes.find(F);
+  DenseMap<Function*, DenseMap<Instruction*, const Loop*>* >::iterator it = invariantInstScopes.find(F);
   if(it != invariantInstScopes.end())
-    return it->second;
+    return *(it->second);
   else {
     DenseMap<Instruction*, const Loop*>* instScopes;
     DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* edgeScopes;
@@ -3524,9 +3525,9 @@ DenseMap<Instruction*, const Loop*>& IntegrationHeuristicsPass::getInstScopes(Fu
 
 DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& IntegrationHeuristicsPass::getEdgeScopes(Function* F) {
 
-  DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*> >::iterator it = invariantEdgeScopes.find(F);
+  DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* >::iterator it = invariantEdgeScopes.find(F);
   if(it != invariantEdgeScopes.end())
-    return it->second;
+    return *(it->second);
   else {
     DenseMap<Instruction*, const Loop*>* instScopes;
     DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* edgeScopes;
@@ -3539,9 +3540,9 @@ DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& IntegrationHeuristic
 
 DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Function* F) {
 
-  DenseMap<Function*, DenseMap<BasicBlock*, const Loop*> >::iterator it = invariantBlockScopes.find(F);
+  DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* >::iterator it = invariantBlockScopes.find(F);
   if(it != invariantBlockScopes.end())
-    return it->second;
+    return *(it->second);
   else {
     DenseMap<Instruction*, const Loop*>* instScopes;
     DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* edgeScopes;

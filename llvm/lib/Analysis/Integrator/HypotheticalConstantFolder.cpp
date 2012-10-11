@@ -1073,6 +1073,9 @@ bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value*
 
     }
 
+    if(UsedV == CI->getCalledValue())
+      return true;
+
     return false;
 
   }
