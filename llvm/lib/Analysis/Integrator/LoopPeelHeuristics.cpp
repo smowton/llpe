@@ -201,6 +201,39 @@ ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope
 
 }
 
+ValCtx IntegrationAttempt::getReplacementUsingScopeRising(Value* V, const Loop* LScope) {
+
+  const Loop* MyScope = getLoopContext();
+
+  if(LScope == MyScope)
+    return getLocalReplacement(V);
+
+  // Read from child loop if appropriate:
+  if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyScope, LScope))) {
+
+    PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
+    if(finalIter->iterStatus == IterationStatusFinal) {
+
+      return finalIter->getReplacementUsingScopeRising(V, LScope);
+
+    }
+    else {
+	    
+      LPDEBUG("Unable to read from loop " << LScope->getHeader()->getName() << " because loop is not known to terminate yet\n");
+      return VCNull;
+
+    }
+
+  }
+  else {
+
+    LPDEBUG("Unable to read from loop " << LScope->getHeader()->getName() << " because loop has not been peeled yet\n");
+    return VCNull;
+
+  }
+
+}  
+
 ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
 
   if(Constant* C = dyn_cast<Constant>(V))
@@ -303,18 +336,29 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
   if((MyScope != EdgeScope) && ((!MyScope) || MyScope->contains(EdgeScope))) {
 
-    if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
-      PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
-      if(FinalIter->iterStatus == IterationStatusFinal) {
-	return FinalIter->edgeIsDeadWithScope(B1, B2, EdgeScope);
-      }
-    }
-    
-    return false;
+    return edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
 
   }
 
   return edgeIsDeadWithScope(B1, B2, EdgeScope);
+
+}
+
+bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B2, const Loop* EdgeScope) {
+
+  const Loop* MyScope = getLoopContext();
+
+  if(EdgeScope == MyScope)
+    return edgeIsDeadWithScope(B1, B2, EdgeScope);
+  
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
+    PeelIteration* FinalIter = LPA->Iterations.back();
+    if(FinalIter->iterStatus == IterationStatusFinal) {
+      return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
+    }
+  }
+    
+  return false;
 
 }
 

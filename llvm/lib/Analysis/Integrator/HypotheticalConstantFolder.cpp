@@ -585,6 +585,8 @@ bool PeelIteration::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
 
 }
 
+
+
 ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
   BasicBlock* BB = PN->getParent();
@@ -607,30 +609,10 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
       // If the predecessor comes from a descendent of the PHI's loop
       if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
 
-	// LCSSA form: this must be read from an immediate child loop. Read it if we can, or else fail.
-	if(PeelAttempt* PA = getPeelAttempt(predLoop)) {
-
-	  PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
-	  if(finalIter->iterStatus == IterationStatusFinal) {
-
-	    predValue = finalIter->getReplacement(oldValue);
-
-	  }
-	  else {
-	    
-	    LPDEBUG("Unable to evaluate exit PHI " << itcache(*PN) << " because its loop is not known to terminate yet\n");
-	    onlyValue = VCNull;
-	    break;
-
-	  }
-
-	}
-	else {
-
-	  LPDEBUG("Unable to evaluate exit PHI " << itcache(*PN) << " because its loop has not been peeled yet\n");
+	predValue = getReplacementUsingScopeRising(oldValue, predLoop);
+	if(predValue == VCNull) {
 	  onlyValue = VCNull;
 	  break;
-
 	}
 
       }
@@ -1487,10 +1469,22 @@ void IntegrationAttempt::visitExitPHI(Instruction* UserI, VisitorContext& Visito
   
 void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
-  // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI and belongs to our immediate parent.
+  // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI. It could however occur in any parent loop.
   if(iterStatus == IterationStatusFinal) {
-    assert(isa<PHINode>(UserI) && LI[&F]->getLoopFor(UserI->getParent()) == (L->getParentLoop()));
-    Visitor.visit(parent, UserI);
+    assert(isa<PHINode>(UserI));
+    const Loop* PHIL = LI[&F]->getLoopFor(UserI->getParent());
+    parent->visitExitPHIWithScope(UserI, Visitor, PHIL);
+  }
+
+}
+
+void IntegrationAttempt::visitExitPHIWithScope(Instruction* UserI, VisitorContext& Visitor, const Loop* UserL) {
+
+  if(UserL == getLoopContext())
+    Visitor.visit(this, UserI);
+  else {
+    assert(getLoopContext() && "About to leave function in visitExitPHIWithScope!");
+    parent->visitExitPHIWithScope(UserI, Visitor, UserL);
   }
 
 }

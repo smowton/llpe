@@ -627,11 +627,13 @@ protected:
   const Loop* getValueScope(Value*);
   ValCtx getLocalReplacement(Value*);
   ValCtx getReplacementUsingScope(Value* V, const Loop* LScope);
+  ValCtx getReplacementUsingScopeRising(Value* V, const Loop* LScope);
   void callWithScope(Callable& C, const Loop* LScope);
   ValCtx getDefaultVCWithScope(Value*, const Loop*);
 
   const Loop* getEdgeScope(BasicBlock*, BasicBlock*);
   bool edgeIsDeadWithScope(BasicBlock*, BasicBlock*, const Loop*);
+  bool edgeIsDeadWithScopeRising(BasicBlock*, BasicBlock*, const Loop*);
 
   const Loop* getBlockScope(BasicBlock*);
   bool blockIsDeadWithScope(BasicBlock*, const Loop*);
@@ -828,6 +830,7 @@ protected:
   
   virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
   virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
+  void visitExitPHIWithScope(Instruction* UserI, VisitorContext& Visitor, const Loop*);
   void visitUsers(Value* V, VisitorContext& Visitor);
   void visitUser(Value* UI, VisitorContext& Visitor);
 
