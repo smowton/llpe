@@ -93,6 +93,8 @@ vii. __uClibc_init featured some silly assembly which is designed to defeat opti
 
 viii. Remove the one call to mempcpy, in tcgetattr. Since LLVM's analyses don't understand mempcpy I'd have needed to extend its llvm.memcpy intrinsic to note whether it's a memcpy or a mempcpy, lower it correctly, and so on and and so forth. Easier to just hack out the one use. Alternatively, could have supplied an IL definition that expands to memcpy; return dest + size;
 
+ix. Patch strftime because it used some very silly pointer arithmetic which confused the compiler into using ptrtoint followed by (-x ^ -1) to express subtracting 1, which is really quite hard a case to catch in the integrator!
+
 3. Fix dragonegg-2.8:
 
 Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
