@@ -1071,7 +1071,7 @@ bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value*
     Function* F = getCalledFunction(CI);
     for(Function::arg_iterator it = F->arg_begin(), it2 = F->arg_end(); it != it2; ++it, ++i) {
 
-      if(CI->getArgOperand(i) == UsedV && IA->shouldTryEvaluate(it))
+      if(CI->getArgOperand(i) == UsedV && (IA->shouldTryEvaluate(it) || UsedV->getType()->isPointerTy()))
 	return true;
 
     }
@@ -1084,7 +1084,17 @@ bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value*
   }
   else {
 
-    return shouldTryEvaluate(ArgV, verbose);
+    if(shouldTryEvaluate(ArgV, verbose))
+      return true;
+
+    if(ArgV->getType()->isPointerTy() && (isa<PHINode>(ArgV) || isa<SelectInst>(ArgV))) {
+
+      if(getReplacement(ArgV) == getReplacement(UsedV))
+	return true;
+
+    }
+
+    return false;
 
   }
 
@@ -1351,7 +1361,7 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
   // If it's a pointer type, find loads and stores that eventually use it and queue them/loads dependent on them for reconsideration.
   // Otherwise just consider the value.
 
-  if((!shouldInvestigateUser(UserI, false, Used)) && (!UserI->getType()->isPointerTy()))
+  if((!shouldInvestigateUser(UserI, false, Used)))
     return;
 
   queueWorkBlockedOn(UserI);
@@ -1382,7 +1392,10 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 	for(int i = 0; i < argNumber; ++i)
 	  ++it;
 
-	pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
+	if(IA->shouldTryEvaluate(&*it))
+	  pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
+	else if(Used->getType()->isPointerTy())
+	  IA->investigateUsers(&*it);
 
       }
 
@@ -1407,8 +1420,18 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
     // Explore the use graph further looking for loads and stores.
     // Additionally queue the instruction itself! GEPs and casts, if ultimately defined from a global, are expressible as ConstantExprs.
-    pass->queueTryEvaluate(this, UserI);
-    investigateUsers(UserI);
+    bool known = !shouldTryEvaluate(UserI, false);
+    if(!known)
+      pass->queueTryEvaluate(this, UserI);
+    
+    if((isa<PHINode>(UserI)) || (isa<SelectInst>(UserI))) {
+      if(known)
+	investigateUsers(UserI);
+    }
+    else {
+      if(!known)
+	investigateUsers(UserI);
+    }
 
   }
   else {
