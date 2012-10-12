@@ -157,6 +157,15 @@ static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
 
 }
 
+static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA) {
+
+  std::string Esc;
+  raw_string_ostream RSO(Esc);
+  IA->printWithCache(MDR, RSO);
+  return escapeHTML(TruncStr(RSO.str(), 100));
+
+}
+
 void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
   
   if(blockIsDead(I->getParent()))
@@ -177,9 +186,13 @@ void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
     if(CDC.isDead)
       Out << "(invar) DEAD";
   }
-  else {
-    if(deadValues.count(I))
-      Out << "DEAD";
+  else if(deadValues.count(I)) {
+    Out << "DEAD";
+  }
+  else if(LoadInst* LI = dyn_cast<LoadInst>(I)) {
+    DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);
+    if(it != LastLoadFailures.end())
+      Out << escapeHTMLValue(it->second, this);
   }
 
 }
@@ -209,7 +222,10 @@ bool PeelIteration::getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* To
 
 }
 
-void IntegrationAttempt::printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out) {
+void IntegrationAttempt::printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
+
+  if(brief && blockIsDead(SB))
+    return;
 
   const Loop* MyLoop = getLoopContext();
 
@@ -244,7 +260,10 @@ void IntegrationAttempt::printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsig
 	
 }
 
-void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* forceSuccessors) {
+void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* forceSuccessors, bool brief) {
+
+  if(brief && blockIsDead(BB))
+    return;
 
   TerminatorInst* TI = BB->getTerminator();
   bool useLabels = false;
@@ -301,7 +320,7 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
 
     for(SmallVector<BasicBlock*, 4>::const_iterator it = forceSuccessors->begin(), it2 = forceSuccessors->end(); it != it2; ++it) {
 
-      printOutgoingEdge(BB, *it, 0, false, deferEdges, deferredEdges, Out);
+      printOutgoingEdge(BB, *it, 0, false, deferEdges, deferredEdges, Out, brief);
 
     }
 
@@ -312,7 +331,7 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
     unsigned i = 0;
     for(succ_const_iterator SI = succ_begin((const BasicBlock*)BB), SE = succ_end((const BasicBlock*)BB); SI != SE; ++SI, ++i) {
 
-      printOutgoingEdge(BB, const_cast<BasicBlock*>(*SI), i, useLabels, deferEdges, deferredEdges, Out);
+      printOutgoingEdge(BB, const_cast<BasicBlock*>(*SI), i, useLabels, deferEdges, deferredEdges, Out, brief);
 
     }
 
@@ -343,7 +362,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
       it->first->getExitingBlocks(Targets);
 
-      describeBlockAsDOT(it->first->getHeader(), 0, 0, Out, &Targets);
+      describeBlockAsDOT(it->first->getHeader(), 0, 0, Out, &Targets, brief);
 
       for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI = it->second->ExitEdges.begin(), EE = it->second->ExitEdges.end(); EI != EE; ++EI) {
 
@@ -356,7 +375,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 	    Targets.push_back(EI2->second);
 
 	}
-	describeBlockAsDOT(EI->first, &it->second->ExitEdges, &deferredEdges, Out, &Targets);
+	describeBlockAsDOT(EI->first, &it->second->ExitEdges, &deferredEdges, Out, &Targets, brief);
 	blocksPrinted.insert(EI->first);
 
       }
@@ -375,7 +394,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
 	BasicBlock* BB = *BI;
 	blocksPrinted.insert(BB);
-	describeBlockAsDOT(BB, &it->second->ExitEdges, &deferredEdges, Out, 0);
+	describeBlockAsDOT(BB, &it->second->ExitEdges, &deferredEdges, Out, 0, brief);
 
       }
 
@@ -411,7 +430,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
     bool isMine = (!myLoop) || myLoop->contains(FI);
     if(isMine && !blocksPrinted.count(FI)) {
 
-      describeBlockAsDOT(FI, 0, 0, Out, 0);
+      describeBlockAsDOT(FI, 0, 0, Out, 0, brief);
 
     }
 

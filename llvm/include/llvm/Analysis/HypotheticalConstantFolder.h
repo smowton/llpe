@@ -10,6 +10,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
 #include "llvm/Constant.h"
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
 
 #include <limits.h>
 #include <string>
@@ -25,7 +26,6 @@ class Instruction;
 class TargetData;
 class AliasAnalysis;
 class PHINode;
-class MemDepResult;
 class NonLocalDepResult;
 class LoadInst;
 class raw_ostream;
@@ -544,6 +544,7 @@ protected:
 
   SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
   DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
+  DenseMap<LoadInst*, MemDepResult> LastLoadFailures;
 
   SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
   DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
@@ -878,8 +879,8 @@ protected:
   // DOT export:
 
   void printRHS(Instruction* I, raw_ostream& Out);
-  void printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out);
-  void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* ForceSuccessors);
+  void printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
+  void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* ForceSuccessors, bool brief);
   void describeAsDOT(raw_ostream& Out, bool brief);
   std::string getInstructionColour(Instruction* I);
   std::string getGraphPath(std::string prefix);

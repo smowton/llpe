@@ -1096,10 +1096,13 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
     }
 
+    LastLoadFailures[LoadI] = Res;
+
     return VCNull;
 
   }
   else {
+    LastLoadFailures.erase(LoadI);
     return Result;
   }
 
