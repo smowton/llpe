@@ -73,6 +73,8 @@ class IntegratorFrame: public wxFrame
   std::string dotpath;
   std::string pngpath;
   std::string dotcommand;
+  
+  bool brief;
 
 public:
 
@@ -80,6 +82,7 @@ public:
 
   void OnClose(wxCloseEvent&);
   void OnQuit(wxCommandEvent& event);
+  void OnBriefToggle(wxCommandEvent& event);
   void OnSelectionChanged(wxDataViewEvent&);
 
   void redrawImage();
@@ -92,12 +95,14 @@ enum
 {
   ID_Quit = wxID_HIGHEST + 1,
   ID_TreeView,
-  ID_SelectionChanged
+  ID_SelectionChanged,
+  ID_BriefToggle
 };
 
 BEGIN_EVENT_TABLE(IntegratorFrame, wxFrame)
   EVT_CLOSE(IntegratorFrame::OnClose)
   EVT_MENU(ID_Quit, IntegratorFrame::OnQuit)
+  EVT_MENU(ID_BriefToggle, IntegratorFrame::OnBriefToggle)
   EVT_DATAVIEW_SELECTION_CHANGED(ID_TreeView, IntegratorFrame::OnSelectionChanged)
 END_EVENT_TABLE()
 
@@ -361,7 +366,7 @@ public:
 };
 
 IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
-  : wxFrame(NULL, -1, title, pos, size) {
+  : wxFrame(NULL, -1, title, pos, size), brief(true) {
 
   if(!mkdtemp(workdir)) {
     errs() << "Failed to create a temporary directory: " << strerror(errno) << "\n";
@@ -385,8 +390,8 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   }
 
   wxMenu *menuFile = new wxMenu;
-
   menuFile->Append( ID_Quit, _("E&xit") );
+  menuFile->Append( ID_BriefToggle, _("&Brief") );
 
   wxMenuBar *menuBar = new wxMenuBar;
   menuBar->Append( menuFile, _("&File") );
@@ -447,6 +452,11 @@ void IntegratorFrame::OnQuit(wxCommandEvent& WXUNUSED(event)) {
   Close(true);
 }
 
+void IntegratorFrame::OnBriefToggle(wxCommandEvent& WXUNUSED(event)) {
+  brief = !brief;
+  redrawImage();
+}
+
 void IntegratorFrame::OnClose(wxCloseEvent& WXUNUSED(event)) {
 
   std::string command;
@@ -474,7 +484,7 @@ void IntegratorFrame::redrawImage() {
 
   std::string error;
   raw_fd_ostream RFO(dotpath.c_str(), error);
-  currentIA->describeAsDOT(RFO, true);
+  currentIA->describeAsDOT(RFO, brief);
   RFO.close();
 
   if(!error.empty()) {

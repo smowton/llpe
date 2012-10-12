@@ -466,9 +466,19 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     if(isa<ReturnInst>(BB->getTerminator()))
       queueTryEvaluateOwnCall();
 
+    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+      
+      deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
+
+    }
+
+    checkSuccessors(BB);
+
+    queueCFGBlockedLoads();
+    queueCFGBlockedOpens();
+
   }
-  
-  if(isCertain) {
+  else if(isCertain) {
 
     const Loop* MyL = getLoopContext();
     if(!MyL) {
@@ -505,21 +515,6 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     }
 
-    queueCFGBlockedOpens();
-
-  }
-
-  if(isDead) {
-
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-      
-      deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
-
-    }
-
-    checkSuccessors(BB);
-
-    queueCFGBlockedLoads();
     queueCFGBlockedOpens();
 
   }
@@ -2183,6 +2178,30 @@ void IntegrationAttempt::queueInitialWork() {
 
   queueCheckAllInstructionsInScope(getLoopContext());
   queueCheckAllLoadsInScope(getLoopContext());
+
+  if(const Loop* L = getLoopContext()) {
+
+    // Check blocks whose predecessors are already invariant-dead:
+
+    for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
+
+      BasicBlock* BB = *BI;
+
+      if(blockIsDead(BB)) {
+
+	for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+      
+	  deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
+
+	}
+
+	checkSuccessors(BB);
+
+      }
+
+    }
+ 
+  }
 
 }
 

@@ -329,11 +329,11 @@ bool IntegrationAttempt::isUnresolved(Value* V) {
 
 bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
-  const Loop* MyScope = getLoopContext();
-  const Loop* EdgeScope = getEdgeScope(B1, B2);
-
   if(deadEdges.count(std::make_pair(B1, B2)))
     return true;
+
+  const Loop* MyScope = getLoopContext();
+  const Loop* EdgeScope = getEdgeScope(B1, B2);
 
   if((MyScope != EdgeScope) && ((!MyScope) || MyScope->contains(EdgeScope))) {
 
@@ -341,7 +341,18 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
   }
 
-  return edgeIsDeadWithScope(B1, B2, EdgeScope);
+  const Loop* B1Scope = getBlockScope(B1);
+
+  const Loop* CheckScope;
+  if((!EdgeScope) || EdgeScope->contains(B1Scope))
+    CheckScope = EdgeScope;
+  else
+    CheckScope = B1Scope;
+
+  // Check the edge's scope or the block's, whichever is further out, since our predecessor might
+  // get outright killed even if his terminator branch is more variant.
+
+  return edgeIsDeadWithScope(B1, B2, CheckScope);
 
 }
 
@@ -623,7 +634,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
    
   pass->queueCheckBlock(NewIter, L->getHeader());
   NewIter->checkBlockPHIs(L->getHeader());
- 
+
   for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
 	
     pass->queueTryEvaluate(NewIter, BI);
