@@ -19,7 +19,7 @@ using namespace llvm;
 
 static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PtrCtx) {
 
-  if(CSCtx && CSCtx->isResolvedVFSCall(CS.getInstruction())) {
+  if(CSCtx && CSCtx->isSuccessfulVFSCall(CS.getInstruction())) {
 
     // Resolved VFS calls definitely do not write to errno, so ignore any potential alias.
     return LibCallLocationInfo::No;

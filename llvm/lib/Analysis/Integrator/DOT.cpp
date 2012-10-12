@@ -194,6 +194,17 @@ void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
     if(it != LastLoadFailures.end())
       Out << escapeHTMLValue(it->second, this);
   }
+  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+    DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.find(CI);
+    if(it != forwardableOpenCalls.end()) {
+      Out << it->second.Name << "(" << (it->second.success ? "success" : "not found") << ")";
+    }
+    else {
+      DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+      if(it != resolvedReadCalls.end())
+	Out << it->second.openArg->Name << " (" << it->second.incomingOffset << "-" << it->second.incomingOffset + (it->second.readSize - 1) << ")";
+    }
+  }
 
 }
 

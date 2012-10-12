@@ -39,6 +39,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/System/Path.h"
 
 #include <string>
 #include <algorithm>
@@ -1557,13 +1558,18 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	    }
 
 	  }
+	  
+	  bool exists = sys::Path(Filename).exists();
+	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, exists, FDEscapes);
+	  if(exists) {
+	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
+	    pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
+	  }
+	  else {
+	    LPDEBUG("Marking open of " << Filename << " as not existing\n");
+	  }
 
-	  LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
-	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, FDEscapes);
-
-	  pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
-
-	  // Also investigate users, since we now know it'll emit a non-negative FD.
+	  // Also investigate users, since we now know it'll emit non-negative FD or return -1 with ENOENT.
 	  investigateUsers(CI);
       
 	}
@@ -1923,10 +1929,6 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   shouldRequeue = false;
 
   Function* Callee = getCalledFunction(VFSCall);
-  if (!Callee->isDeclaration() || !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage())) {
-    // Call to an internal function. Our caller should handle this.
-    return false;
-  }
   StringRef CalleeName = Callee->getName();
   if(CalleeName == "read") {
 
@@ -2159,6 +2161,22 @@ void IntegrationAttempt::addBlockedOpen(ValCtx OpenInst, ValCtx ReadInst) {
 bool IntegrationAttempt::isResolvedVFSCall(const Instruction* I) {
   
   if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {
+
+    return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI) || resolvedCloseCalls.count(CI);
+
+  }
+
+  return false;
+
+}
+
+bool IntegrationAttempt::isSuccessfulVFSCall(const Instruction* I) {
+  
+  if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {
+
+    DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.find(CI);
+    if(it != forwardableOpenCalls.end() && !it->second.success)
+      return false;
 
     return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI) || resolvedCloseCalls.count(CI);
 

@@ -410,13 +410,14 @@ class LFAQueryable;
 struct OpenStatus {
 
   std::string Name;
+  bool success;
   bool FDEscapes;
   ValCtx LatestResolvedUser;
   ValCtx FirstUser;
 
-OpenStatus(ValCtx O, std::string N, bool Esc) : Name(N), FDEscapes(Esc), LatestResolvedUser(O), FirstUser(VCNull) { }
+OpenStatus(ValCtx O, std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc), LatestResolvedUser(O), FirstUser(VCNull) { }
 
-OpenStatus() : Name(""), FDEscapes(false), LatestResolvedUser(VCNull) {}
+OpenStatus() : Name(""), success(false), FDEscapes(false), LatestResolvedUser(VCNull) {}
 
 };
 
@@ -745,6 +746,7 @@ protected:
   // VFS call forwarding:
 
   virtual bool isForwardableOpenCall(Value*);
+  bool openCallSucceeds(Value*);
   virtual int64_t tryGetIncomingOffset(Value*);
   virtual ReadFile* tryGetReadFile(CallInst* CI);
   void tryPromoteOpenCall(CallInst* CI);
@@ -764,6 +766,7 @@ protected:
   virtual void addBlockedOpen(ValCtx, ValCtx);
   void queueCFGBlockedOpens();
   bool isResolvedVFSCall(const Instruction*);
+  bool isSuccessfulVFSCall(const Instruction*);
   bool isUnusedReadCall(CallInst*);
   ValCtx getNextVFSUser(CallInst*);
   bool isCloseCall(CallInst*);

@@ -82,6 +82,12 @@ public:
 
 };
 
+bool IntegrationAttempt::openCallSucceeds(Value* V) {
+
+  return forwardableOpenCalls[cast<CallInst>(V)].success;
+
+}
+
 bool IntegrationAttempt::isForwardableOpenCall(Value* V) {
 
   if(CallInst* CI = dyn_cast<CallInst>(V))
@@ -516,6 +522,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     checkSuccessors(BB);
 
     queueCFGBlockedLoads();
+    queueCFGBlockedOpens();
 
   }
 
@@ -754,28 +761,46 @@ ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bo
 bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
 
   bool flip;
+  bool exists;
   ConstantInt* CmpInt = 0;
   ValCtx op0 = getReplacement(CmpI->getOperand(0));
   ValCtx op1 = getReplacement(CmpI->getOperand(1));
   if(op0.second && op0.second->isForwardableOpenCall(op0.first)) {
     flip = false;
+    exists = op0.second->openCallSucceeds(op0.first);
     CmpInt = dyn_cast<ConstantInt>(op1.first);
   }
   else if(op1.second && op1.second->isForwardableOpenCall(op1.first)) {
     flip = true;
+    exists = op1.second->openCallSucceeds(op1.first);
     CmpInt = dyn_cast<ConstantInt>(op0.first);
   }
   else {
     return false;
   }
   if(CmpInt) {
+    
+    if(!exists) {
 
-    Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
-    if(Improved.first) {
-      LPDEBUG("Comparison against file descriptor resolves to " << itcache(*Improved.first) << "\n");
+      ConstantInt *Arg0, *Arg1;
+      Arg0 = ConstantInt::getSigned(CmpInt->getType(), -1);
+      Arg1 = CmpInt;
+      if(flip)
+	std::swap(Arg0, Arg1);
+      Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
+      return true;
+
     }
     else {
-      LPDEBUG("Comparison against file descriptor inconclusive\n");
+
+      Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
+      if(Improved.first) {
+	LPDEBUG("Comparison against file descriptor resolves to " << itcache(*Improved.first) << "\n");
+      }
+      else {
+	LPDEBUG("Comparison against file descriptor inconclusive\n");
+      }
+
     }
 
   }
