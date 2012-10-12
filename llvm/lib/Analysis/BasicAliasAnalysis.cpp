@@ -1143,7 +1143,7 @@ BasicAliasAnalysis::aliasPHI(const ValCtx V1, unsigned PNSize,
 // in modifying Value, which is used throughout LLVM.
 Value* BasicAliasAnalysis::getUnderlyingObject(ValCtx VIn, bool& isOffset, bool idOnly) {
   
-  unsigned MaxLookup = 10;
+  unsigned MaxLookup = 1000;
   if (!VIn.first->getType()->isPointerTy())
     return VIn.first;
   Value *V = VIn.first;

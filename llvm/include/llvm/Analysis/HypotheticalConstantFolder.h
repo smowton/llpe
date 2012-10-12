@@ -957,6 +957,8 @@ protected:
 
   virtual void describe(raw_ostream& Stream) const = 0;
   virtual void describeBrief(raw_ostream& Stream) const = 0;
+  virtual std::string getFunctionName();
+  virtual int getIterCount() = 0;
 
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
@@ -1032,6 +1034,10 @@ public:
 
   virtual void deleteDeadBlocks();
   virtual void replaceKnownBranches();
+
+  virtual int getIterCount() {
+    return iterationCount;
+  }
 
 };
 
@@ -1182,6 +1188,10 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void deleteDeadBlocks();
   virtual void replaceKnownBranches();
+
+  virtual int getIterCount() {
+    return -1;
+  }
 
 };
 

@@ -1006,7 +1006,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   LPDEBUG("Trying to forward load: " << itcache(*LoadI) << "\n");
 
   LoadForwardAttempt Attempt(LoadI, this, TD);
-  
+
   ValCtx ConstResult;
   if(tryResolveLoadFromConstant(LoadI, ConstResult))
     return ConstResult;
@@ -1020,6 +1020,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* StartBefore) {
 
   ValCtx ConstVC = VCNull;
+
   MemDepResult Res = tryResolveLoad(LFA, StartBefore, ConstVC);
 
   if(ConstVC != VCNull && Res == MemDepResult()) {
@@ -2370,6 +2371,12 @@ void PeelIteration::printHeader(raw_ostream& OS) const {
 void PeelAttempt::printHeader(raw_ostream& OS) const {
 
   OS << "Loop " << L->getHeader()->getName();
+
+}
+
+std::string IntegrationAttempt::getFunctionName() {
+
+  return F.getName();
 
 }
 
