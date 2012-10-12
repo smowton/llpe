@@ -209,16 +209,51 @@ bool PeelIteration::getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* To
 
 }
 
-void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out) {
+void IntegrationAttempt::printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out) {
 
   const Loop* MyLoop = getLoopContext();
 
+  std::string edgeString;
+  raw_string_ostream rso(edgeString);
+
+  rso << "Node" << BB;
+  if(useLabels) {
+    rso << ":s" << i;
+  }
+
+  rso << " -> ";
+
+  // Handle exits from this loop / this loop's latch specially:
+  if(!getSpecialEdgeDescription(BB, SB, rso))
+    rso << "Node" << SB;
+
+  const Loop* edgeLoop = getEdgeScope(BB, SB);
+
+  if(((!edgeLoop) || edgeLoop->contains(MyLoop)) && edgeIsDead(BB, SB)) {
+    rso << "[color=gray]";
+  }
+
+  rso << ";\n";
+
+  if(deferEdges && std::find(deferEdges->begin(), deferEdges->end(), std::make_pair(BB, const_cast<BasicBlock*>(SB))) != deferEdges->end()) {
+    deferredEdges->push_back(rso.str());
+  }
+  else {
+    Out << rso.str();
+  }
+	
+}
+
+void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* forceSuccessors) {
+
   TerminatorInst* TI = BB->getTerminator();
   bool useLabels = false;
-  if(BranchInst* BI = dyn_cast<BranchInst>(TI))
-    useLabels = BI->isConditional();
-  else if(isa<SwitchInst>(TI))
-    useLabels = true;
+  if(!forceSuccessors) {
+    if(BranchInst* BI = dyn_cast<BranchInst>(TI))
+      useLabels = BI->isConditional();
+    else if(isa<SwitchInst>(TI))
+      useLabels = true;
+  }
   unsigned numSuccessors = 1;
   if(useLabels)
     numSuccessors = TI->getNumSuccessors();
@@ -262,45 +297,30 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
 
   Out << "</table>>];";
 
-  // Print the successor edges *except* any loop exit edges, since those must occur in parent context.
-  unsigned i = 0;
-  for(succ_const_iterator SI = succ_begin((const BasicBlock*)BB), SE = succ_end((const BasicBlock*)BB); SI != SE; ++SI, ++i) {
+  if(forceSuccessors) {
 
-    std::string edgeString;
-    raw_string_ostream rso(edgeString);
+    for(SmallVector<BasicBlock*, 4>::const_iterator it = forceSuccessors->begin(), it2 = forceSuccessors->end(); it != it2; ++it) {
 
-    BasicBlock* SB = const_cast<BasicBlock*>(*SI);
-    rso << "Node" << BB;
-    if(useLabels) {
-      rso << ":s" << i;
+      printOutgoingEdge(BB, *it, 0, false, deferEdges, deferredEdges, Out);
+
     }
 
-    rso << " -> ";
+  }
+  else {
 
-    // Handle exits from this loop / this loop's latch specially:
-    if(!getSpecialEdgeDescription(BB, SB, rso))
-      rso << "Node" << SB;
+    // Print the successor edges *except* any loop exit edges, since those must occur in parent context.
+    unsigned i = 0;
+    for(succ_const_iterator SI = succ_begin((const BasicBlock*)BB), SE = succ_end((const BasicBlock*)BB); SI != SE; ++SI, ++i) {
 
-    const Loop* edgeLoop = getEdgeScope(BB, SB);
+      printOutgoingEdge(BB, const_cast<BasicBlock*>(*SI), i, useLabels, deferEdges, deferredEdges, Out);
 
-    if(((!edgeLoop) || edgeLoop->contains(MyLoop)) && edgeIsDead(BB, SB)) {
-      rso << "[color=gray]";
     }
 
-    rso << ";\n";
-
-    if(deferEdges && std::find(deferEdges->begin(), deferEdges->end(), std::make_pair(BB, const_cast<BasicBlock*>(SB))) != deferEdges->end()) {
-      deferredEdges->push_back(rso.str());
-    }
-    else {
-      Out << rso.str();
-    }
-	
   }
  
 }
 
-void IntegrationAttempt::describeAsDOT(raw_ostream& Out) {
+void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
   std::string escapedName;
   raw_string_ostream RSO(escapedName);
@@ -316,11 +336,48 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out) {
 
     Out << "subgraph \"cluster_" << DOT::EscapeString(it->first->getHeader()->getName()) << "\" {";
 
-    for(Loop::block_iterator BI = it->first->block_begin(), BE = it->first->block_end(); BI != BE; ++BI) {
+    if(brief) {
 
-      BasicBlock* BB = *BI;
-      blocksPrinted.insert(BB);
-      describeBlockAsDOT(BB, &it->second->ExitEdges, &deferredEdges, Out);
+      // Draw the header branching to all exiting blocks, to each exit block.
+      SmallVector<BasicBlock*, 4> Targets;
+
+      it->first->getExitingBlocks(Targets);
+
+      describeBlockAsDOT(it->first->getHeader(), 0, 0, Out, &Targets);
+
+      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI = it->second->ExitEdges.begin(), EE = it->second->ExitEdges.end(); EI != EE; ++EI) {
+
+	if(blocksPrinted.count(EI->first))
+	  continue;
+	Targets.clear();
+	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI2 = it->second->ExitEdges.begin(), EE2 = it->second->ExitEdges.end(); EI2 != EE2; ++EI2) {
+
+	  if(EI2->first == EI->first)
+	    Targets.push_back(EI2->second);
+
+	}
+	describeBlockAsDOT(EI->first, &it->second->ExitEdges, &deferredEdges, Out, &Targets);
+	blocksPrinted.insert(EI->first);
+
+      }
+
+      for(Loop::block_iterator BI = it->first->block_begin(), BE = it->first->block_end(); BI != BE; ++BI) {
+
+	BasicBlock* BB = *BI;
+	blocksPrinted.insert(BB);
+
+      }
+
+    }
+    else {
+
+      for(Loop::block_iterator BI = it->first->block_begin(), BE = it->first->block_end(); BI != BE; ++BI) {
+
+	BasicBlock* BB = *BI;
+	blocksPrinted.insert(BB);
+	describeBlockAsDOT(BB, &it->second->ExitEdges, &deferredEdges, Out, 0);
+
+      }
 
     }
 						     
@@ -354,7 +411,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out) {
     bool isMine = (!myLoop) || myLoop->contains(FI);
     if(isMine && !blocksPrinted.count(FI)) {
 
-      describeBlockAsDOT(FI, 0, 0, Out);
+      describeBlockAsDOT(FI, 0, 0, Out, 0);
 
     }
 
@@ -403,7 +460,7 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
   }
 
-  describeAsDOT(os);
+  describeAsDOT(os, false);
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 

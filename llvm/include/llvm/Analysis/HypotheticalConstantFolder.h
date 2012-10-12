@@ -878,8 +878,9 @@ protected:
   // DOT export:
 
   void printRHS(Instruction* I, raw_ostream& Out);
-  void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out);
-  void describeAsDOT(raw_ostream& Out);
+  void printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out);
+  void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* ForceSuccessors);
+  void describeAsDOT(raw_ostream& Out, bool brief);
   std::string getInstructionColour(Instruction* I);
   std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);

@@ -474,7 +474,7 @@ void IntegratorFrame::redrawImage() {
 
   std::string error;
   raw_fd_ostream RFO(dotpath.c_str(), error);
-  currentIA->describeAsDOT(RFO);
+  currentIA->describeAsDOT(RFO, true);
   RFO.close();
 
   if(!error.empty()) {
@@ -513,8 +513,6 @@ void IntegratorFrame::OnSelectionChanged(wxDataViewEvent& event) {
   if(tag && tag->type == IntegratorTypeIA) {
 
     currentIA = (IntegrationAttempt*)(tag->ptr);
-    redrawImage();
- 
     redrawImage();
 
   }
