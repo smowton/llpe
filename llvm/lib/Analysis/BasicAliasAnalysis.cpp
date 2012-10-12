@@ -584,7 +584,7 @@ const ValCtx BasicAliasAnalysis::DecomposeGEPExpression(const ValCtx FirstV, int
 							SmallVectorImpl<VariableGEPIndex> &VarIndices,
 							const TargetData *TD) {
   // Limit recursion depth to limit compile time in crazy cases.
-  unsigned MaxLookup = 12;
+  unsigned MaxLookup = 1000;
   
   ValCtx V = FirstV;
   BaseOffs = 0;
