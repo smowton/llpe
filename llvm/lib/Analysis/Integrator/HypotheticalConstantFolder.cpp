@@ -71,9 +71,7 @@ public:
 
   virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
 
-    if(Ctx->shouldInvestigateUser(UserI, false, V)) {
-      Ctx->queueTryEvaluateGeneric(UserI, V);
-    }
+    Ctx->queueTryEvaluateGeneric(UserI, V);
 
   }
 
@@ -817,8 +815,8 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   Value* op0 = CmpI->getOperand(0);
   Value* op1 = CmpI->getOperand(1);
  
-  Constant* op0C = dyn_cast<Constant>(getConstReplacement(op0));
-  Constant* op1C = dyn_cast<Constant>(getConstReplacement(op1));
+  Constant* op0C = getConstReplacement(op0);
+  Constant* op1C = getConstReplacement(op1);
   int64_t op0Off, op1Off;
   ValCtx op0O = GetBaseWithConstantOffset(op0, this, op0Off);
   ValCtx op1O = GetBaseWithConstantOffset(op1, this, op1Off);
@@ -1352,6 +1350,9 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
   // UserI might have been improved. Queue work appropriate to find out and if so use that information.
   // If it's a pointer type, find loads and stores that eventually use it and queue them/loads dependent on them for reconsideration.
   // Otherwise just consider the value.
+
+  if((!shouldInvestigateUser(UserI, false, Used)) && (!UserI->getType()->isPointerTy()))
+    return;
 
   queueWorkBlockedOn(UserI);
 
