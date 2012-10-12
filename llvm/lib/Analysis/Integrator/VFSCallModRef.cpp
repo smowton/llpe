@@ -113,7 +113,7 @@ unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const
     
 }
   
-static LibCallFunctionInfo::LocationMRInfo OpenMR[] = {
+static LibCallFunctionInfo::LocationMRInfo JustErrno[] = {
   { 0, AliasAnalysis::Mod },
   { ~0U, AliasAnalysis::ModRef }
 };
@@ -176,8 +176,12 @@ static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCa
 
 static LibCallFunctionInfo VFSCallFunctions[] = {
 
-  { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, OpenMR, 0 },
+  { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR, 0 },
+  { "lseek", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "llseek", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "lseek64", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "close", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
   { "malloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, MallocMR, 0 },
   { "realloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReallocMR, 0 },

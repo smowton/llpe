@@ -1734,6 +1734,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	if(vfsCallBlocksOpen(CI, OpenInst, ReadInst, OS, isVFSCall, shouldRequeue)) {
 	  if(shouldRequeue) {
 	    // Queue to retry when we know more about the call.
+	    LPDEBUG("Inst blocked on " << itcache(*CI) << "\n");
 	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
 	  }
 	  return false;
@@ -1798,6 +1799,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
       if(Start == VCNull) {
 
+	LPDEBUG("CFG blocked: " << BB->getName() << " has no unique successor\n");
 	addBlockedOpen(OpenInst, ReadInst);
 	return false;
 
@@ -2034,6 +2036,10 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     setNextUser(OS, ThisCall);
     OS.LatestResolvedUser = ThisCall;
     resolvedCloseCalls[VFSCall] = CloseFile(&OS);
+
+    setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    investigateUsers(VFSCall);
+
     return true;
 
   }
