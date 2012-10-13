@@ -1364,7 +1364,7 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
     LPDEBUG("Unable to pursue load through call " << itcache(*CI) << " as it has not yet been explored\n");
     return false;
   }
-
+  
   LPDEBUG("Trying to forward load " << itcache(*(LFA.getOriginalInst())) << " through call " << itcache(*CI) << ":\n");
   
   bool ret;

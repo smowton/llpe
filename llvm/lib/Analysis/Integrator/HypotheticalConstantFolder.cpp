@@ -1233,7 +1233,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	  const Type* DestTy = CI->getDestTy();
 	
 	  ValCtx SrcVC = getReplacement(CI->getOperand(0));
-	  if(SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)
+	  if(((SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)) || SrcVC.isPtrAsInt())
 	     && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
 	     && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
 

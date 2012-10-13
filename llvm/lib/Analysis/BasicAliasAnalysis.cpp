@@ -1261,7 +1261,8 @@ BasicAliasAnalysis::aliasCheck(ValCtx V1, unsigned V1Size,
     // Arguments can't alias with local allocations or noalias calls
     // in the same function.
     if (((isa<Argument>(O1) && (isa<AllocaInst>(O2) || isNoAliasCall(O2))) ||
-         (isa<Argument>(O2) && (isa<AllocaInst>(O1) || isNoAliasCall(O1)))))
+         (isa<Argument>(O2) && (isa<AllocaInst>(O1) || isNoAliasCall(O1))))
+	&& (UO1.second == UO2.second))
       return NoAlias;
 
     // Most objects can't alias null.
@@ -1278,9 +1279,9 @@ BasicAliasAnalysis::aliasCheck(ValCtx V1, unsigned V1Size,
     // temporary store the nocapture argument's value in a temporary memory
     // location if that memory location doesn't escape. Or it may pass a
     // nocapture value to other functions as long as they don't capture it.
-    if (isEscapeSource(O1) && isNonEscapingLocalObject(O2))
+    if (isEscapeSource(O1) && isNonEscapingLocalObject(O2) && UO1.second == UO2.second)
       return NoAlias;
-    if (isEscapeSource(O2) && isNonEscapingLocalObject(O1))
+    if (isEscapeSource(O2) && isNonEscapingLocalObject(O1) && UO1.second == UO2.second)
       return NoAlias;
   }
 
