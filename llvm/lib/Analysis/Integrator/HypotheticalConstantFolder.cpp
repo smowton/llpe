@@ -167,8 +167,8 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 	    LPDEBUG("Ignored edge to " << it->second->getName() << " (invariant)\n");
 	  }
 
-	  // Check regardless because certainty is always variant
-	  pass->queueCheckBlock(this, it->second);
+	  // Have the owner of the successor block re-check:
+	  checkLocalEdge(it->first, it->second);
 	  checkBlockPHIs(it->second);
 
 	}

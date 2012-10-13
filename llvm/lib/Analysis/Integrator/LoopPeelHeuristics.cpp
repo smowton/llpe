@@ -358,6 +358,9 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
 bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B2, const Loop* EdgeScope) {
 
+  if(deadEdges.count(std::make_pair(B1, B2)))
+    return true;
+
   const Loop* MyScope = getLoopContext();
 
   if(EdgeScope == MyScope)
@@ -578,7 +581,8 @@ void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
 
 void PeelIteration::checkExitEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
-  if(getEdgeScope(FromBB, ToBB) == L) {
+  const Loop* EScope = getEdgeScope(FromBB, ToBB);
+  if(EScope && L->contains(EScope)) {
     queueCheckExitBlock(ToBB);
   }
   else {
