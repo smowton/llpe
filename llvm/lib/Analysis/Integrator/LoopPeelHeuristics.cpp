@@ -1399,6 +1399,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
   }
   
+  /*
   std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> LastIterEntry = LFA.getLastIterCache(BB, L);
   MemDepResult& LastIterResult = LastIterEntry.first->second;
 
@@ -1410,24 +1411,28 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
     }
   }
   else {
-    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
+  */
 
-    if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult)) {
-      LastIterResult = MemDepResult::getNonLocal();
+  MemDepResult LastIterResult;
+
+  LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
+
+  if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult)) {
+    LastIterResult = MemDepResult::getNonLocal();
+  }
+  else {
+    if(LastIterResult.isClobber()) {
+      LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
     }
     else {
-      if(LastIterResult.isClobber()) {
-	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in last iteration of " << L->getHeader()->getName() << "\n");
-      }
-      else {
-	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
-      }
-      Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
-      return true;
+      LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
     }
+    Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
+    return true;
   }
 
   // OK, try raising the load through the iterations before the last.
+  /*
   std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> OtherItersEntry = LFA.getOtherItersCache(L);
   MemDepResult& OtherItersResult = OtherItersEntry.first->second;
 
@@ -1439,20 +1444,23 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
     }
   }
   else {
-    LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through main body of " << L->getHeader()->getName() << "\n");
-    if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult)) {
-      OtherItersResult = MemDepResult::getNonLocal();
+  */
+
+  MemDepResult OtherItersResult;
+
+  LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through main body of " << L->getHeader()->getName() << "\n");
+  if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult)) {
+    OtherItersResult = MemDepResult::getNonLocal();
+  }
+  else {
+    if(OtherItersResult.isClobber()) {
+      LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
     }
     else {
-      if(OtherItersResult.isClobber()) {
-	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " clobbered in non-final iteration of " << L->getHeader()->getName() << "\n");
-      }
-      else {
-	LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
-      }
-      Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
-      return true;
+      LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
     }
+    Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
+    return true;
   }
 
   // Made it here: the instruction propagates through the entire loop.
@@ -2642,12 +2650,14 @@ void LoadForwardAttempt::describeSymExpr(raw_ostream& Str) {
 
 // Make a symbolic expression for a given load instruction if it depends solely on one pointer
 // with many constant offsets.
-bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
+bool LoadForwardAttempt::buildSymExpr(Value* RootPtr, IntegrationAttempt* RootCtx) {
 
   if(!RootPtr)
     RootPtr = LI->getPointerOperand();
+  if(!RootCtx)
+    RootCtx = originalCtx;
   
-  ValCtx Ptr = originalCtx->getDefaultVC(RootPtr);
+  ValCtx Ptr = RootCtx->getDefaultVC(RootPtr);
 
   LPDEBUG("Trying to describe " << itcache(Ptr) << " as a simple symbolic expression\n");
 
@@ -2727,31 +2737,29 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr) {
 
 }
 
-bool LoadForwardAttempt::tryBuildSymExpr(Value* Ptr) {
+bool LoadForwardAttempt::tryBuildSymExpr(Value* Ptr, IntegrationAttempt* Ctx) {
 
   if(ExprValid)
     return (Expr.size() > 0);
   else {
-    bool ret = buildSymExpr(Ptr);
+    bool ret = buildSymExpr(Ptr, Ctx);
     ExprValid = true;
     return ret;
   }
 
 }
 
-bool LoadForwardAttempt::canBuildSymExpr(Value* Ptr) {
+bool LoadForwardAttempt::canBuildSymExpr(Value* Ptr, IntegrationAttempt* Ctx) {
 
   // Perhaps we could do some quickier checks than just making the thing right away?
-  return tryBuildSymExpr(Ptr);
+  return tryBuildSymExpr(Ptr, Ctx);
 
 }
 
 SmallVector<SymExpr*, 4>* LoadForwardAttempt::getSymExpr() {
   
-  if(!tryBuildSymExpr())
-    return 0;
-  else
-    return &Expr;
+  assert(ExprValid && "getSymExpr without buildSymExpr");
+  return &Expr;
   
 }
 

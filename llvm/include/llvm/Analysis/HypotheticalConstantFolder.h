@@ -1229,7 +1229,7 @@ class LoadForwardAttempt : public LFAQueryable {
 
   TargetData* TD;
 
-  bool buildSymExpr(Value* Ptr);
+  bool buildSymExpr(Value* Ptr, IntegrationAttempt* Ctx);
 
  public:
 
@@ -1239,8 +1239,8 @@ class LoadForwardAttempt : public LFAQueryable {
   virtual LoadForwardAttempt& getLFA();  
 
   void describeSymExpr(raw_ostream& Str);
-  bool tryBuildSymExpr(Value* Ptr = 0);
-  bool canBuildSymExpr(Value* Ptr = 0);
+  bool tryBuildSymExpr(Value* Ptr = 0, IntegrationAttempt* Ctx = 0);
+  bool canBuildSymExpr(Value* Ptr = 0, IntegrationAttempt* Ctx = 0);
   int64_t getSymExprOffset();
   void setSymExprOffset(int64_t);
 

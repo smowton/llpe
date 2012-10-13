@@ -441,7 +441,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     // Generate our own symbolic expression rather than the one that naturally results from the load.
     // This will be used for realisations outside this scope, so it had better be rooted on an identified
     // object as per usual.
-    if(!SubLFA.tryBuildSymExpr(MTI->getSource())) {
+    if(!SubLFA.tryBuildSymExpr(MTI->getSource(), Clobber.second)) {
 
       LPDEBUG("Can't try harder to forward over a memcpy because the source address " << itcache(*(MTI->getSource())) << " is not fully resolved\n");
       return PVNull;
