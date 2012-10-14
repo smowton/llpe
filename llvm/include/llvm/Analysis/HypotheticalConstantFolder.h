@@ -142,6 +142,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
 
+   SmallSet<Function*, 4> alwaysInline;
+
    TargetData* TD;
    AliasAnalysis* AA;
 
@@ -214,6 +216,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
+
+   bool shouldAlwaysInline(Function* F) {
+     return alwaysInline.count(F);
+   }
 
    IntegrationAttempt* getRoot() { return RootIA; }
    void commit();

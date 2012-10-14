@@ -262,8 +262,9 @@ void IntegrationAttempt::queueCFGBlockedLoads() {
 
   // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
   for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
-
-    pass->queueCheckLoad(LI->first, LI->second);
+    
+    if(LI->first->shouldTryEvaluate(LI->second))
+      pass->queueCheckLoad(LI->first, LI->second);
 
   }
 
@@ -652,7 +653,8 @@ void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
       
       for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
 	
-	pass->queueCheckLoad(LI->first, LI->second);
+	if(LI->first->shouldTryEvaluate(LI->second))
+	  pass->queueCheckLoad(LI->first, LI->second);
 	
       }
 
@@ -1144,18 +1146,28 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	  const unsigned NumSucc = TI->getNumSuccessors();
 
+	  bool anyNewDeadEdges = false;
+
 	  for (unsigned I = 0; I != NumSucc; ++I) {
 
 	    BasicBlock* thisTarget = TI->getSuccessor(I);
 
 	    if(thisTarget != takenTarget) {
-	      setEdgeDead(TI->getParent(), thisTarget);
-	      checkBlockPHIs(thisTarget);
+	      if(!edgeIsDead(TI->getParent(), thisTarget)) {
+		anyNewDeadEdges = true;
+		setEdgeDead(TI->getParent(), thisTarget);
+		checkBlockPHIs(thisTarget);
+	      }
 	    }
 
 	    if(shouldCheckEdge(TI->getParent(), thisTarget))
 	      checkEdge(TI->getParent(), thisTarget);
 
+	  }
+
+	  if(anyNewDeadEdges) {
+	    queueCFGBlockedLoads();
+	    queueCFGBlockedOpens();
 	  }
 
 	}

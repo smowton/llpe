@@ -61,6 +61,7 @@ static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("mai
 static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
 static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -499,6 +500,7 @@ static bool functionIsBlacklisted(Function* F) {
   return (F->getName() == "malloc" || F->getName() == "free" ||
 	  F->getName() == "realloc" || F->getName() == "ioctl" ||
 	  F->getName() == "gettimeofday" || F->getName() == "clock_gettime" ||
+	  F->getName() == "time" ||
 	  F->getName() == "open" || F->getName() == "read" ||
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
 	  F->getName() == "lseek64" || F->getName() == "close");
@@ -524,7 +526,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if(!certainBlocks.count(CI->getParent())) {
+  if((!pass->shouldAlwaysInline(FCalled)) && !certainBlocks.count(CI->getParent())) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
     return 0;
   }
@@ -2736,6 +2738,9 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr, IntegrationAttempt* RootCt
   if(success) {
     ExprOffset = Offset;
   }
+  else {
+    Expr.clear();
+  }
 
   return success;
 
@@ -3939,6 +3944,17 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       exit(1);
 
     }
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = AlwaysInlineFunctions.begin(), ArgE = AlwaysInlineFunctions.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* AlwaysF = F.getParent()->getFunction(*ArgI);
+    if(!AlwaysF) {
+      errs() << "No such function " << *ArgI << "\n";
+      exit(1);
+    }
+    alwaysInline.insert(AlwaysF);
 
   }
 

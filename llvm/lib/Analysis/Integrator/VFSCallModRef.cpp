@@ -85,6 +85,12 @@ static LibCallLocationInfo::LocResult isArg1(ImmutableCallSite CS, const Value* 
   
 }
 
+static LibCallLocationInfo::LocResult isArg2(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, AliasAnalysis::UnknownSize);
+  
+}
+
 static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
   return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize);
@@ -103,13 +109,14 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isArg0 },
   { isTermios },
   { isReturnVal },
-  { isArg1 }
+  { isArg1 },
+  { isArg2 }
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 6;
+  return 7;
     
 }
   
@@ -159,6 +166,19 @@ static LibCallFunctionInfo::LocationMRInfo GettimeofdayMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo TimeMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static LibCallFunctionInfo::LocationMRInfo LocaltimeTZIMR[] = {
+  { 2, AliasAnalysis::Ref },
+  { 5, AliasAnalysis::Mod },
+  { 6, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -188,6 +208,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
   { "clock_gettime", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeMR, 0 },
   { "gettimeofday", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeofdayMR, 0 },
+  { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, TimeMR, 0 },
+  // HACK! Workaround for shortcomings working on the date program:
+  { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
