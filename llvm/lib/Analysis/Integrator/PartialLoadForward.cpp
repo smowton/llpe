@@ -254,7 +254,7 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 // * It's defined by a memcpy in similar fashion
 // * It's defined by a VFS read operation, similar to a memcpy
 // Return the result of forwarding, or VCNull if none.
-PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber) {
+PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal) {
 
   // The GVN code I swiped this from contained the comment:
   // "The address being loaded in this non-local block may not be the same as
@@ -274,8 +274,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
   if(Clobber.second->isRootMainCall()) {
 
-    BasicBlock& ClobberEntry = cast<Instruction>(Clobber.first)->getParent()->getParent()->getEntryBlock();
-    if(ClobberEntry.begin() == Clobber.first) {
+    if(isEntryNonLocal) {
 
       if(LFA.canBuildSymExpr()) {
 	  

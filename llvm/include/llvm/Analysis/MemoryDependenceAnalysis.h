@@ -79,21 +79,24 @@ namespace llvm {
     typedef PointerIntPair<Instruction*, 2, DepType> PairTy;
     PairTy Value;
     IntegrationAttempt* Cookie;
-    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0) : Value(V), Cookie(C) {}
+    bool isEntryBlockExit;
+    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0, bool E = false) : Value(V), Cookie(C), isEntryBlockExit(E) {}
   public:
-    MemDepResult() : Value(0, Invalid), Cookie(0) {}
+    MemDepResult() : Value(0, Invalid), Cookie(0), isEntryBlockExit(false) {}
     
     /// get methods: These are static ctor methods for creating various
     /// MemDepResult kinds.
     static MemDepResult getDef(Instruction *Inst, IntegrationAttempt* C = 0) {
       return MemDepResult(PairTy(Inst, Def), C);
     }
-    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0) {
-      return MemDepResult(PairTy(Inst, Clobber), C);
+    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0, bool isEntryBlock = false) {
+      return MemDepResult(PairTy(Inst, Clobber), C, isEntryBlock);
     }
     static MemDepResult getNonLocal() {
       return MemDepResult(PairTy(0, NonLocal));
     }
+
+    bool isEntryNonLocal() const { return isEntryBlockExit; }
 
     /// isClobber - Return true if this MemDepResult represents a query that is
     /// a instruction clobber dependency.
@@ -266,6 +269,7 @@ namespace llvm {
     AliasAnalysis *AA;
     TargetData *TD;
     IntegrationAttempt* parent;
+    bool ignoreLoads;
 
     LoadForwardAttempt* LFA;
 
@@ -275,7 +279,7 @@ namespace llvm {
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0);
+    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0, bool ignoreLoads = false);
 
     /// Clean up memory in between runs
     void releaseMemory();

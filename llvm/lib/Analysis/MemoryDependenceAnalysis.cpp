@@ -83,11 +83,12 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA, bool ignoreLoads) {
 
   this->AA = AA;
   this->parent = P;
   this->LFA = LFA;
+  this->ignoreLoads = ignoreLoads;
   if (PredCache == 0)
     PredCache.reset(new PredIteratorCache());
 
@@ -163,7 +164,7 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
   bool isEntryBlock = (BB == &BB->getParent()->getEntryBlock()) || (parent && parent->getEntryBlock() == BB);
   if (!isEntryBlock)
     return MemDepResult::getNonLocal();
-  return MemDepResult::getClobber(ScanIt);
+  return MemDepResult::getClobber(ScanIt, 0, true);
 }
 
 /// getPointerDependencyFrom - Return the instruction on which a memory
@@ -221,6 +222,10 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
     // Values depend on loads if the pointers are must aliased.  This means that
     // a load depends on another must aliased load from the same value.
     if (LoadInst *LI = dyn_cast<LoadInst>(Inst)) {
+
+      if(ignoreLoads)
+	continue;
+
       Value *Pointer = LI->getPointerOperand();
       uint64_t PointerSize = AA->getTypeStoreSize(LI->getType());
       
@@ -330,7 +335,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
   bool isEntryBlock = (BB == &BB->getParent()->getEntryBlock()) || (parent && parent->getEntryBlock() == BB);
   if (!isEntryBlock)
     return MemDepResult::getNonLocal();
-  return MemDepResult::getClobber(ScanIt);
+  return MemDepResult::getClobber(ScanIt, 0, true);
 }
 
 /// getDependency - Return the instruction on which a memory operation

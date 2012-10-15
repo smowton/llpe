@@ -104,7 +104,7 @@ enum IntegratorWQItemType {
 };
 
 // A cheesy hack to make a value type that acts like a dynamic dispatch hierarchy
-class IntegratorWQItem {
+struct IntegratorWQItem {
 
   IntegrationAttempt* ctx;
   IntegratorWQItemType type;
@@ -117,8 +117,6 @@ class IntegratorWQItem {
       ValCtx OpenProgress;
     } OpenArgs;
   } u;
-
-public:
 
  IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
  IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
@@ -143,6 +141,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
 
    SmallSet<Function*, 4> alwaysInline;
+   DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
 
    TargetData* TD;
    AliasAnalysis* AA;
@@ -219,6 +218,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool shouldAlwaysInline(Function* F) {
      return alwaysInline.count(F);
+   }
+   
+   std::pair<BasicBlock*, BasicBlock*> getOptimisticEdge(const Loop* L) {
+     return optimisticLoopMap.lookup(L);
    }
 
    IntegrationAttempt* getRoot() { return RootIA; }
@@ -552,6 +555,7 @@ protected:
   SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
   DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
   DenseMap<LoadInst*, MemDepResult> LastLoadFailures;
+  DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> > LastLoadOverdefs;
 
   SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
   DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
@@ -663,6 +667,7 @@ protected:
   virtual void collectAllLoopStats() = 0;
   virtual void printHeader(raw_ostream& OS) const = 0;
   virtual void queueTryEvaluateOwnCall() = 0;
+  virtual bool isOptimisticPeel() = 0;
 
   // Simple state-tracking helpers:
 
@@ -704,6 +709,7 @@ protected:
   void checkBlockPHIs(BasicBlock*);
   void markBlockCertain(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
+  void checkEdge(BasicBlock*, BasicBlock*, const Loop*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
   void checkLocalEdge(BasicBlock*, BasicBlock*);
   virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
@@ -748,6 +754,8 @@ protected:
   void queueCFGBlockedLoads();
   void queueCheckAllLoadsInScope(const Loop*);
   void queueCheckAllInstructionsInScope(const Loop*);
+
+  void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
 
   // VFS call forwarding:
 
@@ -815,7 +823,7 @@ protected:
   bool GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
 		       ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
 		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
-  PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber);
+  PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal);
 
   // Dead store and allocation elim:
 
@@ -887,11 +895,11 @@ protected:
 
   // DOT export:
 
-  void printRHS(Instruction* I, raw_ostream& Out);
+  void printRHS(Value*, raw_ostream& Out);
   void printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
   void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* ForceSuccessors, bool brief);
   void describeAsDOT(raw_ostream& Out, bool brief);
-  std::string getInstructionColour(Instruction* I);
+  std::string getValueColour(Value* I);
   std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out) = 0;
@@ -1041,6 +1049,11 @@ public:
   virtual void deleteDeadBlocks();
   virtual void replaceKnownBranches();
 
+  virtual bool isOptimisticPeel();
+
+  bool isOnlyExitingIteration();
+  bool allExitEdgesDead();
+
   virtual int getIterCount() {
     return iterationCount;
   }
@@ -1076,6 +1089,8 @@ class PeelAttempt {
    std::vector<BasicBlock*> LoopBlocks;
    std::vector<PeelIteration*> Iterations;
 
+   std::pair<BasicBlock*, BasicBlock*> OptimisticEdge;
+
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth);
    ~PeelAttempt();
@@ -1105,6 +1120,8 @@ class PeelAttempt {
    void walkLoadsFromFoldedContexts(bool);
    
    void describeTreeAsDOT(std::string path);
+
+   bool allNonFinalIterationsDoNotExit();
 
    void collectStats();
    void printHeader(raw_ostream& OS) const;
@@ -1194,6 +1211,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void deleteDeadBlocks();
   virtual void replaceKnownBranches();
+
+  virtual bool isOptimisticPeel();
 
   virtual int getIterCount() {
     return -1;
@@ -1345,6 +1364,8 @@ class LFARMapping {
 
  // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
+
+ bool functionIsBlacklisted(Function*);
 
 } // Namespace LLVM
 

@@ -62,6 +62,7 @@ static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
 static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
+static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -104,6 +105,8 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   
   L->getExitEdges(ExitEdges);
   LoopBlocks = L->getBlocks();
+
+  OptimisticEdge = Pass->getOptimisticEdge(L);
 
   getOrCreateIteration(0);
 
@@ -214,7 +217,7 @@ ValCtx IntegrationAttempt::getReplacementUsingScopeRising(Value* V, const Loop* 
   if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyScope, LScope))) {
 
     PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
-    if(finalIter->iterStatus == IterationStatusFinal) {
+    if(finalIter->isOnlyExitingIteration()) {
 
       return finalIter->getReplacementUsingScopeRising(V, LScope);
 
@@ -369,7 +372,7 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
   
   if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
     PeelIteration* FinalIter = LPA->Iterations.back();
-    if(FinalIter->iterStatus == IterationStatusFinal) {
+    if(FinalIter->isOnlyExitingIteration()) {
       return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
     }
   }
@@ -455,7 +458,7 @@ const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
 
 bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
 
-  const Loop* BlockL = getBlockScope(BB);
+  const Loop* BlockL = LI[&F]->getLoopFor(BB);
   const Loop* MyL = getLoopContext();
 
   if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
@@ -463,9 +466,9 @@ bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
     if(PeelAttempt* LPA = getPeelAttempt(BlockL)) {
 
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
-      if(FinalIter->iterStatus == IterationStatusFinal) {
+      if(FinalIter->isOnlyExitingIteration()) {
 
-	return FinalIter->certainBlocks.count(BB);
+	return FinalIter->blockIsCertain(BB);
 
       }
       else {
@@ -495,7 +498,7 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 
 }
 
-static bool functionIsBlacklisted(Function* F) {
+bool llvm::functionIsBlacklisted(Function* F) {
 
   return (F->getName() == "malloc" || F->getName() == "free" ||
 	  F->getName() == "realloc" || F->getName() == "ioctl" ||
@@ -503,7 +506,10 @@ static bool functionIsBlacklisted(Function* F) {
 	  F->getName() == "time" ||
 	  F->getName() == "open" || F->getName() == "read" ||
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
-	  F->getName() == "lseek64" || F->getName() == "close");
+	  F->getName() == "lseek64" || F->getName() == "close" ||
+	  F->getName() == "__time_localtime_tzi" ||
+	  F->getName() == "fwrite" ||
+	  F->getName() == "memset_byte_fn");
 
 }
 
@@ -535,6 +541,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
     return 0;
   }
+
+  errs() << "Inline new fn " << FCalled->getName() << "\n";
 
   InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
   inlineChildren[CI] = IA;
@@ -600,16 +608,20 @@ void PeelIteration::checkFinalIteration() {
 
   if(edgeIsDead(L->getLoopLatch(), L->getHeader())) {
 
-    for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
-      
-      checkExitEdge(EI->first, EI->second);
-
-    }
-    
     iterStatus = IterationStatusFinal;
 
-    // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
-    parent->queueCFGBlockedLoads();
+    if(isOnlyExitingIteration()) {
+
+      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+      
+	checkExitEdge(EI->first, EI->second);
+	
+      }
+    
+      // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
+      parent->queueCFGBlockedLoads();
+
+    }
 
   }
 
@@ -659,6 +671,20 @@ PeelIteration* PeelIteration::getNextIteration() {
 
 }
 
+bool PeelIteration::allExitEdgesDead() {
+
+  for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+
+    if(!edgeIsDead(EI->first, EI->second)) {
+      return false;
+    }
+
+  }
+
+  return true;
+
+}
+
 PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
   if(PeelIteration* Existing = getNextIteration())
@@ -669,16 +695,10 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     return 0;
   }
 
-  bool willIterate = true;
+  std::pair<BasicBlock*, BasicBlock*>& OE = parentPA->OptimisticEdge;
 
-  for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second)) || allExitEdgesDead();
 
-    if(!edgeIsDead(EI->first, EI->second)) {
-      willIterate = false;
-    }
-
-  }
-  
   if(!willIterate) {
 
     LPDEBUG("Won't peel loop " << L->getHeader()->getName() << " yet because at least one exit edge is still alive\n");
@@ -691,6 +711,8 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     return 0;
 
   }
+
+  errs() << "Peel loop " << L->getHeader()->getName() << "\n";
 
   iterStatus = IterationStatusNonFinal;
   LPDEBUG("Loop known to iterate: creating next iteration\n");
@@ -873,11 +895,36 @@ ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
 
 }
 
+static bool shouldBlockOnInst(Instruction* I, IntegrationAttempt* ICtx) {
+
+  if(!I)
+    return false;
+
+  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+    // An apparent dependence on the call site means either (a) we couldn't build a symbolic expression,
+    // only fixable by improving the loaded pointer, or (b) the call is not expanded (in which case this
+    // test fails), or (c) multiple results within the call (in which case the appropriate queueing is
+    // done elsewhere)
+
+    return !ICtx->getInlineAttempt(CI);
+
+  }
+  else if(I->mayWriteToMemory()) {
+
+    return true;
+
+  }
+
+  return false;
+
+}
+
 // Find the unique definer or clobberer for a given Load.
 MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, this, &(LFA.getLFA()));
+  MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */);
 
   LoadInst* QueryInst = LFA.getQueryInst();
   LoadInst* OriginalInst = LFA.getOriginalInst();
@@ -913,6 +960,27 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
       }
       else {
 	LPDEBUG(itcache(*OriginalInst) << " is overdefined: depends on at least " << itcache(Seen) << " and " << itcache(Res) << "\n");
+	IntegrationAttempt* OrigCtx = LFA.getOriginalCtx();
+	OrigCtx->setLoadOverdef(OriginalInst, NLResults);
+
+	for(unsigned int i = 0; i < NLResults.size(); i++) {
+		
+	  // If there are two clobbers, or a clobber and a def, improvement of a clobber might
+	  // yield 1-def or 1-clobber. Defs will always Def unless edges get killed.
+	  const MemDepResult& Res = NLResults[i].getResult();
+	  if(Res.isClobber() && !Res.isEntryNonLocal()) {
+
+	    IntegrationAttempt* BlockCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
+
+	    if(shouldBlockOnInst(Res.getInst(), BlockCtx)) {
+	      BlockCtx->addBlockedLoad(Res.getInst(), OrigCtx, OriginalInst);
+	      //errs() << "Block load " << itcache(*LFA.getOriginalInst()) << " on " << itcache(*(Res.getInst())) << "\n";
+	    }
+
+	  }
+	  
+	}
+
 	return MemDepResult();
       }
 
@@ -926,6 +994,12 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
   }
 
   return Seen;
+
+}
+
+void IntegrationAttempt::setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res) {
+
+  LastLoadOverdefs[LI] = Res;
 
 }
 
@@ -1047,7 +1121,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
   if(Res.isClobber()) {
     // See if we can do better for clobbers by misaligned stores, memcpy, read calls, etc.
-    PV = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt));
+    PV = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt), Res.isEntryNonLocal());
   }
   else if(Res.isDef()) {
     ValCtx DefResult = getDefn(Res);
@@ -1105,9 +1179,11 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
       LPDEBUG("Load resolved successfully, but " << itcache(Result) << " is not a forwardable value\n");
     }
 
-    if(Res.getInst() && (isa<CallInst>(Res.getInst()) || isa<LoadInst>(Res.getInst()) || Res.getInst()->mayWriteToMemory()))
+    IntegrationAttempt* BlockCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
+    if(shouldBlockOnInst(Res.getInst(), BlockCtx)) {
       ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
     // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
+    }
 
     if(Res.getInst() && Res.getCookie()) {
       
@@ -1398,7 +1474,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
   PreheaderOut = 0;
 
-  if(Iterations.back()->iterStatus != IterationStatusFinal) {
+  if(!(Iterations.back()->isOnlyExitingIteration())) {
     
     LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through loop " << (L->getHeader()->getName()) << " without per-iteration knowledge as it is not yet known to terminate\n");
     return false;
@@ -3715,11 +3791,75 @@ void IntegrationHeuristicsPass::releaseMemory(void) {
   }
 }
 
+namespace llvm {
+
+inline bool operator==(IntegratorWQItem W1, IntegratorWQItem W2) {
+
+  if(W1.ctx != W2.ctx || W1.type != W2.type)
+    return false;
+
+  switch(W1.type) {
+  case TryEval:
+    return W1.u.V == W2.u.V;
+  case CheckBlock:
+    return W1.u.BB == W2.u.BB;
+  case CheckLoad:
+    return W1.u.LI == W2.u.LI;
+  case OpenPush:
+    return (W1.u.OpenArgs.OpenI == W2.u.OpenArgs.OpenI && W1.u.OpenArgs.OpenProgress == W2.u.OpenArgs.OpenProgress);
+  default:
+    assert(0 && "Bad WQ item type!");
+  }
+
+}
+
+inline bool operator!=(IntegratorWQItem W1, IntegratorWQItem W2) {
+  return !(W1 == W2);
+}
+
+inline bool operator<(IntegratorWQItem W1, IntegratorWQItem W2) {
+  if(W1.ctx != W2.ctx)
+    return W1.ctx < W2.ctx;
+  if(W1.type != W2.type)
+    return W1.type < W2.type;
+  switch(W1.type) {
+  case TryEval:
+    return W1.u.V < W2.u.V;
+  case CheckBlock:
+    return W1.u.BB < W2.u.BB;
+  case CheckLoad:
+    return W1.u.LI < W2.u.LI;
+  case OpenPush:
+    if(W1.u.OpenArgs.OpenI != W2.u.OpenArgs.OpenI)
+      return W1.u.OpenArgs.OpenI < W2.u.OpenArgs.OpenI;
+    return W1.u.OpenArgs.OpenProgress < W2.u.OpenArgs.OpenProgress;
+  default:
+    assert(0 && "Bad WQ item type!");
+  }
+}
+
+inline bool operator<=(IntegratorWQItem W1, IntegratorWQItem W2) {
+  return W1 < W2 || W1 == W2;
+}
+
+inline bool operator>(IntegratorWQItem W1, IntegratorWQItem W2) {
+  return !(W1 <= W2);
+}
+
+inline bool operator>=(IntegratorWQItem W1, IntegratorWQItem W2) {
+  return !(W1 < W2);
+}
+
+}
+
 void IntegrationHeuristicsPass::runQueue() {
 
   SmallVector<IntegratorWQItem, 64>* consumeQueue = (produceQueue == &workQueue1) ? &workQueue2 : &workQueue1;
 
   while(workQueue1.size() || workQueue2.size()) {
+    
+    std::sort(consumeQueue->begin(), consumeQueue->end());
+    std::unique(consumeQueue->begin(), consumeQueue->end());
 
     for(SmallVector<IntegratorWQItem, 64>::iterator it = consumeQueue->begin(), itend = consumeQueue->end(); it != itend; ++it) {
 
@@ -3734,7 +3874,6 @@ void IntegrationHeuristicsPass::runQueue() {
     std::swap(consumeQueue, produceQueue);
 
   }
-
 
 }
 
@@ -3955,6 +4094,60 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       exit(1);
     }
     alwaysInline.insert(AlwaysF);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = OptimisticLoops.begin(), ArgE = OptimisticLoops.end(); ArgI != ArgE; ++ArgI) {
+
+    const std::string& arg = *ArgI;
+
+    std::string FName, BB1Name, BB2Name;
+    size_t firstComma = arg.find(',');
+    size_t secondComma;
+    if(firstComma != std::string::npos)
+      secondComma = arg.find(',', firstComma+1);
+    if(firstComma == std::string::npos || secondComma == std::string::npos) {
+      errs() << "--int-optimistic-loop must have the form fname,bbname,bbname\n";
+      exit(1);
+    }
+
+    FName = arg.substr(0, firstComma);
+    BB1Name = arg.substr(firstComma + 1, (secondComma - firstComma) - 1);
+    BB2Name = arg.substr(secondComma + 1);
+
+    Function* LoopF = F.getParent()->getFunction(FName);
+    if(!LoopF) {
+      errs() << "No such function " << FName << "\n";
+      exit(1);
+    }
+
+    BasicBlock *BB1 = 0, *BB2 = 0;
+
+    for(Function::iterator FI = LoopF->begin(), FE = LoopF->end(); FI != FE; ++FI) {
+
+      if(FI->getName() == BB1Name)
+	BB1 = FI;
+      if(FI->getName() == BB2Name)
+	BB2 = FI;
+
+    }
+
+    if(!BB1) {
+      errs() << "No such block " << BB1Name << " in " << FName << "\n";
+      exit(1);
+    }
+    if(!BB2) {
+      errs() << "No such block " << BB2Name << " in " << FName << "\n";
+      exit(1);
+    }
+
+    const Loop* L = LIs[LoopF]->getLoopFor(BB1);
+    if(!L) {
+      errs() << "Block " << BB1Name << " in " << FName << " not in a loop\n";
+      exit(1);
+    }
+    
+    optimisticLoopMap[L] = std::make_pair(BB1, BB2);
 
   }
 

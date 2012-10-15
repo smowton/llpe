@@ -35,7 +35,7 @@ public:
 
 };
 
-std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
+std::string IntegrationAttempt::getValueColour(Value* V) {
 
   // How should the instruction be coloured:
   // Bright green: defined here, i.e. it's a loop invariant.
@@ -45,13 +45,15 @@ std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
   // Lime green: Invariant defined above.
   // Grey: part of a dead block.
 
-  if(blockIsDead(I->getParent()))
+  Instruction* I = dyn_cast<Instruction>(V);
+
+  if(I && blockIsDead(I->getParent()))
     return "#aaaaaa";
 
-  if(deadValues.count(I) || unusedWriters.count(I))
+  if(I && (deadValues.count(I) || unusedWriters.count(I)))
     return "red";
 
-  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+  if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
     if(inlineChildren.find(CI) != inlineChildren.end())
       return "yellow";
     else
@@ -59,24 +61,26 @@ std::string IntegrationAttempt::getInstructionColour(Instruction* I) {
   }
 
   const Loop* MyScope = getLoopContext();
-  const Loop* IScope = getValueScope(I);
+  const Loop* VScope = getValueScope(V);
 
-  if(IScope == MyScope) {
+  if(VScope == MyScope) {
 
     // Defined or killed here:
-    if(getReplacement(I) != getDefaultVC(I))
+    if(getReplacement(V) != getDefaultVC(V))
       return "green";
 
   }
-  else if((!IScope) || IScope->contains(MyScope)) {
+  else if((!VScope) || VScope->contains(MyScope)) {
 
-    if(getReplacement(I) != getDefaultVC(I))
+    if(getReplacement(V) != getDefaultVC(V))
       return "limegreen";
     
-    CheckDeadCallback CDC(I);
-    callWithScope(CDC, IScope);
-    if(CDC.isDead)
-      return "red";
+    if(I) {
+      CheckDeadCallback CDC(I);
+      callWithScope(CDC, VScope);
+      if(CDC.isDead)
+	return "red";
+    }
 
   }
   else {
@@ -144,7 +148,7 @@ static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 100));
+  return escapeHTML(TruncStr(RSO.str(), 1000));
 
 }
 
@@ -153,7 +157,7 @@ static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 100));
+  return escapeHTML(TruncStr(RSO.str(), 1000));
 
 }
 
@@ -162,39 +166,59 @@ static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(MDR, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 100));
+  return escapeHTML(TruncStr(RSO.str(), 1000));
 
 }
 
-void IntegrationAttempt::printRHS(Instruction* I, raw_ostream& Out) {
+void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   
-  if(blockIsDead(I->getParent()))
+  Instruction* I = dyn_cast<Instruction>(V);
+
+  if(I && blockIsDead(I->getParent()))
     return;
 
   const Loop* MyScope = getLoopContext();
-  const Loop* IScope = getValueScope(I);
-  bool isInvariant = (MyScope != IScope && ((!IScope) || IScope->contains(MyScope)));
-  
-  if(getDefaultVC(I) != getReplacement(I)) {
+  const Loop* VScope = getValueScope(V);
+  bool isInvariant = (MyScope != VScope && ((!VScope) || VScope->contains(MyScope)));
+
+  ValCtx Repl = getReplacement(V);  
+  if(getDefaultVC(V) != Repl) {
     if(isInvariant)
       Out << "(invar) ";
-    Out << escapeHTMLValue(getReplacement(I), this);
+    if(isa<Function>(Repl.first))
+      Out << "@" << Repl.first->getName();
+    else
+      Out << escapeHTMLValue(Repl, this);
   }
-  else if(isInvariant) {
+  else if(isInvariant && I) {
     CheckDeadCallback CDC(I);
-    callWithScope(CDC, IScope);
+    callWithScope(CDC, VScope);
     if(CDC.isDead)
       Out << "(invar) DEAD";
   }
-  else if(deadValues.count(I)) {
+  else if(I && deadValues.count(I)) {
     Out << "DEAD";
   }
-  else if(LoadInst* LI = dyn_cast<LoadInst>(I)) {
+  else if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
     DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);
-    if(it != LastLoadFailures.end())
-      Out << escapeHTMLValue(it->second, this);
+    if(it != LastLoadFailures.end()) {
+      bool printed = false;
+      if(it->second == MemDepResult()) {
+	DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> >::iterator it2 = LastLoadOverdefs.find(LI);
+	if(it2 != LastLoadOverdefs.end()) {
+	  Out << "{{ ";
+	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE; ++NLI) {
+	    Out << escapeHTMLValue(NLI->getResult(), this) << ", ";
+	  }
+	  Out << " }}";
+	  printed = true;
+	}
+      }
+      if(!printed)
+	Out << escapeHTMLValue(it->second, this);
+    }
   }
-  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+  else if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
     DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.find(CI);
     if(it != forwardableOpenCalls.end()) {
       Out << it->second.Name << "(" << (it->second.success ? "success" : "not found") << ")";
@@ -301,11 +325,28 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
     Out << "Entry block: ";
   Out << escapeHTML(BB->getName()) << "</font></td></tr>\n";
 
-  for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+  bool isFunctionHeader = (!getLoopContext()) && (BB == &(F.getEntryBlock()));
 
-    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getInstructionColour(II) << "\">";
-    Out << escapeHTMLValue(II, this) << "</td><td>";
-    printRHS(II, Out);
+  size_t ValSize = BB->size();
+  if(isFunctionHeader)
+    ValSize += F.arg_size();
+
+  std::vector<Value*> Vals;
+  Vals.reserve(ValSize);
+
+  if(isFunctionHeader) {
+    for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI)
+      Vals.push_back(AI);
+  }
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI)
+    Vals.push_back(BI);
+
+  for(std::vector<Value*>::iterator VI = Vals.begin(), VE = Vals.end(); VI != VE; ++VI) {
+
+    Value* V = *VI;
+    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(V) << "\">";
+    Out << escapeHTMLValue(V, this) << "</td><td>";
+    printRHS(V, Out);
     Out << "</td></tr>\n";
 
   }

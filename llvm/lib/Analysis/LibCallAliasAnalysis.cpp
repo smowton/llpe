@@ -14,6 +14,7 @@
 #include "llvm/Analysis/LibCallAliasAnalysis.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/LibCallSemantics.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Function.h"
 #include "llvm/Pass.h"
 using namespace llvm;

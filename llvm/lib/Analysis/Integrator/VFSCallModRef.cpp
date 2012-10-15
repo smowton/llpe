@@ -179,6 +179,19 @@ static LibCallFunctionInfo::LocationMRInfo LocaltimeTZIMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo FwriteMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Ref },
+  { 6, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
+static LibCallFunctionInfo::LocationMRInfo MemsetByteMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -211,6 +224,8 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, TimeMR, 0 },
   // HACK! Workaround for shortcomings working on the date program:
   { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
+  { "fwrite", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, FwriteMR, 0 },
+  { "memset_byte_fn", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, MemsetByteMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

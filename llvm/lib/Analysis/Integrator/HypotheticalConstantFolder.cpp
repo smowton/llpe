@@ -16,6 +16,7 @@
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/Instructions.h"
+#include "llvm/IntrinsicInst.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -183,12 +184,41 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
 }
 
+bool PeelAttempt::allNonFinalIterationsDoNotExit() {
+
+  for(unsigned i = 0; i < Iterations.size() - 1; ++i) {
+
+    if(!Iterations[i]->allExitEdgesDead())
+      return false;
+
+  }
+
+  return true;
+
+}
+
+bool PeelIteration::isOnlyExitingIteration() {
+
+  if(iterStatus != IterationStatusFinal)
+    return false;
+
+  if(!parentPA->OptimisticEdge.first)
+    return true;
+
+  return parentPA->allNonFinalIterationsDoNotExit();
+
+}
+
 bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
   // Check if this is the latch or an exit edge.
 
   bool isExitEdge = !L->contains(ToBB);
-  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || isExitEdge);
+  bool isOptimisticEdge = std::make_pair(FromBB, ToBB) == parentPA->OptimisticEdge;
+  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || isExitEdge || isOptimisticEdge);
+
+  if(isOptimisticEdge)
+    pass->queueCheckBlock(this, ToBB);
 
   if(isSpecialBranchTarget) {
     if(iterStatus == IterationStatusUnknown) {
@@ -196,7 +226,7 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
       if(iterStatus == IterationStatusUnknown)
 	checkFinalIteration();
     }
-    else if(iterStatus == IterationStatusFinal && isExitEdge) {
+    else if(isOnlyExitingIteration() && isExitEdge) {
       checkExitEdge(FromBB, ToBB);
     }
 
@@ -215,9 +245,7 @@ void IntegrationAttempt::checkLocalEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
   
 }
 
-void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  const Loop* EdgeScope = getEdgeScope(FromBB, ToBB);
+void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB, const Loop* EdgeScope) {
 
   if((!EdgeScope) || EdgeScope->contains(getLoopContext())) {
     // Check regardless of scope, because certainty is always variant
@@ -226,6 +254,18 @@ void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
   else {
     checkVariantEdge(FromBB, ToBB, EdgeScope);
   }
+
+}
+
+void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  // Check the edge once at its natural scope, to try to kill it:
+  const Loop* EdgeScope = getEdgeScope(FromBB, ToBB);
+  checkEdge(FromBB, ToBB, EdgeScope);
+  // And again at its containing scope, as block certainty is always variant.
+  const Loop* ContScope = LI[&F]->getLoopFor(FromBB);
+  if(ContScope != EdgeScope)
+    checkEdge(FromBB, ToBB, ContScope);
 
 }
 
@@ -261,6 +301,10 @@ void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, 
 void IntegrationAttempt::queueCFGBlockedLoads() {
 
   // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
+
+  std::sort(CFGBlockedLoads.begin(), CFGBlockedLoads.end());
+  std::unique(CFGBlockedLoads.begin(), CFGBlockedLoads.end());
+
   for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
     
     if(LI->first->shouldTryEvaluate(LI->second))
@@ -388,6 +432,18 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
 
 }
 
+bool InlineAttempt::isOptimisticPeel() {
+  
+  return false;
+
+}
+
+bool PeelIteration::isOptimisticPeel() {
+
+  return !!(parentPA->OptimisticEdge.first);
+
+}
+
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
@@ -405,7 +461,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   bool isDead = true;
   bool isCertain = true;
 
-  if(BB == getEntryBlock()) {
+  if(BB == getEntryBlock() && ((!parent) || parent->blockIsCertain(getEntryInstruction()->getParent()))) {
 
     isCertain = true;
     isDead = false;
@@ -650,6 +706,9 @@ void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
     DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
     
     if(it != InstBlockedLoads.end()) {
+      
+      std::sort(it->second.begin(), it->second.end());
+      std::unique(it->second.begin(), it->second.end());
       
       for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
 	
@@ -1362,6 +1421,32 @@ void PeelIteration::queueTryEvaluateOwnCall() {
 
 }
 
+static bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx) {
+
+  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+    // Being blocked on a call instruction usually means you're waiting for it to be expanded.
+    // getInlineAttempt deals with that case itself.
+    // The exception is functions for which we have specific argument modref info, which are blacklisted
+
+    if(isa<MemIntrinsic>(CI))
+      return true;
+    Function* F = ICtx->getCalledFunction(CI);
+    // If the callee is unknown there's no point asking people to try to forward through it.
+    if(!F)
+      return false;
+    if(functionIsBlacklisted(F))
+      return true;
+
+    return false;
+
+  }
+  else {
+    return true;
+  }
+
+}
+
 void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used) {
 
   // UserI might have been improved. Queue work appropriate to find out and if so use that information.
@@ -1370,8 +1455,9 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
 
   if((!shouldInvestigateUser(UserI, false, Used)))
     return;
-
-  queueWorkBlockedOn(UserI);
+  
+  if(shouldQueueOnInst(UserI, this))
+    queueWorkBlockedOn(UserI);
 
   if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
 
@@ -1524,7 +1610,7 @@ void IntegrationAttempt::visitExitPHI(Instruction* UserI, VisitorContext& Visito
 void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
   // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI. It could however occur in any parent loop.
-  if(iterStatus == IterationStatusFinal) {
+  if(isOnlyExitingIteration()) {
     assert(isa<PHINode>(UserI));
     const Loop* PHIL = LI[&F]->getLoopFor(UserI->getParent());
     parent->visitExitPHIWithScope(UserI, Visitor, PHIL);
@@ -1609,8 +1695,10 @@ void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
 
 void IntegrationAttempt::investigateUsers(Value* V) {
 
-  if(Instruction* I = dyn_cast<Instruction>(V))
-    queueWorkBlockedOn(I);
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+    if(shouldQueueOnInst(I, this))
+      queueWorkBlockedOn(I);
+  }
   InvestigateVisitor IV(V);
   visitUsers(V, IV);
 
@@ -1846,7 +1934,7 @@ void IntegrationAttempt::walkOperand(Value* V, OpCallback& CB) {
 	return;
 
       PeelIteration* Final = LPA->Iterations[LPA->Iterations.size() - 1];
-      if(Final->iterStatus != IterationStatusFinal)
+      if(!Final->isOnlyExitingIteration())
 	return;
 
       CB.callback(Final, V);
@@ -2131,6 +2219,9 @@ void IntegrationAttempt::queueCheckAllInstructionsInScope(const Loop* MyL) {
 	if(BranchInst* BI = dyn_cast<BranchInst>(II)) {
 	  if(BI->isUnconditional())
 	    continue;
+	}
+	else if(CallInst* CI = dyn_cast<CallInst>(II)) {
+	  getOrCreateInlineAttempt(CI);
 	}
 	if(getValueScope(II) == MyL) {
 	  
