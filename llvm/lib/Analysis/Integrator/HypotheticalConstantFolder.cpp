@@ -714,8 +714,9 @@ void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
       
       for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
 	
-	if(LI->first->shouldTryEvaluate(LI->second))
+	if(LI->first->shouldTryEvaluate(LI->second)) {
 	  pass->queueCheckLoad(LI->first, LI->second);
+	}
 	
       }
 

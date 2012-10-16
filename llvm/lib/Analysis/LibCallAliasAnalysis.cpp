@@ -89,8 +89,8 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
   
   // Find out if the pointer refers to a known location.
-  bool NoneMatch = true;
-  for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
+  MRInfo = NoModRef;
+  for (unsigned i = 0; Details[i].LocationID != ~0U && MRInfo != ModRef; ++i) {
     const LibCallLocationInfo &Loc =
     LCI->getLocationInfo(Details[i].LocationID);
     LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, CSCtx, PCtx);
@@ -98,24 +98,9 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
     
     // If we don't know if this pointer points to the location, then we have to
     // assume it might alias in some case.
-    if (Res == LibCallLocationInfo::Unknown) {
-      NoneMatch = false;
-      continue;
-    }
-    
-    // If we know that this pointer definitely is pointing into the location,
-    // merge in this information.
-    return ModRefResult(MRInfo & Details[i].MRInfo);
+    MRInfo = ModRefResult(MRInfo | Details[i].MRInfo);
   }
   
-  // If we found that the pointer is guaranteed to not match any of the
-  // locations in our 'DoesOnly' rule, then we know that the pointer must point
-  // to some other location.  Since the libcall doesn't mod/ref any other
-  // locations, return NoModRef.
-  if (NoneMatch)
-    return NoModRef;
-  
-  // Otherwise, return any other info gained so far.
   return MRInfo;
 }
 

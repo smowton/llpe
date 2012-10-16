@@ -1041,7 +1041,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
       if(Result != VCNull)
 	return true;
 
-      uint64_t CSize = TD->getTypeAllocSize(GV->getInitializer()->getType());
+      int64_t CSize = TD->getTypeAllocSize(GV->getInitializer()->getType());
       if(CSize < Offset) {
 
 	LPDEBUG("Can't forward from constant: read from global out of range\n");
@@ -1395,7 +1395,7 @@ bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction
 bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult) {
 
   LFARealization LFAR(LFA, this, Where);
-  
+
   if(tryResolveLoadFromConstant(LFAR.getQueryInst(), ConstResult)) {
     Result = MemDepResult();
     return false;

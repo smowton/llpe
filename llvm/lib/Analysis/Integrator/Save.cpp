@@ -715,7 +715,28 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(isa<CallInst>(I))
       oldMapping = VM[I];
 
-    I->replaceAllUsesWith(it->second.first);
+    Constant* TargetC = cast<Constant>(it->second.first);
+    if(I->getType() != it->second.first->getType()) {
+      assert(isa<CallInst>(I) && "Non-call instruction replaced with wrong type?");
+      if(I->getType()->isVoidTy()) {
+	TargetC = 0;
+      }
+      else if(I->getType()->isIntegerTy()) {
+	TargetC = ConstantExpr::getIntegerCast(TargetC, I->getType(), false);
+      }
+      else if(I->getType()->isPointerTy()) {
+	TargetC = ConstantExpr::getPointerCast(TargetC, I->getType());
+      }
+      else if(I->getType()->isFloatingPointTy()) {
+	TargetC = ConstantExpr::getFPCast(TargetC, I->getType());
+      }
+      else {
+	assert(0 && "Type mismatch not handled");
+      }
+    }
+
+    if(TargetC)
+      I->replaceAllUsesWith(TargetC);
 
     // Keep call instructions since they might have useful side-effects.
     if(!isa<CallInst>(I))

@@ -91,6 +91,12 @@ static LibCallLocationInfo::LocResult isArg2(ImmutableCallSite CS, const Value* 
   
 }
 
+static LibCallLocationInfo::LocResult isArg3(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(3), CSCtx, AliasAnalysis::UnknownSize);
+  
+}
+
 static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
   return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize);
@@ -110,13 +116,14 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isTermios },
   { isReturnVal },
   { isArg1 },
-  { isArg2 }
+  { isArg2 },
+  { isArg3 }
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 7;
+  return 8;
     
 }
   
@@ -182,7 +189,7 @@ static LibCallFunctionInfo::LocationMRInfo LocaltimeTZIMR[] = {
 static LibCallFunctionInfo::LocationMRInfo FwriteMR[] = {
   { 0, AliasAnalysis::Mod },
   { 2, AliasAnalysis::Ref },
-  { 6, AliasAnalysis::Mod },
+  { 7, AliasAnalysis::Mod },
   { ~0U, AliasAnalysis::ModRef }
 };
 
