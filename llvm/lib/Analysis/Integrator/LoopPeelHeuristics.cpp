@@ -63,6 +63,7 @@ static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
+static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1014,7 +1015,7 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
     else
       New = Ultimate;
     New = make_vc(New.first->getUnderlyingObject(), New.second);
-  
+ 
     if(New == Ultimate)
       break;
 
@@ -1035,9 +1036,19 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     if(GV->isConstant()) {
 
       uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
+
       Result = extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD);
       if(Result != VCNull)
 	return true;
+
+      uint64_t CSize = TD->getTypeAllocSize(GV->getInitializer()->getType());
+      if(CSize < Offset) {
+
+	LPDEBUG("Can't forward from constant: read from global out of range\n");
+	Result = VCNull;
+	return true;
+
+      }
 
       unsigned char* buf = (unsigned char*)alloca(LoadSize);
       memset(buf, 0, LoadSize);
@@ -1050,6 +1061,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
       else {
 
 	LPDEBUG("ReadDataFromGlobal failed\n");
+	Result = VCNull;
+	return true;
 
       }
 
@@ -3954,6 +3967,50 @@ static bool parseIntCommaString(const std::string& str, long& idx, std::string& 
 
 }
 
+static void parseFBB(const char* paramName, const std::string& arg, Module& M, Function*& F, BasicBlock*& BB1, BasicBlock*& BB2) {
+
+  std::string FName, BB1Name, BB2Name;
+  size_t firstComma = arg.find(',');
+  size_t secondComma;
+  if(firstComma != std::string::npos)
+    secondComma = arg.find(',', firstComma+1);
+  if(firstComma == std::string::npos || secondComma == std::string::npos) {
+    errs() << "--" << paramName << " must have the form fname,bbname,bbname\n";
+    exit(1);
+  }
+
+  FName = arg.substr(0, firstComma);
+  BB1Name = arg.substr(firstComma + 1, (secondComma - firstComma) - 1);
+  BB2Name = arg.substr(secondComma + 1);
+
+  F = M.getFunction(FName);
+  if(!F) {
+    errs() << "No such function " << FName << "\n";
+    exit(1);
+  }
+
+  BB1 = BB2 = 0;
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    if(FI->getName() == BB1Name)
+      BB1 = FI;
+    if(FI->getName() == BB2Name)
+      BB2 = FI;
+
+  }
+
+  if(!BB1) {
+    errs() << "No such block " << BB1Name << " in " << FName << "\n";
+    exit(1);
+  }
+  if(!BB2) {
+    errs() << "No such block " << BB2Name << " in " << FName << "\n";
+    exit(1);
+  }
+
+}
+
 void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val) {
 
   const Type* Target = F.getFunctionType()->getParamType(Idx);
@@ -4099,55 +4156,29 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 
   for(cl::list<std::string>::const_iterator ArgI = OptimisticLoops.begin(), ArgE = OptimisticLoops.end(); ArgI != ArgE; ++ArgI) {
 
-    const std::string& arg = *ArgI;
+    Function* LoopF;
+    BasicBlock *BB1, *BB2;
 
-    std::string FName, BB1Name, BB2Name;
-    size_t firstComma = arg.find(',');
-    size_t secondComma;
-    if(firstComma != std::string::npos)
-      secondComma = arg.find(',', firstComma+1);
-    if(firstComma == std::string::npos || secondComma == std::string::npos) {
-      errs() << "--int-optimistic-loop must have the form fname,bbname,bbname\n";
-      exit(1);
-    }
-
-    FName = arg.substr(0, firstComma);
-    BB1Name = arg.substr(firstComma + 1, (secondComma - firstComma) - 1);
-    BB2Name = arg.substr(secondComma + 1);
-
-    Function* LoopF = F.getParent()->getFunction(FName);
-    if(!LoopF) {
-      errs() << "No such function " << FName << "\n";
-      exit(1);
-    }
-
-    BasicBlock *BB1 = 0, *BB2 = 0;
-
-    for(Function::iterator FI = LoopF->begin(), FE = LoopF->end(); FI != FE; ++FI) {
-
-      if(FI->getName() == BB1Name)
-	BB1 = FI;
-      if(FI->getName() == BB2Name)
-	BB2 = FI;
-
-    }
-
-    if(!BB1) {
-      errs() << "No such block " << BB1Name << " in " << FName << "\n";
-      exit(1);
-    }
-    if(!BB2) {
-      errs() << "No such block " << BB2Name << " in " << FName << "\n";
-      exit(1);
-    }
+    parseFBB("int-optimistic-loop", *ArgI, *(F.getParent()), LoopF, BB1, BB2);
 
     const Loop* L = LIs[LoopF]->getLoopFor(BB1);
     if(!L) {
-      errs() << "Block " << BB1Name << " in " << FName << " not in a loop\n";
+      errs() << "Block " << BB1->getName() << " in " << LoopF->getName() << " not in a loop\n";
       exit(1);
     }
     
     optimisticLoopMap[L] = std::make_pair(BB1, BB2);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = AssumeEdges.begin(), ArgE = AssumeEdges.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* AssF;
+    BasicBlock *BB1, *BB2;
+    
+    parseFBB("int-assume-edge", *ArgI, *(F.getParent()), AssF, BB1, BB2);
+
+    assumeEdges[AssF].insert(std::make_pair(BB1, BB2));
 
   }
 

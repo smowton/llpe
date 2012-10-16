@@ -479,13 +479,15 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 	  bool onlySuccessor = true;
 
-	  for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+	  if(!shouldAssumeEdge(*PI, BB)) {
+	    for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
 
-	    if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
-	      onlySuccessor = false;
-	      break;
+	      if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
+		onlySuccessor = false;
+		break;
+	      }
+
 	    }
-
 	  }
 
 	  if(!onlySuccessor)
