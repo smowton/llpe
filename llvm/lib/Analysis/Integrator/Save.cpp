@@ -851,7 +851,7 @@ Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
 void IntegrationAttempt::commitLocalPointers() {
 
   errs() << "Commit phase 2: ";
-  printHeaderNoCache(this);
+  //printHeaderNoCache(this);
   errs() << "\n";
 
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
