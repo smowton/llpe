@@ -112,7 +112,7 @@ Loop* llvm::cloneLoop(Loop* oldLoop, std::map<Loop*, Loop*>& oldToNewMap) {
 
 }
 
-BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnTrue, BasicBlock* toBlock, Twine blockName, bool addPHIs) {
+BasicBlock* splitEdge(BasicBlock* fromBlock, TerminatorInst* fromInst, BasicBlock* toBlock, Twine blockName, bool addPHIs) {
   
   BasicBlock *newBlock = BasicBlock::Create(fromBlock->getContext(), blockName, fromBlock->getParent(), toBlock);
   for(BasicBlock::iterator it = toBlock->begin(); isa<PHINode>(*it) && it != toBlock->end(); it++) {
@@ -126,10 +126,99 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
     }
   }
   BranchInst::Create(toBlock, newBlock);
-  fromInst->setSuccessor(splitOnTrue ? 0 : 1, newBlock);
+
+  for(unsigned i = 0; i < fromInst->getNumSuccessors(); ++i) {
+    if(fromInst->getSuccessor(i) == toBlock)
+      fromInst->setSuccessor(i, newBlock);
+  }
 
   return newBlock;
   
+}
+
+static void replaceTerminatorEdges(TerminatorInst* TI, BasicBlock* FromBB, BasicBlock* ToBB) {
+
+  for(unsigned i = 0; i < TI->getNumSuccessors(); ++i) {
+    if(TI->getSuccessor(i) == FromBB)
+      TI->setSuccessor(i, ToBB);
+  }
+
+}
+
+// TI passed by ref because we might replace it.
+static void removeTerminatorEdges(TerminatorInst*& TI, BasicBlock* ToBB) {
+
+  // Count the edges going elsewhere and see if we now have a unique destination.
+  unsigned keepEdges = 0;
+  BasicBlock* UniqueDest = 0;
+  bool noUniqueDest = false;
+
+  BasicBlock* TermBB = TI->getParent();
+
+  for(unsigned i = 0; i < TI->getNumSuccessors(); ++i) {
+
+    if(TI->getSuccessor(i) != ToBB) {
+      keepEdges++;
+      if(!noUniqueDest) {
+	if(!UniqueDest)
+	  UniqueDest = ToBB;
+	else {
+	  UniqueDest = 0;
+	  noUniqueDest = true;
+	}
+      }
+    }
+
+  }
+
+  if((!UniqueDest) && !noUniqueDest) {
+
+    // This leaves broken CFG: when working on loops without an exiting latch, our caller must make
+    // sure they route away from this block.
+    TI->eraseFromParent();
+    TI = new UnreachableInst(TermBB->getContext(), TermBB);    
+
+  }
+  else if(UniqueDest) {
+
+    TI->eraseFromParent();
+    TI = BranchInst::Create(UniqueDest, TermBB);
+
+  }
+  else {
+
+    // At least 2 outgoing destinations remain! Must be a switch, or else we were asked to remove
+    // a destination that never occurs.
+    SwitchInst* SI = cast<SwitchInst>(TI);
+    if(SI->getDefaultDest() == ToBB) {
+
+      // Must have a default edge, but our chosen one is no good! Just default
+      // to one of the other edges that won't be deleted.
+      for(unsigned i = 0; i < TI->getNumSuccessors(); ++i) {
+
+	BasicBlock* Succ = TI->getSuccessor(i);
+	if(Succ != ToBB) {
+	  TI->setSuccessor(0, Succ);
+	  break;
+	}
+
+      }
+
+    }
+
+    for(unsigned i = 1; i < TI->getNumSuccessors(); ++i) {
+
+      if(TI->getSuccessor(i) == ToBB) {
+
+	SI->removeCase(i);
+	--i;
+
+      }
+      
+    }
+
+  }
+
 }
 
 /// Unroll the given loop by Count. The loop must be in LCSSA form. Returns true
@@ -145,8 +234,19 @@ BasicBlock* splitEdge(BasicBlock* fromBlock, BranchInst* fromInst, bool splitOnT
 ///
 /// If doPeel is true, the loop will be peeled rather than unrolled: it will be preceded
 /// by Count copies of its own body.
+///
+/// If CompletelyUnroll is true, complete unrolling (straightening) will be done even if
+/// the loop can't easily be proven to have a small finite iteration count.
+///
+/// If allowNonCondLatch is true, the loop will be unrolled even if the latch->header edge
+/// is unconditional. This may leave an 'unreachable' in the last loop latch which our
+/// caller must clean up.
+///
+/// If keepLatchExits is true, exit edges stemming from the latch block will be treated
+/// like any other exit, rather than being eliminated when we think we're certain
+/// the loop will iterate this time. The latch->header edge will be amended as usual.
 
-bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, bool allowNonCondLatch, std::vector<ValueMap<const Value *, Value*>* >* Iterations) {
+bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM, bool doPeel, bool CompletelyUnroll, bool allowNonCondLatch, bool keepLatchExits, std::vector<ValueMap<const Value *, Value*>* >* Iterations) {
   BasicBlock *Preheader = L->getLoopPreheader();
   if (!Preheader) {
     DEBUG(dbgs() << "  Can't unroll; loop preheader-insertion failed.\n");
@@ -160,7 +260,8 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   }
 
   BasicBlock *Header = L->getHeader();
-  BranchInst *BI = dyn_cast<BranchInst>(LatchBlock->getTerminator());
+  TerminatorInst* TI = LatchBlock->getTerminator();
+  BranchInst *BI = dyn_cast<BranchInst>(TI);
   
   if ((!BI || BI->isUnconditional()) && !allowNonCondLatch) {
     // The loop-rotate pass can be helpful to avoid this in many cases.
@@ -171,10 +272,6 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   
   if(BI && BI->isUnconditional()) {
     BI = 0;
-  }
-  else if(!BI) {
-    errs() << "Can't handle loops with a switch terminator yet\n";
-    return false;
   }
 
   // Notify ScalarEvolution that the loop will be substantially changed,
@@ -258,14 +355,16 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   std::vector<Loop*> SubLoops = L->getSubLoops();
   SmallVector<BasicBlock*, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
-
-  BasicBlock *LoopExit = 0;
-  bool ContinueOnTrue;
-  if(BI) {
-    ContinueOnTrue = L->contains(BI->getSuccessor(0));
-    LoopExit = BI->getSuccessor(ContinueOnTrue);
+  SmallVector<std::pair<BasicBlock*, BasicBlock*>, 8> ExitingEdges;
+  L->getExitEdges(ExitingEdges);
+  
+  std::vector<BasicBlock*> LatchExitBlocks;
+  for(unsigned i = 0; i < TI->getNumSuccessors(); ++i) {
+    BasicBlock* Succ =  TI->getSuccessor(i);
+    if(!L->contains(Succ))
+      LatchExitBlocks.push_back(Succ);
   }
-
+  
   // For the first iteration of the loop, we should use the precloned values for
   // PHI nodes.  Insert associations now.
   typedef ValueMap<const Value*, Value*> ValueToValueMapTy;
@@ -332,7 +431,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       newHeaderHasMultiplePredecessors = true;
     // Could we break before or after this iteration?
     bool thisLatchCouldBreak = true;
-    if(!doPeel) {
+    if((!doPeel) && !keepLatchExits) {
       // If we know the trip count or a multiple of it, we can safely use an
       // unconditional branch for some iterations.
       if (It != Count - 1 && (It + 1) != BreakoutTrip && (TripMultiple == 0 || (It + 1) % TripMultiple != 0)) {
@@ -352,7 +451,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       Loop* innermostLoop = LI->getLoopFor(*BB);
       if(oldToNewLoops[innermostLoop]) {
 	DEBUG(dbgs() << "Added block " << *New << " to loop " << *(oldToNewLoops[innermostLoop]) << "\n");
-	oldToNewLoops[innermostLoop]->addBasicBlockToLoop(New, LI->getBase());
+	oldToNewLoops[innermostLoop]->addBasicBlockToNewLoop(New, LI->getBase());
 	// Make this block a loop header if appropriate. It is the header of 0 or 1 loops, and if it
 	// is a header at all it is the header of the innermost loop. This is because we require
 	// LoopSimplify, which requires that loop headers have exactly 2 predecessors: the latch and the preheader.
@@ -466,11 +565,14 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
 
   // Fix the first (original) iteration:
   // 1. Fix exit PHIs that draw from the first iteration's latch if we know it can't exit
-  bool firstIterationCanBreak = doPeel || BreakoutTrip == 1 || TripMultiple == 1;
-  if ((!firstIterationCanBreak) && LoopExit) {
-    for(BasicBlock::iterator I = LoopExit->begin(), IE = LoopExit->end(); I != IE && isa<PHINode>(*I); I++) {
-      PHINode* PN = cast<PHINode>(I);
-      PN->removeIncomingValue(LatchBlock, false);
+  bool firstIterationCanBreak = doPeel || BreakoutTrip == 1 || TripMultiple == 1 || keepLatchExits;
+  if ((!firstIterationCanBreak)) {
+    for(unsigned i = 0; i < LatchExitBlocks.size(); ++i) {
+      BasicBlock* BB = LatchExitBlocks[i];
+      for(BasicBlock::iterator I = BB->begin(), IE = BB->end(); I != IE && isa<PHINode>(*I); I++) {
+	PHINode* PN = cast<PHINode>(I);
+	PN->removeIncomingValue(LatchBlock, false);
+      }
     }
   }
 
@@ -531,34 +633,49 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       LI->removeBlock(*it);
       if(parent) {
 	DEBUG(dbgs() << "Added block " << (*it)->getName() << " to loop " << *parent << "\n");
-	parent->addBasicBlockToLoop(*it, LI->getBase());
+	parent->addBasicBlockToNewLoop(*it, LI->getBase());
       }
 
     }
 
     if(!CompletelyUnroll)
       L->moveToHeader(Headers.back());
-    else
+    else {
       // Remove the loop from the LoopPassManager if it's completely removed.
       if(LPM)
 	LPM->deleteLoopFromQueue(L);
+    }
   }
 
   // Rewire every iteration's exit branch to point to the next iteration:
   for(unsigned i = 0; i < Latches.size(); i++) {
     // Wire the previous iteration's jump to this block
     BasicBlock* thisLatch = Latches[i];
-    bool thisLatchCouldBreak = true;
-    if ((!doPeel) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0))
-      thisLatchCouldBreak = false;
+    TerminatorInst* latchTerm = thisLatch->getTerminator();
 
-    BasicBlock* target = 0;
+    if ((!keepLatchExits) && (!doPeel) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0)) {
+
+      // Destroy any edges currently targeted outside the loop.
+      for(unsigned i = 0; i < LatchExitBlocks.size(); ++i) {
+
+	removeTerminatorEdges(latchTerm, LatchExitBlocks[i]);
+
+      }
+
+    }
+
     if(i == Latches.size() - 1) {
       if(!doPeel) {
-	if(CompletelyUnroll)
-	  target = LoopExit;
-	else
-	  target = Header;
+	if(CompletelyUnroll) {
+	  
+	  removeTerminatorEdges(latchTerm, Headers[i]);
+
+	}
+	else {
+
+	  replaceTerminatorEdges(latchTerm, Headers[i], Header);
+
+	}
       }
       else {
 	// For peeling the final iteration should be left alone
@@ -566,47 +683,9 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
       }
     }
     else {
-      target = Headers[i+1];
-    }
 
-    BranchInst *Term = cast<BranchInst>(thisLatch->getTerminator());
-      
-    if(Term->isConditional()) {
-
-      if(thisLatchCouldBreak)
-	Term->setSuccessor(!ContinueOnTrue, target);
-      else {
-	Term->setUnconditionalDest(target);
-	// Merge adjacent basic blocks, if possible.
-	// Should this be here? Shouldn't another pass do this?
-	// Don't do this if our caller wants mappings from one iteration to the next
-	// since this makes the relationship more complicated.
-	if(!Iterations) {
-	  if (BasicBlock *Fold = FoldBlockIntoPredecessor(target, LI)) {
-	    DEBUG(dbgs() << "Folded BB\n");
-	    std::replace(Latches.begin(), Latches.end(), target, Fold);
-	    std::replace(Headers.begin(), Headers.end(), target, Fold);
-	  }
-	}
-      }
-
-    }
-    else {
-
-      if(target) {
-
-	Term->setUnconditionalDest(target);
-
-      }
-      else {
-
-	// This leaves broken CFG: when working on loops without an exiting latch, our caller must make
-	// sure they route away from this block.
-	BasicBlock* TermBB = Term->getParent();
-	Term->eraseFromParent();
-	new UnreachableInst(TermBB->getContext(), TermBB);
-
-      }
+      // Non-final iteration:
+      replaceTerminatorEdges(latchTerm, Headers[i], Headers[i+1]);
 
     }
 
@@ -631,22 +710,22 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
   {
     std::vector<BasicBlock*> newBlocks;
     if(doPeel) {
-      for(SmallVector<BasicBlock*, 8>::iterator it = ExitingBlocks.begin(); it != ExitingBlocks.end(); it++) {
-	BasicBlock* ExitingBlock = cast<BasicBlock>(LastValueMap[*it]);
-	BranchInst *ExitInst = cast<BranchInst>(ExitingBlock->getTerminator());
-	bool ExitOnTrue = !L->contains(ExitInst->getSuccessor(0));
-	BasicBlock* ExitBlock = ExitInst->getSuccessor(!ExitOnTrue);
-	newBlocks.push_back(splitEdge(ExitingBlock, ExitInst, ExitOnTrue, ExitBlock, ExitBlock->getName() + ".peelexit", true));
+
+      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 8>::iterator it = ExitingEdges.begin(); it != ExitingEdges.end(); it++) {
+	BasicBlock* ExitingBlock = cast<BasicBlock>(LastValueMap[it->first]);
+	TerminatorInst *ExitInst = ExitingBlock->getTerminator();
+	BasicBlock* ExitBlock = it->second;
+	newBlocks.push_back(splitEdge(ExitingBlock, ExitInst, ExitBlock, ExitBlock->getName() + ".peelexit", true));
       }
       // ...and now insert a preheader between the last peel and the loop.
       BasicBlock* LastPeeledLatch = Latches[Latches.size() - 2];
-      BranchInst* EnterInst = cast<BranchInst>(LastPeeledLatch->getTerminator());
+      TerminatorInst* EnterInst = LastPeeledLatch->getTerminator();
       BasicBlock* NewHeader = Headers.back();
-      newBlocks.push_back(splitEdge(LastPeeledLatch, EnterInst, ContinueOnTrue, NewHeader, NewHeader->getName() + ".peelpreheader", false));
+      newBlocks.push_back(splitEdge(LastPeeledLatch, EnterInst, NewHeader, NewHeader->getName() + ".peelpreheader", false));
     }
     for(std::vector<BasicBlock*>::iterator it = newBlocks.begin(); it != newBlocks.end(); it++) {
       if(Loop* parent = L->getParentLoop()) {
-	parent->addBasicBlockToLoop(*it, LI->getBase());
+	parent->addBasicBlockToNewLoop(*it, LI->getBase());
       }
     }
   }

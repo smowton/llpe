@@ -11,7 +11,7 @@
 // simpler form, which makes subsequent analyses and transformations simpler and
 // more effective.
 //
-// Loop pre-header insertion guarantees that there is a single, non-critical
+// Loop pre-header insertion guarantees that tere is a single, non-critical
 // entry edge from outside of the loop to the loop header.  This simplifies a
 // number of analyses and transformations, such as LICM.
 //

@@ -8,7 +8,7 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  memcpy-cases-nonconst struct-const struct-global reinterpret fp fpreinterpret \
 	  fpalign read read-indirect-fd
 
-LLVM_TARGETS = load-struct load-array
+LLVM_TARGETS = load-struct load-array switch-loop
 
 LLVM_TARGETS_SOURCE = $(patsubst %,%.lls,$(LLVM_TARGETS))
 LLVM_TARGETS_ASM = $(patsubst %,%.s,$(LLVM_TARGETS))

@@ -510,7 +510,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "lseek64" || F->getName() == "close" ||
 	  F->getName() == "__time_localtime_tzi" ||
 	  F->getName() == "fwrite" ||
-	  F->getName() == "memset_byte_fn");
+	  F->getName() == "memset_byte_fn" ||
+	  F->getName() == "nl_langinfo");
 
 }
 
@@ -529,7 +530,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
   }
 
   if(FCalled->isDeclaration() || FCalled->isVarArg()) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body, or it's vararg\n");
+    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body\n");
     return 0;
   }
 
@@ -1675,7 +1676,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  }
 	  
 	  bool exists = sys::Path(Filename).exists();
-	  forwardableOpenCalls[CI] = OpenStatus(make_vc(CI, this), Filename, exists, FDEscapes);
+	  forwardableOpenCalls[CI] = new OpenStatus(make_vc(CI, this), Filename, exists, FDEscapes);
 	  if(exists) {
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
 	    pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
@@ -1719,7 +1720,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 
 void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
 
-  OpenStatus& OS = forwardableOpenCalls[OpenI];
+  OpenStatus& OS = *(forwardableOpenCalls[OpenI]);
 
   if(OS.LatestResolvedUser != OpenProgress) {
 
@@ -2295,8 +2296,8 @@ bool IntegrationAttempt::isSuccessfulVFSCall(const Instruction* I) {
   
   if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {
 
-    DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.find(CI);
-    if(it != forwardableOpenCalls.end() && !it->second.success)
+    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+    if(it != forwardableOpenCalls.end() && !it->second->success)
       return false;
 
     return forwardableOpenCalls.count(CI) || resolvedReadCalls.count(CI) || resolvedSeekCalls.count(CI) || resolvedCloseCalls.count(CI);
@@ -4057,8 +4058,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       dieArgvUsage();
 
     unsigned argc;
-    Constant* Argv = loadArgv(*(F.getParent()), ArgvFile, argc);
-    setParam(RootIA, F, argvIdx, Argv);
+    loadArgv(&F, ArgvFile, argvIdx, argc);
     setParam(RootIA, F, argcIdx, ConstantInt::get(Type::getInt32Ty(F.getContext()), argc));
 
   }

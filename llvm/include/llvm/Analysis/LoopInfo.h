@@ -335,6 +335,9 @@ public:
   /// is not valid to replace the loop header with this method.
   ///
   void addBasicBlockToLoop(BlockT *NewBB, LoopInfoBase<BlockT, LoopT> &LI);
+  /// addBasicBlockToNewLoop - The same as the above, but excludes checking prior
+  /// consistency, for passes building nested loops in one go.
+  void addBasicBlockToNewLoop(BlockT *NewBB, LoopInfoBase<BlockT, LoopT> &LI);
 
   /// replaceChildLoopWith - This is used when splitting loops up.  It replaces
   /// the OldChild entry in our children list with NewChild, and updates the
@@ -1058,10 +1061,8 @@ template <> struct GraphTraits<Loop*> {
 
 template<class BlockT, class LoopT>
 void
-LoopBase<BlockT, LoopT>::addBasicBlockToLoop(BlockT *NewBB,
-                                             LoopInfoBase<BlockT, LoopT> &LIB) {
-  assert((Blocks.empty() || LIB[getHeader()] == this) &&
-         "Incorrect LI specified for this loop!");
+LoopBase<BlockT, LoopT>::addBasicBlockToNewLoop(BlockT *NewBB,
+						LoopInfoBase<BlockT, LoopT> &LIB) {
   assert(NewBB && "Cannot add a null basic block to the loop!");
   assert(LIB[NewBB] == 0 && "BasicBlock already in the loop!");
 
@@ -1075,6 +1076,15 @@ LoopBase<BlockT, LoopT>::addBasicBlockToLoop(BlockT *NewBB,
     L->Blocks.push_back(NewBB);
     L = L->getParentLoop();
   }
+}
+
+template<class BlockT, class LoopT>
+void
+LoopBase<BlockT, LoopT>::addBasicBlockToLoop(BlockT *NewBB,
+                                             LoopInfoBase<BlockT, LoopT> &LIB) {
+  assert((Blocks.empty() || LIB[getHeader()] == this) &&
+         "Incorrect LI specified for this loop!");
+  addBasicBlockToNewLoop(NewBB, LIB);
 }
 
 } // End llvm namespace

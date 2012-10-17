@@ -11,7 +11,9 @@
 #include "llvm/Type.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Constants.h"
+#include "llvm/Instructions.h"
 #include "llvm/GlobalVariable.h"
+#include "llvm/Attributes.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -34,10 +36,16 @@ static void readWholeFile(std::string& path, std::string& out, bool addnewline) 
 
 }
 
-static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& lineStarts, std::vector<bool>& lineUnknown, Module& M) {
+static GlobalVariable* getStringArray(std::string& bytes, Module& M) {
 
-  Constant* EnvInit = ConstantArray::get(M.getContext(), bytes, false);
-  GlobalVariable* EnvInitG = new GlobalVariable(M, EnvInit->getType(), true, GlobalValue::PrivateLinkage, EnvInit, "spec_env_str");
+  Constant* EnvInit = ConstantArray::get(M.getContext(), bytes, false);  
+  return new GlobalVariable(M, EnvInit->getType(), true, GlobalValue::PrivateLinkage, EnvInit, "spec_env_str");
+
+}
+
+static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& lineStarts, Module& M) {
+
+  GlobalVariable* EnvInitG = getStringArray(bytes, M);
 
   // Build an array of GEPs into that string:
   std::vector<Constant*> lineStartConsts;
@@ -47,27 +55,9 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
   for(unsigned i = 0; i < lineStarts.size(); ++i) {
 
     size_t start = lineStarts[i];
-    bool unknown = lineUnknown[i];
 
-    size_t offset;
-    Constant* base;
-
-    if(unknown) {
-
-      GlobalVariable* UnknownStr = new GlobalVariable(M, ArrayType::get(Type::getInt8Ty(M.getContext()), 1), false, GlobalValue::PrivateLinkage, 0, "unknown_spec_str");
-      offset = 0;
-      base = UnknownStr;      
-
-    }
-    else {
-      
-      offset = start;
-      base = EnvInitG;
-
-    }
-
-    Constant* gepArgs[] = { Zero, ConstantInt::get(Int64, offset) };
-    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(base, gepArgs, 2));
+    Constant* gepArgs[] = { Zero, ConstantInt::get(Int64, start) };
+    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(EnvInitG, gepArgs, 2));
 
   }
 
@@ -84,15 +74,14 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
 }
 
 // Fetch a newline-delimited command-line (saves escaping spaces etc) and provide a char** argv replacement.
-Constant* IntegrationHeuristicsPass::loadArgv(Module& M, std::string& path, unsigned& argc) {
+void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigned argvIdx, unsigned& argc) {
 
   std::string argvtext;
   readWholeFile(path, argvtext, true);
 
   size_t startidx = 0;
 
-  std::vector<size_t> lineStarts;
-  std::vector<bool> lineUnknown;
+  std::vector<int> lineStarts;
 
   for(size_t findidx = argvtext.find('\n'); findidx != std::string::npos; findidx = argvtext.find('\n', startidx)) {
 
@@ -107,7 +96,6 @@ Constant* IntegrationHeuristicsPass::loadArgv(Module& M, std::string& path, unsi
 
     bool isUnknown = false;
     if(!argvtext.compare(startidx, findidx - startidx, "__undef__")) {
-      lineUnknown.push_back(true);
       lineStarts.push_back(-1);
       isUnknown = true;
     }
@@ -121,7 +109,6 @@ Constant* IntegrationHeuristicsPass::loadArgv(Module& M, std::string& path, unsi
     else {
 
       argvtext.replace(findidx, 1, 1, '\0');
-      lineUnknown.push_back(false);
       lineStarts.push_back(startidx);
       
       startidx = findidx + 1;
@@ -131,7 +118,38 @@ Constant* IntegrationHeuristicsPass::loadArgv(Module& M, std::string& path, unsi
   }
 
   argc = lineStarts.size();
-  return getStringPtrArray(argvtext, lineStarts, lineUnknown, M);
+  GlobalVariable* ArgvConsts = getStringArray(argvtext, *(F->getParent()));
+
+  BasicBlock& EntryBB = F->getEntryBlock();
+  BasicBlock::iterator BI = EntryBB.begin();
+  while(isa<AllocaInst>(BI))
+    ++BI;
+
+  Instruction* InsertBefore = BI;
+
+  Function::arg_iterator Arg = F->arg_begin();
+  for(long i = 0; i < argvIdx; ++i)
+    ++Arg;
+
+  const Type* Int64 = Type::getInt64Ty(F->getContext());
+  for(unsigned i = 0; i < argc; ++i) {
+
+    if(lineStarts[i] != -1) {
+      
+      // Get a pointer into the constant argv:
+      Constant* gepArgs[] = { ConstantInt::get(Int64, 0), ConstantInt::get(Int64, lineStarts[i]) };
+      Constant* stringPtr = ConstantExpr::getGetElementPtr(ArgvConsts, gepArgs, 2);
+
+      // Get a pointer into the real argv:
+      Constant* gepArg = ConstantInt::get(Int64, i);
+      Instruction* argvPtr = GetElementPtrInst::Create(Arg, gepArg, "argv_ptr", InsertBefore);
+      new StoreInst(stringPtr, argvPtr, InsertBefore);
+
+    }
+
+  }
+
+  F->addAttribute(argvIdx+1, Attribute::NoAlias);
 
 }
 
@@ -183,6 +201,6 @@ Constant* IntegrationHeuristicsPass::loadEnvironment(Module& M, std::string& pat
 
   }
 
-  return getStringPtrArray(useenv, lineStarts, lineUnknown, M);
+  return getStringPtrArray(useenv, lineStarts, M);
   
 }

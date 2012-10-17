@@ -199,6 +199,13 @@ static LibCallFunctionInfo::LocationMRInfo MemsetByteMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
+static LibCallFunctionInfo::LocationMRInfo LanginfoMR[] = {
+
+  { 5, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -233,6 +240,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
   { "fwrite", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, FwriteMR, 0 },
   { "memset_byte_fn", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, MemsetByteMR, 0 },
+  { "nl_langinfo", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, LanginfoMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

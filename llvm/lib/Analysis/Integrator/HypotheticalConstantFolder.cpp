@@ -83,7 +83,7 @@ public:
 
 bool IntegrationAttempt::openCallSucceeds(Value* V) {
 
-  return forwardableOpenCalls[cast<CallInst>(V)].success;
+  return forwardableOpenCalls[cast<CallInst>(V)]->success;
 
 }
 
@@ -461,7 +461,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   bool isDead = true;
   bool isCertain = true;
 
-  if(BB == getEntryBlock() && ((!parent) || parent->blockIsCertain(getEntryInstruction()->getParent()))) {
+  if(BB == getEntryBlock()) {
 
     isCertain = true;
     isDead = false;

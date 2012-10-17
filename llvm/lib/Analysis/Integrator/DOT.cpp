@@ -219,9 +219,9 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     }
   }
   else if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
-    DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.find(CI);
+    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
     if(it != forwardableOpenCalls.end()) {
-      Out << it->second.Name << "(" << (it->second.success ? "success" : "not found") << ")";
+      Out << it->second->Name << "(" << (it->second->success ? "success" : "not found") << ")";
     }
     else {
       DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);

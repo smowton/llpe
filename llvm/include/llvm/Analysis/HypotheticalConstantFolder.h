@@ -159,8 +159,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    IntegrationAttempt* RootIA;
 
-   DenseMap<const Function*, DenseMap<const Instruction*, std::string> > functionTextCache;
-   DenseMap<const Function*, DenseMap<const Instruction*, std::string> > briefFunctionTextCache;
+   DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
+   DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
    bool cacheDisabled;
 
  public:
@@ -211,7 +211,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
-   Constant* loadArgv(Module&, std::string&, unsigned& argc);
+   void loadArgv(Function*, std::string&, unsigned argvidx, unsigned& argc);
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
@@ -568,7 +568,7 @@ protected:
   SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
   DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
 
-  DenseMap<CallInst*, OpenStatus> forwardableOpenCalls;
+  DenseMap<CallInst*, OpenStatus*> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
   DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
   DenseMap<CallInst*, CloseFile> resolvedCloseCalls;
@@ -966,6 +966,7 @@ protected:
   void removeBlockFromLoops(BasicBlock*);
   void foldVFSCalls();
   void markOrDeleteCloseCall(CallInst*, IntegrationAttempt*);
+  virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) = 0;
   
   void commitLocalPointers();
 
@@ -1061,6 +1062,8 @@ public:
   virtual void replaceKnownBranches();
 
   virtual bool isOptimisticPeel();
+
+  virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
@@ -1224,6 +1227,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void replaceKnownBranches();
 
   virtual bool isOptimisticPeel();
+
+  virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
   virtual int getIterCount() {
     return -1;

@@ -133,7 +133,7 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
       Loop* innermostLoop = ChildLI->getLoopFor(&BB);
       if(innermostLoop) {
 
-	(*oldToNewLoops)[innermostLoop]->addBasicBlockToLoop(CBB, ParentLI->getBase());
+	(*oldToNewLoops)[innermostLoop]->addBasicBlockToNewLoop(CBB, ParentLI->getBase());
 	if(&BB == innermostLoop->getHeader()) {
 
 	  (*oldToNewLoops)[innermostLoop]->moveToHeader(CBB);
@@ -143,7 +143,7 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
       }
       else if(ParentDestLoop) {
 
-	ParentDestLoop->addBasicBlockToLoop(CBB, ParentLI->getBase());
+	ParentDestLoop->addBasicBlockToNewLoop(CBB, ParentLI->getBase());
 
       }
 

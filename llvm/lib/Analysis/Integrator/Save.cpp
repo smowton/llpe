@@ -15,6 +15,17 @@
 
 using namespace llvm;
 
+static void printHeaderNoCache(IntegrationAttempt* IA) {
+
+  if(IA->getIterCount() != -1) {
+    errs() << IA->getEntryBlock()->getName() << " iter " << IA->getIterCount();
+  }
+  else {
+    errs() << IA->getFunctionName();
+  }
+
+}
+
 // Root entry point for saving our results:
 void IntegrationAttempt::commit() {
 
@@ -155,6 +166,10 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // Values as integrated into the program for the second phase when we resolve pointers,
   // and resolve constants / dead code now.
 
+  errs() << "Commit phase 1: ";
+  printHeaderNoCache(this);
+  errs() << "\n";
+
   this->MasterLI = MasterLI;
   CommittedValues.insert(valMap.begin(), valMap.end());
 
@@ -232,7 +247,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
     std::vector<ValueMap<const Value*, Value*>* > iterValues;
 
-    if(!UnrollLoop(L, unrollCount, MasterLI, 0, !completelyUnrollLoop, completelyUnrollLoop, true, &iterValues)) {
+    if(!UnrollLoop(L, unrollCount, MasterLI, 0, !completelyUnrollLoop, completelyUnrollLoop, true /* Allow unusual exit branches*/, true /* Assume all iterations might exit */, &iterValues)) {
 
       assert(0 && "Unrolling failed");
 
@@ -381,12 +396,73 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB) {
 
 }
 
+bool InlineAttempt::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) {
+  return false;
+}
+
+bool PeelIteration::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) {
+  
+  if(FromBB != L->getLoopLatch())
+    return false;
+  
+  if(iterStatus != IterationStatusFinal)
+    return false;
+
+  Target = 0;
+
+  unsigned J = 0;
+  for (unsigned I = 0; I != TI->getNumSuccessors(); ++I, ++J) {
+
+    BasicBlock* thisTarget = TI->getSuccessor(I);
+    if(thisTarget == L->getHeader()) {
+      // This target will have been deleted by the unroller.
+      --J;
+      continue;
+    }
+      
+    if(!edgeIsDead(FromBB, thisTarget)) {
+
+      // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
+      // which is fine!
+      BasicBlock* thisRealTarget = ReplaceTI->getSuccessor(J);
+      if(Target && (Target != thisRealTarget)) {
+	Target = 0;
+	break;
+      }
+      else
+	Target = thisRealTarget;
+
+    }
+
+  }
+
+  return true;
+
+}
+
 void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* TI) {
 
   bool isDead = deadBlocks.count(FromBB);
   BasicBlock* Target = 0;
+  
+  const Loop* TIScope = 0;
+  DenseMap<Instruction*, const Loop*>::iterator it = invariantInsts.find(TI);
 
-  if((!isDead) && getValueScope(TI) != getLoopContext())
+  if(it != invariantInsts.end())
+    TIScope = it->second;
+  else {
+    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+      if(std::find(it->second->LoopBlocks.begin(), it->second->LoopBlocks.end(), FromBB) != it->second->LoopBlocks.end()) {
+	TIScope = it->first;
+	break;
+      }
+    }
+    if(!TIScope)
+      TIScope = getLoopContext();
+  }
+
+  if((!isDead) && TIScope != getLoopContext())
     return;
 
   // Return instructions have been replaced already by the inliner!
@@ -412,16 +488,28 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
     if(NumSucc <= 1)
       return;
 
-    for (unsigned I = 0; I != NumSucc; ++I) {
+    // For loop latches this is a bit complicated: at this point their exit branches pointing at the
+    // loop header have been appropriately redirected, or removed if this is the final iteration.
+    // The redirected case is fine, as ReplaceTI->getSuccessor(...) picks it up. If it's been removed,
+    // we need the following special case:
 
-      // Back to using the original blocks here since our results are calculated in their terms
-      BasicBlock* thisTarget = TI->getSuccessor(I);
-      if(!edgeIsDead(FromBB, thisTarget)) {
+    if(!getLoopBranchTarget(FromBB, TI, ReplaceTI, Target)) {
 
-	if(Target)
-	  return;
-	else
-	  Target = ReplaceTI->getSuccessor(I);
+      for (unsigned I = 0; I != NumSucc; ++I) {
+
+	// Back to using the original blocks here since our results are calculated in their terms
+	BasicBlock* thisTarget = TI->getSuccessor(I);
+	if(!edgeIsDead(FromBB, thisTarget)) {
+
+	  // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
+	  // which is fine!
+	  BasicBlock* thisRealTarget = ReplaceTI->getSuccessor(I);
+	  if(Target && (Target != thisRealTarget))
+	    return;
+	  else
+	    Target = thisRealTarget;
+
+	}
 
       }
 
@@ -470,14 +558,6 @@ void InlineAttempt::replaceKnownBranches() {
 void PeelIteration::replaceKnownBranches() {
 
   for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
-
-    // Skip loop latch edges already dealt with:
-    if(parentPA->Iterations[parentPA->Iterations.size() - 1]->iterStatus == IterationStatusFinal) {
-      // We process a dead latch regardless, because that means this is necessarily the last
-      // iteration (otherwise the latch is taken) and latch's exiting edge needs to be removed.
-      if((*it == L->getLoopLatch()) && (!blockIsDead(*it)))
-	continue;
-    }
 
     replaceKnownBranch(*it, (*it)->getTerminator());
 
@@ -605,7 +685,7 @@ void IntegrationAttempt::foldVFSCalls() {
 
   }
 
-  for(DenseMap<CallInst*, OpenStatus>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
+  for(DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
     
     // Can't delete open if it has direct users still!
     if(!deadValues.count(it->first))
@@ -614,7 +694,7 @@ void IntegrationAttempt::foldVFSCalls() {
     ValCtx closeCall = VCNull;
 
     // Delete an open call if its chain is entirely available and the open is dead (not directly used).
-    for(ValCtx NextUser = it->second.FirstUser; NextUser != VCNull;) {
+    for(ValCtx NextUser = it->second->FirstUser; NextUser != VCNull;) {
 
       if(!NextUser.second->isAvailable())
 	break;
@@ -629,7 +709,7 @@ void IntegrationAttempt::foldVFSCalls() {
 
     if(closeCall != VCNull) {
 
-      deleteInstruction(it->first);
+      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
       closeCall.second->markOrDeleteCloseCall(cast<CallInst>(closeCall.first), this);
 
     }
@@ -638,8 +718,9 @@ void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
 
-    if(it->second.canRemove)
-      it->first->eraseFromParent();
+    if(it->second.canRemove) {
+      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
+    }
 
   }
 
@@ -769,6 +850,10 @@ Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
 
 void IntegrationAttempt::commitLocalPointers() {
 
+  errs() << "Commit phase 2: ";
+  printHeaderNoCache(this);
+  errs() << "\n";
+
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
 
     Instruction* I = dyn_cast<Instruction>(it->first);
@@ -791,7 +876,10 @@ void IntegrationAttempt::commitLocalPointers() {
     LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first));
 
     Instruction* replaceWith = it->second.second->getCommittedValue(it->second.first);
-    assert(replaceWith && "Couldn't get a replacement for a resolved pointer!");
+    if(!replaceWith)
+      continue;
+    // This is occasionally legitimate: noalias results and parameters are id'd objects.
+    //assert(replaceWith && "Couldn't get a replacement for a resolved pointer!");
 
     I = cast<Instruction>(VI->second);
 
