@@ -95,6 +95,10 @@ viii. Remove the one call to mempcpy, in tcgetattr. Since LLVM's analyses don't 
 
 ix. Patch strftime because it used some very silly pointer arithmetic which confused the compiler into using ptrtoint followed by (-x ^ -1) to express subtracting 1, which is really quite hard a case to catch in the integrator!
 
+x. Patch both strftime and _strftime_case to use more readily understood pointers.
+
+xi. Add crtspec.S, a prologue that doesn't use main(), permitting it to be eliminated.
+
 3. Fix dragonegg-2.8:
 
 Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
