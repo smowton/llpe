@@ -955,8 +955,8 @@ protected:
   void commitInContext(LoopInfo* MasterLI, ValueMap<const Value*, Value*>& valMap);
   void commitPointers();
   void deleteInstruction(Instruction*);
-  void tryDeleteDeadBlock(BasicBlock*);
-  virtual void deleteDeadBlocks() = 0;
+  void tryDeleteDeadBlock(BasicBlock*, bool);
+  virtual void deleteDeadBlocks(bool) = 0;
   void replaceKnownBranch(BasicBlock*, TerminatorInst*);
   virtual void replaceKnownBranches() = 0;
   void commitLocalConstants(ValueMap<const Value*, Value*>& VM);
@@ -1058,7 +1058,7 @@ public:
   virtual bool isEnabled();
   virtual void setEnabled(bool);
 
-  virtual void deleteDeadBlocks();
+  virtual void deleteDeadBlocks(bool);
   virtual void replaceKnownBranches();
 
   virtual bool isOptimisticPeel();
@@ -1223,7 +1223,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool isEnabled();
   virtual void setEnabled(bool);
 
-  virtual void deleteDeadBlocks();
+  virtual void deleteDeadBlocks(bool);
   virtual void replaceKnownBranches();
 
   virtual bool isOptimisticPeel();

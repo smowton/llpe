@@ -180,6 +180,10 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
 
   commitLocalConstants(CommittedValues);
 
+  // Delete dead blocks that fall lexically in inner loops, to avoid their getting duplicated
+  // by the loop unroller.
+  deleteDeadBlocks(true);
+
   // Step 2: inline each child call
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
@@ -321,10 +325,11 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     }
 
   }
-
+  
+  // Delete blocks dead at our scope.
   // Do this last because the loop unroller will try to add edges towards them (and then, if they're
   // dead, commitLocalConstants->replaceKnownBranches will remove them again)
-  deleteDeadBlocks();
+  deleteDeadBlocks(false);
 
 }
 
@@ -367,9 +372,22 @@ void IntegrationAttempt::deleteInstruction(Instruction* I) {
 
 }
 
-void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB) {
+void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB, bool innerScopesOnly) {
 
   if(!deadBlocks.count(BB))
+    return;
+
+  bool blockIsInvar = false;
+
+  DenseMap<BasicBlock*, const Loop*>::iterator Inv = invariantBlocks.find(BB);
+  if(Inv != invariantBlocks.end()) {
+
+    if(Inv->second != getLoopContext())
+      blockIsInvar = true;
+
+  }
+
+  if(blockIsInvar != innerScopesOnly)
     return;
 
   ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(BB);
@@ -420,7 +438,7 @@ bool PeelIteration::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, 
       continue;
     }
       
-    if(!edgeIsDead(FromBB, thisTarget)) {
+    if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
 
       // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
       // which is fine!
@@ -499,7 +517,7 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
 	// Back to using the original blocks here since our results are calculated in their terms
 	BasicBlock* thisTarget = TI->getSuccessor(I);
-	if(!edgeIsDead(FromBB, thisTarget)) {
+	if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
 
 	  // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
 	  // which is fine!
@@ -565,7 +583,7 @@ void PeelIteration::replaceKnownBranches() {
 
 }
 
-void InlineAttempt::deleteDeadBlocks() {
+void InlineAttempt::deleteDeadBlocks(bool innerScopesOnly) {
 
   // Avoid iterator invalidation
   std::vector<BasicBlock*> FBlocks(F.size());
@@ -574,17 +592,17 @@ void InlineAttempt::deleteDeadBlocks() {
 
   for(std::vector<BasicBlock*>::iterator FI = FBlocks.begin(), FE = FBlocks.end(); FI != FE; ++FI) {
 
-    tryDeleteDeadBlock(*FI);
+    tryDeleteDeadBlock(*FI, innerScopesOnly);
 
   }
 
 }
 
-void PeelIteration::deleteDeadBlocks() {
+void PeelIteration::deleteDeadBlocks(bool innerScopesOnly) {
 
   for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
 
-    tryDeleteDeadBlock(*it);
+    tryDeleteDeadBlock(*it, innerScopesOnly);
 
   }  
 

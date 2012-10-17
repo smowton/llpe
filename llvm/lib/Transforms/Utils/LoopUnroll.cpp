@@ -161,7 +161,7 @@ static void removeTerminatorEdges(TerminatorInst*& TI, BasicBlock* ToBB) {
       keepEdges++;
       if(!noUniqueDest) {
 	if(!UniqueDest)
-	  UniqueDest = ToBB;
+	  UniqueDest = TI->getSuccessor(i);
 	else {
 	  UniqueDest = 0;
 	  noUniqueDest = true;

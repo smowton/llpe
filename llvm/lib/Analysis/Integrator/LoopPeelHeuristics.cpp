@@ -1270,7 +1270,7 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
   }
   else {
     if(LFA.getBaseContext() == this) {
-      LPDEBUG("Can't pursue LFA further because this is its base contex\n");
+      LPDEBUG("Can't pursue LFA further because this is its base context\n");
       return MemDepResult();
     }
     else {
@@ -2804,8 +2804,8 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr, IntegrationAttempt* RootCt
 	continue;
       }
     }
-    else if (isa<Constant>(Ptr.first)) {
-      Expr.push_back(new SymThunk(Ptr));
+    else if (Constant* C = dyn_cast<Constant>(Ptr.first)) {
+      Expr.push_back(new SymThunk(const_vc(C)));
       break;
     }
 
