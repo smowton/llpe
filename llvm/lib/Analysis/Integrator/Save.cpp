@@ -382,7 +382,10 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB, bool innerScopesOnly
   DenseMap<BasicBlock*, const Loop*>::iterator Inv = invariantBlocks.find(BB);
   if(Inv != invariantBlocks.end()) {
 
-    if(Inv->second != getLoopContext())
+    // If it's dead and usually belongs to another scope that indicates we've killed
+    // an entire loop. We'll pick this up in the second phase.
+
+    if(Inv->second == getLoopContext())
       blockIsInvar = true;
 
   }
@@ -705,30 +708,38 @@ void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
     
-    // Can't delete open if it has direct users still!
-    if(!deadValues.count(it->first))
-      continue;
+    if(!it->second->success) {
+      // It's ok to delete the open in this case, as it will be replaced by -1.
+      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
+    }
+    else {
 
-    ValCtx closeCall = VCNull;
+      // Can't delete open if it has direct users still!
+      if(!deadValues.count(it->first))
+	continue;
 
-    // Delete an open call if its chain is entirely available and the open is dead (not directly used).
-    for(ValCtx NextUser = it->second->FirstUser; NextUser != VCNull;) {
+      ValCtx closeCall = VCNull;
 
-      if(!NextUser.second->isAvailable())
-	break;
-      if(NextUser.second->isCloseCall(cast<CallInst>(NextUser.first))) {
-	closeCall = NextUser;
-	break;
+      // Delete an open call if its chain is entirely available and the open is dead (not directly used).
+      for(ValCtx NextUser = it->second->FirstUser; NextUser != VCNull;) {
+
+	if(!NextUser.second->isAvailable())
+	  break;
+	if(NextUser.second->isCloseCall(cast<CallInst>(NextUser.first))) {
+	  closeCall = NextUser;
+	  break;
+	}
+
+	NextUser = NextUser.second->getNextVFSUser(cast<CallInst>(NextUser.first));
+
       }
 
-      NextUser = NextUser.second->getNextVFSUser(cast<CallInst>(NextUser.first));
+      if(closeCall != VCNull) {
 
-    }
+	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
+	closeCall.second->markOrDeleteCloseCall(cast<CallInst>(closeCall.first), this);
 
-    if(closeCall != VCNull) {
-
-      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
-      closeCall.second->markOrDeleteCloseCall(cast<CallInst>(closeCall.first), this);
+      }
 
     }
 

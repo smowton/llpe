@@ -725,6 +725,7 @@ protected:
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }
+  void eraseBlockValues(BasicBlock*);
   
   // Child (inlines, peels) management
 
@@ -1153,6 +1154,8 @@ class PeelAttempt {
    IntegratorTag* getChildTag(unsigned);
    bool isEnabled();
    void setEnabled(bool);
+
+  void eraseBlockValues(BasicBlock*);
 
    void removeBlockFromLoops(BasicBlock*);
 

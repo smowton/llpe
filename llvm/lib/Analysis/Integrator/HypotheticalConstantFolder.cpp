@@ -444,6 +444,33 @@ bool PeelIteration::isOptimisticPeel() {
 
 }
 
+void PeelAttempt::eraseBlockValues(BasicBlock* BB) {
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
+    (*it)->eraseBlockValues(BB);
+
+}
+
+void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
+
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+    
+    improvedValues.erase(BI);
+    
+  }
+  
+  const Loop* L = LI[&F]->getLoopFor(BB);
+  const Loop* MyL = getLoopContext();
+  if(L != MyL) {
+
+    const Loop* ChildL = immediateChildLoop(MyL, L);
+    if(PeelAttempt* PA = getPeelAttempt(ChildL))
+      PA->eraseBlockValues(BB);
+
+  }
+
+}
+
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
@@ -515,11 +542,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     
     // Remove any resolutions for these instructions, since they're both a waste
     // of memory and a trap waiting to catch us when we commit the results.
-    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
-      
-      improvedValues.erase(BI);
-
-    }
+    eraseBlockValues(BB);
 
     // If this kills a return instruction, check if our retval just became defined:
     if(isa<ReturnInst>(BB->getTerminator()))
