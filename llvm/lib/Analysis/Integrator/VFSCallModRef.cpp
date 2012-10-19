@@ -79,6 +79,12 @@ static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* 
   
 }
 
+static LibCallLocationInfo::LocResult isArg0Size24(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, 24);
+  
+}
+
 static LibCallLocationInfo::LocResult isArg1(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
 
   return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, AliasAnalysis::UnknownSize);
@@ -117,13 +123,14 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isReturnVal },
   { isArg1 },
   { isArg2 },
-  { isArg3 }
+  { isArg3 },
+  { isArg0Size24 },
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 8;
+  return 9;
     
 }
   
@@ -206,6 +213,21 @@ static LibCallFunctionInfo::LocationMRInfo LanginfoMR[] = {
 
 };
 
+static LibCallFunctionInfo::LocationMRInfo VAStartMR[] = {
+
+  { 8, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo VACopyMR[] = {
+
+  { 8, AliasAnalysis::Mod },
+  { 5, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -236,6 +258,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "clock_gettime", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeMR, 0 },
   { "gettimeofday", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeofdayMR, 0 },
   { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, TimeMR, 0 },
+  { "llvm.va_start", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, VAStartMR, 0 },
+  { "llvm.va_copy", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, VACopyMR, 0 },
+  { "llvm.va_end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
   // HACK! Workaround for shortcomings working on the date program:
   { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
   { "fwrite", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, FwriteMR, 0 },

@@ -202,28 +202,50 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
     Function* Called = getCalledFunction(it->first);
     assert(Called && "Unresolved call inlined?!");
 
-    // As we have already RAUW'd constants, a constant argument will be picked up by the inliner
-    // if appropriate. Otherwise it will get caught up in the phase 2 pointer resolution.
+    if(!Called->isVarArg()) {
 
-    InlineFunctionInfo IFI(0, TD);
+      // As we have already RAUW'd constants, a constant argument will be picked up by the inliner
+      // if appropriate. Otherwise it will get caught up in the phase 2 pointer resolution.
 
-    // Get my loop context as it will be written:
+      InlineFunctionInfo IFI(0, TD);
 
-    const Loop* MyL = getLoopContext();
-    if(MyL) {
+      // Get my loop context as it will be written:
 
-      MyL = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[MyL->getHeader()]));
+      const Loop* MyL = getLoopContext();
+      if(MyL) {
+
+	MyL = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[MyL->getHeader()]));
+
+      }
+
+      if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called], this))
+	assert(0 && "Inlining failed!\n");
+
+      CommittedValues.erase(it->first);
+
+      // childMap is now a map from the instructions' "real" names to those inlined.
+      // Use it to commit changes known about that context:
+      it->second->commitInContext(MasterLI, childMap);
 
     }
+    else {
 
-    if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called], this))
-      assert(0 && "Inlining failed!\n");
+      // For varargs functions we must keep the original function.
+      ValueMap<const Value*, Value*> NewFnMap;
+      Function* Clone = CloneFunction(Called, NewFnMap, true);
+      Clone->setLinkage(GlobalValue::InternalLinkage);
+      Called->getParent()->getFunctionList().push_back(Clone);
 
-    CommittedValues.erase(it->first);
+      CI->setCalledFunction(Clone);
 
-    // childMap is now a map from the instructions' "real" names to those inlined.
-    // Use it to commit changes known about that context:
-    it->second->commitInContext(MasterLI, childMap);
+      DominatorTree* CloneDT = new DominatorTree();
+      CloneDT->runOnFunction(*Clone);
+      LoopInfo* CloneLI = new LoopInfo();
+      CloneLI->runOnFunction(*Clone, CloneDT);      
+
+      it->second->commitInContext(CloneLI, NewFnMap);
+
+    }
 
   }
 
@@ -812,6 +834,9 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
     if(it->second.isPtrAsInt())
       continue;
 
+    if(it->second.isVaArg())
+      continue;
+
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
     if(VI == CommittedValues.end())
       continue;
@@ -896,6 +921,9 @@ void IntegrationAttempt::commitLocalPointers() {
       continue;
 
     if(it->second.isPtrAsInt())
+      continue;
+
+    if(it->second.isVaArg())
       continue;
 
     ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);

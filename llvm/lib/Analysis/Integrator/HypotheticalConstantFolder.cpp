@@ -103,6 +103,9 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
 
   if(V.isPtrAsInt())
     return true;
+
+  if(V.isVaArg())
+    return true;
   
   if(V.first->getType()->isPointerTy()) {
     
@@ -1157,6 +1160,13 @@ bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value*
 	return true;
 
     }
+    // Varargs:
+    for(unsigned i = F->arg_size(); i < CI->getNumArgOperands(); ++i) {
+
+      if(CI->getArgOperand(i) == UsedV)
+	return true;
+
+    }
 
     if(UsedV == CI->getCalledValue())
       return true;
@@ -1330,9 +1340,16 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	  const Type* DestTy = CI->getDestTy();
 	
 	  ValCtx SrcVC = getReplacement(CI->getOperand(0));
-	  if(((SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)) || SrcVC.isPtrAsInt())
-	     && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
-	     && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+
+	  if(SrcVC.isVaArg()) {
+
+	    Improved = SrcVC;
+
+	  }
+
+	  else if(((SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)) || SrcVC.isPtrAsInt())
+		  && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
+		  && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
 
 	    Improved = SrcVC;
 
@@ -1351,6 +1368,25 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
       else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
 	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved));
+
+      }
+
+      else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
+
+	tryConstFold = true;
+	
+	ValCtx Base = getReplacement(GEP->getPointerOperand());
+	if(Base.isVaArg()) {
+
+	  if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices() && isa<Constant>(GEP->idx_begin())) {
+
+	    errs() << "Assuming GEP " << itcache(*GEP) << " bumps vararg " << itcache(Base) << " " << Base.va_arg << "\n";
+	    Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, Base.va_arg + 1);
+	    tryConstFold = false;
+
+	  }
+	  
+	}
 
       }
 
@@ -1507,14 +1543,23 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
       }
       else {
 
-	Function::arg_iterator it = getCalledFunction(CI)->arg_begin();
-	for(int i = 0; i < argNumber; ++i)
-	  ++it;
+	Function* CalledF = getCalledFunction(CI);
+	Function::arg_iterator it = CalledF->arg_begin();
+	for(int i = 0; i < argNumber && it != CalledF->arg_end(); ++i, ++it) { }
 
-	if(IA->shouldTryEvaluate(&*it))
-	  pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
-	else if(Used->getType()->isPointerTy())
-	  IA->investigateUsers(&*it);
+	if(it != CalledF->arg_end()) {
+
+	  if(IA->shouldTryEvaluate(&*it))
+	    pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
+	  else if(Used->getType()->isPointerTy())
+	    IA->investigateUsers(&*it);
+
+	}
+	else {
+
+	  IA->queueBlockedVAs();
+
+	}
 
       }
 
@@ -1756,7 +1801,7 @@ bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
   // The other value will be replaced with this V, so it will remain a user.
   if(VC == OtherVC)
     return false;
-  if(VC != getDefaultVC(V) && (!VC.isPtrAsInt()) && ((!VC.second) || VC.second->isAvailable()))
+  if(VC != getDefaultVC(V) && (!VC.isVaArg()) && (!VC.isPtrAsInt()) && ((!VC.second) || VC.second->isAvailable()))
     return true;
 
   return false;
@@ -1811,11 +1856,18 @@ public:
 
 	if(CalledF) {
 	  Function::arg_iterator it = CalledF->arg_begin();
-	  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i, ++it) {
+	  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
 
 	    if(CI->getArgOperand(i) == V) {
 
-	      if(!IA->valueWillNotUse(&*it, make_vc(V, OriginCtx))) {
+	      if(it == CalledF->arg_end()) {
+
+		// Varargs
+		maybeLive = true;
+		return;
+
+	      }
+	      else if(!IA->valueWillNotUse(&*it, make_vc(V, OriginCtx))) {
 
 		maybeLive = true;
 		return;
@@ -1823,6 +1875,9 @@ public:
 	      }
 
 	    }
+
+	    if(it != CalledF->arg_end())
+	      ++it;
 
 	  }
 	}

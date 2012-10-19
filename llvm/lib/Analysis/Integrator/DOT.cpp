@@ -189,6 +189,8 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
       Out << "@" << Repl.first->getName();
     else
       Out << escapeHTMLValue(Repl, this);
+    if(Repl.isVaArg())
+      Out << " vararg #" << Repl.va_arg;
   }
   else if(isInvariant && I) {
     CheckDeadCallback CDC(I);

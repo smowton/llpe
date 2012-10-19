@@ -653,7 +653,7 @@ bool llvm::UnrollLoop(Loop *L, unsigned Count, LoopInfo* LI, LPPassManager* LPM,
     BasicBlock* thisLatch = Latches[i];
     TerminatorInst* latchTerm = thisLatch->getTerminator();
 
-    if ((!keepLatchExits) && (!doPeel) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0)) {
+    if ((!keepLatchExits) && (!doPeel) && (i != Latches.size() - 1) && (i+1) != BreakoutTrip && (TripMultiple == 0 || (i+1) % TripMultiple != 0)) {
 
       // Destroy any edges currently targeted outside the loop.
       for(unsigned i = 0; i < LatchExitBlocks.size(); ++i) {

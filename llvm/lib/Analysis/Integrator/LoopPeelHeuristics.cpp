@@ -529,7 +529,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if(FCalled->isDeclaration() || FCalled->isVarArg()) {
+  if(FCalled->isDeclaration()) {
     LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body\n");
     return 0;
   }
@@ -1028,7 +1028,66 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
 
 }
 
+void IntegrationAttempt::blockVA(ValCtx LoadVC) {
+
+  BlockedVALoads.push_back(LoadVC);
+
+}
+
+void IntegrationAttempt::queueBlockedVAs() {
+  
+  for(SmallVector<ValCtx, 1>::iterator it = BlockedVALoads.begin(), it2 = BlockedVALoads.end(); it != it2; ++it) {
+
+    pass->queueCheckLoad(it->second, cast<LoadInst>(it->first));
+
+  }
+
+  BlockedVALoads.clear();
+
+}
+
+void InlineAttempt::getVarArg(uint64_t idx, ValCtx& Result) {
+
+  if(idx >= CI->getNumOperands()) {
+    
+    errs() << "Vararg index " << idx << ": out of bounds\n";
+    Result = VCNull;
+
+  }
+  else {
+
+    Result = parent->getReplacement(CI->getArgOperand(F.arg_size() + idx));
+
+  }
+
+}
+
+void PeelIteration::getVarArg(uint64_t idx, ValCtx& Result) {
+
+  parent->getVarArg(idx, Result);
+
+}
+
 bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Result) {
+
+  // A special case: loading from a symbolic vararg:
+
+  ValCtx LPtr = getReplacement(LoadI->getPointerOperand());
+  LPtr = make_vc(LPtr.first->stripPointerCasts(), LPtr.second, LPtr.offset, LPtr.va_arg);
+
+  if(LPtr.isVaArg()) {
+    
+    LPtr.second->getVarArg(LPtr.va_arg, Result);
+    errs() << "va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n";
+    if(!shouldForwardValue(Result)) {
+
+      Result = VCNull;
+      LPtr.second->blockVA(make_vc(LoadI, this));
+
+    }
+    return true;
+
+  }
 
   int64_t Offset = 0;
   ValCtx Base = GetBaseWithConstantOffset(LoadI->getPointerOperand(), this, Offset);
@@ -3135,7 +3194,7 @@ bool LoadForwardAttempt::addPartialVal(PartialVal& PV) {
 
     const Type* sourceType = PV.TotalVC.first->getType();
 
-    if(allowTotalDefnImplicitCast(sourceType, targetType)) {
+    if(PV.TotalVC.isVaArg() || allowTotalDefnImplicitCast(sourceType, targetType)) {
       LPDEBUG("Accepting " << itcache(PV.TotalVC) << " as a total definition\n");
       Result = PV.TotalVC;
       return true;
@@ -4024,11 +4083,14 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
   }
 
   Function::arg_iterator Arg = F.arg_begin();
-  for(long i = 0; i < Idx; ++i)
+  for(long i = 0; i < Idx && Arg != F.arg_end(); ++i)
     ++Arg;
 
-  IA->setReplacement(Arg, const_vc(Val));
-  IA->investigateUsers(Arg);
+  if(Arg != F.arg_end()) {
+    IA->setReplacement(Arg, const_vc(Val));
+    IA->investigateUsers(Arg);
+  }
+  // Else it's varargs, and loads get investigated anyway.
 
 }
 

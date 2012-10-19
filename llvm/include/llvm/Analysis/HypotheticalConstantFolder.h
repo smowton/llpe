@@ -61,11 +61,16 @@ typedef struct {
   Value* first; 
   IntegrationAttempt* second;
   int64_t offset;
+  int64_t va_arg;
 
   static const int64_t noOffset = LLONG_MAX;
 
   bool isPtrAsInt() {
     return offset != noOffset;
+  }
+
+  bool isVaArg() {
+    return va_arg != noOffset;
   }
 
 } ValCtx;
@@ -263,10 +268,10 @@ template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T>
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
+ 
+inline ValCtx make_vc(Value* V, IntegrationAttempt* H, uint64_t Off = ValCtx::noOffset, uint64_t VaArg = ValCtx::noOffset) {
 
-inline ValCtx make_vc(Value* V, IntegrationAttempt* H, uint64_t Off = ValCtx::noOffset) {
-
-  ValCtx newCtx = {V, H, Off};
+  ValCtx newCtx = {V, H, Off, VaArg};
   return newCtx;
 
 }
@@ -568,6 +573,8 @@ protected:
   SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
   DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
 
+  SmallVector<ValCtx, 1> BlockedVALoads;
+
   DenseMap<CallInst*, OpenStatus*> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
   DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
@@ -836,7 +843,12 @@ protected:
 		       ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
 		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
   PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal);
-
+  PartialVal tryForwardFromCopy(LoadForwardAttempt& LFA, ValCtx Clobber, const Type* subTargetType, Value* copySource, Instruction* copyInst, uint64_t OffsetCI, uint64_t FirstDef, uint64_t FirstNotDef);
+  // Load forwarding extensions for varargs:
+  void queueBlockedVAs();
+  void blockVA(ValCtx);
+  virtual void getVarArg(uint64_t, ValCtx&) = 0;
+  
   // Dead store and allocation elim:
 
   bool tryKillStore(StoreInst* SI);
@@ -1066,6 +1078,8 @@ public:
 
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
+  virtual void getVarArg(uint64_t, ValCtx&);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
 
@@ -1232,6 +1246,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool isOptimisticPeel();
 
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
+
+  virtual void getVarArg(uint64_t, ValCtx&);
 
   virtual int getIterCount() {
     return -1;
