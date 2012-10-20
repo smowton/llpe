@@ -902,7 +902,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
  
   Constant* op0C = getConstReplacement(op0);
   Constant* op1C = getConstReplacement(op1);
-  int64_t op0Off, op1Off;
+  int64_t op0Off = 0, op1Off = 0;
   ValCtx op0O = GetBaseWithConstantOffset(op0, this, op0Off);
   ValCtx op1O = GetBaseWithConstantOffset(op1, this, op1Off);
 

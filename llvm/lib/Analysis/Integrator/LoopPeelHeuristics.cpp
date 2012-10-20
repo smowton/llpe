@@ -137,6 +137,12 @@ AliasAnalysis* IntegrationAttempt::getAA() {
 
 }
 
+Module& IntegrationAttempt::getModule() {
+
+  return *(F.getParent());
+
+}
+
 ValCtx IntegrationAttempt::getLocalReplacement(Value* V) {
 
   DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
@@ -536,6 +542,11 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
   if((!pass->shouldAlwaysInline(FCalled)) && !certainBlocks.count(CI->getParent())) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
+    return 0;
+  }
+
+  if(getLoopContext() != LI[&F]->getLoopFor(CI->getParent())) {
+    // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
 
@@ -961,6 +972,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
 	Seen = Res;
       }
       else {
+	
 	LPDEBUG(itcache(*OriginalInst) << " is overdefined: depends on at least " << itcache(Seen) << " and " << itcache(Res) << "\n");
 	IntegrationAttempt* OrigCtx = LFA.getOriginalCtx();
 	OrigCtx->setLoadOverdef(OriginalInst, NLResults);
@@ -1515,7 +1527,7 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
     LPDEBUG("Unable to pursue load through call " << itcache(*CI) << " as it has not yet been explored\n");
     return false;
   }
-  
+
   LPDEBUG("Trying to forward load " << itcache(*(LFA.getOriginalInst())) << " through call " << itcache(*CI) << ":\n");
   
   bool ret;
@@ -3932,9 +3944,11 @@ void IntegrationHeuristicsPass::runQueue() {
   while(workQueue1.size() || workQueue2.size()) {
     
     std::sort(consumeQueue->begin(), consumeQueue->end());
-    std::unique(consumeQueue->begin(), consumeQueue->end());
 
-    for(SmallVector<IntegratorWQItem, 64>::iterator it = consumeQueue->begin(), itend = consumeQueue->end(); it != itend; ++it) {
+    SmallVector<IntegratorWQItem, 64>::iterator it, itend;
+    itend = std::unique(consumeQueue->begin(), consumeQueue->end());
+
+    for(it = consumeQueue->begin(); it != itend; ++it) {
 
       DEBUG(dbgs() << "Dequeue: ");
       DEBUG(it->describe(dbgs()));

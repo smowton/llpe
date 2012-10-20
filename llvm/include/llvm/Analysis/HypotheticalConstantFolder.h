@@ -642,6 +642,8 @@ protected:
 
   ~IntegrationAttempt();
 
+  Module& getModule();
+
   virtual AliasAnalysis* getAA();
 
   virtual ValCtx getDefaultVC(Value*);
@@ -922,6 +924,8 @@ protected:
   void printRHS(Value*, raw_ostream& Out);
   void printOutgoingEdge(BasicBlock* BB, BasicBlock* SB, unsigned i, bool useLabels, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
   void describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4 >* deferEdges, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<BasicBlock*, 4>* ForceSuccessors, bool brief);
+  void describeLoopAsDOT(const Loop* L, raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
+  virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted) = 0;
   void describeAsDOT(raw_ostream& Out, bool brief);
   std::string getValueColour(Value* I);
   std::string getGraphPath(std::string prefix);
@@ -1079,6 +1083,8 @@ public:
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
   virtual void getVarArg(uint64_t, ValCtx&);
+
+  virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
@@ -1248,6 +1254,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
   virtual void getVarArg(uint64_t, ValCtx&);
+
+  virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
   virtual int getIterCount() {
     return -1;

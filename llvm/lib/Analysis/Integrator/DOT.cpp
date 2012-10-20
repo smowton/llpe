@@ -148,7 +148,7 @@ static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 1000));
+  return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
 
@@ -157,7 +157,7 @@ static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(V, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 1000));
+  return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
 
@@ -166,7 +166,7 @@ static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA) {
   std::string Esc;
   raw_string_ostream RSO(Esc);
   IA->printWithCache(MDR, RSO);
-  return escapeHTML(TruncStr(RSO.str(), 1000));
+  return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
 
@@ -209,7 +209,8 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
 	DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> >::iterator it2 = LastLoadOverdefs.find(LI);
 	if(it2 != LastLoadOverdefs.end()) {
 	  Out << "{{ ";
-	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE; ++NLI) {
+	  int i = 0;
+	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE && i < 3; ++i, ++NLI) {
 	    Out << escapeHTMLValue(NLI->getResult(), this) << ", ";
 	  }
 	  Out << " }}";
@@ -393,6 +394,115 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
  
 }
 
+void IntegrationAttempt::describeLoopAsDOT(const Loop* L, raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted) {
+
+  SmallVector<std::string, 4> deferredEdges;
+
+  if(brief && blockIsDead(L->getHeader()))
+    return;
+
+  SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
+  L->getExitEdges(ExitEdges);
+
+  Out << "subgraph \"cluster_" << DOT::EscapeString(L->getHeader()->getName()) << "\" {";
+
+  if(brief) {
+
+    // Draw the header branching to all exiting blocks, to each exit block.
+    SmallVector<BasicBlock*, 4> Targets;
+    L->getExitingBlocks(Targets);
+
+    describeBlockAsDOT(L->getHeader(), 0, 0, Out, &Targets, brief);
+
+    for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI = ExitEdges.begin(), EE = ExitEdges.end(); EI != EE; ++EI) {
+
+      if(blocksPrinted.count(EI->first))
+	continue;
+      Targets.clear();
+      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI2 = ExitEdges.begin(), EE2 = ExitEdges.end(); EI2 != EE2; ++EI2) {
+
+	if(EI2->first == EI->first)
+	  Targets.push_back(EI2->second);
+
+      }
+      describeBlockAsDOT(EI->first, &ExitEdges, &deferredEdges, Out, &Targets, brief);
+      blocksPrinted.insert(EI->first);
+
+    }
+
+    for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
+
+      BasicBlock* BB = *BI;
+      blocksPrinted.insert(BB);
+
+    }
+
+  }
+  else {
+
+    for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
+
+      BasicBlock* BB = *BI;
+      blocksPrinted.insert(BB);
+      describeBlockAsDOT(BB, &ExitEdges, &deferredEdges, Out, 0, brief);
+
+    }
+
+  }
+						     
+  Out << "label = \"Loop " << DOT::EscapeString(L->getHeader()->getName()) << " (";
+
+  DenseMap<const Loop*, PeelAttempt*>::iterator InlIt = peelChildren.find(L);
+  if(InlIt == peelChildren.end()) {
+
+    Out << "Not explored";
+
+  }
+  else {
+
+    int numIters = InlIt->second->Iterations.size();
+    PeelIteration* LastIter = InlIt->second->Iterations[numIters-1];
+    if(LastIter->iterStatus == IterationStatusFinal) {
+      Out << "Terminated";
+    }
+    else {
+      Out << "Not terminated";
+    }
+
+    Out << ", " << numIters << " iterations";
+
+  }
+
+  Out << ")\";\n}\n";
+
+  for(SmallVector<std::string, 4>::iterator it = deferredEdges.begin(), it2 = deferredEdges.end(); it != it2; ++it) {
+
+    Out << *it;
+
+  }
+
+}
+
+void InlineAttempt::describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted) {
+
+  for(LoopInfo::iterator it = LI[&F]->begin(), it2 = LI[&F]->end(); it != it2; ++it) {
+
+    describeLoopAsDOT(*it, Out, brief, blocksPrinted);
+
+  }
+
+}
+
+void PeelIteration::describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted) {
+
+  for(Loop::iterator it = L->begin(), it2 = L->end(); it != it2; ++it) {
+
+    describeLoopAsDOT(*it, Out, brief, blocksPrinted);
+
+  }
+
+}
+
 void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
   std::string escapedName;
@@ -402,78 +512,8 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
   // First draw all child loops which can be expanded as a sub-cluster.
   SmallSet<BasicBlock*, 32> blocksPrinted;
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    SmallVector<std::string, 4> deferredEdges;
-
-    Out << "subgraph \"cluster_" << DOT::EscapeString(it->first->getHeader()->getName()) << "\" {";
-
-    if(brief) {
-
-      // Draw the header branching to all exiting blocks, to each exit block.
-      SmallVector<BasicBlock*, 4> Targets;
-
-      it->first->getExitingBlocks(Targets);
-
-      describeBlockAsDOT(it->first->getHeader(), 0, 0, Out, &Targets, brief);
-
-      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI = it->second->ExitEdges.begin(), EE = it->second->ExitEdges.end(); EI != EE; ++EI) {
-
-	if(blocksPrinted.count(EI->first))
-	  continue;
-	Targets.clear();
-	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::const_iterator EI2 = it->second->ExitEdges.begin(), EE2 = it->second->ExitEdges.end(); EI2 != EE2; ++EI2) {
-
-	  if(EI2->first == EI->first)
-	    Targets.push_back(EI2->second);
-
-	}
-	describeBlockAsDOT(EI->first, &it->second->ExitEdges, &deferredEdges, Out, &Targets, brief);
-	blocksPrinted.insert(EI->first);
-
-      }
-
-      for(Loop::block_iterator BI = it->first->block_begin(), BE = it->first->block_end(); BI != BE; ++BI) {
-
-	BasicBlock* BB = *BI;
-	blocksPrinted.insert(BB);
-
-      }
-
-    }
-    else {
-
-      for(Loop::block_iterator BI = it->first->block_begin(), BE = it->first->block_end(); BI != BE; ++BI) {
-
-	BasicBlock* BB = *BI;
-	blocksPrinted.insert(BB);
-	describeBlockAsDOT(BB, &it->second->ExitEdges, &deferredEdges, Out, 0, brief);
-
-      }
-
-    }
-						     
-    Out << "label = \"Loop " << DOT::EscapeString(it->first->getHeader()->getName()) << " (";
-
-    int numIters = it->second->Iterations.size();
-    PeelIteration* LastIter = it->second->Iterations[numIters-1];
-    if(LastIter->iterStatus == IterationStatusFinal) {
-      Out << "Terminated";
-    }
-    else {
-      Out << "Not terminated";
-    }
-
-    Out << ", " << numIters << " iterations)\";\n}\n";
-
-    for(SmallVector<std::string, 4>::iterator it = deferredEdges.begin(), it2 = deferredEdges.end(); it != it2; ++it) {
-
-      Out << *it;
-
-    }
-						      
-  }
+  
+  describeLoopsAsDOT(Out, brief, blocksPrinted);
 
   // Now print the blocks that belong within our loop but not any child.
 

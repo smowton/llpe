@@ -570,11 +570,40 @@ void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* 
 
   BasicBlock* ReplaceSource = ReplaceTI->getParent();
 
+  std::vector<BasicBlock*> Succs;
+  Succs.reserve(ReplaceTI->getNumSuccessors());
+	       
   for(unsigned i = 0; i < ReplaceTI->getNumSuccessors(); ++i) {
     
-    BasicBlock* Succ = ReplaceTI->getSuccessor(i);
-    if(Succ != Target)
-      Succ->removePredecessor(ReplaceSource, true /* Don't delete 1-arg PHI nodes */);
+    Succs.push_back(ReplaceTI->getSuccessor(i));
+
+  }
+
+  std::sort(Succs.begin(), Succs.end());
+  std::vector<BasicBlock*>::iterator SuccEnd = std::unique(Succs.begin(), Succs.end());
+
+  // Gah... BBs with multiple edges from a single block seem sometimes to have multiple
+  // PHI entries for that block, sometimes just one. Unique the successors first, then remove
+  // ourselves from their PHIs until we can't anymore.
+  
+  for(std::vector<BasicBlock*>::iterator SuccIt = Succs.begin(); SuccIt != SuccEnd; ++SuccIt) {
+
+    BasicBlock* Succ = *SuccIt;
+    if(Succ != Target) {
+
+      for(BasicBlock::iterator BI = Succ->begin(), BE = Succ->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+
+	int idx;
+	PHINode* PN = cast<PHINode>(BI);
+	while((idx = PN->getBasicBlockIndex(ReplaceTI->getParent())) != -1) {
+
+	  PN->removeIncomingValue(idx, false);
+
+	}
+
+      }
+
+    }
 
   }
 

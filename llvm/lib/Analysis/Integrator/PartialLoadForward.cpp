@@ -469,7 +469,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     // Then we can just treat the memcpy as a GEP, augment the constant expression
     // and try to resolve it.
 
-    if(Constant* MTISourceC = getConstReplacement(MTI->getSource())) {
+    if(Constant* MTISourceC = Clobber.second->getConstReplacement(MTI->getSource())) {
 
       if(ReadOffset > 0) {
 
@@ -505,13 +505,15 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
     }
 
-  return tryForwardFromCopy(LFA, Clobber, subTargetType, MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef);
+    return tryForwardFromCopy(LFA, Clobber, subTargetType, MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef);
 
   }
 
   if(CallInst* CI = dyn_cast<CallInst>(Clobber.first)) {
 
     Function* CalledF = getCalledFunction(CI);
+    if(!CalledF)
+      return PVNull;
 
     if(CalledF->getName() == "llvm.va_start") {
 

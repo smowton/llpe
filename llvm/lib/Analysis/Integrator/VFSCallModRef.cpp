@@ -1,6 +1,7 @@
 
 #include <llvm/Analysis/VFSCallModRef.h>
 
+#include <llvm/Module.h>
 #include <llvm/Function.h>
 
 #include <llvm/Analysis/AliasAnalysis.h>
@@ -115,6 +116,33 @@ static LibCallLocationInfo::LocResult isTermios(ImmutableCallSite CS, const Valu
 
 }
 
+static LibCallLocationInfo::LocResult isStdOut(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  Module& M = CSCtx->getModule();
+  GlobalVariable* Stdout = M.getNamedGlobal("_stdio_streams");
+  assert(Stdout);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdout, CSCtx, AliasAnalysis::UnknownSize);
+
+}
+
+static LibCallLocationInfo::LocResult isStdErr(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  Module& M = CSCtx->getModule();
+  GlobalVariable* Stderr = M.getNamedGlobal("_stdio_streams");
+  assert(Stderr);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stderr, CSCtx, AliasAnalysis::UnknownSize);
+
+}
+
+static LibCallLocationInfo::LocResult isStdBufs(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+
+  Module& M = CSCtx->getModule();
+  GlobalVariable* Stdbufs = M.getNamedGlobal("_fixed_buffers");
+  assert(Stdbufs);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdbufs, CSCtx, AliasAnalysis::UnknownSize);
+
+}
+
 static LibCallLocationInfo VFSCallLocations[] = {
   { isErrnoForLocation },
   { isReadBuf },
@@ -125,12 +153,15 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isArg2 },
   { isArg3 },
   { isArg0Size24 },
+  { isStdOut },
+  { isStdErr },
+  { isStdBufs }
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 9;
+  return 12;
     
 }
   
@@ -206,9 +237,15 @@ static LibCallFunctionInfo::LocationMRInfo MemsetByteMR[] = {
   { ~0U, AliasAnalysis::ModRef }
 };
 
-static LibCallFunctionInfo::LocationMRInfo LanginfoMR[] = {
+static LibCallFunctionInfo::LocationMRInfo LanginfoLMR[] = {
 
   { 5, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo LanginfoMR[] = {
+
   { ~0U, AliasAnalysis::ModRef }
 
 };
@@ -224,6 +261,31 @@ static LibCallFunctionInfo::LocationMRInfo VACopyMR[] = {
 
   { 8, AliasAnalysis::Mod },
   { 5, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo ErrorMR[] = {
+
+  { 9, AliasAnalysis::Mod },
+  { 10, AliasAnalysis::Mod },
+  { 11, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Ref },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo StrToLMR[] = {
+
+  { 5, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo FerrorMR[] = {
+
+  { 2, AliasAnalysis::Ref },
   { ~0U, AliasAnalysis::ModRef }
 
 };
@@ -265,7 +327,12 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
   { "fwrite", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, FwriteMR, 0 },
   { "memset_byte_fn", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, MemsetByteMR, 0 },
+  { "nl_langinfo_l", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, LanginfoLMR, 0 },
   { "nl_langinfo", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, LanginfoMR, 0 },
+  { "__error", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, ErrorMR, 0 },
+  { "verify_numeric", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, ErrorMR, 0 },
+  { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
+  { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
