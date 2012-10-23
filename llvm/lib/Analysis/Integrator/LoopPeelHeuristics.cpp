@@ -1083,7 +1083,7 @@ void IntegrationAttempt::queueBlockedVAs() {
 
 void InlineAttempt::getVarArg(uint64_t idx, ValCtx& Result) {
 
-  if(idx >= CI->getNumOperands()) {
+  if(idx >= (CI->getNumArgOperands() - F.arg_size())) {
     
     errs() << "Vararg index " << idx << ": out of bounds\n";
     Result = VCNull;
@@ -1114,6 +1114,10 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     
     LPtr.second->getVarArg(LPtr.va_arg, Result);
     errs() << "va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n";
+    // Is this va_arg read out of bounds?
+    if(Result == VCNull)
+      return true;
+
     if(!shouldForwardValue(Result)) {
 
       Result = VCNull;
