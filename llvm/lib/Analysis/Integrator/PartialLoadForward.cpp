@@ -186,7 +186,7 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAtte
   GEPOperator *GEP = dyn_cast_or_null<GEPOperator>(PtrOp);
   if (GEP == 0) {
     if(PtrCtx) {
-      ValCtx NewVC = PtrCtx->getReplacement(Ptr);
+      ValCtx NewVC = PtrCtx->getPtrAsIntReplacement(Ptr);
       if(NewVC == make_vc(Ptr, PtrCtx))
 	return NewVC;
       else {

@@ -333,6 +333,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "verify_numeric", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, ErrorMR, 0 },
   { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
   { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
+  { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

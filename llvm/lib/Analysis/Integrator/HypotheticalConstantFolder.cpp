@@ -1005,13 +1005,133 @@ ValCtx IntegrationAttempt::tryFoldIntToPtr(Instruction* IPI) {
 
 }
 
+static bool containsPtrAsInt(ConstantExpr* CE) {
+
+  if(CE->getOpcode() == Instruction::PtrToInt)
+    return true;
+
+  for(unsigned i = 0; i < CE->getNumOperands(); ++i) {
+
+    if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CE->getOperand(i))) {      
+      if(containsPtrAsInt(SubCE))
+	return true;
+    }
+
+  }
+
+  return false;
+
+}
+
+static ValCtx evaluatePtrAsIntCE(Constant* C) {
+
+  ConstantExpr* CE = dyn_cast<ConstantExpr>(C);
+  if(!CE)
+    return const_vc(C);
+
+  if(!containsPtrAsInt(CE))
+    return const_vc(CE);
+
+  switch(CE->getOpcode()) {
+
+  case Instruction::PtrToInt:
+    return make_vc(CE->getOperand(0), 0, 0);
+  case Instruction::SExt:
+  case Instruction::ZExt:
+    return evaluatePtrAsIntCE(CE->getOperand(0));
+  case Instruction::Add:
+  case Instruction::Sub:
+    {
+
+      ValCtx Op1 = evaluatePtrAsIntCE(CE->getOperand(0));
+      ValCtx Op2 = evaluatePtrAsIntCE(CE->getOperand(0));
+      assert(Op1.isPtrAsInt() || Op2.isPtrAsInt());
+      if(CE->getOpcode() == Instruction::Add) {
+
+	if(Op2.isPtrAsInt())
+	  std::swap(Op1, Op2);
+
+	if(Op2.isPtrAsInt()) // Can't add 2 pointers
+	  return const_vc(CE);
+
+	if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.first))
+	  return make_vc(Op1.first, Op1.second, Op1.offset + Op2C->getLimitedValue());
+	else
+	  return const_vc(CE);
+
+      }
+      else {
+	
+	if(Op1.isPtrAsInt()) {
+	  
+	  if(Op2.isPtrAsInt()) {
+	    
+	    if(Op1.first == Op2.first && Op1.second == Op2.second) {
+
+	      return const_vc(ConstantInt::get(Type::getInt64Ty(CE->getContext()), Op1.offset - Op2.offset));
+	      
+	    }
+	    // Else can't subtract 2 pointers with unknown base
+
+	  }
+	  else {
+
+	    if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.first))
+	      return make_vc(Op1.first, Op1.second, Op1.offset - Op2C->getLimitedValue());
+	    else
+	      return const_vc(CE);
+
+	  }
+	  
+	}
+	
+      }
+
+      // Fall through to default
+
+    }	
+
+  default:
+    return const_vc(CE);
+
+  }
+
+}
+
+ValCtx IntegrationAttempt::getPtrAsIntReplacement(Value* V) {
+
+  ValCtx VC = getReplacement(V);
+  if(VC.first && !VC.isPtrAsInt()) {
+
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(VC.first)) {
+
+      return evaluatePtrAsIntCE(CE);
+
+    }
+
+  }
+ 
+  return VC;
+
+}
+
 bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved) {
 
   if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub)
     return false;
 
-  ValCtx Op0 = getReplacement(BOp->getOperand(0));
-  ValCtx Op1 = getReplacement(BOp->getOperand(1));
+  if(Instruction* I = dyn_cast<Instruction>(BOp)) {
+
+    if(I->getParent()->getName() == "53" && I->getParent()->getParent()->getName() == "_ppfs_parsespec") {
+
+      errs() << "Hit\n!";
+
+    }
+
+  }
+
+  ValCtx Op0 = getPtrAsIntReplacement(BOp->getOperand(0));
+  ValCtx Op1 = getPtrAsIntReplacement(BOp->getOperand(1));
 
   bool Op0Ptr = Op0.isPtrAsInt();
   bool Op1Ptr = Op1.isPtrAsInt();
