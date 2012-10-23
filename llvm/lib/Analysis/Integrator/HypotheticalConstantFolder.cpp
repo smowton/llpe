@@ -1120,16 +1120,6 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved
   if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub)
     return false;
 
-  if(Instruction* I = dyn_cast<Instruction>(BOp)) {
-
-    if(I->getParent()->getName() == "53" && I->getParent()->getParent()->getName() == "_ppfs_parsespec") {
-
-      errs() << "Hit\n!";
-
-    }
-
-  }
-
   ValCtx Op0 = getPtrAsIntReplacement(BOp->getOperand(0));
   ValCtx Op1 = getPtrAsIntReplacement(BOp->getOperand(1));
 

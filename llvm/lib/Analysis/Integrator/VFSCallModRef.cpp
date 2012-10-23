@@ -228,6 +228,7 @@ static LibCallFunctionInfo::LocationMRInfo FwriteMR[] = {
   { 0, AliasAnalysis::Mod },
   { 2, AliasAnalysis::Ref },
   { 7, AliasAnalysis::Mod },
+  { 11, AliasAnalysis::Mod },
   { ~0U, AliasAnalysis::ModRef }
 };
 
@@ -290,6 +291,30 @@ static LibCallFunctionInfo::LocationMRInfo FerrorMR[] = {
 
 };
 
+static LibCallFunctionInfo::LocationMRInfo CharPadMR[] = {
+
+  { 2, AliasAnalysis::Mod },
+  { 11, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo FputsMR[] = {
+
+  { 5, AliasAnalysis::Mod },
+  { 11, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo StdioFwriteMR[] = {
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Ref },
+  { 6, AliasAnalysis::Mod },
+  { 11, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -334,6 +359,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
   { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
   { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
+  { "_charpad", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, CharPadMR, 0 },
+  { "fputs_unlocked", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FputsMR, 0 },
+  { "__stdio_fwrite", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, StdioFwriteMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
