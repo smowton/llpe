@@ -754,15 +754,15 @@ protected:
   ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
-  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result);
+  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal = false);
   ValCtx getDefn(const MemDepResult& Res);
-  MemDepResult getUniqueDependency(LFAQueryable&);
+  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal = false);
   bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult);
-  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result);
+  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal = false);
 
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
   virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);

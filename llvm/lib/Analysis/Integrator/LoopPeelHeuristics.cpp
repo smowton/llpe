@@ -32,6 +32,7 @@
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/PHITransAddr.h"
 #include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/Support/CFG.h"
@@ -934,7 +935,16 @@ static bool shouldBlockOnInst(Instruction* I, IntegrationAttempt* ICtx) {
 }
 
 // Find the unique definer or clobberer for a given Load.
-MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
+// The startNonLocal parameter means that we should use getNonLocalPointerDepFromBB from the outset
+// rather than using getDependency first.
+// On the one hand that means checking the block from the beginning (so this wouldn't make sense
+// if we were asking about a load in the middle of the block), but on the other hand it means we're
+// capable of immediately calling back into tryForwardLoadThroughLoopFromBB if appropriate.
+// This is used to handle the case that we try to LFA over a loop with an exit edge that exits
+// more than one loop: then we call this with startNonLocal = true, which calls tryForwardThroughLoop,
+// which calls this again... for each nested loop. That way we neatly mirror the situation when loops
+// have a more pedestrian nesting situation.
+MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool startNonLocal) {
 
   MemoryDependenceAnalyser MD;
   MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */);
@@ -942,16 +952,29 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA) {
   LoadInst* QueryInst = LFA.getQueryInst();
   LoadInst* OriginalInst = LFA.getOriginalInst();
 
-  MemDepResult Seen = MD.getDependency(QueryInst);
+  MemDepResult Seen;
+  if(!startNonLocal)
+    Seen = MD.getDependency(QueryInst);
 
-  if(Seen.isNonLocal()) {
+  if(startNonLocal || Seen.isNonLocal()) {
 
     Seen = MemDepResult();
     Value* LPointer = QueryInst->getOperand(0);
-
+    const Type *EltTy = cast<PointerType>(LPointer->getType())->getElementType();
+    uint64_t PointeeSize = AA->getTypeStoreSize(EltTy);
+    PHITransAddr LAddr(LPointer, TD, this);
+    DenseMap<BasicBlock*, Value*> Visited;
+    Visited.insert(std::make_pair(QueryInst->getParent(), LPointer));
     SmallVector<NonLocalDepResult, 4> NLResults;
 
-    MD.getNonLocalPointerDependency(LPointer, true, QueryInst->getParent(), NLResults);
+    if(MD.getNonLocalPointerDepFromBB(LAddr, PointeeSize, true, QueryInst->getParent(), NLResults, Visited, !startNonLocal)) {
+
+      NLResults.clear();
+      NLResults.push_back(NonLocalDepResult(QueryInst->getParent(),
+					    MemDepResult::getClobber(QueryInst->getParent()->begin()),
+					    LPointer));
+
+    }
 
     if(NLResults.size() == 0) {
 
@@ -1421,9 +1444,9 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result, bool startNonLocal) {
 
-  Result = getUniqueDependency(LFAQ);
+  Result = getUniqueDependency(LFAQ, startNonLocal);
 
   if(Result == MemDepResult()) {
     // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
@@ -1448,19 +1471,19 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult&
 
 }
 
-bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result) {
+bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal) {
 
   LFARMapping LFARM(LFAR, this);
 
-  return forwardLoadIsNonLocal(LFAR, Result);
+  return forwardLoadIsNonLocal(LFAR, Result, startNonLocal);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal) {
 
   LFARealization LFAR(LFA, this, Where);
   
-  return tryResolveExprUsing(LFAR, Result);
+  return tryResolveExprUsing(LFAR, Result, startNonLocal);
 
 }
 
@@ -1584,7 +1607,9 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
   LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " from exit block " << BB->getName() << " to header of " << L->getHeader()->getName() << "\n");
 
-  if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult)) {
+  // Use startNonLocal so that if this exiting block is actually the exiting block of a nested child loop
+  // as well, MDA will immediately recurse into tryForwardLoadThroughLoopFromBB.
+  if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult, /* startNonLocal = */ true)) {
     LastIterResult = MemDepResult::getNonLocal();
   }
   else {
@@ -1641,6 +1666,8 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
   const Loop* BBL = LI[&F]->getLoopFor(BB);
 
   if(BBL != getLoopContext() && ((!getLoopContext()) || getLoopContext()->contains(BBL))) {
+
+    BBL = immediateChildLoop(getLoopContext(), BBL);
 
     PeelAttempt* LPA = getPeelAttempt(BBL);
     if(!LPA) {
