@@ -43,6 +43,7 @@ std::string IntegrationAttempt::getValueColour(Value* V) {
   // Yellow: Expanded call instruction
   // Pink: Unexpanded call instruction
   // Lime green: Invariant defined above.
+  // Dark green: Pointer base known
   // Grey: part of a dead block.
 
   Instruction* I = dyn_cast<Instruction>(V);
@@ -62,6 +63,7 @@ std::string IntegrationAttempt::getValueColour(Value* V) {
 
   const Loop* MyScope = getLoopContext();
   const Loop* VScope = getValueScope(V);
+  PointerBase PB;
 
   if(VScope == MyScope) {
 
@@ -83,7 +85,15 @@ std::string IntegrationAttempt::getValueColour(Value* V) {
     }
 
   }
-  else {
+  
+  if(getPointerBase(I, PB, I)) {
+
+    if(!PB.Overdef)
+      return "darkgreen";
+    
+  }
+
+  if((MyScope != VScope) && ((!MyScope) || MyScope->contains(VScope))) {
     
     // Instruction is a loop variant here.
     return "cyan";
@@ -180,6 +190,7 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   const Loop* MyScope = getLoopContext();
   const Loop* VScope = getValueScope(V);
   bool isInvariant = (MyScope != VScope && ((!VScope) || VScope->contains(MyScope)));
+  PointerBase PB;
 
   ValCtx Repl = getReplacement(V);  
   if(getDefaultVC(V) != Repl) {
@@ -200,6 +211,9 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   }
   else if(I && deadValues.count(I)) {
     Out << "DEAD";
+  }
+  else if(getPointerBase(I, PB, I) && !PB.Overdef) {
+    Out << "BASE " << itcache(PB.Base);
   }
   else if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
     DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);

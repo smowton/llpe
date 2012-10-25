@@ -104,7 +104,8 @@ enum IntegratorWQItemType {
    TryEval,
    CheckBlock,
    CheckLoad,
-   OpenPush
+   OpenPush,
+   PBSolve
 
 };
 
@@ -121,12 +122,14 @@ struct IntegratorWQItem {
       CallInst* OpenI;
       ValCtx OpenProgress;
     } OpenArgs;
+    IntegrationHeuristicsPass* IHP;
   } u;
 
  IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
  IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
  IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock) { u.BB = BB; }
  IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush) { u.OpenArgs.OpenI = OpenI; u.OpenArgs.OpenProgress = OpenProgress; }
+IntegratorWQItem() { }
 
   void execute();
   void describe(raw_ostream& s);
@@ -162,6 +165,13 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<ValCtx, 64>* produceDIEQueue;
 
+   SmallVector<ValCtx, 64> PBQueue1;
+   SmallVector<ValCtx, 64> PBQueue2;
+
+   SmallVector<ValCtx, 64>* PBProduceQ;
+
+   uint64_t PBGeneration;
+
    IntegrationAttempt* RootIA;
 
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
@@ -174,8 +184,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
+     PBProduceQ = &PBQueue2;
      produceDIEQueue = &dieQueue2;
      produceQueue = &workQueue2;
+     PBGeneration = 0;
 
    }
 
@@ -219,6 +231,11 @@ class IntegrationHeuristicsPass : public ModulePass {
    void loadArgv(Function*, std::string&, unsigned argvidx, unsigned& argc);
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
+
+   void runPointerBaseSolver(bool finalise, SmallVector<ValCtx, 64>* ChangedVCs);
+   void runPointerBaseSolver();
+   uint64_t getPBGeneration();
+   void queueUpdatePB(IntegrationAttempt* IA, Value* V);
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
@@ -506,6 +523,27 @@ public:
 
 };
 
+// PointerBase: an SCCP-like value giving the pointer base for a value.
+// May be: 
+// overdefined (more than one pointer base asserted),
+// defined (known base)
+// undefined (implied by absence from map)
+// Note Base may be null (signifying a null pointer) without being Overdef.
+
+struct PointerBase {
+
+  ValCtx Base;
+  bool Overdef;
+  uint64_t Generation;
+
+PointerBase() : Base(VCNull), Overdef(false), Generation(0) { }
+PointerBase(ValCtx B, bool O, uint64_t G) : Base(B), Overdef(O), Generation(G) { }
+
+  static PointerBase get(ValCtx VC, uint64_t G) { return PointerBase(VC, false, G); }
+  static PointerBase getOverdef(uint64_t G) { return PointerBase(VCNull, true, G); }
+
+};
+
 enum IterationStatus {
 
   IterationStatusUnknown,
@@ -579,6 +617,9 @@ protected:
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
   DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
   DenseMap<CallInst*, CloseFile> resolvedCloseCalls;
+
+  // Pointers resolved down to their base object, but not necessarily the offset:
+  DenseMap<Value*, PointerBase> pointerBases;
 
   // Inline attempts / peel attempts which are currently ignored because they've been opted out.
   // These may include inlines / peels which are logically two loop levels deep, 
@@ -756,7 +797,7 @@ protected:
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
   bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal = false);
-  ValCtx getDefn(const MemDepResult& Res);
+  void getDefn(const MemDepResult& Res, ValCtx& VCout, PointerBase& PBout, bool& PBValidOut);
   MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
@@ -899,6 +940,20 @@ protected:
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
   void queueAllReturnInsts();
   void queueAllLiveValues();
+
+  // Pointer base analysis
+  bool getPointerBaseLocal(Value* V, PointerBase& OutPB);
+  bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
+  bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
+  bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
+  bool updateMergeBasePointer(Instruction* I, bool finalise);
+  bool updateBasePointer(Value* V, bool finalise);
+  void queueUsersUpdatePB(Value* V);
+  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
+  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
+  void resolvePointerBase(Value* V, ValCtx Base);
+  void queuePBCheckAllInstructionsInScope(const Loop* L);
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed) = 0;
 
   // Enabling / disabling exploration:
 
@@ -1085,6 +1140,8 @@ public:
 
   virtual void getVarArg(uint64_t, ValCtx&);
 
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed);
+
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
   bool isOnlyExitingIteration();
@@ -1176,9 +1233,11 @@ class PeelAttempt {
    bool isEnabled();
    void setEnabled(bool);
 
-  void eraseBlockValues(BasicBlock*);
+   void eraseBlockValues(BasicBlock*);
 
    void removeBlockFromLoops(BasicBlock*);
+   
+   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
 
    void dumpMemoryUsage(int indent);
 
@@ -1255,6 +1314,10 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
   virtual void getVarArg(uint64_t, ValCtx&);
+
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed);
+
+  bool getArgBasePointer(Argument*, PointerBase&);
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 

@@ -883,28 +883,28 @@ ValCtx InlineAttempt::getImprovedCallArgument(Argument* A) {
 }
 
 // Given a MemDep Def, get the value loaded or stored.
-ValCtx IntegrationAttempt::getDefn(const MemDepResult& Res) {
-
+void IntegrationAttempt::getDefn(const MemDepResult& Res, ValCtx& improved, PointerBase& improvedBase, bool& improvedBaseValid) {
+  
   IntegrationAttempt* QueryCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
-  ValCtx improved = VCNull;
+  improved = VCNull;
+  improvedBaseValid = false;
   if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
     improved = QueryCtx->getReplacement(SI->getOperand(0));
-  }
-  else if(LoadInst* DefLI= dyn_cast<LoadInst>(Res.getInst())) {
-    improved = QueryCtx->getReplacement(DefLI);
+    improvedBaseValid = QueryCtx->getPointerBase(SI->getOperand(0), improvedBase, SI);
   }
   else {
     LPDEBUG("Defined by " << itcache(*(Res.getInst())) << " which is not a simple load or store\n");
-    return VCNull;
+    return;
   }
 
   if(improved.first != Res.getInst() || improved.second != QueryCtx) {
     LPDEBUG("Definition improved to " << itcache(improved) << "\n");
-    return improved;
+    return;
   }
   else {
+    improved = VCNull;
     LPDEBUG("Definition not improved\n");
-    return VCNull;
+    return;
   }
 
 }
@@ -1236,7 +1236,17 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     PV = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt), Res.isEntryNonLocal());
   }
   else if(Res.isDef()) {
-    ValCtx DefResult = getDefn(Res);
+    ValCtx DefResult;
+    PointerBase DefResultBase;
+    bool DefResultBaseValid;
+    getDefn(Res, DefResult, DefResultBase, DefResultBaseValid);
+
+    if(DefResultBaseValid && !DefResultBase.Overdef) {
+
+      resolvePointerBase(LoadI, DefResultBase.Base);
+
+    }
+
     if(DefResult == VCNull) {
       Result = VCNull;
       goto out;
@@ -3589,6 +3599,9 @@ void IntegratorWQItem::execute() {
   case OpenPush:
     ctx->tryPushOpen(u.OpenArgs.OpenI, u.OpenArgs.OpenProgress);
     break;
+  case PBSolve:
+    u.IHP->runPointerBaseSolver();
+    break;
   }
 }
 
@@ -3609,6 +3622,10 @@ void IntegratorWQItem::describe(raw_ostream& s) {
   case OpenPush:
     s << "Push-VFS-chain ";
     ctx->printWithCache(make_vc(u.OpenArgs.OpenI, ctx), s);
+    break;
+  case PBSolve:
+    s << "Run-PB-solver";
+    break;
   }
 
 }
@@ -3923,6 +3940,8 @@ inline bool operator==(IntegratorWQItem W1, IntegratorWQItem W2) {
     return W1.u.LI == W2.u.LI;
   case OpenPush:
     return (W1.u.OpenArgs.OpenI == W2.u.OpenArgs.OpenI && W1.u.OpenArgs.OpenProgress == W2.u.OpenArgs.OpenProgress);
+  case PBSolve:
+    return true;
   default:
     assert(0 && "Bad WQ item type!");
   }
@@ -3949,6 +3968,8 @@ inline bool operator<(IntegratorWQItem W1, IntegratorWQItem W2) {
     if(W1.u.OpenArgs.OpenI != W2.u.OpenArgs.OpenI)
       return W1.u.OpenArgs.OpenI < W2.u.OpenArgs.OpenI;
     return W1.u.OpenArgs.OpenProgress < W2.u.OpenArgs.OpenProgress;
+  case PBSolve:
+    return false;
   default:
     assert(0 && "Bad WQ item type!");
   }
