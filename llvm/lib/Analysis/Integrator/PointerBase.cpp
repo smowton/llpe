@@ -12,6 +12,59 @@
 
 using namespace llvm;
 
+static bool extractCEBase(Constant* C, PointerBase& PB) {
+
+  if(isa<GlobalValue>(C)) {
+    PB = PointerBase::get(const_vc(C), 0);
+    return true;
+  }
+
+  ConstantExpr* CE = dyn_cast<ConstantExpr>(C);
+  if(!CE)
+    return false;
+
+  switch(CE->getOpcode()) {
+
+  case Instruction::GetElementPtr:
+  case Instruction::BitCast:
+  case Instruction::SExt:
+  case Instruction::ZExt:
+  case Instruction::IntToPtr:
+  case Instruction::PtrToInt:
+    return extractCEBase(CE->getOperand(0), PB);
+  case Instruction::Add:
+  case Instruction::Sub:
+    {
+      PointerBase PB1, PB2;
+      bool PB1Valid, PB2Valid;
+      PB1Valid = extractCEBase(CE->getOperand(0), PB1);
+      PB2Valid = extractCEBase(CE->getOperand(1), PB2);
+      if(CE->getOpcode() == Instruction::Add) {
+
+	if(PB1Valid == PB2Valid)
+	  return false;
+	PB = PB1Valid ? PB1 : PB2;
+	return true;
+
+      }
+      else {
+
+	if((!PB1Valid) || PB2Valid)
+	  return false;
+	PB = PB1;
+	return true;
+
+      }
+      
+    }
+
+ default:
+   return false;
+
+  }
+
+}
+
 bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
 
   if(isa<AllocaInst>(V) || isNoAliasCall(V)) {
@@ -24,6 +77,11 @@ bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
 
     OutPB = PointerBase::get(const_vc(cast<Constant>(V)), 0);    
     return true;
+
+  }
+  else if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V)) {
+
+    return extractCEBase(CE, OutPB);
 
   }
 
@@ -68,6 +126,9 @@ bool IntegrationAttempt::getPointerBaseFalling(Value* V, PointerBase& OutPB) {
 // UserI is the instruction that uses V in whose context we're investigating V.
 bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI) {
 
+  if(isa<Constant>(V))
+    return getPointerBaseLocal(V, OutPB);
+
   const Loop* MyL = getLoopContext();
   const Loop* VL = getValueScope(V);
   const Loop* UserL = getValueScope(UserI);
@@ -103,7 +164,14 @@ bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instructio
 // the newest result of their operands.
 // If finalise is true, we're in the 'resolution' phase: they take on their true value.
 // e.g. in phase 1, PHI(def_1, overdef_0) = def_1, in phase 2 it is overdef_1.
-bool IntegrationAttempt::updateMergeBasePointer(Instruction* I, bool finalise) {
+void IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
+
+  if(isa<SelectInst>(I)) {
+
+    errs() << "Hit\n";
+
+  }
+
 
   SmallVector<Value*, 4> Vals;
   if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
@@ -141,67 +209,50 @@ bool IntegrationAttempt::updateMergeBasePointer(Instruction* I, bool finalise) {
     
     Value* V = *it;
     PointerBase VPB;
-    if(getPointerBase(V, VPB, I)) {
-
-      if(VPB.Generation == MaxGen || (!VPB.Overdef) || finalise) {
-
-	if(VPB.Overdef || (UniqueBaseSet && UniqueBase != VPB.Base)) {
-
-	  pointerBases[I] = PointerBase::getOverdef(MaxGen);
-	  return true;
-
-	}
-	else {
-
-	  UniqueBaseSet = true;
-	  UniqueBase = VPB.Base;
-
-	}
-
+    if((!getPointerBase(V, VPB, I)) || VPB.Overdef) {
+      if(finalise) {
+	NewPB = PointerBase::getOverdef(MaxGen);
+	return;
       }
+      else
+	continue;      
+    }
+
+    if(UniqueBaseSet && UniqueBase != VPB.Base) {
+
+      NewPB = PointerBase::getOverdef(MaxGen);
+      return;
 
     }
 
-  }
-
-  if(UniqueBaseSet) {
-
-    pointerBases[I] = PointerBase::get(UniqueBase, MaxGen);
-    return true;
+    UniqueBaseSet = true;
+    UniqueBase = VPB.Base;
 
   }
 
-  if(!finalise) {
-    // Else, have no information.
-    return false;
-  }
-  else {
-    // Missing operands treated as overdef in the finalise phase.
-    pointerBases[I] = PointerBase::getOverdef(MaxGen);
-    return true;
-  }
+  if(UniqueBaseSet)
+    NewPB = PointerBase::get(UniqueBase, MaxGen);
+  else
+    NewPB = PointerBase::getOverdef(MaxGen);
 
 }
 
 bool InlineAttempt::getArgBasePointer(Argument* A, PointerBase& OutPB) {
 
+  if(!parent)
+    return false;
   return parent->getPointerBaseFalling(CI->getArgOperand(A->getArgNo()), OutPB);
 
 }
 
-bool InlineAttempt::updateHeaderPHIPB(PHINode* PN, bool& Changed) {
+bool InlineAttempt::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) {
   
   return false;
 
 }
 
-bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& Changed) {
+bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) {
   
-  Changed = false;
-
-  PointerBase OldPB;
-  bool OldPBValid = getPointerBaseFalling(PN, OldPB);
-
   if(L && L->getHeader() == PN->getParent()) {
 
     ValCtx Repl;
@@ -211,19 +262,7 @@ bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& Changed) {
       PeelIteration* PreviousIter = parentPA->getIteration(getIterCount() - 1);	      
       Repl = make_vc(PN->getIncomingValueForBlock(L->getLoopLatch()), PreviousIter);
     }
-    PointerBase PrevPB;
-    if(Repl.second->getPointerBaseFalling(Repl.first, PrevPB)) {
-      if((!OldPBValid) || PrevPB.Generation > OldPB.Generation) {
-	pointerBases[PN] = PrevPB;
-	Changed = true;
-      }
-      else {
-	// Nothing changed
-      }
-    }
-    else {
-      // No information
-    }
+    NewPBValid = Repl.second->getPointerBaseFalling(Repl.first, NewPB);
 
     return true;
 
@@ -233,31 +272,28 @@ bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& Changed) {
 
 }
 
+void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
+
+  if(PB.Overdef)
+    out << "Overdef";
+  else
+    out << itcache(PB.Base);
+
+}
+
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
+
+  LPDEBUG("Update pointer base " << itcache(*V) << "\n");
+  PointerBase NewPB;
+
+  PointerBase OldPB;
+  bool OldPBValid = getPointerBaseFalling(V, OldPB);
 
   if(Argument* A = dyn_cast<Argument>(V)) {
 
-    PointerBase OldPB;
-    bool OldPBValid = getPointerBaseFalling(V, OldPB);
-
     PointerBase PB;
     InlineAttempt* IA = getFunctionRoot();
-    if(IA->getArgBasePointer(A, PB)) {
-
-      if((!OldPBValid) || PB.Generation > OldPB.Generation) {
-
-	pointerBases[A] = PB;
-
-      }
-      else {
-
-	// Already up to date
-	return false;
-
-      }
-
-    }
-    else {
+    if(!IA->getArgBasePointer(A, NewPB)) {
 
       // No information from our argument
       return false;
@@ -268,28 +304,6 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
   else {
 
     Instruction* I = cast<Instruction>(V);
-
-    // First a quick check: do we need to update at all?
-    PointerBase OldPB;
-    bool mustUpdate = false;
-    if(getPointerBaseFalling(I, OldPB)) {
-
-      for(unsigned i = 0; i < I->getNumOperands() && !mustUpdate; ++i) {
-
-	PointerBase ArgPB;
-	if(getPointerBase(I->getOperand(i), ArgPB, I)) {
-
-	  if(ArgPB.Generation > OldPB.Generation)
-	    mustUpdate = true;
-
-	}
-
-      }
-
-    }
-
-    if(!mustUpdate)
-      return false;
 
     switch(I->getOpcode()) {
 
@@ -303,7 +317,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
       {
 	PointerBase PB;
 	if(getPointerBase(I->getOperand(0), PB, I))
-	  pointerBases[V] = PB;
+	  NewPB = PB;
 	else
 	  return false;
 	break;
@@ -316,13 +330,13 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	bool found2 = getPointerBase(I->getOperand(1), PB2, I);
 	if(found1 && found2) {
 	  LPDEBUG("Add of 2 pointers\n");
-	  pointerBases[V] = PointerBase::getOverdef(std::max(PB1.Generation, PB2.Generation));
+	  NewPB = PointerBase::getOverdef(std::max(PB1.Generation, PB2.Generation));
 	}
 	else if((!found1) && (!found2)) {
 	  return false;
 	}
 	else {
-	  pointerBases[V] = found1 ? PB1 : PB2;
+	  NewPB = found1 ? PB1 : PB2;
 	}
 	break;
       }      
@@ -336,7 +350,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	  return false;
 	}
 	else if(found1) {
-	  pointerBases[V] = PB1;
+	  NewPB = PB1;
 	}
 	else {
 	  return false;
@@ -345,31 +359,42 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
       }
     case Instruction::PHI:
       {
-	bool Changed;
-	if(updateHeaderPHIPB(cast<PHINode>(I), Changed)) {
-	  if(Changed)
-	    break;
-	  else
+	bool NewPBValid;
+	if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
+	  if(!NewPBValid)
 	    return false;
+	  else
+	    break;
 	}
 	// Else fall through:
       }
     case Instruction::Select:
       {
-	if(!updateMergeBasePointer(I, finalise))
-	  return false;
+	getMergeBasePointer(I, finalise, NewPB);
 	break;
       }
     default:
-      // Unknown instruction -- leave it alone, if pointer-typed it will be demoted to overdef later.
+      // Unknown instruction, draw no conclusions.
       return false;
     }
 
   }
 
-  queueUsersUpdatePB(V);
+  if((!OldPBValid) || OldPB.Overdef != NewPB.Overdef || OldPB.Base != NewPB.Base) {
 
-  return true;
+    pointerBases[V] = NewPB;
+
+    LPDEBUG("Updated dep to ");
+    DEBUG(printPB(dbgs(), NewPB));
+    DEBUG(dbgs() << "\n");
+  
+    queueUsersUpdatePB(V);
+
+    return true;
+
+  }
+  
+  return false;
 
 }
 
@@ -512,6 +537,7 @@ void IntegrationHeuristicsPass::queueUpdatePB(IntegrationAttempt* IA, Value* V) 
   
   IntegratorWQItem I;
   I.type = PBSolve;
+  I.ctx = 0;
   I.u.IHP = this;
 
   produceQueue->push_back(I);
@@ -522,5 +548,35 @@ void IntegrationAttempt::resolvePointerBase(Value* V, ValCtx Base) {
 
   pointerBases[V] = PointerBase::get(Base, pass->getPBGeneration());
   queueUsersUpdatePB(V);
+
+}
+
+bool InlineAttempt::ctxContains(IntegrationAttempt* IA) {
+
+  return this == IA;
+
+}
+
+bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
+
+  if(this == IA)
+    return true;
+  return parent->ctxContains(IA);
+
+}
+
+bool IntegrationAttempt::basesMayAlias(ValCtx VC1, ValCtx VC2) {
+
+  if(VC1.first == VC2.first) {
+
+    if((!VC1.second) || (!VC2.second))
+      return true;
+
+    if(VC1.second->ctxContains(VC2.second) || VC2.second->ctxContains(VC1.second))
+      return true;
+
+  }
+
+  return false;
 
 }

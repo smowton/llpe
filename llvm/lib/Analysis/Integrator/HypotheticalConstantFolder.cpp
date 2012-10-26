@@ -1045,7 +1045,17 @@ static ValCtx evaluatePtrAsIntCE(Constant* C) {
 
       ValCtx Op1 = evaluatePtrAsIntCE(CE->getOperand(0));
       ValCtx Op2 = evaluatePtrAsIntCE(CE->getOperand(0));
-      assert(Op1.isPtrAsInt() || Op2.isPtrAsInt());
+
+      if(!(Op1.isPtrAsInt() || Op2.isPtrAsInt())) {
+
+	assert(isa<Constant>(Op1.first) && isa<Constant>(Op2.first));
+	if(CE->getOpcode() == Instruction::Add)
+	  return const_vc(ConstantExpr::getAdd(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
+	else
+	  return const_vc(ConstantExpr::getSub(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
+
+      }
+
       if(CE->getOpcode() == Instruction::Add) {
 
 	if(Op2.isPtrAsInt())
@@ -2449,6 +2459,16 @@ void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
 }
 
 void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
+
+  if(!getLoopContext()) {
+
+    for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
+
+      pass->queueUpdatePB(this, AI);
+
+    }
+
+  }
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 

@@ -286,6 +286,7 @@ static bool notDifferentParent(const Value *O1, const Value *O2) {
 #endif
 
 namespace {
+
   /// BasicAliasAnalysis - This is the default alias analysis implementation.
   /// Because it doesn't chain to a previous alias analysis (like -no-aa), it
   /// derives from the NoAA class.
@@ -300,6 +301,40 @@ namespace {
 
     }
 
+    bool getPointerBase(const Value* V, IntegrationAttempt* Ctx, ValCtx& VC) {
+
+      ValCtx Repl = Ctx->getReplacement(const_cast<Value*>(V));
+      bool ignored;
+      VC = getUltimateUnderlyingObject(Repl, ignored);
+      if(isIdentifiedObject(VC.first))
+	return true;
+
+      PointerBase PB;
+      if((!Ctx->getPointerBaseFalling(const_cast<Value*>(V), PB)) || (PB.Overdef))
+	return false;
+      else {
+	VC = PB.Base;
+	return true;
+      }
+
+    }
+
+    AliasAnalysis::AliasResult tryResolvePointerBases(const Value* V1, IntegrationAttempt* V1Ctx,
+						      const Value* V2, IntegrationAttempt* V2Ctx) {
+
+      ValCtx VC1, VC2;
+      IntegrationAttempt* QueryCtx = V1Ctx ? V1Ctx : V2Ctx;
+      if(getPointerBase(V1, V1Ctx, VC1) && getPointerBase(V2, V2Ctx, VC2)) {
+
+	if(!QueryCtx->basesMayAlias(VC1, VC2))
+	  return AliasAnalysis::NoAlias;
+
+      }
+
+      return AliasAnalysis::MayAlias;
+
+    }
+
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
 					  IntegrationAttempt* parent) {
@@ -308,8 +343,11 @@ namespace {
       assert(notDifferentParent(V1, V2) &&
              "BasicAliasAnalysis doesn't support interprocedural queries.");
       AliasResult Alias;
-      if(parent)
+      if(parent) {
 	Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
+	if(Alias == MayAlias)
+	  Alias = tryResolvePointerBases(V1, parent, V2, parent);
+      }
       else
 	Alias = aliasCheck(make_vc(const_cast<Value*>(V1), 0), V1Size, make_vc(const_cast<Value*>(V2), 0), V2Size);
       Visited.clear();
@@ -323,6 +361,8 @@ namespace {
       // I think I can ignore the not-different assertion!
       assert(Visited.empty() && "Visited must be cleared after use!");
       AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
+      if(Alias == MayAlias && (V1.second || V2.second))
+	Alias = tryResolvePointerBases(V1.first, V1.second, V2.first, V2.second);
       Visited.clear();
       return Alias;
 

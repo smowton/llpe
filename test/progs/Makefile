@@ -6,7 +6,8 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
           invariants def-function def-skip-function defloop defskiploop loadundef memops \
 	  small-write-large-load large-write-small-load nonconstmemcpy memcpy-cases \
 	  memcpy-cases-nonconst struct-const struct-global reinterpret fp fpreinterpret \
-	  fpalign read read-indirect-fd varargs varargs-param varargs-copy
+	  fpalign read read-indirect-fd varargs varargs-param varargs-copy pointerbase pointerarith \
+	  pointerarithfail pointerarithnested fakestdio
 
 LLVM_TARGETS = load-struct load-array switch-loop
 

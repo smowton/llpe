@@ -944,16 +944,19 @@ protected:
   // Pointer base analysis
   bool getPointerBaseLocal(Value* V, PointerBase& OutPB);
   bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
-  bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
+  virtual bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
-  bool updateMergeBasePointer(Instruction* I, bool finalise);
+  void getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
   void queueUsersUpdatePB(Value* V);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
   void resolvePointerBase(Value* V, ValCtx Base);
   void queuePBCheckAllInstructionsInScope(const Loop* L);
-  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed) = 0;
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
+  void printPB(raw_ostream& out, PointerBase PB);
+  virtual bool ctxContains(IntegrationAttempt*) = 0;
+  virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
 
   // Enabling / disabling exploration:
 
@@ -1140,7 +1143,9 @@ public:
 
   virtual void getVarArg(uint64_t, ValCtx&);
 
-  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed);
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
+
+  virtual bool ctxContains(IntegrationAttempt*);
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
@@ -1315,7 +1320,9 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void getVarArg(uint64_t, ValCtx&);
 
-  virtual bool updateHeaderPHIPB(PHINode* PN, bool& Changed);
+  virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
+
+  virtual bool ctxContains(IntegrationAttempt*);
 
   bool getArgBasePointer(Argument*, PointerBase&);
 

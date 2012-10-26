@@ -86,7 +86,7 @@ std::string IntegrationAttempt::getValueColour(Value* V) {
 
   }
   
-  if(getPointerBase(I, PB, I)) {
+  if(getPointerBaseFalling(V, PB)) {
 
     if(!PB.Overdef)
       return "darkgreen";
@@ -212,7 +212,7 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   else if(I && deadValues.count(I)) {
     Out << "DEAD";
   }
-  else if(getPointerBase(I, PB, I) && !PB.Overdef) {
+  else if(I && getPointerBase(I, PB, I) && !PB.Overdef) {
     Out << "BASE " << itcache(PB.Base);
   }
   else if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
