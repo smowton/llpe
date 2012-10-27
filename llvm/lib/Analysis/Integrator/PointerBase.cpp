@@ -388,7 +388,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
     DEBUG(printPB(dbgs(), NewPB));
     DEBUG(dbgs() << "\n");
   
-    queueUsersUpdatePB(V);
+    queueUsersUpdatePB(V, !NewPB.Overdef);
 
     return true;
 
@@ -402,7 +402,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 // We investigate: (1) the user's 'natural' scope (since this catches exit PHIs), and
 // (2) if the user is within our scope, all scopes between ours and its 
 // (since our new invariant information might be useful at many scopes).
-void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
+void IntegrationAttempt::queueUsersUpdatePB(Value* V, bool VDefined) {
 
   const Loop* MyL = getLoopContext();
   
@@ -414,12 +414,12 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
 
       if((!MyL) || (UserL && MyL->contains(UserL))) {
 	  
-	queueUsersUpdatePBRising(UserI, UserL, V);
+	queueUsersUpdatePBRising(UserI, UserL, V, VDefined);
 	
       }
       else {
 	
-	queueUsersUpdatePBFalling(UserI, UserL, V);
+	queueUsersUpdatePBFalling(UserI, UserL, V, VDefined);
 
       }
 
@@ -429,7 +429,7 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V) {
+void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined) {
 
   if(getLoopContext() == IL) {
 
@@ -454,35 +454,37 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
     }
     else {
       pass->queueUpdatePB(this, I);
+      if(VDefined)
+	queueWorkBlockedOn(I);
     }
 
   }
   else {
     if(parent)
-      parent->queueUsersUpdatePBFalling(I, IL, V);
+      parent->queueUsersUpdatePBFalling(I, IL, V, VDefined);
   }
 
 }
 
-void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
+void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined) {
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->queueUsersUpdatePBRising(I, TargetL, V);
+    Iterations[i]->queueUsersUpdatePBRising(I, TargetL, V, VDefined);
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
+void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined) {
 
   const Loop* MyL = getLoopContext();
 
   // Investigate here:
-  queueUsersUpdatePBFalling(I, MyL, V);
+  queueUsersUpdatePBFalling(I, MyL, V, VDefined);
   
   // And at inner contexts if possible.
   if(TargetL != MyL) {
 
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(getLoopContext(), TargetL)))
-      PA->queueUsersUpdatePBRising(I, TargetL, V);
+      PA->queueUsersUpdatePBRising(I, TargetL, V, VDefined);
 
   }
 
@@ -546,8 +548,11 @@ void IntegrationHeuristicsPass::queueUpdatePB(IntegrationAttempt* IA, Value* V) 
 
 void IntegrationAttempt::resolvePointerBase(Value* V, ValCtx Base) {
 
-  pointerBases[V] = PointerBase::get(Base, pass->getPBGeneration());
-  queueUsersUpdatePB(V);
+  PointerBase ExistingPB;
+  if((!getPointerBaseLocal(V, ExistingPB)) || ExistingPB.Overdef) {
+    pointerBases[V] = PointerBase::get(Base, pass->getPBGeneration());
+    queueUsersUpdatePB(V, true);
+  }
 
 }
 

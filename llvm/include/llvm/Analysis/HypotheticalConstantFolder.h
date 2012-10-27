@@ -958,9 +958,9 @@ protected:
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
   void getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
-  void queueUsersUpdatePB(Value* V);
-  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
-  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
+  void queueUsersUpdatePB(Value* V, bool VDefined);
+  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined);
+  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);
   void resolvePointerBase(Value* V, ValCtx Base);
   void queuePBCheckAllInstructionsInScope(const Loop* L);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
@@ -1252,7 +1252,7 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
    
-   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
+   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);
 
    void dumpMemoryUsage(int indent);
 

@@ -986,8 +986,20 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       }
 
     }
-    else if(Res.isClobber()) {
+    else if(Res.isClobber() && !Res.isEntryNonLocal()) {
+
+      IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
+      Instruction* Inst = Res.getInst();
+      if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
+	
+	// Expanded calls that clobber the concrete result don't clobber the pointer base
+	// unless it was already explicitly clobbered whilst investigating within the call.
+	if(ResCtx->getInlineAttempt(CI))
+	  continue;
+
+      }
       RealLFA.setPBOverdef();
+
     }
 
   }
@@ -1307,6 +1319,8 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   if(Attempt.PBIsViable()) {
 
+    LPDEBUG("Load PB " << itcache(*LoadI) << " defined to base " << itcache(Attempt.PB.Base) << "\n");
+
     resolvePointerBase(LoadI, Attempt.PB.Base);
 
     PointerBase OldPB;
@@ -1314,9 +1328,14 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     if((!OldPBValid) || OldPB.Base != Attempt.PB.Base || OldPB.Overdef != Attempt.PB.Overdef) {
 
       pointerBases[LoadI] = Attempt.PB;
-      queueUsersUpdatePB(LoadI);
+      queueUsersUpdatePB(LoadI, !Attempt.PB.Overdef);
 
     }
+
+  }
+  else {
+
+    LPDEBUG("Load PB " << itcache(*LoadI) << " overdefined\n");
 
   }
 
@@ -1537,8 +1556,10 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
       OnlyDependsOnParent = false;
     }
 
-    if(LFM == LFMNormal || ((!OnlyDependsOnParent) && ((!IterMayDependOnParent) || !LFA.PBIsViable()))) {
-      // Shouldn't pursue further -- the result is either defined or conclusively clobbered here.
+    if((!OnlyDependsOnParent) && (LFM == LFMNormal || (!IterMayDependOnParent) || !LFA.PBIsViable())) {
+      // Shouldn't pursue further -- the result is either defined or conclusively clobbered here
+      // and either we shouldn't look at PBs, or not even they could depend on definers further afield,
+      // or the PB result is hopeless anyway.
       if(Result.isDef()) {
 	LPDEBUG("Resolved to " << itcache(Result) << "\n");
       }
