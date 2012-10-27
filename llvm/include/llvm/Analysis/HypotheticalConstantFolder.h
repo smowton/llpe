@@ -566,6 +566,14 @@ struct IntegratorTag {
 
 };
 
+enum LoadForwardMode {
+
+  LFMNormal,
+  LFMPB,
+  LFMBoth
+
+};
+
 class IntegrationAttempt {
 
 protected:
@@ -796,18 +804,20 @@ protected:
   ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
-  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal = false);
-  void getDefn(const MemDepResult& Res, ValCtx& VCout, PointerBase& PBout, bool& PBValidOut);
-  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal);
+  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode);
+  void getDefn(const MemDepResult& Res, ValCtx& VCout);
+  void getDependencies(LFAQueryable& LFA, bool startNonLocal, bool PBMode, SmallVector<NonLocalDepResult, 4>& Results);
+  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
+  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent, LoadForwardMode);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal = false);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult);
-  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal = false);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, LoadForwardMode, bool& MayDependOnParent);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, LoadForwardMode, bool& MayDependOnParent);
+  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode);
 
-  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&);
-  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
+  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&, bool& mayDependOnParent);
+  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode);
 
   void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
   void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
@@ -1201,11 +1211,11 @@ class PeelAttempt {
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
    MemDepResult tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
-   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result);
+   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent, LoadForwardMode);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
-   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
+   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode);
 
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
@@ -1278,7 +1288,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
   
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
-  bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&);
+  bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&, bool&);
 
   virtual void queueTryEvaluateOwnCall();
   
@@ -1372,6 +1382,9 @@ class LoadForwardAttempt : public LFAQueryable {
 
  public:
 
+  PointerBase PB;
+  bool PBValid;
+
   virtual LoadInst* getOriginalInst();
   virtual IntegrationAttempt* getOriginalCtx();
   virtual LoadInst* getQueryInst();
@@ -1404,6 +1417,29 @@ class LoadForwardAttempt : public LFAQueryable {
   ValCtx getResult();
 
   uint64_t markPaddingBytes(bool*, const Type*);
+
+  void setPBOverdef() {
+    PB = PointerBase::getOverdef(0);
+    PBValid = true;
+  }
+
+  void addPBDefn(PointerBase NewPB) {
+    if((!(PBValid)) || ((!PB.Overdef) && (!NewPB.Overdef) && PB.Base == NewPB.Base)) {
+      PB = NewPB;
+    }
+    else {
+      PB = PointerBase::getOverdef(0);
+    }
+    PBValid = true;
+  }
+
+  bool PBIsViable() {
+    return PBValid && (!PB.Overdef);
+  }
+
+  bool PBIsOverdef() {
+    return PBValid && PB.Overdef;
+  }
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
   ~LoadForwardAttempt();

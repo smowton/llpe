@@ -83,12 +83,13 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA, bool ignoreLoads) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA, bool ignoreLoads, bool PBMode) {
 
   this->AA = AA;
   this->parent = P;
   this->LFA = LFA;
   this->ignoreLoads = ignoreLoads;
+  this->PBMode = PBMode;
   if (PredCache == 0)
     PredCache.reset(new PredIteratorCache());
 
@@ -317,10 +318,16 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
     if(parent) {
       if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
 	MemDepResult parentResult;
-	if(parent->tryForwardLoadThroughCall(*LFA, CI, parentResult)) {
+	bool MayDependOnParent = false;
+	if(parent->tryForwardLoadThroughCall(*LFA, CI, parentResult, MayDependOnParent)) {
 	  if(parentResult.isNonLocal())
 	    continue;
-	  else
+	  else if(PBMode && LFA->PBIsViable() && MayDependOnParent) {
+	    // Keep looking for more definers if the ones at this scope
+	    // leave the PB in a good state.
+	    continue;
+	  }
+	  else 
 	    return parentResult;
 	}
       }
@@ -838,7 +845,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
 	// It might also prompt us to queue the loop's preheader (rather than BB's immediate predecessors).
 	BasicBlock* CheckPreheader;
 
-	if(parent->tryForwardLoadThroughLoopFromBB(BB, *LFA, CheckPreheader, Result)) {
+	if(parent->tryForwardLoadThroughLoopFromBB(BB, *LFA, CheckPreheader, Result, PBMode)) {
 	  // Parent special cased it, and will have added any extra checks necessary to Result.
 	  if(CheckPreheader) {
 	    std::pair<DenseMap<BasicBlock*,Value*>::iterator, bool>
