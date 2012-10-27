@@ -15,17 +15,6 @@
 
 using namespace llvm;
 
-static void printHeaderNoCache(IntegrationAttempt* IA) {
-
-  if(IA->getIterCount() != -1) {
-    errs() << IA->getEntryBlock()->getName() << " iter " << IA->getIterCount();
-  }
-  else {
-    errs() << IA->getFunctionName();
-  }
-
-}
-
 // Root entry point for saving our results:
 void IntegrationAttempt::commit() {
 
@@ -166,9 +155,7 @@ void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Valu
   // Values as integrated into the program for the second phase when we resolve pointers,
   // and resolve constants / dead code now.
 
-  errs() << "Commit phase 1: ";
-  printHeaderNoCache(this);
-  errs() << "\n";
+  errs() << "Commit phase 1: " << HeaderStr << "\n";
 
   this->MasterLI = MasterLI;
   CommittedValues.insert(valMap.begin(), valMap.end());
@@ -933,9 +920,7 @@ Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
 
 void IntegrationAttempt::commitLocalPointers() {
 
-  errs() << "Commit phase 2: ";
-  //printHeaderNoCache(this);
-  errs() << "\n";
+  errs() << "Commit phase 2: " << HeaderStr <<  "\n";
 
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
 

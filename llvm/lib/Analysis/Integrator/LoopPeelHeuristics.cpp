@@ -94,7 +94,27 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   CI(_CI)
   { 
     UniqueReturnBlock = Pass->getUniqueReturnBlock(&F);
+
+    raw_string_ostream OS(HeaderStr);
+    OS << (!CI ? "Root " : "") << "Function " << F.getName();
+    if(CI && !CI->getType()->isVoidTy())
+      OS << " at " << itcache(*CI, true);
   }
+
+PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
+	      AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
+	      DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth) :
+  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
+  iterationCount(iter),
+  L(_L),
+  parentPA(PP),
+  iterStatus(IterationStatusUnknown)
+{ 
+
+  raw_string_ostream OS(HeaderStr);
+  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
+
+}
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 			 DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
@@ -104,6 +124,9 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 
   this->tag.ptr = (void*)this;
   this->tag.type = IntegratorTypePA;
+
+  raw_string_ostream OS(HeaderStr);
+  OS << "Loop " << L->getHeader()->getName();
   
   L->getExitEdges(ExitEdges);
   LoopBlocks = L->getBlocks();
@@ -2747,23 +2770,15 @@ void IntegrationAttempt::collectStats() {
 
 }
 
-void InlineAttempt::printHeader(raw_ostream& OS) const {
-
-  OS << (!CI ? "Root " : "") << "Function " << F.getName();
-  if(CI && !CI->getType()->isVoidTy())
-    OS << " at " << itcache(*CI, true);
-
-}
-
-void PeelIteration::printHeader(raw_ostream& OS) const {
-
-  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
+void IntegrationAttempt::printHeader(raw_ostream& OS) const {
+  
+  OS << HeaderStr;
 
 }
 
 void PeelAttempt::printHeader(raw_ostream& OS) const {
-
-  OS << "Loop " << L->getHeader()->getName();
+  
+  OS << HeaderStr;
 
 }
 

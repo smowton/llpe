@@ -587,6 +587,8 @@ protected:
 
   Function& F;
 
+  std::string HeaderStr;
+
   DenseMap<Instruction*, const Loop*>& invariantInsts;
   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
@@ -732,7 +734,7 @@ protected:
   virtual const Loop* getLoopContext() = 0;
   virtual Instruction* getEntryInstruction() = 0;
   virtual void collectAllLoopStats() = 0;
-  virtual void printHeader(raw_ostream& OS) const = 0;
+  void printHeader(raw_ostream& OS) const;
   virtual void queueTryEvaluateOwnCall() = 0;
   virtual bool isOptimisticPeel() = 0;
 
@@ -1091,15 +1093,9 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
- PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
-	       AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
-	       DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth) :
-  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
-    iterationCount(iter),
-    L(_L),
-    parentPA(PP),
-    iterStatus(IterationStatusUnknown)
-    { }
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
+		AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
+		DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth);
 
   IterationStatus iterStatus;
 
@@ -1135,7 +1131,6 @@ public:
   virtual void describeBrief(raw_ostream& Stream) const;
 
   virtual void collectAllLoopStats();
-  virtual void printHeader(raw_ostream&) const;
 
   virtual std::string getShortHeader();
   virtual IntegratorTag* getParentTag();
@@ -1176,6 +1171,8 @@ class PeelAttempt {
    IntegrationHeuristicsPass* pass;
    IntegrationAttempt* parent;
    Function& F;
+
+   std::string HeaderStr;
 
    DenseMap<Function*, LoopInfo*>& LI;
    TargetData* TD;
@@ -1312,7 +1309,6 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void describeBrief(raw_ostream& Stream) const;
   
   virtual void collectAllLoopStats();
-  virtual void printHeader(raw_ostream&) const;
 
   virtual std::string getShortHeader();
   virtual IntegratorTag* getParentTag();
