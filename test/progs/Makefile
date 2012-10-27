@@ -7,7 +7,7 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  small-write-large-load large-write-small-load nonconstmemcpy memcpy-cases \
 	  memcpy-cases-nonconst struct-const struct-global reinterpret fp fpreinterpret \
 	  fpalign read read-indirect-fd varargs varargs-param varargs-copy pointerbase pointerarith \
-	  pointerarithfail pointerarithnested fakestdio
+	  pointerarithfail pointerarithnested
 
 LLVM_TARGETS = load-struct load-array switch-loop
 
@@ -23,9 +23,17 @@ ALL_TARGETS = $(TARGETS) $(LLVM_TARGETS)
 OPT_BC_TARGETS = $(patsubst %,%-opt.bc,$(ALL_TARGETS))
 OPT_TARGETS = $(patsubst %,%-opt,$(ALL_TARGETS))
 
+SPECIAL_TARGETS = fakestdio.bc fakestdio-opt.bc
+
 .PHONY: all clean
 
-all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS) $(LLVM_TARGETS) $(OPT_BC_TARGETS) $(OPT_TARGETS)
+all: $(TARGETS) $(BC_TARGETS) $(LL_TARGETS) $(LLVM_TARGETS) $(OPT_BC_TARGETS) $(OPT_TARGETS) $(SPECIAL_TARGETS)
+
+fakestdiolib.ltemp: fakestdiolib.c
+	$(LLVM_GCC) -std=c99 -O3 $< -o $@
+
+fakestdio.bc: fakestdioclient.bc fakestdiolib.bc
+	llvm-link fakestdioclient.bc fakestdiolib.bc -o fakestdio.bc
 
 % : %.c
 	gcc -std=c99 $< -o $@
