@@ -1768,6 +1768,8 @@ void PeelIteration::visitVariant(Instruction* VI, const Loop* VILoop, VisitorCon
   PeelAttempt* LPA = getPeelAttempt(immediateChild);
   if(LPA)
     LPA->visitVariant(VI, VILoop, Visitor);
+  else 
+    Visitor.notifyUsersMissed();
 
 }
 

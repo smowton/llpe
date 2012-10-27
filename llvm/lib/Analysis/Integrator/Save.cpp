@@ -100,22 +100,28 @@ void PeelAttempt::removeBlockFromLoops(BasicBlock* BB) {
 
 }
 
-void IntegrationAttempt::localPrepareCommit() {
+void PeelIteration::localPrepareCommit() {
 
   // Remove loop header values, since these are removed by the loop unroller and are realised
   // by RAUW'ing the PHI node with one of its arguments rather than by directly replacing it.
-  if(const Loop* L = getLoopContext()) {
+    
+  LHeader = L->getHeader();
+  LLatch = L->getLoopLatch();
 
-    BasicBlock* H = L->getHeader();
-    for(BasicBlock::iterator it = H->begin(), it2 = H->end(); it != it2 && isa<PHINode>(it); ++it) {
+  BasicBlock* H = L->getHeader();
+  for(BasicBlock::iterator it = H->begin(), it2 = H->end(); it != it2 && isa<PHINode>(it); ++it) {
 
-      Value* V = it;
-      deadValues.erase(V);
-      improvedValues.erase(V);
-
-    }
+    Value* V = it;
+    deadValues.erase(V);
+    improvedValues.erase(V);
 
   }
+
+  IntegrationAttempt::localPrepareCommit();
+
+}
+
+void IntegrationAttempt::localPrepareCommit() {
 
   // Remove any return instructions from consideration, since the inliner will take care of them for us
   for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
@@ -432,7 +438,7 @@ bool InlineAttempt::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, 
 
 bool PeelIteration::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) {
   
-  if(FromBB != L->getLoopLatch())
+  if(FromBB != LLatch)
     return false;
   
   if(iterStatus != IterationStatusFinal)
@@ -444,7 +450,7 @@ bool PeelIteration::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, 
   for (unsigned I = 0; I != TI->getNumSuccessors(); ++I, ++J) {
 
     BasicBlock* thisTarget = TI->getSuccessor(I);
-    if(thisTarget == L->getHeader()) {
+    if(thisTarget == LHeader) {
       // This target will have been deleted by the unroller.
       --J;
       continue;

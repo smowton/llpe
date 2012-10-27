@@ -1050,7 +1050,7 @@ protected:
   void commitLocalConstants(ValueMap<const Value*, Value*>& VM);
   Instruction* getCommittedValue(Value*);
   void prepareCommit();
-  void localPrepareCommit();
+  virtual void localPrepareCommit();
   void removeBlockFromLoops(BasicBlock*);
   void foldVFSCalls();
   void markOrDeleteCloseCall(CallInst*, IntegrationAttempt*);
@@ -1087,6 +1087,9 @@ class PeelIteration : public IntegrationAttempt {
   int iterationCount;
   const Loop* L;
   PeelAttempt* parentPA;
+
+  BasicBlock* LHeader;
+  BasicBlock* LLatch;
 
   PeelIteration* getNextIteration();
   PeelIteration* getOrCreateNextIteration();
@@ -1145,6 +1148,7 @@ public:
   virtual bool isOptimisticPeel();
 
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
+  virtual void localPrepareCommit();
 
   virtual void getVarArg(uint64_t, ValCtx&);
 
