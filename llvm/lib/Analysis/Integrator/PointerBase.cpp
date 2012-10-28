@@ -166,13 +166,6 @@ bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instructio
 // e.g. in phase 1, PHI(def_1, overdef_0) = def_1, in phase 2 it is overdef_1.
 void IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
 
-  if(isa<SelectInst>(I)) {
-
-    errs() << "Hit\n";
-
-  }
-
-
   SmallVector<Value*, 4> Vals;
   if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
 
