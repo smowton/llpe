@@ -301,19 +301,21 @@ namespace {
 
     }
 
-    bool getPointerBase(const Value* V, IntegrationAttempt* Ctx, ValCtx& VC) {
+    bool getPointerBase(const Value* V, IntegrationAttempt* Ctx, SmallVector<ValCtx, 4>& VCs) {
 
       ValCtx Repl = Ctx->getReplacement(const_cast<Value*>(V));
       bool ignored;
-      VC = getUltimateUnderlyingObject(Repl, ignored);
-      if(isIdentifiedObject(VC.first))
+      ValCtx UO = getUltimateUnderlyingObject(Repl, ignored);
+      if(isIdentifiedObject(UO.first)) {
+	VCs.push_back(UO);
 	return true;
+      }
 
       PointerBase PB;
       if((!Ctx->getPointerBaseFalling(const_cast<Value*>(V), PB)) || (PB.Overdef))
 	return false;
       else {
-	VC = PB.Base;
+	VCs = PB.Values;
 	return true;
       }
 
@@ -322,16 +324,27 @@ namespace {
     AliasAnalysis::AliasResult tryResolvePointerBases(const Value* V1, IntegrationAttempt* V1Ctx,
 						      const Value* V2, IntegrationAttempt* V2Ctx) {
 
-      ValCtx VC1, VC2;
+      SmallVector<ValCtx, 4> VCs1, VCs2;
       IntegrationAttempt* QueryCtx = V1Ctx ? V1Ctx : V2Ctx;
-      if(getPointerBase(V1, V1Ctx, VC1) && getPointerBase(V2, V2Ctx, VC2)) {
+      if(getPointerBase(V1, V1Ctx, VCs1) && getPointerBase(V2, V2Ctx, VCs2)) {
 
-	if(!QueryCtx->basesMayAlias(VC1, VC2))
-	  return AliasAnalysis::NoAlias;
+	for(unsigned i = 0; i < VCs1.size(); ++i) {
+	  for(unsigned j = 0; j < VCs2.size(); ++j) {
+
+	    if(QueryCtx->basesMayAlias(VCs1[i], VCs2[j]))
+	      return AliasAnalysis::MayAlias;
+
+	  }
+	}
+
+	return AliasAnalysis::NoAlias;
 
       }
+      else {
 
-      return AliasAnalysis::MayAlias;
+	return AliasAnalysis::MayAlias;
+
+      }
 
     }
 

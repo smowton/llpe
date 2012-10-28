@@ -523,25 +523,25 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
       if(loadOffset == 0) {
 	
-	errs() << "Load from va_start field 0: return 100\n";
+	LPDEBUG("Load from va_start field 0: return 100\n");
 	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt64Ty(CI->getContext()), 100)));
 
       }
       else if(loadOffset == 4) {
 
-	errs() << "Load from va_start field 1: return 0\n";
+	LPDEBUG("Load from va_start field 1: return 0\n");
 	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt8Ty(CI->getContext()), 100)));
 
       }
       else if(loadOffset == 8) {
 
-	errs() << "Load from va_start field 2: return va_arg ptr\n";
+	LPDEBUG("Load from va_start field 2: return va_arg ptr\n");
 	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, 0));
 
       }
       else if(loadOffset == 16) {
 
-	errs() << "Load from va_start field 3: return null ptr\n";
+	LPDEBUG("Load from va_start field 3: return null ptr\n");
 	return PartialVal::getTotal(const_vc(Constant::getNullValue(Type::getInt8PtrTy(CI->getContext()))));
 
       }

@@ -322,13 +322,14 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 	if(parent->tryForwardLoadThroughCall(*LFA, CI, parentResult, MayDependOnParent)) {
 	  if(parentResult.isNonLocal())
 	    continue;
-	  else if(PBMode && LFA->PBIsViable() && MayDependOnParent) {
-	    // Keep looking for more definers if the ones at this scope
-	    // leave the PB in a good state.
-	    continue;
-	  }
 	  else 
 	    return parentResult;
+	}
+	else if(PBMode && LFA->PBIsViable() && MayDependOnParent) {
+	  // Keep looking for more definers if the ones at this scope
+	  // leave the PB in a good state.
+	  // Note that MayDependOnParent implies the call was explored.
+	  continue;
 	}
       }
     }

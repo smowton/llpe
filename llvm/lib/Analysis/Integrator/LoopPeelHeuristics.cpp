@@ -1001,8 +1001,18 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	PointerBase NewPB;
 	if(getPointerBase(SI->getOperand(0), NewPB, SI))
 	  RealLFA.addPBDefn(NewPB);
-	else
-	  RealLFA.setPBOverdef();
+	else {
+	  // Try to find a concrete definition, since the concrete defns path is more advanced.
+	  // Remember the PB sets only take constants or identified underlying objects.
+	  ValCtx Repl = getReplacement(SI->getOperand(0));
+	  ValCtx ReplUO = getUltimateUnderlyingObject(Repl.first);
+	  if(isa<Constant>(ReplUO.first) || isIdentifiedObject(ReplUO.first)) {
+	    PointerBase PB = PointerBase::get(ReplUO);
+	    RealLFA.addPBDefn(PB);
+	  }
+	  else
+	    RealLFA.setPBOverdef();
+	}
       }
       else {
 	RealLFA.setPBOverdef();
@@ -1220,7 +1230,7 @@ void InlineAttempt::getVarArg(uint64_t idx, ValCtx& Result) {
 
   if(idx >= (CI->getNumArgOperands() - F.arg_size())) {
     
-    errs() << "Vararg index " << idx << ": out of bounds\n";
+    LPDEBUG("Vararg index " << idx << ": out of bounds\n");
     Result = VCNull;
 
   }
@@ -1248,7 +1258,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
   if(LPtr.isVaArg()) {
     
     LPtr.second->getVarArg(LPtr.va_arg, Result);
-    errs() << "va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n";
+    LPDEBUG("va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n");
     // Is this va_arg read out of bounds?
     if(Result == VCNull)
       return true;
@@ -1342,13 +1352,15 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   if(Attempt.PBIsViable()) {
 
-    LPDEBUG("Load PB " << itcache(*LoadI) << " defined to base " << itcache(Attempt.PB.Base) << "\n");
+    LPDEBUG("Load PB " << itcache(*LoadI) << " defined to base ");
+    DEBUG(printPB(dbgs(), Attempt.PB));
+    DEBUG(dbgs() << "\n");
 
-    resolvePointerBase(LoadI, Attempt.PB.Base);
+    resolvePointerBase(LoadI, Attempt.PB);
 
     PointerBase OldPB;
     bool OldPBValid = getPointerBaseFalling(LoadI, OldPB);
-    if((!OldPBValid) || OldPB.Base != Attempt.PB.Base || OldPB.Overdef != Attempt.PB.Overdef) {
+    if((!OldPBValid) || OldPB != Attempt.PB) {
 
       pointerBases[LoadI] = Attempt.PB;
       queueUsersUpdatePB(LoadI, !Attempt.PB.Overdef);
@@ -3010,7 +3022,6 @@ IntegratorTag* PeelAttempt::getParentTag() {
     targetType = target;
 
   mayBuildFromBytes = !containsPointerTypes(targetType);
-  PBValid = false;
 
 }
 

@@ -213,7 +213,8 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     Out << "DEAD";
   }
   else if(I && getPointerBase(I, PB, I) && !PB.Overdef) {
-    Out << "BASE " << itcache(PB.Base);
+    Out << "BASE ";
+    printPB(Out, PB);
   }
   else if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
     DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);

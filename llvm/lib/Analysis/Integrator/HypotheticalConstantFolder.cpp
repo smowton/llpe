@@ -1500,7 +1500,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	  if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices() && isa<Constant>(GEP->idx_begin())) {
 
-	    errs() << "Assuming GEP " << itcache(*GEP) << " bumps vararg " << itcache(Base) << " " << Base.va_arg << "\n";
+	    LPDEBUG("Assuming GEP " << itcache(*GEP) << " bumps vararg " << itcache(Base) << " " << Base.va_arg << "\n");
 	    Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, Base.va_arg + 1);
 	    tryConstFold = false;
 

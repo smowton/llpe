@@ -15,7 +15,7 @@ using namespace llvm;
 static bool extractCEBase(Constant* C, PointerBase& PB) {
 
   if(isa<GlobalValue>(C)) {
-    PB = PointerBase::get(const_vc(C), 0);
+    PB = PointerBase::get(const_vc(C));
     return true;
   }
 
@@ -69,13 +69,13 @@ bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
 
   if(isa<AllocaInst>(V) || isNoAliasCall(V)) {
 
-    OutPB = PointerBase::get(make_vc(V, this), 0);
+    OutPB = PointerBase::get(make_vc(V, this));
     return true;
 
   }
   else if(isa<GlobalValue>(V)) {
 
-    OutPB = PointerBase::get(const_vc(cast<Constant>(V)), 0);    
+    OutPB = PointerBase::get(const_vc(cast<Constant>(V)));    
     return true;
 
   }
@@ -164,7 +164,7 @@ bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instructio
 // the newest result of their operands.
 // If finalise is true, we're in the 'resolution' phase: they take on their true value.
 // e.g. in phase 1, PHI(def_1, overdef_0) = def_1, in phase 2 it is overdef_1.
-void IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
+bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
 
   SmallVector<Value*, 4> Vals;
   if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
@@ -181,52 +181,27 @@ void IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 
   }
 
-  bool UniqueBaseSet = false;
-  ValCtx UniqueBase;
-  
-  uint64_t MaxGen = 0;
-  for(SmallVector<Value*, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2; ++it) {
+  bool anyInfo = false;
 
-    Value* V = *it;
-    PointerBase VPB;
-    if(getPointerBase(V, VPB, I)) {
-
-      if(VPB.Generation > MaxGen)
-	MaxGen = VPB.Generation;
-
-    }
-
-  }
-
-  for(SmallVector<Value*, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2; ++it) {
+  for(SmallVector<Value*, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
     Value* V = *it;
     PointerBase VPB;
-    if((!getPointerBase(V, VPB, I)) || VPB.Overdef) {
+    if(!getPointerBase(V, VPB, I)) {
       if(finalise) {
-	NewPB = PointerBase::getOverdef(MaxGen);
-	return;
+	NewPB = PointerBase::getOverdef();
+	return true;
       }
       else
 	continue;      
     }
 
-    if(UniqueBaseSet && UniqueBase != VPB.Base) {
-
-      NewPB = PointerBase::getOverdef(MaxGen);
-      return;
-
-    }
-
-    UniqueBaseSet = true;
-    UniqueBase = VPB.Base;
+    anyInfo = true;
+    NewPB.merge(VPB);
 
   }
 
-  if(UniqueBaseSet)
-    NewPB = PointerBase::get(UniqueBase, MaxGen);
-  else
-    NewPB = PointerBase::getOverdef(MaxGen);
+  return anyInfo;
 
 }
 
@@ -269,8 +244,17 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
 
   if(PB.Overdef)
     out << "Overdef";
-  else
-    out << itcache(PB.Base);
+  else {
+    out << "{ ";
+    for(SmallVector<ValCtx, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
+
+      if(it != PB.Values.begin())
+	out << ", ";
+      out << itcache(*it);
+
+    }
+    out << " }";
+  }
 
 }
 
@@ -323,7 +307,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	bool found2 = getPointerBase(I->getOperand(1), PB2, I);
 	if(found1 && found2) {
 	  LPDEBUG("Add of 2 pointers\n");
-	  NewPB = PointerBase::getOverdef(std::max(PB1.Generation, PB2.Generation));
+	  NewPB = PointerBase::getOverdef();
 	}
 	else if((!found1) && (!found2)) {
 	  return false;
@@ -363,8 +347,10 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
       }
     case Instruction::Select:
       {
-	getMergeBasePointer(I, finalise, NewPB);
-	break;
+	if(!getMergeBasePointer(I, finalise, NewPB))
+	  return false;
+	else
+	  break;
       }
     default:
       // Unknown instruction, draw no conclusions.
@@ -373,7 +359,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
   }
 
-  if((!OldPBValid) || OldPB.Overdef != NewPB.Overdef || OldPB.Base != NewPB.Base) {
+  if((!OldPBValid) || OldPB != NewPB) {
 
     pointerBases[V] = NewPB;
 
@@ -539,11 +525,11 @@ void IntegrationHeuristicsPass::queueUpdatePB(IntegrationAttempt* IA, Value* V) 
 
 }
 
-void IntegrationAttempt::resolvePointerBase(Value* V, ValCtx Base) {
+void IntegrationAttempt::resolvePointerBase(Value* V, PointerBase& PB) {
 
   PointerBase ExistingPB;
-  if((!getPointerBaseLocal(V, ExistingPB)) || ExistingPB.Overdef) {
-    pointerBases[V] = PointerBase::get(Base, pass->getPBGeneration());
+  if((!getPointerBaseLocal(V, ExistingPB)) || ExistingPB != PB) {
+    pointerBases[V] = PB;
     queueUsersUpdatePB(V, true);
   }
 

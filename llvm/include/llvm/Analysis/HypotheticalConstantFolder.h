@@ -523,26 +523,81 @@ public:
 
 };
 
-// PointerBase: an SCCP-like value giving the pointer base for a value.
+// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
 // May be: 
-// overdefined (more than one pointer base asserted),
-// defined (known base)
+// overdefined (overflowed, or defined by an unknown)
+// defined (known set of possible values)
 // undefined (implied by absence from map)
-// Note Base may be null (signifying a null pointer) without being Overdef.
+// Note Value members may be null (signifying a null pointer) without being Overdef.
+
+#define PBMAX 4
 
 struct PointerBase {
 
-  ValCtx Base;
+  SmallVector<ValCtx, 4> Values;
   bool Overdef;
-  uint64_t Generation;
 
-PointerBase() : Base(VCNull), Overdef(false), Generation(0) { }
-PointerBase(ValCtx B, bool O, uint64_t G) : Base(B), Overdef(O), Generation(G) { }
+PointerBase() : Overdef(false) { }
+PointerBase(bool OD) : Overdef(OD) { }
+  
+  PointerBase& insert(ValCtx VC) {
+    if(Overdef)
+      return *this;
+    if(Values.size() + 1 > PBMAX) {
+      Values.clear();
+      Overdef = true;
+    }
+    else {
+      if(!std::count(Values.begin(), Values.end(), VC))
+	Values.push_back(VC);
+    }
+    return *this;
+  }
 
-  static PointerBase get(ValCtx VC, uint64_t G) { return PointerBase(VC, false, G); }
-  static PointerBase getOverdef(uint64_t G) { return PointerBase(VCNull, true, G); }
+  PointerBase& merge(PointerBase& OtherPB) {
+    if(OtherPB.Overdef) {
+      Values.clear();
+      Overdef = true;
+    }
+    else {
+      for(SmallVector<ValCtx, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
+	insert(*it);
+    }
+    return *this;
+  }
 
+  static PointerBase get(ValCtx VC) { return PointerBase().insert(VC); }
+  static PointerBase getOverdef() { return PointerBase(true); }
+  
 };
+
+inline bool operator==(PointerBase& PB1, PointerBase& PB2) {
+
+  if(PB1.Overdef != PB2.Overdef)
+    return false;
+
+  if(PB1.Overdef)
+    return true;
+
+  if(PB1.Values.size() != PB2.Values.size())
+    return false;
+
+  std::sort(PB1.Values.begin(), PB1.Values.end());
+  std::sort(PB2.Values.begin(), PB2.Values.end());
+
+  for(unsigned i = 0; i < PB1.Values.size(); ++i)
+    if(PB1.Values[i] != PB2.Values[i])
+      return false;
+
+  return true;
+
+}
+
+inline bool operator!=(PointerBase& PB1, PointerBase& PB2) {
+
+  return !(PB1 == PB2);
+
+}
 
 enum IterationStatus {
 
@@ -958,12 +1013,12 @@ protected:
   bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
   virtual bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
-  void getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
+  bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
   void queueUsersUpdatePB(Value* V, bool VDefined);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);
-  void resolvePointerBase(Value* V, ValCtx Base);
+  void resolvePointerBase(Value* V, PointerBase&);
   void queuePBCheckAllInstructionsInScope(const Loop* L);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
   void printPB(raw_ostream& out, PointerBase PB);
@@ -1383,7 +1438,6 @@ class LoadForwardAttempt : public LFAQueryable {
  public:
 
   PointerBase PB;
-  bool PBValid;
 
   virtual LoadInst* getOriginalInst();
   virtual IntegrationAttempt* getOriginalCtx();
@@ -1419,26 +1473,19 @@ class LoadForwardAttempt : public LFAQueryable {
   uint64_t markPaddingBytes(bool*, const Type*);
 
   void setPBOverdef() {
-    PB = PointerBase::getOverdef(0);
-    PBValid = true;
+    PB = PointerBase::getOverdef();
   }
 
-  void addPBDefn(PointerBase NewPB) {
-    if((!(PBValid)) || ((!PB.Overdef) && (!NewPB.Overdef) && PB.Base == NewPB.Base)) {
-      PB = NewPB;
-    }
-    else {
-      PB = PointerBase::getOverdef(0);
-    }
-    PBValid = true;
+  void addPBDefn(PointerBase& NewPB) {
+    PB.merge(NewPB);
   }
 
   bool PBIsViable() {
-    return PBValid && (!PB.Overdef);
+    return (!PB.Overdef) && PB.Values.size() > 0;
   }
 
   bool PBIsOverdef() {
-    return PBValid && PB.Overdef;
+    return PB.Overdef;
   }
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
