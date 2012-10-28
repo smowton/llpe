@@ -291,6 +291,7 @@ static LibCallFunctionInfo::LocationMRInfo FerrorMR[] = {
 
 };
 
+/*
 static LibCallFunctionInfo::LocationMRInfo CharPadMR[] = {
 
   { 2, AliasAnalysis::Mod },
@@ -314,6 +315,7 @@ static LibCallFunctionInfo::LocationMRInfo StdioFwriteMR[] = {
   { 11, AliasAnalysis::Mod },
   { ~0U, AliasAnalysis::ModRef }
 };
+*/
 
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
@@ -359,9 +361,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
   { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
   { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
-  { "_charpad", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, CharPadMR, 0 },
-  { "fputs_unlocked", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FputsMR, 0 },
-  { "__stdio_fwrite", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, StdioFwriteMR, 0 },
+  //  { "_charpad", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, CharPadMR, 0 },
+  //  { "fputs_unlocked", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FputsMR, 0 },
+  //  { "__stdio_fwrite", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, StdioFwriteMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

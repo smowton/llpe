@@ -220,7 +220,7 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
   bool isOptimisticEdge = std::make_pair(FromBB, ToBB) == parentPA->OptimisticEdge;
   bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || isExitEdge || isOptimisticEdge);
 
-  if(isOptimisticEdge)
+  if(isOptimisticEdge && !isExitEdge)
     pass->queueCheckBlock(this, ToBB);
 
   if(isSpecialBranchTarget) {
@@ -229,7 +229,7 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
       if(iterStatus == IterationStatusUnknown)
 	checkFinalIteration();
     }
-    else if(isOnlyExitingIteration() && isExitEdge) {
+    if(isOnlyExitingIteration() && isExitEdge) {
       checkExitEdge(FromBB, ToBB);
     }
 

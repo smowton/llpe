@@ -3,11 +3,13 @@
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/Function.h"
+#include "llvm/Constants.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instruction.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -258,6 +260,109 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
 
 }
 
+bool IntegrationAttempt::getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result) {
+
+  PointerBase PB;
+  bool found = getPointerBase(V, PB, UserI);
+  if(found) {
+
+    if(PB.Overdef)
+      return false;
+    assert(PB.Values.size());
+    if(PB.Values[0].first->getType()->isPointerTy())
+      return false;
+    if(PB.Values[0].second)
+      return false;
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[0].first)) {
+      PointerBase Ign;
+      if(extractCEBase(CE, Ign))
+	return false;
+    }
+
+    // That *should* eliminate everything but integers, FP, and other things not related to pointers.
+    for(unsigned i = 0; i < PB.Values.size(); ++i) {
+      Result.push_back(cast<Constant>(PB.Values[i].first));
+    }
+    return true;
+
+  }
+
+  Constant* C = getConstReplacement(V);
+  if(!C)
+    return false;
+
+  PointerBase Ign;
+  if(C->getType()->isPointerTy() || extractCEBase(C, Ign))
+    return false;
+
+  Result.push_back(C);
+  return true;
+
+}
+
+bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop) {
+
+  switch(I->getOpcode()) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+    break;
+  default:
+    return false;
+  }
+
+  SmallVector<Constant*, 4> Op1Vals;
+  SmallVector<Constant*, 4> Op2Vals;
+
+  if((!getScalarSet(I->getOperand(0), I, Op1Vals)) || (!getScalarSet(I->getOperand(1), I, Op2Vals)))
+    return false;
+
+  // Prevent treating these like pointer bases.
+  isScalarBinop = true;
+
+  if(Op1Vals.size() == 1 && Op2Vals.size() == 1) {
+
+    // Pointless, until the regular constant folder and this one are merged.
+    return false;
+
+  }
+
+  for(unsigned i = 0; i < Op1Vals.size() && !PB.Overdef; ++i) {
+    for(unsigned j = 0; j < Op2Vals.size() && !PB.Overdef; ++j) {
+    
+      Constant* Expr = ConstantExpr::get(I->getOpcode(), Op1Vals[i], Op2Vals[j]);
+      if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
+	Expr = ConstantFoldConstantExpression(CE, TD);
+
+      if(Expr) {
+
+	PB.insert(const_vc(Expr));
+
+      }
+      else {
+
+	return false;
+
+      }
+
+    }
+  }
+
+  if(PB.Values.size() == 1 && !PB.Overdef) {
+
+    // Feed the result to the ordinary constant folder, until the two get merged.
+    setReplacement(I, PB.Values[0]);
+    investigateUsers(I);
+    return false;
+
+  }
+
+  return PB.Values.size() > 0 && !PB.Overdef;
+  
+}
+
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
   LPDEBUG("Update pointer base " << itcache(*V) << "\n");
@@ -282,6 +387,8 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
     Instruction* I = cast<Instruction>(V);
 
+    bool handled = false;
+
     switch(I->getOpcode()) {
 
     case Instruction::GetElementPtr:
@@ -293,6 +400,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
       {
 	PointerBase PB;
+	handled = true;
 	if(getPointerBase(I->getOperand(0), PB, I))
 	  NewPB = PB;
 	else
@@ -300,61 +408,81 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	break;
       }
 
-    case Instruction::Add:
-      {
-	PointerBase PB1, PB2;
-	bool found1 = getPointerBase(I->getOperand(0), PB1, I);
-	bool found2 = getPointerBase(I->getOperand(1), PB2, I);
-	if(found1 && found2) {
-	  LPDEBUG("Add of 2 pointers\n");
-	  NewPB = PointerBase::getOverdef();
+    }
+
+    if(!handled) {
+
+      bool isScalarBinop = false;
+      if(updateBinopValues(I, NewPB, isScalarBinop))
+	handled = true;
+      if(isScalarBinop)
+	return false;
+
+    }
+    
+    if(!handled) {
+
+      switch(I->getOpcode()) {
+
+      case Instruction::Add:
+	{
+	  PointerBase PB1, PB2;
+	  bool found1 = getPointerBase(I->getOperand(0), PB1, I);
+	  bool found2 = getPointerBase(I->getOperand(1), PB2, I);
+	  if((!found1) && (!found2)) {
+	    return false;
+	  }
+
+	  if(found1 && found2) {
+	    LPDEBUG("Add of 2 pointers\n");
+	    NewPB = PointerBase::getOverdef();
+	  }
+	  else {
+	    NewPB = found1 ? PB1 : PB2;
+	  }
+
+	  break;
+	}      
+      case Instruction::Sub:
+	{
+	  PointerBase PB1, PB2;
+	  bool found1 = getPointerBase(I->getOperand(0), PB1, I);
+	  bool found2 = getPointerBase(I->getOperand(1), PB2, I);
+	  if(found1 && found2) {
+	    LPDEBUG("Subtract of 2 pointers (makes plain int)\n");
+	    return false;
+	  }
+	  else if(found1) {
+	    NewPB = PB1;
+	  }
+	  else {
+	    return false;
+	  }
+	  break;
 	}
-	else if((!found1) && (!found2)) {
-	  return false;
+      case Instruction::PHI:
+	{
+	  bool NewPBValid;
+	  if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
+	    if(!NewPBValid)
+	      return false;
+	    else
+	      break;
+	  }
+	  // Else fall through:
 	}
-	else {
-	  NewPB = found1 ? PB1 : PB2;
-	}
-	break;
-      }      
-    case Instruction::Sub:
-      {
-	PointerBase PB1, PB2;
-	bool found1 = getPointerBase(I->getOperand(0), PB1, I);
-	bool found2 = getPointerBase(I->getOperand(1), PB2, I);
-	if(found1 && found2) {
-	  LPDEBUG("Subtract of 2 pointers (makes plain int)\n");
-	  return false;
-	}
-	else if(found1) {
-	  NewPB = PB1;
-	}
-	else {
-	  return false;
-	}
-	break;
-      }
-    case Instruction::PHI:
-      {
-	bool NewPBValid;
-	if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
-	  if(!NewPBValid)
+      case Instruction::Select:
+	{
+	  if(!getMergeBasePointer(I, finalise, NewPB))
 	    return false;
 	  else
 	    break;
 	}
-	// Else fall through:
+      default:
+	// Unknown instruction, draw no conclusions.
+	return false;
       }
-    case Instruction::Select:
-      {
-	if(!getMergeBasePointer(I, finalise, NewPB))
-	  return false;
-	else
-	  break;
-      }
-    default:
-      // Unknown instruction, draw no conclusions.
-      return false;
+
     }
 
   }

@@ -1015,6 +1015,8 @@ protected:
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
+  bool getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result);
+  bool updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop);
   void queueUsersUpdatePB(Value* V, bool VDefined);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);

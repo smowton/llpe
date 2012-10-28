@@ -991,37 +991,57 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   // Integrate the defs and clobbers found with the pointer base result.
 
+  bool print = false;
+
   for(unsigned int i = 0; i < NLResults.size() && !RealLFA.PBIsOverdef(); i++) {
 
     const MemDepResult& Res = NLResults[i].getResult();
+    IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
 
     if(Res.isDef()) {
 
       if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
 	PointerBase NewPB;
-	if(getPointerBase(SI->getOperand(0), NewPB, SI))
+	if(getPointerBase(SI->getOperand(0), NewPB, SI)) {
+	  if(print) {
+	    errs() << "Add PB ";
+	    printPB(errs(), NewPB);
+	    errs() << "\n";
+	  }
 	  RealLFA.addPBDefn(NewPB);
+	}
 	else {
 	  // Try to find a concrete definition, since the concrete defns path is more advanced.
 	  // Remember the PB sets only take constants or identified underlying objects.
-	  ValCtx Repl = getReplacement(SI->getOperand(0));
+	  ValCtx Repl = ResCtx->getReplacement(SI->getOperand(0));
 	  ValCtx ReplUO = getUltimateUnderlyingObject(Repl.first);
 	  if(isa<Constant>(ReplUO.first) || isIdentifiedObject(ReplUO.first)) {
 	    PointerBase PB = PointerBase::get(ReplUO);
+	    if(print) {
+	      errs() << "Add PB ";
+	      printPB(errs(), NewPB);
+	      errs() << "\n";
+	    }
 	    RealLFA.addPBDefn(PB);
 	  }
-	  else
+	  else {
+	    if(print) {
+	      errs() << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
+	    }
 	    RealLFA.setPBOverdef();
+	  }
 	}
       }
       else {
+	if(print) {
+	  errs() << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
+	}
 	RealLFA.setPBOverdef();
       }
 
     }
     else if(Res.isClobber() && !Res.isEntryNonLocal()) {
 
-      IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
       Instruction* Inst = Res.getInst();
       if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
 	
