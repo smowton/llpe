@@ -1013,7 +1013,7 @@ void IntegrationAttempt::getDependencies(LFAQueryable& LFA, bool startNonLocal, 
     uint64_t PointeeSize = AA->getTypeStoreSize(EltTy);
     PHITransAddr LAddr(LPointer, TD, this);
     DenseMap<BasicBlock*, Value*> Visited;
-    Visited.insert(std::make_pair(QueryInst->getParent(), LPointer));
+    //Visited.insert(std::make_pair(QueryInst->getParent(), LPointer));
 
     if(MD.getNonLocalPointerDepFromBB(LAddr, PointeeSize, true, QueryInst->getParent(), NLResults, Visited, !startNonLocal)) {
 
@@ -1043,7 +1043,9 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
       if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
 	PointerBase NewPB;
-	if(getPointerBase(SI->getOperand(0), NewPB, SI)) {
+	if(ResCtx->getPointerBase(SI->getOperand(0), NewPB, SI)) {
+	  if(RealLFA.PBOptimistic && NewPB.Overdef)
+	    continue;
 	  prout << "Add PB ";
 	  printPB(prout, NewPB);
 	  prout << "\n";
@@ -1062,6 +1064,8 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	    RealLFA.addPBDefn(PB);
 	  }
 	  else {
+	    if(RealLFA.PBOptimistic)
+	      continue;
 	    prout << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
 	    RealLFA.setPBOverdef();
 	  }
@@ -1070,6 +1074,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       else {
 	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
 	RealLFA.setPBOverdef();
+	RealLFA.PBCouldWorkIfOptimistic = false;
       }
 
     }
@@ -1084,9 +1089,28 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  continue;
 
       }
+
       RealLFA.setPBOverdef();
+      RealLFA.PBCouldWorkIfOptimistic = false;
 
     }
+
+  }
+
+}
+
+static void checkOnlyDependsOnParent(SmallVector<NonLocalDepResult, 4>& NLResults, bool& OnlyDependsOnParent) {
+
+  for(unsigned i = 0; i < NLResults.size() && OnlyDependsOnParent; ++i) {
+
+    const MemDepResult& MDR = NLResults[i].getResult();
+    if(MDR.isNonLocal())
+      continue;
+
+    if(MDR.isClobber() && MDR.isEntryNonLocal())
+      continue;
+
+    OnlyDependsOnParent = false;
 
   }
 
@@ -1119,10 +1143,13 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
   LoadInst* OriginalInst = LFA.getOriginalInst();
   LoadForwardAttempt& RealLFA = LFA.getLFA();
 
+  OnlyDependsOnParent = true;
+
   if(LFM != LFMPB) {
 
     SmallVector<NonLocalDepResult, 4> InstResults;
     getDependencies(LFA, startNonLocal, false, InstResults);
+    checkOnlyDependsOnParent(InstResults, OnlyDependsOnParent);
   
     if(InstResults.size() == 0) {
 
@@ -1134,25 +1161,14 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
 
     for(unsigned int i = 0; i < InstResults.size(); i++) {
 
-      bool isParentDep = false;
-
       const MemDepResult& Res = InstResults[i].getResult();
 
       if(Res.isNonLocal())
 	continue;
 
-      if(Res.isClobber() && parent && (Res.getInst()->getParent() == getEntryBlock())) {
-	BasicBlock::iterator TestII(Res.getInst());
-	if(TestII == getEntryBlock()->begin()) {
-	  isParentDep = true;
-	}
-      }
-
       if(Res == Seen)
 	continue;
       else if(Seen == MemDepResult()) { // Nothing seen yet
-	if(isParentDep)
-	  OnlyDependsOnParent = true;
 	Seen = Res;
       }
       else {
@@ -1211,6 +1227,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
 
     SmallVector<NonLocalDepResult, 4> PBResults;
     getDependencies(LFA, startNonLocal, true, PBResults);
+    checkOnlyDependsOnParent(PBResults, OnlyDependsOnParent);
 
     for(unsigned int i = 0; i < PBResults.size(); i++) {
 
@@ -1401,7 +1418,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   if(tryResolveLoadFromConstant(LoadI, ConstResult))
     return ConstResult;
 
-  MemDepResult Res = tryResolveLoad(Attempt);
+  MemDepResult Res = tryResolveLoad(Attempt, LFMBoth);
 
   if(Attempt.PBIsViable()) {
 
@@ -1411,19 +1428,16 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
     resolvePointerBase(LoadI, Attempt.PB);
 
-    PointerBase OldPB;
-    bool OldPBValid = getPointerBaseFalling(LoadI, OldPB);
-    if((!OldPBValid) || OldPB != Attempt.PB) {
-
-      pointerBases[LoadI] = Attempt.PB;
-      queueUsersUpdatePB(LoadI, !Attempt.PB.Overdef);
-
-    }
-
   }
   else {
 
     LPDEBUG("Load PB " << itcache(*LoadI) << " overdefined\n");
+    if(Attempt.PBCouldWorkIfOptimistic) {
+
+      LPDEBUG("May work in optimistic mode; queueing\n");
+      pass->queueUpdatePB(this, LoadI);
+
+    }
 
   }
 
@@ -1540,13 +1554,13 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
 }
 
-MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt) {
+MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt, LoadForwardMode mode) {
 
   MemDepResult Result;
   bool OnlyDependsOnParent;
   bool MayDependOnParent = false;
 
-  OnlyDependsOnParent = forwardLoadIsNonLocal(Attempt, Result, false, MayDependOnParent, LFMBoth);
+  OnlyDependsOnParent = forwardLoadIsNonLocal(Attempt, Result, false, MayDependOnParent, mode);
 
   if(OnlyDependsOnParent || (MayDependOnParent && Attempt.PBIsViable())) {
 
@@ -3067,7 +3081,7 @@ IntegratorTag* PeelAttempt::getParentTag() {
 
 // Implement LoadForwardAttempt
 
- LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD) {
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD), PBOptimistic(false) {
 
   if(!target)
     targetType = _LI->getType();
@@ -3075,6 +3089,7 @@ IntegratorTag* PeelAttempt::getParentTag() {
     targetType = target;
 
   mayBuildFromBytes = !containsPointerTypes(targetType);
+  PBCouldWorkIfOptimistic = true;
 
 }
 

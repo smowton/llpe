@@ -198,6 +198,8 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 	continue;      
     }
 
+    if(VPB.Overdef && !finalise)
+      continue;
     anyInfo = true;
     NewPB.merge(VPB);
 
@@ -363,6 +365,24 @@ bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool
   
 }
 
+// Do load forwarding, possibly in optimistic mode: this means that
+// stores that def but which have no associated PB are optimistically assumed
+// to be compatible with anything, the same as the mergepoint logic above
+// when finalise is false. When finalise = true this is just like normal load
+// forwarding operating in PB mode.
+bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
+
+  LoadForwardAttempt Attempt(LI, this, TD);
+  Attempt.PBOptimistic = !finalise;
+  tryResolveLoad(Attempt, LFMPB);
+  if(Attempt.PB.Values.size() == 0 && !Attempt.PB.Overdef)
+    return false;
+
+  NewPB = Attempt.PB;
+  return true;
+
+}
+
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
   LPDEBUG("Update pointer base " << itcache(*V) << "\n");
@@ -371,7 +391,13 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
   PointerBase OldPB;
   bool OldPBValid = getPointerBaseFalling(V, OldPB);
 
-  if(Argument* A = dyn_cast<Argument>(V)) {
+  if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
+
+    if(!tryForwardLoadPB(LI, finalise, NewPB))
+      return false;
+
+  }
+  else if(Argument* A = dyn_cast<Argument>(V)) {
 
     PointerBase PB;
     InlineAttempt* IA = getFunctionRoot();
@@ -540,6 +566,10 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
 
   if(getLoopContext() == IL) {
 
+    if(!isa<CallInst>(I))
+      if(VDefined)
+	queueWorkBlockedOn(I);
+
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
@@ -559,10 +589,24 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
       }
 
     }
+    else if(isa<StoreInst>(I)) {
+
+      DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = 
+	InstBlockedLoads.find(I);
+      if(it != InstBlockedLoads.end()) {
+
+	for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator II = it->second.begin(),
+	      IE = it->second.end(); II != IE; ++II) {
+
+	  pass->queueUpdatePB(this, II->second);
+
+	}
+
+      }
+
+    }
     else {
       pass->queueUpdatePB(this, I);
-      if(VDefined)
-	queueWorkBlockedOn(I);
     }
 
   }

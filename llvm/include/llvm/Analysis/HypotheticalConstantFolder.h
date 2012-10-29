@@ -633,7 +633,8 @@ enum LoadForwardMode {
 
   LFMNormal,
   LFMPB,
-  LFMBoth
+  LFMBoth,
+  LFMPBOptimistic
 
 };
 
@@ -867,7 +868,7 @@ protected:
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
   ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore);
-  MemDepResult tryResolveLoad(LoadForwardAttempt&);
+  MemDepResult tryResolveLoad(LoadForwardAttempt&, LoadForwardMode);
   MemDepResult tryResolveLoad(LoadForwardAttempt&, Instruction* StartBefore, ValCtx& ConstResult);
   ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
@@ -1037,6 +1038,7 @@ protected:
   void printPB(raw_ostream& out, PointerBase PB);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
+  bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
 
   // Enabling / disabling exploration:
 
@@ -1451,6 +1453,8 @@ class LoadForwardAttempt : public LFAQueryable {
  public:
 
   PointerBase PB;
+  bool PBCouldWorkIfOptimistic;
+  bool PBOptimistic;
 
   virtual LoadInst* getOriginalInst();
   virtual IntegrationAttempt* getOriginalCtx();
