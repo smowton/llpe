@@ -348,7 +348,7 @@ const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
     for(const Loop* L = InstL; L != MyL; L = L->getParentLoop()) {
 
       if(pass->shouldIgnoreLoop(&F, L->getHeader()))
-	InstL = L;
+	InstL = L->getParentLoop();
 
     }
 
@@ -1032,7 +1032,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   // Integrate the defs and clobbers found with the pointer base result.
 
-  bool print = false;
+  raw_ostream& prout = dbgs();
 
   for(unsigned int i = 0; i < NLResults.size() && !RealLFA.PBIsOverdef(); i++) {
 
@@ -1044,11 +1044,9 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
 	PointerBase NewPB;
 	if(getPointerBase(SI->getOperand(0), NewPB, SI)) {
-	  if(print) {
-	    errs() << "Add PB ";
-	    printPB(errs(), NewPB);
-	    errs() << "\n";
-	  }
+	  prout << "Add PB ";
+	  printPB(prout, NewPB);
+	  prout << "\n";
 	  RealLFA.addPBDefn(NewPB);
 	}
 	else {
@@ -1058,25 +1056,19 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  ValCtx ReplUO = getUltimateUnderlyingObject(Repl.first);
 	  if(isa<Constant>(ReplUO.first) || isIdentifiedObject(ReplUO.first)) {
 	    PointerBase PB = PointerBase::get(ReplUO);
-	    if(print) {
-	      errs() << "Add PB ";
-	      printPB(errs(), NewPB);
-	      errs() << "\n";
-	    }
+	    prout << "Add PB ";
+	    printPB(prout, NewPB);
+	    prout << "\n";
 	    RealLFA.addPBDefn(PB);
 	  }
 	  else {
-	    if(print) {
-	      errs() << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
-	    }
+	    prout << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
 	    RealLFA.setPBOverdef();
 	  }
 	}
       }
       else {
-	if(print) {
-	  errs() << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
-	}
+	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
 	RealLFA.setPBOverdef();
       }
 
@@ -1174,7 +1166,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
 	  // If there are two clobbers, or a clobber and a def, improvement of a clobber might
 	  // yield 1-def or 1-clobber. Defs will always Def unless edges get killed.
 	  const MemDepResult& Res = InstResults[i].getResult();
-	  if(Res.isClobber() && !Res.isEntryNonLocal()) {
+	  if(Res.isDef() || (Res.isClobber() && !Res.isEntryNonLocal())) {
 
 	    IntegrationAttempt* BlockCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
 
@@ -4658,9 +4650,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   RootIA = IA;
 
   queueCheckBlock(IA, &(F.getEntryBlock()));
-  IA->queueInitialWork();
 
   parseArgs(IA, F);
+
+  IA->queueInitialWork();
 
   runQueue();
 
