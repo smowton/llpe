@@ -129,7 +129,7 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
 bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
 
   // Check for a loop header being entered for the first time (i.e., a child loop should perhaps be expanded?)
-  Loop* L = LI[&F]->getLoopFor(ToBB);
+  const Loop* L = getBlockScopeVariant(ToBB);
 
   if(!L)
     return false;
@@ -266,7 +266,7 @@ void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
   const Loop* EdgeScope = getEdgeScope(FromBB, ToBB);
   checkEdge(FromBB, ToBB, EdgeScope);
   // And again at its containing scope, as block certainty is always variant.
-  const Loop* ContScope = LI[&F]->getLoopFor(FromBB);
+  const Loop* ContScope = getBlockScopeVariant(FromBB);
   if(ContScope != EdgeScope)
     checkEdge(FromBB, ToBB, ContScope);
 
@@ -459,10 +459,14 @@ void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
     
     improvedValues.erase(BI);
+    // This can happen when calls are always-inlined.
+    // Cowardly non-deletion here, TODO delete it and deal with the fallout.
+    if(const CallInst* CI = dyn_cast<CallInst>(BI))
+      inlineChildren.erase(const_cast<CallInst*>(CI));
     
   }
   
-  const Loop* L = LI[&F]->getLoopFor(BB);
+  const Loop* L = getBlockScopeVariant(BB);
   const Loop* MyL = getLoopContext();
   if(L != MyL) {
 
@@ -571,7 +575,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
       for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 
 	BasicBlock* SB = DTN->getBlock();
-	if(LI[&F]->getLoopFor(SB) == MyL) {
+	if(getBlockScopeVariant(SB) == MyL) {
 	
 	  markBlockCertain(SB);
 
@@ -587,7 +591,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 	const BBWrapper* BW = DTN->getBlock();
 	if(BW->BB) {
 	  
-	  const Loop* BBL = LI[&F]->getLoopFor(BW->BB);
+	  const Loop* BBL = getBlockScopeVariant(const_cast<BasicBlock*>(BW->BB));
 	  if(BBL == MyL) {
 
 	    markBlockCertain(const_cast<BasicBlock*>(BW->BB));
@@ -1805,6 +1809,7 @@ void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
   // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI. It could however occur in any parent loop.
   if(isOnlyExitingIteration()) {
     assert(isa<PHINode>(UserI));
+    // No need for getBlockScopeVariant: exit PHI already known to be at lower scope.
     const Loop* PHIL = LI[&F]->getLoopFor(UserI->getParent());
     parent->visitExitPHIWithScope(UserI, Visitor, PHIL);
   }
@@ -2413,7 +2418,7 @@ void IntegrationAttempt::queueCheckAllInstructionsInScope(const Loop* MyL) {
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    const Loop* BBL = LI[&F]->getLoopFor(BB);
+    const Loop* BBL = getBlockScopeVariant(BB);
 
     if((!MyL) || MyL->contains(BBL)) {
 
@@ -2445,7 +2450,7 @@ void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    if(LI[&F]->getLoopFor(BB) == L) {
+    if(getBlockScopeVariant(BB) == L) {
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
@@ -2475,7 +2480,7 @@ void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    const Loop* BBL = LI[&F]->getLoopFor(BB);
+    const Loop* BBL = getBlockScopeVariant(BB);
     if((!L) || (BBL && L->contains(BBL))) {
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
@@ -2495,7 +2500,7 @@ void IntegrationAttempt::tryPromoteAllCalls() {
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
-    if(LI[&F]->getLoopFor(BB) == getLoopContext()) {
+    if(getBlockScopeVariant(BB) == getLoopContext()) {
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 

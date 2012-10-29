@@ -151,6 +151,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<Function*, 4> alwaysInline;
    DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
+   DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
 
    TargetData* TD;
    AliasAnalysis* AA;
@@ -246,12 +247,19 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::pair<BasicBlock*, BasicBlock*> getOptimisticEdge(const Loop* L) {
      return optimisticLoopMap.lookup(L);
    }
-
+   
    bool shouldAssumeEdge(Function* F, BasicBlock* BB1, BasicBlock* BB2) {
      DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1> >::iterator it = assumeEdges.find(F);
      if(it == assumeEdges.end())
        return false;
      return it->second.count(std::make_pair(BB1, BB2));
+   }
+
+   bool shouldIgnoreLoop(Function* F, BasicBlock* HBB) {
+     DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = ignoreLoops.find(F);
+     if(it == ignoreLoops.end())
+       return false;
+     return it->second.count(HBB);
    }
 
    IntegrationAttempt* getRoot() { return RootIA; }
@@ -771,7 +779,10 @@ protected:
   bool edgeIsDeadWithScope(BasicBlock*, BasicBlock*, const Loop*);
   bool edgeIsDeadWithScopeRising(BasicBlock*, BasicBlock*, const Loop*);
 
+  const Loop* applyIgnoreLoops(const Loop*);
   const Loop* getBlockScope(BasicBlock*);
+  // The variant version ignores block-liveness invariance, but does apply flattened loops.
+  const Loop* getBlockScopeVariant(BasicBlock*);
   bool blockIsDeadWithScope(BasicBlock*, const Loop*);
 
   bool blockIsCertain(BasicBlock*);

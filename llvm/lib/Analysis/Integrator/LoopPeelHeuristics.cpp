@@ -65,6 +65,7 @@ static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -338,15 +339,39 @@ void IntegrationAttempt::eraseReplacement(Value* V) {
 
 }
 
+const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
+
+  const Loop* MyL = getLoopContext();
+
+  if(MyL != InstL && ((!MyL) || MyL->contains(InstL))) {
+
+    for(const Loop* L = InstL; L != MyL; L = L->getParentLoop()) {
+
+      if(pass->shouldIgnoreLoop(&F, L->getHeader()))
+	InstL = L;
+
+    }
+
+  }
+
+  return InstL;
+
+}
+
 // Get the loop scope at which a given instruction should be resolved.
 const Loop* IntegrationAttempt::getValueScope(Value* V) {
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+    const Loop* InstL;
     DenseMap<Instruction*, const Loop*>::iterator it = invariantInsts.find(I);
     if(it != invariantInsts.end())
-      return it->second;
+      InstL = it->second;
     else
-      return LI[&F]->getLoopFor(I->getParent());
+      InstL = LI[&F]->getLoopFor(I->getParent());
+
+    return applyIgnoreLoops(InstL);
+
   }
   else if(isa<Argument>(V)) {
     return 0;
@@ -436,10 +461,13 @@ void IntegrationAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 const Loop* IntegrationAttempt::getEdgeScope(BasicBlock* B1, BasicBlock* B2) {
 
   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator it = invariantEdges.find(std::make_pair(B1, B2));
+  const Loop* L;
   if(it != invariantEdges.end())
-    return it->second;
+    L = it->second;
   else
-    return LI[&F]->getLoopFor(B1);
+    L = LI[&F]->getLoopFor(B1);
+
+  return applyIgnoreLoops(L);
 
 }
 
@@ -480,16 +508,25 @@ void IntegrationAttempt::setBlockDead(BasicBlock* BB) {
 const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
 
   DenseMap<BasicBlock*, const Loop*>::iterator it = invariantBlocks.find(BB);
+  const Loop* L;
   if(it == invariantBlocks.end())
-    return LI[&F]->getLoopFor(BB);
+    L = LI[&F]->getLoopFor(BB);
   else
-    return it->second;
+    L = it->second;
+
+  return applyIgnoreLoops(L);
   
+}
+
+const Loop* IntegrationAttempt::getBlockScopeVariant(BasicBlock* BB) {
+
+  return applyIgnoreLoops(LI[&F]->getLoopFor(BB));
+
 }
 
 bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
 
-  const Loop* BlockL = LI[&F]->getLoopFor(BB);
+  const Loop* BlockL = getBlockScopeVariant(BB);
   const Loop* MyL = getLoopContext();
 
   if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
@@ -538,8 +575,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "open" || F->getName() == "read" ||
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
 	  F->getName() == "lseek64" || F->getName() == "close" ||
+	  F->getName() == "write" || 
 	  F->getName() == "__time_localtime_tzi" ||
-	  F->getName() == "fwrite" ||
 	  F->getName() == "memset_byte_fn" ||
 	  F->getName() == "nl_langinfo");
 
@@ -569,7 +606,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if(getLoopContext() != LI[&F]->getLoopFor(CI->getParent())) {
+  if(getLoopContext() != getValueScope(CI)) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
@@ -621,6 +658,7 @@ public:
 void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
 
   // Only called if the exit edge is a local variant
+  // No need for getBlockScopeVariant as we already know the block is outside.
   CheckBlockCallback CBC(BB, pass);
   callWithScope(CBC, LI[&F]->getLoopFor(BB));
 
@@ -773,6 +811,9 @@ PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
 PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
   if(ignorePAs.count(NewL))
+    return 0;
+
+  if(pass->shouldIgnoreLoop(&F, NewL->getHeader()))
     return 0;
 
   if(PeelAttempt* PA = getPeelAttempt(NewL))
@@ -1909,7 +1950,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
 bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode) {
 
-  const Loop* BBL = LI[&F]->getLoopFor(BB);
+  const Loop* BBL = getBlockScopeVariant(BB);
 
   if(BBL != getLoopContext() && ((!getLoopContext()) || getLoopContext()->contains(BBL))) {
 
@@ -2110,7 +2151,7 @@ ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
     if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start))
       return Start;
 
-    Loop* SuccLoop = LI[&F]->getLoopFor(UniqueSuccessor);
+    const Loop* SuccLoop = getBlockScopeVariant(UniqueSuccessor);
     if(SuccLoop != getLoopContext()) {
 
       if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
@@ -4317,6 +4358,42 @@ static bool parseIntCommaString(const std::string& str, long& idx, std::string& 
 
 }
 
+static void parseFB(const char* paramName, const std::string& arg, Module& M, Function*& F, BasicBlock*& BB1) {
+
+  std::string FName, BB1Name;
+  size_t firstComma = arg.find(',');
+  if(firstComma == std::string::npos) {
+    errs() << "--" << paramName << " must have the form fname,bbname\n";
+    exit(1);
+  }
+
+  FName = arg.substr(0, firstComma);
+  BB1Name = arg.substr(firstComma + 1);
+
+  F = M.getFunction(FName);
+  if(!F) {
+    errs() << "No such function " << FName << "\n";
+    exit(1);
+  }
+
+  BB1 = 0;
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    if(FI->getName() == BB1Name) {
+      BB1 = FI;
+      break;
+    }
+
+  }
+
+  if(!BB1) {
+    errs() << "No such block " << BB1Name << " in " << FName << "\n";
+    exit(1);
+  }
+
+}
+
 static void parseFBB(const char* paramName, const std::string& arg, Module& M, Function*& F, BasicBlock*& BB1, BasicBlock*& BB2) {
 
   std::string FName, BB1Name, BB2Name;
@@ -4531,6 +4608,17 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
     parseFBB("int-assume-edge", *ArgI, *(F.getParent()), AssF, BB1, BB2);
 
     assumeEdges[AssF].insert(std::make_pair(BB1, BB2));
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = IgnoreLoops.begin(), ArgE = IgnoreLoops.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* LF;
+    BasicBlock* HBB;
+
+    parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
+
+    ignoreLoops[LF].insert(HBB);
 
   }
 

@@ -291,6 +291,14 @@ static LibCallFunctionInfo::LocationMRInfo FerrorMR[] = {
 
 };
 
+static LibCallFunctionInfo::LocationMRInfo WriteMR[] = {
+
+  { 5, AliasAnalysis::Ref },
+  { 0, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
 /*
 static LibCallFunctionInfo::LocationMRInfo CharPadMR[] = {
 
@@ -361,6 +369,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
   { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
   { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
+  { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
   //  { "_charpad", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, CharPadMR, 0 },
   //  { "fputs_unlocked", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FputsMR, 0 },
   //  { "__stdio_fwrite", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, StdioFwriteMR, 0 },

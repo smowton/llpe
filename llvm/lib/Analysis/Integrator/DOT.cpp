@@ -502,6 +502,9 @@ void InlineAttempt::describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<Ba
 
   for(LoopInfo::iterator it = LI[&F]->begin(), it2 = LI[&F]->end(); it != it2; ++it) {
 
+    if(pass->shouldIgnoreLoop(&F, (*it)->getHeader()))
+      continue;
+
     describeLoopAsDOT(*it, Out, brief, blocksPrinted);
 
   }
@@ -511,6 +514,9 @@ void InlineAttempt::describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<Ba
 void PeelIteration::describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted) {
 
   for(Loop::iterator it = L->begin(), it2 = L->end(); it != it2; ++it) {
+
+    if(pass->shouldIgnoreLoop(&F, (*it)->getHeader()))
+      continue;
 
     describeLoopAsDOT(*it, Out, brief, blocksPrinted);
 
