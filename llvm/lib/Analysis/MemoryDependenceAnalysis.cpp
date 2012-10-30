@@ -269,8 +269,11 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       
       if (R == AliasAnalysis::NoAlias)
         continue;
-      if (R == AliasAnalysis::MayAlias)
+      if (R == AliasAnalysis::MayAlias) {
+	if(LFA && LFA->PBOptimistic)
+	  continue;
         return MemDepResult::getClobber(Inst);
+      }
       return MemDepResult::getDef(Inst);
     }
 
@@ -334,6 +337,8 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       }
     }
 
+    if(LFA && LFA->PBOptimistic)
+      continue;
     return MemDepResult::getClobber(Inst);
 
   }
@@ -380,7 +385,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst) {
     if(!isEntryBlock)
       LocalCache = MemDepResult::getNonLocal();
     else
-      LocalCache = MemDepResult::getClobber(QueryInst);
+      LocalCache = MemDepResult::getClobber(QueryInst, 0, true);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(QueryInst)) {
     // If this is a volatile store, don't mess around with it.  Just return the
     // previous instruction as a clobber.

@@ -262,24 +262,35 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
 
 }
 
+bool IntegrationAttempt::isScalarSet(PointerBase& PB) {
+
+  if(PB.Overdef)
+    return false;
+  assert(PB.Values.size());
+  if(PB.Values[0].first->getType()->isPointerTy())
+    return false;
+  if(PB.Values[0].second)
+    return false;
+  if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[0].first)) {
+    PointerBase Ign;
+    if(extractCEBase(CE, Ign))
+      return false;
+  }
+
+  return true;
+
+}
+
+
+
 bool IntegrationAttempt::getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result) {
 
   PointerBase PB;
   bool found = getPointerBase(V, PB, UserI);
   if(found) {
-
-    if(PB.Overdef)
+    
+    if(!isScalarSet(PB))
       return false;
-    assert(PB.Values.size());
-    if(PB.Values[0].first->getType()->isPointerTy())
-      return false;
-    if(PB.Values[0].second)
-      return false;
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[0].first)) {
-      PointerBase Ign;
-      if(extractCEBase(CE, Ign))
-	return false;
-    }
 
     // That *should* eliminate everything but integers, FP, and other things not related to pointers.
     for(unsigned i = 0; i < PB.Values.size(); ++i) {
@@ -352,15 +363,6 @@ bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool
     }
   }
 
-  if(PB.Values.size() == 1 && !PB.Overdef) {
-
-    // Feed the result to the ordinary constant folder, until the two get merged.
-    setReplacement(I, PB.Values[0]);
-    investigateUsers(I);
-    return false;
-
-  }
-
   return PB.Values.size() > 0 && !PB.Overdef;
   
 }
@@ -390,6 +392,14 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
   PointerBase OldPB;
   bool OldPBValid = getPointerBaseFalling(V, OldPB);
+
+  // Getting no better:
+  if((!finalise) && OldPBValid && (!OldPB.Overdef) && OldPB.Values.size() == 1)
+    return false;
+
+  // Getting no worse:
+  if(finalise && ((!OldPBValid) || OldPB.Overdef))
+    return false;
 
   if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
 
@@ -521,7 +531,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
     DEBUG(printPB(dbgs(), NewPB));
     DEBUG(dbgs() << "\n");
   
-    queueUsersUpdatePB(V, !NewPB.Overdef);
+    queueUsersUpdatePB(V);
 
     return true;
 
@@ -535,7 +545,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 // We investigate: (1) the user's 'natural' scope (since this catches exit PHIs), and
 // (2) if the user is within our scope, all scopes between ours and its 
 // (since our new invariant information might be useful at many scopes).
-void IntegrationAttempt::queueUsersUpdatePB(Value* V, bool VDefined) {
+void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
 
   const Loop* MyL = getLoopContext();
   
@@ -547,12 +557,12 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V, bool VDefined) {
 
       if((!MyL) || (UserL && MyL->contains(UserL))) {
 	  
-	queueUsersUpdatePBRising(UserI, UserL, V, VDefined);
+	queueUsersUpdatePBRising(UserI, UserL, V);
 	
       }
       else {
 	
-	queueUsersUpdatePBFalling(UserI, UserL, V, VDefined);
+	queueUsersUpdatePBFalling(UserI, UserL, V);
 
       }
 
@@ -562,13 +572,9 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V, bool VDefined) {
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined) {
+void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V) {
 
   if(getLoopContext() == IL) {
-
-    if(!isa<CallInst>(I))
-      if(VDefined)
-	queueWorkBlockedOn(I);
 
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
@@ -612,36 +618,45 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
   }
   else {
     if(parent)
-      parent->queueUsersUpdatePBFalling(I, IL, V, VDefined);
+      parent->queueUsersUpdatePBFalling(I, IL, V);
   }
 
 }
 
-void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined) {
+void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->queueUsersUpdatePBRising(I, TargetL, V, VDefined);
+    Iterations[i]->queueUsersUpdatePBRising(I, TargetL, V);
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined) {
+void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
 
   const Loop* MyL = getLoopContext();
 
   // Investigate here:
-  queueUsersUpdatePBFalling(I, MyL, V, VDefined);
+  queueUsersUpdatePBFalling(I, MyL, V);
   
   // And at inner contexts if possible.
   if(TargetL != MyL) {
 
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(getLoopContext(), TargetL)))
-      PA->queueUsersUpdatePBRising(I, TargetL, V, VDefined);
+      PA->queueUsersUpdatePBRising(I, TargetL, V);
 
   }
 
 }
 
-void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, SmallVector<ValCtx, 64>* ChangedVCs) {
+struct ChangedPB {
+
+  bool OldPBValid;
+  PointerBase OldPB;
+
+  ChangedPB(bool O, PointerBase OP) : OldPBValid(O), OldPB(OP) { }
+
+};
+
+void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, DenseMap<ValCtx, ChangedPB>* ChangedVCs) {
 
   SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
   
@@ -652,8 +667,13 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, SmallVector<
     
     for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
 
-      if(it->second->updateBasePointer(it->first, finalise) && ChangedVCs)
-	ChangedVCs->push_back(*it);
+      PointerBase OldPB;
+      bool OldPBValid = it->second->getPointerBaseFalling(it->first, OldPB);
+
+      if(it->second->updateBasePointer(it->first, finalise) && ChangedVCs) {
+	// Note the VC's pre-solver PB the first time we update it.
+	ChangedVCs->insert(std::make_pair(*it, ChangedPB(OldPBValid, OldPB)));
+      }
 
     }
 
@@ -664,36 +684,133 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, SmallVector<
 
 }
 
-void IntegrationHeuristicsPass::runPointerBaseSolver() {
+void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
 
-  SmallVector<ValCtx, 64> ChangedVCs;
+  if(isScalarSet(PB)) {
+    if(PB.Values.size() == 1) {
 
-  runPointerBaseSolver(false, &ChangedVCs);
+      // Feed the result to the ordinary constant folder, until the two get merged.
+      setReplacement(V, PB.Values[0]);
+      investigateUsers(V);
 
-  PBProduceQ->insert(PBProduceQ->end(), ChangedVCs.begin(), ChangedVCs.end());
-  
-  runPointerBaseSolver(true, 0);
-
-  ++PBGeneration;
+    }
+  }
+  else {
+    // Set of pointer bases. Retry any load that might benefit (i.e. those at the affected scope
+    // and its children).
+    investigateUsers(V);
+  }
 
 }
 
-uint64_t IntegrationHeuristicsPass::getPBGeneration() {
+void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
 
-  return PBGeneration;
+  if(!isUnresolved(V))
+    return;
+
+  PointerBase PB;
+  bool PBValid = getPointerBaseFalling(V, PB);
+  if(PBValid && PB.Values.size() == 1)
+    return;
+
+  pass->queueUpdatePB(this, V);
+
+}
+
+void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L) {
+
+  if(!getLoopContext()) {
+
+    for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
+
+      queuePBUpdateIfUnresolved(AI);
+
+    }
+
+  }
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    const Loop* BBL = getBlockScopeVariant(BB);
+    if((!L) || (BBL && L->contains(BBL))) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+	
+	queuePBUpdateIfUnresolved(II);
+
+      }
+
+    }
+
+  }  
+
+}
+
+void IntegrationAttempt::queuePBUpdateAllUnresolvedVCs() {
+
+  queuePBUpdateAllUnresolvedVCsInScope(getLoopContext());
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->queuePBUpdateAllUnresolvedVCs();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->queuePBUpdateAllUnresolvedVCs();
+
+  }
+
+}
+
+bool IntegrationHeuristicsPass::runPointerBaseSolver() {
+
+  DenseMap<ValCtx, ChangedPB> ChangedVCs;
+  
+  uint64_t totalVCs = 0, optimisticVCs = 0, pessimisticVCs = 0;
+  RootIA->queuePBUpdateAllUnresolvedVCs();
+  totalVCs = PBProduceQ->size();
+
+  runPointerBaseSolver(false, &ChangedVCs);
+  optimisticVCs = ChangedVCs.size();
+
+  for(DenseMap<ValCtx, ChangedPB>::iterator it = ChangedVCs.begin(), it2 = ChangedVCs.end(); it != it2; ++it) {
+
+    PBProduceQ->push_back(it->first);
+
+  }
+
+  runPointerBaseSolver(true, 0);
+
+  for(DenseMap<ValCtx, ChangedPB>::iterator it = ChangedVCs.begin(), it2 = ChangedVCs.end(); it != it2; ++it) {
+
+    PointerBase NewPB;
+    bool NewPBValid = it->first.second->getPointerBaseFalling(it->first.first, NewPB);
+    assert(NewPBValid && "Ended up in changed queue despite not defining a PB?");
+
+    if(NewPB.Overdef)
+      continue;
+
+    if(it->second.OldPBValid && (NewPB == it->second.OldPB))
+      continue;
+
+    pessimisticVCs++;
+    it->first.second->queueWorkFromUpdatedPB(it->first.first, NewPB);
+
+  }
+
+  errs() << "Ran optimistic solver: considered " << totalVCs << ", found " << optimisticVCs << " optimistic values, kept " << pessimisticVCs << "\n";
+
+  return pessimisticVCs != 0;
 
 }
 
 void IntegrationHeuristicsPass::queueUpdatePB(IntegrationAttempt* IA, Value* V) {
 
   PBProduceQ->push_back(make_vc(V, IA));
-  
-  IntegratorWQItem I;
-  I.type = PBSolve;
-  I.ctx = 0;
-  I.u.IHP = this;
-
-  produceQueue->push_back(I);
 
 }
 
@@ -702,7 +819,7 @@ void IntegrationAttempt::resolvePointerBase(Value* V, PointerBase& PB) {
   PointerBase ExistingPB;
   if((!getPointerBaseLocal(V, ExistingPB)) || ExistingPB != PB) {
     pointerBases[V] = PB;
-    queueUsersUpdatePB(V, true);
+    // Don't queue, just wait for the next round of optimistic solving.
   }
 
 }

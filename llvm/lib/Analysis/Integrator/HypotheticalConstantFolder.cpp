@@ -2465,36 +2465,6 @@ void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
 
 }
 
-void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
-
-  if(!getLoopContext()) {
-
-    for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
-
-      pass->queueUpdatePB(this, AI);
-
-    }
-
-  }
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    const Loop* BBL = getBlockScopeVariant(BB);
-    if((!L) || (BBL && L->contains(BBL))) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-	
-	pass->queueUpdatePB(this, II);
-
-      }
-
-    }
-
-  }
-
-}
-
 void IntegrationAttempt::tryPromoteAllCalls() {
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
@@ -2519,7 +2489,7 @@ void IntegrationAttempt::queueInitialWork() {
 
   queueCheckAllInstructionsInScope(getLoopContext());
   queueCheckAllLoadsInScope(getLoopContext());
-  queuePBCheckAllInstructionsInScope(getLoopContext());
+  //queuePBCheckAllInstructionsInScope(getLoopContext());
 
   if(const Loop* L = getLoopContext()) {
 

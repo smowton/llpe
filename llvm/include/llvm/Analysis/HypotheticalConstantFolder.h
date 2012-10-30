@@ -104,8 +104,7 @@ enum IntegratorWQItemType {
    TryEval,
    CheckBlock,
    CheckLoad,
-   OpenPush,
-   PBSolve
+   OpenPush
 
 };
 
@@ -133,6 +132,63 @@ IntegratorWQItem() { }
 
   void execute();
   void describe(raw_ostream& s);
+
+};
+
+// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
+// May be: 
+// overdefined (overflowed, or defined by an unknown)
+// defined (known set of possible values)
+// undefined (implied by absence from map)
+// Note Value members may be null (signifying a null pointer) without being Overdef.
+
+#define PBMAX 4
+
+struct PointerBase {
+
+  SmallVector<ValCtx, 4> Values;
+  bool Overdef;
+
+PointerBase() : Overdef(false) { }
+PointerBase(bool OD) : Overdef(OD) { }
+  
+  PointerBase& insert(ValCtx VC) {
+    if(Overdef)
+      return *this;
+    if(Values.size() + 1 > PBMAX) {
+      Values.clear();
+      Overdef = true;
+    }
+    else {
+      if(!std::count(Values.begin(), Values.end(), VC))
+	Values.push_back(VC);
+    }
+    return *this;
+  }
+
+  PointerBase& merge(PointerBase& OtherPB) {
+    if(OtherPB.Overdef) {
+      Values.clear();
+      Overdef = true;
+    }
+    else {
+      for(SmallVector<ValCtx, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
+	insert(*it);
+    }
+    return *this;
+  }
+
+  static PointerBase get(ValCtx VC) { return PointerBase().insert(VC); }
+  static PointerBase getOverdef() { return PointerBase(true); }
+  
+};
+
+struct ChangedPB {
+
+  bool OldPBValid;
+  PointerBase OldPB;
+
+  ChangedPB(bool O, PointerBase OP) : OldPBValid(O), OldPB(OP) { }
 
 };
 
@@ -211,7 +267,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    BasicBlock* getUniqueReturnBlock(Function* F);
 
-   void runQueue();
+   void runQueues();
+   bool runQueue();
    void runDIEQueue();
 
    void revertLoadsFromFoldedContexts();
@@ -233,9 +290,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
-   void runPointerBaseSolver(bool finalise, SmallVector<ValCtx, 64>* ChangedVCs);
-   void runPointerBaseSolver();
-   uint64_t getPBGeneration();
+   void runPointerBaseSolver(bool finalise, DenseMap<ValCtx, ChangedPB>* ChangedVCs);
+   bool runPointerBaseSolver();
    void queueUpdatePB(IntegrationAttempt* IA, Value* V);
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
@@ -529,54 +585,6 @@ public:
   virtual void notifyUsersMissed() = 0;
   virtual bool shouldContinue() = 0;
 
-};
-
-// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
-// May be: 
-// overdefined (overflowed, or defined by an unknown)
-// defined (known set of possible values)
-// undefined (implied by absence from map)
-// Note Value members may be null (signifying a null pointer) without being Overdef.
-
-#define PBMAX 4
-
-struct PointerBase {
-
-  SmallVector<ValCtx, 4> Values;
-  bool Overdef;
-
-PointerBase() : Overdef(false) { }
-PointerBase(bool OD) : Overdef(OD) { }
-  
-  PointerBase& insert(ValCtx VC) {
-    if(Overdef)
-      return *this;
-    if(Values.size() + 1 > PBMAX) {
-      Values.clear();
-      Overdef = true;
-    }
-    else {
-      if(!std::count(Values.begin(), Values.end(), VC))
-	Values.push_back(VC);
-    }
-    return *this;
-  }
-
-  PointerBase& merge(PointerBase& OtherPB) {
-    if(OtherPB.Overdef) {
-      Values.clear();
-      Overdef = true;
-    }
-    else {
-      for(SmallVector<ValCtx, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
-	insert(*it);
-    }
-    return *this;
-  }
-
-  static PointerBase get(ValCtx VC) { return PointerBase().insert(VC); }
-  static PointerBase getOverdef() { return PointerBase(true); }
-  
 };
 
 inline bool operator==(PointerBase& PB1, PointerBase& PB2) {
@@ -1027,13 +1035,17 @@ protected:
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
+  bool isScalarSet(PointerBase& PB);
   bool getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result);
   bool updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop);
-  void queueUsersUpdatePB(Value* V, bool VDefined);
-  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool VDefined);
-  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);
+  void queueUsersUpdatePB(Value* V);
+  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
+  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
   void resolvePointerBase(Value* V, PointerBase&);
-  void queuePBCheckAllInstructionsInScope(const Loop* L);
+  void queueWorkFromUpdatedPB(Value* V, PointerBase&);
+  void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L);
+  void queuePBUpdateIfUnresolved(Value *V);
+  void queuePBUpdateAllUnresolvedVCs();
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
   void printPB(raw_ostream& out, PointerBase PB);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
@@ -1323,7 +1335,7 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
    
-   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool VDefined);
+   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
 
    void dumpMemoryUsage(int indent);
 
@@ -1453,7 +1465,8 @@ class LoadForwardAttempt : public LFAQueryable {
  public:
 
   PointerBase PB;
-  bool PBCouldWorkIfOptimistic;
+  bool PBNeverClobbered;
+  bool PBDefined;
   bool PBOptimistic;
 
   virtual LoadInst* getOriginalInst();
@@ -1498,11 +1511,15 @@ class LoadForwardAttempt : public LFAQueryable {
   }
 
   bool PBIsViable() {
-    return (!PB.Overdef) && PB.Values.size() > 0;
+    return (!PB.Overdef) && (PB.Values.size() > 0 || PBOptimistic);
   }
 
   bool PBIsOverdef() {
     return PB.Overdef;
+  }
+
+  bool shouldTryOptimisticMode() {
+    return PBNeverClobbered && PBDefined;
   }
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);

@@ -7,7 +7,7 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  small-write-large-load large-write-small-load nonconstmemcpy memcpy-cases \
 	  memcpy-cases-nonconst struct-const struct-global reinterpret fp fpreinterpret \
 	  fpalign read read-indirect-fd varargs varargs-param varargs-copy pointerbase pointerarith \
-	  pointerarithfail pointerarithnested multidef invarcall stdiowrite
+	  pointerarithfail pointerarithnested multidef invarcall stdiowrite realstdio
 
 LLVM_TARGETS = load-struct load-array switch-loop
 

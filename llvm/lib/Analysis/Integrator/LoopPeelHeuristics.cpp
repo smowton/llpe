@@ -1013,7 +1013,8 @@ void IntegrationAttempt::getDependencies(LFAQueryable& LFA, bool startNonLocal, 
     uint64_t PointeeSize = AA->getTypeStoreSize(EltTy);
     PHITransAddr LAddr(LPointer, TD, this);
     DenseMap<BasicBlock*, Value*> Visited;
-    //Visited.insert(std::make_pair(QueryInst->getParent(), LPointer));
+    if(startNonLocal)
+      Visited.insert(std::make_pair(QueryInst->getParent(), LPointer));
 
     if(MD.getNonLocalPointerDepFromBB(LAddr, PointeeSize, true, QueryInst->getParent(), NLResults, Visited, !startNonLocal)) {
 
@@ -1032,24 +1033,40 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   // Integrate the defs and clobbers found with the pointer base result.
 
-  raw_ostream& prout = dbgs();
+  raw_ostream& prout = nulls();
 
   for(unsigned int i = 0; i < NLResults.size() && !RealLFA.PBIsOverdef(); i++) {
 
     const MemDepResult& Res = NLResults[i].getResult();
     IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
 
+    // If we're in the optimistic phase, ignore anything but a define with an attached result.
+    // The hope is that the optimistic assumption might remove some clobbers.
+
+    if(RealLFA.PBOptimistic) {
+      if(!Res.isDef())
+	continue;
+      PointerBase ResPB;
+      StoreInst* SI = dyn_cast<StoreInst>(Res.getInst());
+      if(!SI)
+	continue;
+      if(!ResCtx->getPointerBase(SI->getOperand(0), ResPB, SI))
+	continue;
+      if(ResPB.Overdef)
+	continue;
+    }
+
     if(Res.isDef()) {
 
       if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
 	PointerBase NewPB;
 	if(ResCtx->getPointerBase(SI->getOperand(0), NewPB, SI)) {
-	  if(RealLFA.PBOptimistic && NewPB.Overdef)
-	    continue;
 	  prout << "Add PB ";
 	  printPB(prout, NewPB);
 	  prout << "\n";
 	  RealLFA.addPBDefn(NewPB);
+	  if(!NewPB.Overdef)
+	    RealLFA.PBDefined = true;
 	}
 	else {
 	  // Try to find a concrete definition, since the concrete defns path is more advanced.
@@ -1064,8 +1081,6 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	    RealLFA.addPBDefn(PB);
 	  }
 	  else {
-	    if(RealLFA.PBOptimistic)
-	      continue;
 	    prout << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
 	    RealLFA.setPBOverdef();
 	  }
@@ -1074,7 +1089,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       else {
 	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
 	RealLFA.setPBOverdef();
-	RealLFA.PBCouldWorkIfOptimistic = false;
+	RealLFA.PBNeverClobbered = false;
       }
 
     }
@@ -1091,7 +1106,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       }
 
       RealLFA.setPBOverdef();
-      RealLFA.PBCouldWorkIfOptimistic = false;
+      RealLFA.PBNeverClobbered = false;
 
     }
 
@@ -1155,6 +1170,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
 
       // Probably we're in a block which is dead, but has yet to be diagnosed as such.
       LFA.getLFA().setPBOverdef();
+      LFA.getLFA().PBNeverClobbered = false;
       return MemDepResult();
 
     }
@@ -1410,6 +1426,12 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
 // and ask our parent to continue resolving the load.
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
+  if(LoadI->getParent()->getParent()->getName() == "__uClibc_init") {
+
+    errs() << "Hit!\n";
+
+  }
+
   LPDEBUG("Trying to forward load: " << itcache(*LoadI) << "\n");
 
   LoadForwardAttempt Attempt(LoadI, this, TD);
@@ -1419,6 +1441,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     return ConstResult;
 
   MemDepResult Res = tryResolveLoad(Attempt, LFMBoth);
+  ValCtx ForwardedVal = getForwardedValue(Attempt, Res);
 
   if(Attempt.PBIsViable()) {
 
@@ -1429,19 +1452,26 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     resolvePointerBase(LoadI, Attempt.PB);
 
   }
+  /*
+  else if(ForwardedVal != VCNull) {
+
+    queueUsersUpdatePB(LoadI, true);
+
+  }
   else {
 
     LPDEBUG("Load PB " << itcache(*LoadI) << " overdefined\n");
-    if(Attempt.PBCouldWorkIfOptimistic) {
-
+    if(Attempt.shouldTryOptimisticMode()) {
+      
       LPDEBUG("May work in optimistic mode; queueing\n");
       pass->queueUpdatePB(this, LoadI);
-
+      
     }
-
+    
   }
-
-  return getForwardedValue(Attempt, Res);
+  */
+  
+  return ForwardedVal;
 
 }
 
@@ -1566,6 +1596,7 @@ MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt, Loa
 
     if((!parent) || !Attempt.canBuildSymExpr()) {
       Attempt.setPBOverdef();
+      Attempt.PBNeverClobbered = false;
       return MemDepResult();
     }
 
@@ -1621,11 +1652,12 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
     LFA.setPBOverdef();
-    return MemDepResult();
+    return MemDepResult::getClobber(F.getEntryBlock().begin(), this, true);
   }
   else {
     if(LFA.getBaseContext() == this) {
       LPDEBUG("Can't pursue LFA further because this is its base context\n");
+      LFA.PBNeverClobbered = false;
       LFA.setPBOverdef();
       return MemDepResult();
     }
@@ -1677,6 +1709,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     if(LFA.getBaseContext() == Iterations[iter]) {
       LPDEBUG("Abandoning resolution: " << itcache(LFA.getBaseVC()) << " is out of scope\n");
       Result = MemDepResult();
+      LFA.PBNeverClobbered = false;
       LFA.setPBOverdef();
       MayDependOnParent = false;
       return false;
@@ -1715,6 +1748,7 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(LFA.getBaseContext() == this) {
     LPDEBUG("Can't pursue LFA further because this is its base context\n");
+    LFA.PBNeverClobbered = false;
     LFA.setPBOverdef();
     return MemDepResult();
   }
@@ -3089,7 +3123,8 @@ LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, Tar
     targetType = target;
 
   mayBuildFromBytes = !containsPointerTypes(targetType);
-  PBCouldWorkIfOptimistic = true;
+  PBNeverClobbered = true;
+  PBDefined = false;
 
 }
 
@@ -3194,7 +3229,9 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr, IntegrationAttempt* RootCt
     }
 
     ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
-    if(isIdentifiedObject(Repl.first)) {
+    // Disregard noalias arguments since we're looking outside this call.
+    // Exception: noalias arguments at the entry function.
+    if(isIdentifiedObject(Repl.first) && (Repl.second->isRootMainCall() || !isa<Argument>(Repl.first))) {
       Expr.push_back((new SymThunk(Repl)));
       break;
     }
@@ -3871,9 +3908,6 @@ void IntegratorWQItem::execute() {
   case OpenPush:
     ctx->tryPushOpen(u.OpenArgs.OpenI, u.OpenArgs.OpenProgress);
     break;
-  case PBSolve:
-    u.IHP->runPointerBaseSolver();
-    break;
   }
 }
 
@@ -3894,9 +3928,6 @@ void IntegratorWQItem::describe(raw_ostream& s) {
   case OpenPush:
     s << "Push-VFS-chain ";
     ctx->printWithCache(make_vc(u.OpenArgs.OpenI, ctx), s);
-    break;
-  case PBSolve:
-    s << "Run-PB-solver";
     break;
   }
 
@@ -4212,8 +4243,6 @@ inline bool operator==(IntegratorWQItem W1, IntegratorWQItem W2) {
     return W1.u.LI == W2.u.LI;
   case OpenPush:
     return (W1.u.OpenArgs.OpenI == W2.u.OpenArgs.OpenI && W1.u.OpenArgs.OpenProgress == W2.u.OpenArgs.OpenProgress);
-  case PBSolve:
-    return true;
   default:
     assert(0 && "Bad WQ item type!");
   }
@@ -4240,8 +4269,6 @@ inline bool operator<(IntegratorWQItem W1, IntegratorWQItem W2) {
     if(W1.u.OpenArgs.OpenI != W2.u.OpenArgs.OpenI)
       return W1.u.OpenArgs.OpenI < W2.u.OpenArgs.OpenI;
     return W1.u.OpenArgs.OpenProgress < W2.u.OpenArgs.OpenProgress;
-  case PBSolve:
-    return false;
   default:
     assert(0 && "Bad WQ item type!");
   }
@@ -4261,11 +4288,15 @@ inline bool operator>=(IntegratorWQItem W1, IntegratorWQItem W2) {
 
 }
 
-void IntegrationHeuristicsPass::runQueue() {
+bool IntegrationHeuristicsPass::runQueue() {
 
+  bool ret = false;
+  
   SmallVector<IntegratorWQItem, 64>* consumeQueue = (produceQueue == &workQueue1) ? &workQueue2 : &workQueue1;
 
   while(workQueue1.size() || workQueue2.size()) {
+
+    ret = true;
     
     std::sort(consumeQueue->begin(), consumeQueue->end());
 
@@ -4283,6 +4314,21 @@ void IntegrationHeuristicsPass::runQueue() {
 
     consumeQueue->clear();
     std::swap(consumeQueue, produceQueue);
+
+  }
+
+  return ret;
+
+}
+
+void IntegrationHeuristicsPass::runQueues() { 
+
+  while(1) {
+
+    if(!runQueue())
+      return;
+    if(!runPointerBaseSolver())
+      return;
 
   }
 
@@ -4670,7 +4716,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   IA->queueInitialWork();
 
-  runQueue();
+  runQueues();
 
   DEBUG(dbgs() << "Finding dead MTIs\n");
   IA->tryKillAllMTIs();
