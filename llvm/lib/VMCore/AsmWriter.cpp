@@ -1732,6 +1732,9 @@ void AssemblyWriter::printInfoComment(const Value &V) {
 void AssemblyWriter::printInstruction(const Instruction &I, bool nameOnly) {
   if (AnnotationWriter && !nameOnly) AnnotationWriter->emitInstructionAnnot(&I, Out);
 
+  if(I.getType()->isVoidTy())
+    nameOnly = false;
+
   // Print out indentation for an instruction.
   if(!nameOnly)
     Out << "  ";

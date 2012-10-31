@@ -114,7 +114,7 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
     // %0 = (some pointer-typed expression that resolves to a constant (so either null or a constexpr of a global))
     // %1 = cast or gep of %0, ...
     // This means %1 will evaluate to a constexpr; we should reconsider at that time.
-    if(isIdentifiedObject(O.first) && !isa<Constant>(O.first))
+    if(isGlobalIdentifiedObject(O) && !isa<Constant>(O.first))
       return true;
 
   }
@@ -923,12 +923,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0O.first->getType()->isPointerTy() && isIdentifiedObject(op0O.first))
+  else if(op0O.first->getType()->isPointerTy() && isGlobalIdentifiedObject(op0O))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1O.first->getType()->isPointerTy() && isIdentifiedObject(op1O.first))
+  else if(op1O.first->getType()->isPointerTy() && isGlobalIdentifiedObject(op1O))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
@@ -955,7 +955,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   // 3. Restricted comparison of pointers with a differing base: we can compare for equality only
   // as we don't know memory layout at this stage.
 
-  if(isIdentifiedObject(op0O.first) && isIdentifiedObject(op1O.first) && op0O != op1O) {
+  if(isGlobalIdentifiedObject(op0O) && isGlobalIdentifiedObject(op1O) && op0O != op1O) {
 
     if(CmpI->getPredicate() == CmpInst::ICMP_EQ) {
       Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));

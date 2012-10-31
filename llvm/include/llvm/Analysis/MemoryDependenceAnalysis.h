@@ -270,7 +270,6 @@ namespace llvm {
     TargetData *TD;
     IntegrationAttempt* parent;
     bool ignoreLoads;
-    bool PBMode;
 
     LoadForwardAttempt* LFA;
 
@@ -280,7 +279,7 @@ namespace llvm {
     ~MemoryDependenceAnalyser();
 
     // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0, bool ignoreLoads = false, bool PBMode = false);
+    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0, bool ignoreLoads = false);
 
     /// Clean up memory in between runs
     void releaseMemory();

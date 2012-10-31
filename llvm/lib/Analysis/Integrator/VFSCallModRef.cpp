@@ -44,7 +44,7 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
 
   ValCtx VC = PtrCtx->getUltimateUnderlyingObject(const_cast<Value*>(Ptr));
 
-  if(isIdentifiedObject(VC.first))
+  if(isGlobalIdentifiedObject(VC))
     return LibCallLocationInfo::No;
 
   return LibCallLocationInfo::Unknown;

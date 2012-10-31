@@ -93,6 +93,28 @@ bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
     return true;
   }
 
+  // This causes an infinite(?) loop at the moment. Not sure why.
+  /*
+  const Loop* MyL = getLoopContext();
+  const Loop* VL = getValueScope(V);
+  // Single-value results only stored at natural scope for now.
+  if(MyL != VL)
+    return false;
+
+  ValCtx Repl = getReplacement(V);
+  ValCtx ReplUO;
+  if(Repl.second)
+    ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
+  else
+    ReplUO = Repl;
+  if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
+
+    OutPB = PointerBase::get(ReplUO);
+    return true;
+
+  }
+  */
+
   return false;
 
 }
@@ -118,7 +140,7 @@ bool IntegrationAttempt::getPointerBaseFalling(Value* V, PointerBase& OutPB) {
 
   if(getPointerBaseLocal(V, OutPB))
     return true;
-  if(parent)
+  if(getLoopContext())
     return parent->getPointerBaseFalling(V, OutPB);
   return false;
 
@@ -190,16 +212,29 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
     Value* V = *it;
     PointerBase VPB;
     if(!getPointerBase(V, VPB, I)) {
+
+      ValCtx Repl = getReplacement(V);
+      ValCtx ReplUO;
+      if(Repl.second)
+	ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
+      else
+	ReplUO = Repl;
+
+      if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
+	VPB = PointerBase::get(ReplUO);
+      }
+
+    }
+
+    if(VPB.Values.size() == 0 && !VPB.Overdef) {
       if(finalise) {
 	NewPB = PointerBase::getOverdef();
 	return true;
       }
       else
-	continue;      
+	continue;
     }
 
-    if(VPB.Overdef && !finalise)
-      continue;
     anyInfo = true;
     NewPB.merge(VPB);
 
@@ -244,7 +279,7 @@ bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase
 
 }
 
-void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
+void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
 
   if(PB.Overdef)
     out << "Overdef";
@@ -254,7 +289,7 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB) {
 
       if(it != PB.Values.begin())
 	out << ", ";
-      out << itcache(*it);
+      out << itcache(*it, brief);
 
     }
     out << " }";
@@ -267,14 +302,19 @@ bool IntegrationAttempt::isScalarSet(PointerBase& PB) {
   if(PB.Overdef)
     return false;
   assert(PB.Values.size());
-  if(PB.Values[0].first->getType()->isPointerTy())
-    return false;
-  if(PB.Values[0].second)
-    return false;
-  if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[0].first)) {
-    PointerBase Ign;
-    if(extractCEBase(CE, Ign))
+
+  for(unsigned i = 0; i < PB.Values.size(); ++i) {
+  
+    if(PB.Values[i].first->getType()->isPointerTy())
       return false;
+    if(PB.Values[i].second)
+      return false;
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[i].first)) {
+      PointerBase Ign;
+      if(extractCEBase(CE, Ign))
+	return false;
+    }
+
   }
 
   return true;
@@ -310,6 +350,30 @@ bool IntegrationAttempt::getScalarSet(Value* V, Instruction* UserI, SmallVector<
 
   Result.push_back(C);
   return true;
+
+}
+
+PointerBase IntegrationAttempt::updateUnaryScalarValues(Instruction* I, PointerBase &PB) {
+
+  PointerBase ret;
+  for(unsigned i = 0; i < PB.Values.size() && !ret.Overdef; ++i) { 
+
+    PointerBase NewPB;
+
+    Constant* Expr = ConstantExpr::getCast(I->getOpcode(), cast<Constant>(PB.Values[i].first), I->getType());
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
+      Expr = ConstantFoldConstantExpression(CE, TD);
+
+    if((!Expr) || isa<ConstantExpr>(Expr))
+      NewPB = PointerBase::getOverdef();
+    else
+      NewPB = PointerBase::get(const_vc(Expr));
+    
+    ret.merge(NewPB);
+
+  }
+
+  return ret;
 
 }
 
@@ -349,24 +413,49 @@ bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool
       if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
 	Expr = ConstantFoldConstantExpression(CE, TD);
 
-      if(Expr) {
+      PointerBase ThisPB;
 
-	PB.insert(const_vc(Expr));
+      if(Expr)
+	ThisPB = PointerBase::get(const_vc(Expr));
+      else
+	ThisPB = PointerBase::getOverdef();
 
-      }
-      else {
-
-	return false;
-
-      }
+      PB.merge(ThisPB);
 
     }
   }
 
-  return PB.Values.size() > 0 && !PB.Overdef;
+  return true;
   
 }
 
+std::string IntegrationAttempt::describeLFA(LoadForwardAttempt& LFA) {
+  
+  std::string out;
+  raw_string_ostream RSO(out);
+  
+  if(LFA.PB.Overdef) {
+    for(unsigned i = 0; i < LFA.OverdefReasons.size(); ++i) {
+      if(i != 0)
+	RSO << ", ";
+      RSO << LFA.OverdefReasons[i];
+    }
+  }  
+  else if(LFA.PB.Values.size() == 0) {
+    
+    RSO << "No defn";
+    
+  }
+  else {
+    
+    printPB(RSO, LFA.PB, true);
+    
+  }
+    
+  return out;
+    
+}
+  
 // Do load forwarding, possibly in optimistic mode: this means that
 // stores that def but which have no associated PB are optimistically assumed
 // to be compatible with anything, the same as the mergepoint logic above
@@ -374,9 +463,16 @@ bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
 
-  LoadForwardAttempt Attempt(LI, this, TD);
+  LoadForwardAttempt Attempt(LI, this, LFMPB, TD);
   Attempt.PBOptimistic = !finalise;
-  tryResolveLoad(Attempt, LFMPB);
+
+  tryResolveLoad(Attempt);
+
+  if(!finalise)
+    optimisticForwardStatus[LI] = describeLFA(Attempt);
+  else
+    pessimisticForwardStatus[LI] = describeLFA(Attempt);
+    
   if(Attempt.PB.Values.size() == 0 && !Attempt.PB.Overdef)
     return false;
 
@@ -387,15 +483,15 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
+  // Don't duplicate the work of the pessimistic solver:
+  if(getLoopContext() == getValueScope(V) && !isUnresolved(V))
+    return false;
+
   LPDEBUG("Update pointer base " << itcache(*V) << "\n");
   PointerBase NewPB;
 
   PointerBase OldPB;
   bool OldPBValid = getPointerBaseFalling(V, OldPB);
-
-  // Getting no better:
-  if((!finalise) && OldPBValid && (!OldPB.Overdef) && OldPB.Values.size() == 1)
-    return false;
 
   // Getting no worse:
   if(finalise && ((!OldPBValid) || OldPB.Overdef))
@@ -437,8 +533,20 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
       {
 	PointerBase PB;
 	handled = true;
-	if(getPointerBase(I->getOperand(0), PB, I))
-	  NewPB = PB;
+	if(getPointerBase(I->getOperand(0), PB, I)) {
+	  if(isScalarSet(PB)) {
+	    assert(I->getOpcode() != Instruction::GetElementPtr);
+	    // Avoid duplicating pessimistic solver's work
+	    if(PB.Values.size() == 1)
+	      return false;
+	    NewPB = updateUnaryScalarValues(I, PB);
+	    handled = true;
+	  }
+	  else {
+	    NewPB = PB;
+	    handled = true;
+	  }
+	}
 	else
 	  return false;
 	break;
@@ -451,7 +559,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
       bool isScalarBinop = false;
       if(updateBinopValues(I, NewPB, isScalarBinop))
 	handled = true;
-      if(isScalarBinop)
+      else if(isScalarBinop)
 	return false;
 
     }
@@ -509,7 +617,16 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	}
       case Instruction::Select:
 	{
-	  if(!getMergeBasePointer(I, finalise, NewPB))
+	  bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
+	  std::string RStr;
+	  raw_string_ostream RSO(RStr);
+	  printPB(RSO, NewPB);
+	  RSO.flush();
+	  if(!finalise)
+	    optimisticForwardStatus[I] = RStr;
+	  else
+	    pessimisticForwardStatus[I] = RStr;
+	  if(!mergeAnyInfo)
 	    return false;
 	  else
 	    break;
@@ -647,40 +764,16 @@ void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* Ta
 
 }
 
-struct ChangedPB {
+void IntegrationAttempt::printConsiderCount(DenseMap<ValCtx, int>& in, int n) {
 
-  bool OldPBValid;
-  PointerBase OldPB;
+  std::vector<std::pair<int, ValCtx> > results;
+  for(DenseMap<ValCtx, int>::iterator it = in.begin(), it2 = in.end(); it != it2; ++it)
+    results.push_back(std::make_pair(it->second, it->first));
 
-  ChangedPB(bool O, PointerBase OP) : OldPBValid(O), OldPB(OP) { }
-
-};
-
-void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, DenseMap<ValCtx, ChangedPB>* ChangedVCs) {
-
-  SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
+  std::sort(results.begin(), results.end());
   
-  while(PBQueue1.size() || PBQueue2.size()) {
-
-    std::sort(ConsumeQ->begin(), ConsumeQ->end());
-    SmallVector<ValCtx, 64>::iterator endit = std::unique(ConsumeQ->begin(), ConsumeQ->end());
-    
-    for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
-
-      PointerBase OldPB;
-      bool OldPBValid = it->second->getPointerBaseFalling(it->first, OldPB);
-
-      if(it->second->updateBasePointer(it->first, finalise) && ChangedVCs) {
-	// Note the VC's pre-solver PB the first time we update it.
-	ChangedVCs->insert(std::make_pair(*it, ChangedPB(OldPBValid, OldPB)));
-      }
-
-    }
-
-    ConsumeQ->clear();
-    std::swap(ConsumeQ, PBProduceQ);
-
-  }
+  for(int i = results.size() - 1; i >= 0 && i >= (results.size() - (n + 1)); --i)
+    errs() << itcache(results[i].second) << ": " << results[i].first << "\n";
 
 }
 
@@ -731,6 +824,9 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L) {
 
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
+    if(blockIsDead(BI))
+      continue;
+
     BasicBlock* BB = BI;
     const Loop* BBL = getBlockScopeVariant(BB);
     if((!L) || (BBL && L->contains(BBL))) {
@@ -766,45 +862,162 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCs() {
 
 }
 
+void IntegrationAttempt::queuePBUpdateAllResolvedVCs() {
+
+  for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
+
+    if(!it->second.Overdef)
+      pass->queueUpdatePB(this, it->first);
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->queuePBUpdateAllResolvedVCs();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->queuePBUpdateAllResolvedVCs();
+
+  }
+
+}
+
+// Actually clear everything for now, for simplicity's sake.
+void IntegrationAttempt::clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs) {
+
+  //  std::vector<Value*> toErase;
+  
+  for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
+
+    OldPBs.insert(std::make_pair(make_vc(it->first, this), it->second));
+    // toErase.push_back(it->first);
+
+  }
+
+  pointerBases.clear();
+
+  //  for(unsigned i = 0; i < toErase.size(); ++i)
+  //    pointerBases.erase(toErase[i]);
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
+    it->second->clearSuboptimalPBResults(OldPBs);
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->clearSuboptimalPBResults(OldPBs);
+
+  }
+
+}
+
+void IntegrationAttempt::queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, uint64_t& newVCs, uint64_t& changedVCs) {
+
+  for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
+
+    if(it->second.Overdef)
+      continue;
+
+    DenseMap<ValCtx, PointerBase>::iterator OldPB = OldPBs.find(make_vc(it->first, this));
+    bool queue = false;
+    if(OldPB == OldPBs.end()) {
+      newVCs++;
+      queue = true;
+    }
+    else if(OldPB->second != it->second) {
+      changedVCs++;
+      queue = true;
+    }
+
+    if(queue)
+      queueWorkFromUpdatedPB(it->first, it->second);
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
+    it->second->queueNewPBWork(OldPBs, newVCs, changedVCs);
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->queueNewPBWork(OldPBs, newVCs, changedVCs);
+
+  }
+
+}
+
+void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise) {
+
+  DenseMap<ValCtx, int> considerCount;
+
+  SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
+  
+  int i = 0;
+
+  while(PBQueue1.size() || PBQueue2.size()) {
+
+    std::sort(ConsumeQ->begin(), ConsumeQ->end());
+    SmallVector<ValCtx, 64>::iterator endit = std::unique(ConsumeQ->begin(), ConsumeQ->end());
+    
+    for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
+
+      /*
+      considerCount[*it]++;
+      if(++i == 10000) {
+	errs() << "----\n";
+	it->second->printConsiderCount(considerCount, 100);
+	errs() << "----\n";
+	i = 0;
+      }
+      */
+
+      it->second->updateBasePointer(it->first, finalise);
+
+    }
+
+    ConsumeQ->clear();
+    std::swap(ConsumeQ, PBProduceQ);
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
-  DenseMap<ValCtx, ChangedPB> ChangedVCs;
+  DenseMap<ValCtx, PointerBase> OldPBs;
   
-  uint64_t totalVCs = 0, optimisticVCs = 0, pessimisticVCs = 0;
+  uint64_t totalVCs = 0, newVCs = 0, changedVCs = 0;
+
+  // Step 1: discard all existing PB results that could be improved.
+  RootIA->clearSuboptimalPBResults(OldPBs);
+
+  // Step 2: consider every result in optimistic mode until stable.
+  // In this mode, undefineds are ok and clobbers are ignored on the supposition that
+  // they might turn into known pointers.
+  // Overdefs are still bad.
+
   RootIA->queuePBUpdateAllUnresolvedVCs();
   totalVCs = PBProduceQ->size();
 
-  runPointerBaseSolver(false, &ChangedVCs);
-  optimisticVCs = ChangedVCs.size();
+  runPointerBaseSolver(false);
 
-  for(DenseMap<ValCtx, ChangedPB>::iterator it = ChangedVCs.begin(), it2 = ChangedVCs.end(); it != it2; ++it) {
+  // Queue up anything of which we've asserted a non-overdef PB for reconsideration.
+  RootIA->queuePBUpdateAllResolvedVCs();
 
-    PBProduceQ->push_back(it->first);
+  // Step 3: consider every result in pessimistic mode until stable: clobbers are back in,
+  // and undefined == overdefined.
 
-  }
+  runPointerBaseSolver(true);
 
-  runPointerBaseSolver(true, 0);
+  RootIA->queueNewPBWork(OldPBs, newVCs, changedVCs);
 
-  for(DenseMap<ValCtx, ChangedPB>::iterator it = ChangedVCs.begin(), it2 = ChangedVCs.end(); it != it2; ++it) {
+  errs() << "Ran optimistic solver: considered " << totalVCs << ", found " << newVCs << " new and " << changedVCs << " changed\n";
 
-    PointerBase NewPB;
-    bool NewPBValid = it->first.second->getPointerBaseFalling(it->first.first, NewPB);
-    assert(NewPBValid && "Ended up in changed queue despite not defining a PB?");
-
-    if(NewPB.Overdef)
-      continue;
-
-    if(it->second.OldPBValid && (NewPB == it->second.OldPB))
-      continue;
-
-    pessimisticVCs++;
-    it->first.second->queueWorkFromUpdatedPB(it->first.first, NewPB);
-
-  }
-
-  errs() << "Ran optimistic solver: considered " << totalVCs << ", found " << optimisticVCs << " optimistic values, kept " << pessimisticVCs << "\n";
-
-  return pessimisticVCs != 0;
+  return (newVCs + changedVCs) != 0;
 
 }
 

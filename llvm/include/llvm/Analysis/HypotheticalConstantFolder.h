@@ -290,7 +290,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
-   void runPointerBaseSolver(bool finalise, DenseMap<ValCtx, ChangedPB>* ChangedVCs);
+   void runPointerBaseSolver(bool finalise);
    bool runPointerBaseSolver();
    void queueUpdatePB(IntegrationAttempt* IA, Value* V);
 
@@ -640,9 +640,7 @@ struct IntegratorTag {
 enum LoadForwardMode {
 
   LFMNormal,
-  LFMPB,
-  LFMBoth,
-  LFMPBOptimistic
+  LFMPB
 
 };
 
@@ -702,6 +700,8 @@ protected:
 
   // Pointers resolved down to their base object, but not necessarily the offset:
   DenseMap<Value*, PointerBase> pointerBases;
+  DenseMap<Instruction*, std::string> optimisticForwardStatus;
+  DenseMap<Instruction*, std::string> pessimisticForwardStatus;
 
   // Inline attempts / peel attempts which are currently ignored because they've been opted out.
   // These may include inlines / peels which are logically two loop levels deep, 
@@ -876,25 +876,25 @@ protected:
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
   ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore);
-  MemDepResult tryResolveLoad(LoadForwardAttempt&, LoadForwardMode);
+  MemDepResult tryResolveLoad(LoadForwardAttempt&);
   MemDepResult tryResolveLoad(LoadForwardAttempt&, Instruction* StartBefore, ValCtx& ConstResult);
   ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
-  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode);
+  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
   void getDefn(const MemDepResult& Res, ValCtx& VCout);
-  void getDependencies(LFAQueryable& LFA, bool startNonLocal, bool PBMode, SmallVector<NonLocalDepResult, 4>& Results);
+  void getDependencies(LFAQueryable& LFA, bool startNonLocal, SmallVector<NonLocalDepResult, 4>& Results);
   void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
-  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent, LoadForwardMode);
+  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, LoadForwardMode, bool& MayDependOnParent);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, LoadForwardMode, bool& MayDependOnParent);
-  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, bool& MayDependOnParent);
+  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
 
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&, bool& mayDependOnParent);
-  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode);
+  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
   void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
   void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
@@ -1038,6 +1038,7 @@ protected:
   bool isScalarSet(PointerBase& PB);
   bool getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result);
   bool updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop);
+  PointerBase updateUnaryScalarValues(Instruction* I, PointerBase &PB);
   void queueUsersUpdatePB(Value* V);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
@@ -1046,11 +1047,16 @@ protected:
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L);
   void queuePBUpdateIfUnresolved(Value *V);
   void queuePBUpdateAllUnresolvedVCs();
+  void queuePBUpdateAllResolvedVCs();
+  void clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs);
+  void queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, uint64_t& newVCs, uint64_t& changedVCs);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
-  void printPB(raw_ostream& out, PointerBase PB);
+  void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
   bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
+  std::string describeLFA(LoadForwardAttempt& LFA);
+  void printConsiderCount(DenseMap<ValCtx, int>& in, int n);
 
   // Enabling / disabling exploration:
 
@@ -1096,16 +1102,16 @@ protected:
     return PrintCacheWrapper<const MemDepResult&>(*pass, MDR, brief);
   }
 
-  void printWithCache(const Value* V, raw_ostream& ROS) {
-    pass->printValue(ROS, V, false);
+  void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
+    pass->printValue(ROS, V, brief);
   }
 
-  void printWithCache(ValCtx VC, raw_ostream& ROS) {
-    pass->printValue(ROS, VC, false);
+  void printWithCache(ValCtx VC, raw_ostream& ROS, bool brief = false) {
+    pass->printValue(ROS, VC, brief);
   }
 
-  void printWithCache(const MemDepResult& Res, raw_ostream& ROS) {
-    pass->printValue(ROS, Res, false);
+  void printWithCache(const MemDepResult& Res, raw_ostream& ROS, bool brief = false) {
+    pass->printValue(ROS, Res, brief);
   }
 
   // Data export for the Integrator pass:
@@ -1294,11 +1300,11 @@ class PeelAttempt {
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
    MemDepResult tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
-   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent, LoadForwardMode);
+   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
-   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode);
+   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
@@ -1464,10 +1470,13 @@ class LoadForwardAttempt : public LFAQueryable {
 
  public:
 
+  SmallVector<std::string, 1> OverdefReasons;
+
   PointerBase PB;
   bool PBNeverClobbered;
   bool PBDefined;
   bool PBOptimistic;
+  LoadForwardMode Mode;
 
   virtual LoadInst* getOriginalInst();
   virtual IntegrationAttempt* getOriginalCtx();
@@ -1502,12 +1511,16 @@ class LoadForwardAttempt : public LFAQueryable {
 
   uint64_t markPaddingBytes(bool*, const Type*);
 
-  void setPBOverdef() {
+  void setPBOverdef(std::string reason) {
+    OverdefReasons.push_back(reason);
     PB = PointerBase::getOverdef();
   }
 
   void addPBDefn(PointerBase& NewPB) {
+    bool WasOverdef = PB.Overdef;
     PB.merge(NewPB);
+    if(PB.Overdef && (!WasOverdef) && (!NewPB.Overdef))
+      OverdefReasons.push_back("Fan-in");
   }
 
   bool PBIsViable() {
@@ -1522,7 +1535,7 @@ class LoadForwardAttempt : public LFAQueryable {
     return PBNeverClobbered && PBDefined;
   }
 
-  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData*, const Type* T = 0);
+  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, LoadForwardMode M, TargetData*, const Type* T = 0);
   ~LoadForwardAttempt();
 
    // Caching instruction text for debug and DOT export:
@@ -1597,6 +1610,7 @@ class LFARMapping {
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
 
  bool functionIsBlacklisted(Function*);
+ bool isGlobalIdentifiedObject(ValCtx VC);
 
 } // Namespace LLVM
 

@@ -996,10 +996,10 @@ static bool shouldBlockOnInst(Instruction* I, IntegrationAttempt* ICtx) {
 
 }
 
-void IntegrationAttempt::getDependencies(LFAQueryable& LFA, bool startNonLocal, bool PBMode, SmallVector<NonLocalDepResult, 4>& NLResults) {
+void IntegrationAttempt::getDependencies(LFAQueryable& LFA, bool startNonLocal, SmallVector<NonLocalDepResult, 4>& NLResults) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */, PBMode);
+  MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */);
 
   LoadInst* QueryInst = LFA.getQueryInst();
 
@@ -1044,16 +1044,16 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
     // The hope is that the optimistic assumption might remove some clobbers.
 
     if(RealLFA.PBOptimistic) {
+
       if(!Res.isDef())
 	continue;
       PointerBase ResPB;
       StoreInst* SI = dyn_cast<StoreInst>(Res.getInst());
       if(!SI)
 	continue;
-      if(!ResCtx->getPointerBase(SI->getOperand(0), ResPB, SI))
+      if((!ResCtx->getPointerBase(SI->getOperand(0), ResPB, SI)) && ResCtx->isUnresolved(SI->getOperand(0)))
 	continue;
-      if(ResPB.Overdef)
-	continue;
+
     }
 
     if(Res.isDef()) {
@@ -1072,8 +1072,12 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  // Try to find a concrete definition, since the concrete defns path is more advanced.
 	  // Remember the PB sets only take constants or identified underlying objects.
 	  ValCtx Repl = ResCtx->getReplacement(SI->getOperand(0));
-	  ValCtx ReplUO = getUltimateUnderlyingObject(Repl.first);
-	  if(isa<Constant>(ReplUO.first) || isIdentifiedObject(ReplUO.first)) {
+	  ValCtx ReplUO;
+	  if(Repl.second)
+	    ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
+	  else
+	    ReplUO = Repl;
+	  if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
 	    PointerBase PB = PointerBase::get(ReplUO);
 	    prout << "Add PB ";
 	    printPB(prout, NewPB);
@@ -1082,13 +1086,17 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  }
 	  else {
 	    prout << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
-	    RealLFA.setPBOverdef();
+	    std::string RStr;
+	    raw_string_ostream RSO(RStr);
+	    RSO << "D " << itcache(make_vc(Res.getInst(), ResCtx), true);
+	    RSO.flush();
+	    RealLFA.setPBOverdef(RStr);
 	  }
 	}
       }
       else {
 	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
-	RealLFA.setPBOverdef();
+	RealLFA.setPBOverdef("Defn by non-store");
 	RealLFA.PBNeverClobbered = false;
       }
 
@@ -1105,7 +1113,11 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
       }
 
-      RealLFA.setPBOverdef();
+      std::string RStr;
+      raw_string_ostream RSO(RStr);
+      RSO << "C " << itcache(make_vc(Res.getInst(), ResCtx), true);
+      RSO.flush();
+      RealLFA.setPBOverdef(RStr);
       RealLFA.PBNeverClobbered = false;
 
     }
@@ -1152,7 +1164,7 @@ static void checkOnlyDependsOnParent(SmallVector<NonLocalDepResult, 4>& NLResult
 // call @somefun ( ... ) ; Clobbers in normal mode, but maybe-defines the pointer
 // In this situation the correct answer is that the pointer is overdefined (maybe somefun affects it, but the store
 // overdefines it), but normal mode will stop looking at the call and call it a clobber.
-MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent, LoadForwardMode LFM) {
+MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent) {
 
   MemDepResult Seen;
   LoadInst* OriginalInst = LFA.getOriginalInst();
@@ -1160,16 +1172,16 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
 
   OnlyDependsOnParent = true;
 
-  if(LFM != LFMPB) {
+  if(LFA.getLFA().Mode != LFMPB) {
 
     SmallVector<NonLocalDepResult, 4> InstResults;
-    getDependencies(LFA, startNonLocal, false, InstResults);
+    getDependencies(LFA, startNonLocal, InstResults);
     checkOnlyDependsOnParent(InstResults, OnlyDependsOnParent);
   
     if(InstResults.size() == 0) {
 
       // Probably we're in a block which is dead, but has yet to be diagnosed as such.
-      LFA.getLFA().setPBOverdef();
+      LFA.getLFA().setPBOverdef("No NLResults");
       LFA.getLFA().PBNeverClobbered = false;
       return MemDepResult();
 
@@ -1234,15 +1246,14 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
       return Seen;
     
   }
-
-  if(LFM != LFMNormal) {
+  else if(LFA.getLFA().Mode != LFMNormal) {
 
     // If the pointer base result isn't conclusive yet, run MD again looking over calls and loops that may-define.
     // Note we *cannot* calculate MayDependOnParent yet as the above result includes e.g. truncation due to
     // calls that clobber the concrete result.
 
     SmallVector<NonLocalDepResult, 4> PBResults;
-    getDependencies(LFA, startNonLocal, true, PBResults);
+    getDependencies(LFA, startNonLocal, PBResults);
     checkOnlyDependsOnParent(PBResults, OnlyDependsOnParent);
 
     for(unsigned int i = 0; i < PBResults.size(); i++) {
@@ -1260,6 +1271,9 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, bool sta
     addPBResults(RealLFA, PBResults);
 
   }
+  else {
+    assert(0 && "Bad LFMode");
+  }
 
   return Seen;
 
@@ -1271,10 +1285,16 @@ void IntegrationAttempt::setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepRes
 
 }
 
+bool llvm::isGlobalIdentifiedObject(ValCtx VC) {
+
+  return isIdentifiedObject(VC.first) && ((VC.second && VC.second->isRootMainCall()) || !isa<Argument>(VC.first));
+
+}
+
 ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
 
   ValCtx Ultimate = getDefaultVC(V);
-  while(!isIdentifiedObject(Ultimate.first)) {
+  while(!isGlobalIdentifiedObject(Ultimate)) {
 
     ValCtx New;
     if(Ultimate.second)
@@ -1426,21 +1446,15 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
 // and ask our parent to continue resolving the load.
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
-  if(LoadI->getParent()->getParent()->getName() == "__uClibc_init") {
-
-    errs() << "Hit!\n";
-
-  }
-
   LPDEBUG("Trying to forward load: " << itcache(*LoadI) << "\n");
 
-  LoadForwardAttempt Attempt(LoadI, this, TD);
+  LoadForwardAttempt Attempt(LoadI, this, LFMNormal, TD);
 
   ValCtx ConstResult;
   if(tryResolveLoadFromConstant(LoadI, ConstResult))
     return ConstResult;
 
-  MemDepResult Res = tryResolveLoad(Attempt, LFMBoth);
+  MemDepResult Res = tryResolveLoad(Attempt);
   ValCtx ForwardedVal = getForwardedValue(Attempt, Res);
 
   if(Attempt.PBIsViable()) {
@@ -1584,18 +1598,18 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
 
 }
 
-MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt, LoadForwardMode mode) {
+MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt) {
 
   MemDepResult Result;
   bool OnlyDependsOnParent;
   bool MayDependOnParent = false;
 
-  OnlyDependsOnParent = forwardLoadIsNonLocal(Attempt, Result, false, MayDependOnParent, mode);
+  OnlyDependsOnParent = forwardLoadIsNonLocal(Attempt, Result, false, MayDependOnParent);
 
   if(OnlyDependsOnParent || (MayDependOnParent && Attempt.PBIsViable())) {
 
     if((!parent) || !Attempt.canBuildSymExpr()) {
-      Attempt.setPBOverdef();
+      Attempt.setPBOverdef((!parent) ? "Reached top" : "Unresolved expr");
       Attempt.PBNeverClobbered = false;
       return MemDepResult();
     }
@@ -1631,7 +1645,7 @@ MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt, Ins
   bool MayDependOnParent = false;
   bool OnlyDependsOnParent;
 
-  OnlyDependsOnParent = tryResolveExprFrom(Attempt, StartBefore, Result, ConstVC, LFMNormal, MayDependOnParent);
+  OnlyDependsOnParent = tryResolveExprFrom(Attempt, StartBefore, Result, ConstVC, MayDependOnParent);
 
   if(OnlyDependsOnParent || (MayDependOnParent && Attempt.PBIsViable())) {
     MemDepResult SubResult = tryForwardExprFromParent(Attempt);
@@ -1651,14 +1665,14 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
-    LFA.setPBOverdef();
+    LFA.setPBOverdef("Reached top (2)");
     return MemDepResult::getClobber(F.getEntryBlock().begin(), this, true);
   }
   else {
     if(LFA.getBaseContext() == this) {
       LPDEBUG("Can't pursue LFA further because this is its base context\n");
       LFA.PBNeverClobbered = false;
-      LFA.setPBOverdef();
+      LFA.setPBOverdef("Out of scope (1)");
       return MemDepResult();
     }
     else {
@@ -1669,7 +1683,7 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 }
 
-bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, MemDepResult& Result, bool& MayDependOnParent, LoadForwardMode LFM) {
+bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter, MemDepResult& Result, bool& MayDependOnParent) {
 
   // First of all, try winding backwards through our sibling iterations. We can use a single realisation
   // of the LFA for all of these checks, since the instructions are always the same.
@@ -1686,11 +1700,11 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
 
     bool IterMayDependOnParent = false;
 
-    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, false, IterMayDependOnParent, LFM))) {
+    if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, false, IterMayDependOnParent))) {
       OnlyDependsOnParent = false;
     }
 
-    if((!OnlyDependsOnParent) && (LFM == LFMNormal || (!IterMayDependOnParent) || !LFA.PBIsViable())) {
+    if((!OnlyDependsOnParent) && (LFA.Mode == LFMNormal || (!IterMayDependOnParent) || !LFA.PBIsViable())) {
       // Shouldn't pursue further -- the result is either defined or conclusively clobbered here
       // and either we shouldn't look at PBs, or not even they could depend on definers further afield,
       // or the PB result is hopeless anyway.
@@ -1710,7 +1724,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
       LPDEBUG("Abandoning resolution: " << itcache(LFA.getBaseVC()) << " is out of scope\n");
       Result = MemDepResult();
       LFA.PBNeverClobbered = false;
-      LFA.setPBOverdef();
+      LFA.setPBOverdef("Out of scope (2)");
       MayDependOnParent = false;
       return false;
     }
@@ -1728,7 +1742,7 @@ MemDepResult PeelAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA, int 
 
   MemDepResult Result;
   bool MayDependOnParent = false;
-  bool OnlyDependsOnParent = tryForwardExprFromIter(LFA, originIter, Result, MayDependOnParent, LFMBoth);
+  bool OnlyDependsOnParent = tryForwardExprFromIter(LFA, originIter, Result, MayDependOnParent);
   if(OnlyDependsOnParent || (MayDependOnParent && LFA.PBIsViable())) {
     LPDEBUG("Resolving out the preheader edge; deferring to parent\n");
     MemDepResult SubResult = parent->tryResolveLoadAtChildSite(Iterations[0], LFA);
@@ -1749,7 +1763,7 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
   if(LFA.getBaseContext() == this) {
     LPDEBUG("Can't pursue LFA further because this is its base context\n");
     LFA.PBNeverClobbered = false;
-    LFA.setPBOverdef();
+    LFA.setPBOverdef("Out of scope (3)");
     return MemDepResult();
   }
   else {
@@ -1760,10 +1774,10 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
-bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode LFM) {
+bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent) {
 
   bool OnlyDependsOnParent = false;
-  Result = getUniqueDependency(LFAQ, startNonLocal, MayDependOnParent, OnlyDependsOnParent, LFM);
+  Result = getUniqueDependency(LFAQ, startNonLocal, MayDependOnParent, OnlyDependsOnParent);
 
   if(OnlyDependsOnParent)
     return true;
@@ -1783,23 +1797,23 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult&
 
 }
 
-bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent, LoadForwardMode LFM) {
+bool IntegrationAttempt::tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent) {
 
   LFARMapping LFARM(LFAR, this);
 
-  return forwardLoadIsNonLocal(LFAR, Result, startNonLocal, MayDependOnParent, LFM);
+  return forwardLoadIsNonLocal(LFAR, Result, startNonLocal, MayDependOnParent);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, LoadForwardMode LFM, bool& MayDependOnParent) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent) {
 
   LFARealization LFAR(LFA, this, Where);
   
-  return tryResolveExprUsing(LFAR, Result, startNonLocal, MayDependOnParent, LFM);
+  return tryResolveExprUsing(LFAR, Result, startNonLocal, MayDependOnParent);
 
 }
 
-bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, LoadForwardMode LFM, bool& MayDependOnParent) {
+bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, bool& MayDependOnParent) {
 
   LFARealization LFAR(LFA, this, Where);
 
@@ -1808,7 +1822,7 @@ bool IntegrationAttempt::tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction
     return false;
   }
 
-  return tryResolveExprUsing(LFAR, Result, false, MayDependOnParent, LFM);
+  return tryResolveExprUsing(LFAR, Result, false, MayDependOnParent);
 
 }
 
@@ -1822,7 +1836,7 @@ MemDepResult IntegrationAttempt::tryResolveLoadAtChildSite(IntegrationAttempt* I
 
   LPDEBUG("Continuing resolution from entry point " << itcache(*(IA->getEntryInstruction())) << "\n");
 
-  bool OnlyDependsOnParent = tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result, false, LFMBoth, MayDependOnParent);
+  bool OnlyDependsOnParent = tryResolveExprFrom(LFA, IA->getEntryInstruction(), Result, false, MayDependOnParent);
   if(OnlyDependsOnParent) {
     LPDEBUG("Still nonlocal, passing to our parent scope\n");
     return tryForwardExprFromParent(LFA);
@@ -1851,7 +1865,7 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
   }
 
   MayDependOnParent = false;
-  bool OnlyDependsOnParent = tryResolveExprFrom(LFA, RetBB->getTerminator(), Result, false, LFMBoth, MayDependOnParent);
+  bool OnlyDependsOnParent = tryResolveExprFrom(LFA, RetBB->getTerminator(), Result, false, MayDependOnParent);
 
   if(OnlyDependsOnParent) {
     Result = MemDepResult::getNonLocal();
@@ -1896,7 +1910,7 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
 
 }
 
-bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode) {
+bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) {
 
   // MDA has just traversed an exit edge. Pursue the load from the exiting block to the header,
   // then from latch to preheader like the forward-from-parent case. Cache in the LFA object
@@ -1932,8 +1946,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
   // Use startNonLocal so that if this exiting block is actually the exiting block of a nested child loop
   // as well, MDA will immediately recurse into tryForwardLoadThroughLoopFromBB.
   bool mayDependOnParent = false;
-  LoadForwardMode mode = PBMode ? LFMPB : LFMNormal;
-  if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult, /* startNonLocal = */ true, mode, mayDependOnParent)) {
+  if(Iterations.back()->tryResolveExprFrom(LFA, BB->getTerminator(), LastIterResult, /* startNonLocal = */ true, mayDependOnParent)) {
     LastIterResult = MemDepResult::getNonLocal();
   }
   else {
@@ -1944,7 +1957,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
       LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in last iteration of " << L->getHeader()->getName() << "\n");
     }
     Result.push_back(NonLocalDepResult(BB, LastIterResult, 0));
-    if((!PBMode) || (!mayDependOnParent) || !LFA.PBIsViable())
+    if((LFA.Mode == LFMNormal) || (!mayDependOnParent) || !LFA.PBIsViable())
       return true;
   }
 
@@ -1967,7 +1980,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
   LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through main body of " << L->getHeader()->getName() << "\n");
   bool itersMayDependOnParent = false;
-  if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult, itersMayDependOnParent, mode)) {
+  if(tryForwardExprFromIter(LFA, Iterations.size() - 1, OtherItersResult, itersMayDependOnParent)) {
     OtherItersResult = MemDepResult::getNonLocal();
   }
   else {
@@ -1978,7 +1991,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
       LPDEBUG(itcache(*(LFA.getOriginalInst())) << " defined in non-final iteration of " << L->getHeader()->getName() << "\n");
     }
     Result.push_back(NonLocalDepResult(BB, OtherItersResult, 0));
-    if((!PBMode) || (!LFA.PBIsViable()) || (!itersMayDependOnParent))
+    if((LFA.Mode == LFMNormal) || (!LFA.PBIsViable()) || (!itersMayDependOnParent))
       return true;
   }
 
@@ -1988,7 +2001,7 @@ bool PeelAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAtt
 
 }
 
-bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result, bool PBMode) {
+bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result) {
 
   const Loop* BBL = getBlockScopeVariant(BB);
 
@@ -2007,7 +2020,7 @@ bool IntegrationAttempt::tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadFor
       return false;
     }
 
-    return LPA->tryForwardLoadThroughLoopFromBB(BB, LFA, PreheaderOut, Result, PBMode);
+    return LPA->tryForwardLoadThroughLoopFromBB(BB, LFA, PreheaderOut, Result);
 
   }
   else {
@@ -3115,7 +3128,7 @@ IntegratorTag* PeelAttempt::getParentTag() {
 
 // Implement LoadForwardAttempt
 
-LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD), PBOptimistic(false) {
+LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, LoadForwardMode M, TargetData* _TD, const Type* target) : LI(_LI), originalCtx(C), ExprValid(false), Result(VCNull), partialBuf(0), partialValidBuf(0), TD(_TD), PBOptimistic(false), Mode(M) {
 
   if(!target)
     targetType = _LI->getType();
@@ -3231,7 +3244,7 @@ bool LoadForwardAttempt::buildSymExpr(Value* RootPtr, IntegrationAttempt* RootCt
     ValCtx Repl = Ptr.second->getReplacement(Ptr.first);
     // Disregard noalias arguments since we're looking outside this call.
     // Exception: noalias arguments at the entry function.
-    if(isIdentifiedObject(Repl.first) && (Repl.second->isRootMainCall() || !isa<Argument>(Repl.first))) {
+    if(isGlobalIdentifiedObject(Repl)) {
       Expr.push_back((new SymThunk(Repl)));
       break;
     }

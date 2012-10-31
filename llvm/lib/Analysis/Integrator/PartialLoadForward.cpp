@@ -259,7 +259,7 @@ PartialVal IntegrationAttempt::tryForwardFromCopy(LoadForwardAttempt& LFA, ValCt
 
   // Found the LFA on the original load, so any failures get attributed to it.
   // Attempt to load a smaller type if necessary!
-  LoadForwardAttempt SubLFA(LI, this, TD, subTargetType);
+  LoadForwardAttempt SubLFA(LI, this, LFMNormal, TD, subTargetType);
 
   // Generate our own symbolic expression rather than the one that naturally results from the load.
   // This will be used for realisations outside this scope, so it had better be rooted on an identified

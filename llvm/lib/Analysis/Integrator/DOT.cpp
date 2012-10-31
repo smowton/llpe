@@ -153,29 +153,29 @@ static std::string escapeHTML(std::string Str) {
 
 }
 
-static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA) {
+static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA, bool brief=false) {
 
   std::string Esc;
   raw_string_ostream RSO(Esc);
-  IA->printWithCache(V, RSO);
+  IA->printWithCache(V, RSO, brief);
   return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
 
-static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA) {
+static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA, bool brief=false) {
 
   std::string Esc;
   raw_string_ostream RSO(Esc);
-  IA->printWithCache(V, RSO);
+  IA->printWithCache(V, RSO, brief);
   return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
 
-static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA) {
+static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA, bool brief=false) {
 
   std::string Esc;
   raw_string_ostream RSO(Esc);
-  IA->printWithCache(MDR, RSO);
+  IA->printWithCache(MDR, RSO, brief);
   return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
@@ -202,23 +202,38 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
       Out << escapeHTMLValue(Repl, this);
     if(Repl.isVaArg())
       Out << " vararg #" << Repl.va_arg;
+    return;
   }
-  else if(isInvariant && I) {
+  if(isInvariant && I) {
     CheckDeadCallback CDC(I);
     callWithScope(CDC, VScope);
     if(CDC.isDead)
       Out << "(invar) DEAD";
+    return;
   }
-  else if(I && deadValues.count(I)) {
+  if(I && deadValues.count(I)) {
     Out << "DEAD";
+    return;
   }
-  else if(I && getPointerBase(I, PB, I) && !PB.Overdef) {
+  if(I && getPointerBase(I, PB, I) && !PB.Overdef) {
     Out << "BASE ";
     printPB(Out, PB);
+    return;
   }
-  else if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
+  DenseMap<Instruction*, std::string>::iterator optit = optimisticForwardStatus.find(I);
+  DenseMap<Instruction*, std::string>::iterator pesit = pessimisticForwardStatus.find(I);
+  if(optit != optimisticForwardStatus.end()) {
+    Out << "OPT (" << optit->second << "), ";
+  }
+  if(pesit != pessimisticForwardStatus.end()) {
+    Out << "PES (" << pesit->second << "), ";
+  }
+  if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
+
     DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);
+
     if(it != LastLoadFailures.end()) {
+      Out << "NORM (";
       bool printed = false;
       if(it->second == MemDepResult()) {
 	DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> >::iterator it2 = LastLoadOverdefs.find(LI);
@@ -226,14 +241,15 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
 	  Out << "{{ ";
 	  int i = 0;
 	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE && i < 3; ++i, ++NLI) {
-	    Out << escapeHTMLValue(NLI->getResult(), this) << ", ";
+	    Out << escapeHTMLValue(NLI->getResult(), this, true) << ", ";
 	  }
 	  Out << " }}";
 	  printed = true;
 	}
       }
       if(!printed)
-	Out << escapeHTMLValue(it->second, this);
+	Out << escapeHTMLValue(it->second, this, true);
+      Out << ")";
     }
   }
   else if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
