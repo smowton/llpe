@@ -850,7 +850,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
 	// It might also prompt us to queue the loop's preheader (rather than BB's immediate predecessors).
 	BasicBlock* CheckPreheader;
 
-	if(parent->tryForwardLoadThroughLoopFromBB(BB, *LFA, CheckPreheader, Result)) {
+	if(parent->tryForwardLoadThroughLoop(BB, *LFA, CheckPreheader, Result)) {
 	  // Parent special cased it, and will have added any extra checks necessary to Result.
 	  if(CheckPreheader) {
 	    std::pair<DenseMap<BasicBlock*,Value*>::iterator, bool>

@@ -881,20 +881,20 @@ protected:
   ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
-  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
+  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
   void getDefn(const MemDepResult& Res, ValCtx& VCout);
-  void getDependencies(LFAQueryable& LFA, bool startNonLocal, SmallVector<NonLocalDepResult, 4>& Results);
+  void getDependencies(LFAQueryable& LFA, SmallVector<BasicBlock*, 4>* StartBlocks, SmallVector<NonLocalDepResult, 4>& Results);
   void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
-  MemDepResult getUniqueDependency(LFAQueryable&, bool startNonLocal, bool& MayDependOnParent, bool& OnlyDependsOnParent);
+  MemDepResult getUniqueDependency(LFAQueryable&, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent, bool& OnlyDependsOnParent);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
   MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
+  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
   bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, bool& MayDependOnParent);
-  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, bool startNonLocal, bool& MayDependOnParent);
+  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
 
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&, bool& mayDependOnParent);
-  virtual bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
+  virtual bool tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
   void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
   void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
@@ -1248,6 +1248,7 @@ public:
 
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
+  void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
 
   virtual int getIterCount() {
     return iterationCount;
@@ -1300,11 +1301,11 @@ class PeelAttempt {
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
    MemDepResult tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
-   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent);
+   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent, bool includeExitingBlocks);
 
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
 
-   bool tryForwardLoadThroughLoopFromBB(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
+   bool tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
@@ -1453,9 +1454,6 @@ class LoadForwardAttempt : public LFAQueryable {
   bool ExprValid;
   int64_t ExprOffset;
 
-  DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult> lastIterCache;
-  DenseMap<const Loop*, MemDepResult> otherItersCache;
-
   ValCtx Result;
   uint64_t* partialBuf;
   bool* partialValidBuf;
@@ -1471,6 +1469,8 @@ class LoadForwardAttempt : public LFAQueryable {
  public:
 
   SmallVector<std::string, 1> OverdefReasons;
+
+  SmallSet<PeelAttempt*, 8> exploredLoops;
 
   PointerBase PB;
   bool PBNeverClobbered;
@@ -1493,9 +1493,6 @@ class LoadForwardAttempt : public LFAQueryable {
 
   ValCtx getBaseVC();
   IntegrationAttempt* getBaseContext();
-
-  std::pair<DenseMap<std::pair<BasicBlock*, const Loop*>, MemDepResult>::iterator, bool> getLastIterCache(BasicBlock* FromBB, const Loop* L);
-  std::pair<DenseMap<const Loop*, MemDepResult>::iterator, bool> getOtherItersCache(const Loop* L);
 
   unsigned char* getPartialBuf(uint64_t nbytes);
   bool* getBufValid();
