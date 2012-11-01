@@ -279,6 +279,15 @@ bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase
 
 void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
 
+  switch(PB.Type) {
+  case ValSetTypeScalar:
+    out << "S "; break;
+  case ValSetTypePB:
+    out << "PB "; break;
+  case ValSetTypeUnknown:
+    out << "U "; break;
+  }
+
   if(PB.Overdef)
     out << "Overdef";
   else {
@@ -384,8 +393,8 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
   PointerBase Op1PB;
   PointerBase Op2PB;
 
-  bool Op1Valid = getValSetOrReplacement(I, Op1PB);
-  bool Op2Valid = getValSetOrReplacement(I, Op2PB);
+  bool Op1Valid = getValSetOrReplacement(I->getOperand(0), Op1PB);
+  bool Op2Valid = getValSetOrReplacement(I->getOperand(1), Op2PB);
 
   if((!Op1Valid) && (!Op2Valid))
     return false;
@@ -780,6 +789,31 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
 
   if(!isUnresolved(V))
     return;
+
+  if(isa<LoadInst>(V)) {
+    
+    const Loop* MyL = getLoopContext();
+    const Loop* VL = getValueScope(V);
+				     
+    if(MyL != VL) {
+
+      // Check if there's a terminated loop above us which would cause this query
+      // to malfunction (we'd jump into the last iteration without transiting
+      // an exit edge; to fix?)
+
+      if(MyL && !MyL->contains(VL))
+	return;
+
+      if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyL, VL))) {
+
+	if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
+	  return;
+
+      }
+
+    }
+
+  }
 
   PointerBase PB;
   bool PBValid = getPointerBaseFalling(V, PB);

@@ -66,6 +66,7 @@ static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::Zero
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
+static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -681,7 +682,7 @@ void PeelIteration::checkFinalIteration() {
   // Check whether we now have evidence the loop terminates this time around
   // If it does, queue consideration of each exit PHI; by LCSSA these must belong to our parent.
 
-  if(edgeIsDead(L->getLoopLatch(), L->getHeader())) {
+  if(edgeIsDead(L->getLoopLatch(), L->getHeader()) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
 
     iterStatus = IterationStatusFinal;
 
@@ -4496,6 +4497,52 @@ static void parseFBB(const char* paramName, const std::string& arg, Module& M, F
 
 }
 
+static void parseFBI(const char* paramName, const std::string& arg, Module& M, Function*& F, BasicBlock*& BB, uint64_t& IOut) {
+
+  std::string FName, BBName, IStr;
+  size_t firstComma = arg.find(',');
+  size_t secondComma;
+  if(firstComma != std::string::npos)
+    secondComma = arg.find(',', firstComma+1);
+  if(firstComma == std::string::npos || secondComma == std::string::npos) {
+    errs() << "--" << paramName << " must have the form fname,bbname,int\n";
+    exit(1);
+  }
+
+  FName = arg.substr(0, firstComma);
+  BBName = arg.substr(firstComma + 1, (secondComma - firstComma) - 1);
+  IStr = arg.substr(secondComma + 1);
+
+  F = M.getFunction(FName);
+  if(!F) {
+    errs() << "No such function " << FName << "\n";
+    exit(1);
+  }
+
+  BB = 0;
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    if(FI->getName() == BBName)
+      BB = FI;
+
+  }
+
+  if(!BB) {
+    errs() << "No such block " << BBName << " in " << FName << "\n";
+    exit(1);
+  }
+
+  char* IdxEndPtr;
+  IOut = strtol(IStr.c_str(), &IdxEndPtr, 10);
+  
+  if(IdxEndPtr - IStr.c_str() != (int64_t)IStr.size()) {
+    errs() << "Couldn't parse " << IStr << " as an integer\n";
+    exit(1);
+  }
+
+}
+
 void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val) {
 
   const Type* Target = F.getFunctionType()->getParamType(Idx);
@@ -4677,6 +4724,18 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
     parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoops[LF].insert(HBB);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = LoopMaxIters.begin(), ArgE = LoopMaxIters.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* LF;
+    BasicBlock* HBB;
+    uint64_t Count;
+    
+    parseFBI("int-loop-max", *ArgI, *(F.getParent()), LF, HBB, Count);
+
+    maxLoopIters[std::make_pair(LF, HBB)] = Count;
 
   }
 

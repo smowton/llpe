@@ -215,7 +215,7 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     Out << "DEAD";
     return;
   }
-  if(I && getPointerBase(I, PB, I) && !PB.Overdef) {
+  if(getPointerBaseFalling(V, PB) && !PB.Overdef) {
     Out << "BASE ";
     printPB(Out, PB);
     return;

@@ -225,6 +225,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
+   DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
 
    TargetData* TD;
    AliasAnalysis* AA;
@@ -333,6 +334,13 @@ class IntegrationHeuristicsPass : public ModulePass {
      if(it == ignoreLoops.end())
        return false;
      return it->second.count(HBB);
+   }
+
+   bool assumeEndsAfter(Function* F, BasicBlock* HBB, uint64_t C) {
+     DenseMap<std::pair<Function*, BasicBlock*>, uint64_t>::iterator it = maxLoopIters.find(std::make_pair(F, HBB));
+     if(it == maxLoopIters.end())
+       return false;
+     return it->second == C;
    }
 
    IntegrationAttempt* getRoot() { return RootIA; }
