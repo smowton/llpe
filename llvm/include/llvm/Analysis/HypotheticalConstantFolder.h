@@ -144,20 +144,35 @@ IntegratorWQItem() { }
 
 #define PBMAX 4
 
+enum ValSetType {
+
+  ValSetTypeUnknown,
+  ValSetTypePB,
+  ValSetTypeScalar
+
+};
+
+bool extractCEBase(Constant* C, ValCtx& VC);
+
 struct PointerBase {
 
+  ValSetType Type;
   SmallVector<ValCtx, 4> Values;
   bool Overdef;
 
-PointerBase() : Overdef(false) { }
-PointerBase(bool OD) : Overdef(OD) { }
+PointerBase() : Type(ValSetTypeUnknown), Overdef(false) { }
+PointerBase(ValSetType T) : Type(T), Overdef(false) { }
+PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
+
+  bool isInitialised() {
+    return Overdef || Values.size() > 0;
+  }
   
   PointerBase& insert(ValCtx VC) {
     if(Overdef)
       return *this;
     if(Values.size() + 1 > PBMAX) {
-      Values.clear();
-      Overdef = true;
+      setOverdef();
     }
     else {
       if(!std::count(Values.begin(), Values.end(), VC))
@@ -168,28 +183,30 @@ PointerBase(bool OD) : Overdef(OD) { }
 
   PointerBase& merge(PointerBase& OtherPB) {
     if(OtherPB.Overdef) {
-      Values.clear();
-      Overdef = true;
+      setOverdef();
+    }
+    else if(isInitialised() && OtherPB.Type != Type) {
+      setOverdef();
     }
     else {
+      Type = OtherPB.Type;
       for(SmallVector<ValCtx, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
 	insert(*it);
     }
     return *this;
   }
 
-  static PointerBase get(ValCtx VC) { return PointerBase().insert(VC); }
-  static PointerBase getOverdef() { return PointerBase(true); }
+  void setOverdef() {
+
+    Values.clear();
+    Overdef = true;
+
+  }
+
+  static PointerBase get(ValCtx VC);
+  static PointerBase get(ValCtx VC, ValSetType t) { return PointerBase(t).insert(VC); }
+  static PointerBase getOverdef() { return PointerBase(ValSetTypeUnknown, true); }
   
-};
-
-struct ChangedPB {
-
-  bool OldPBValid;
-  PointerBase OldPB;
-
-  ChangedPB(bool O, PointerBase OP) : OldPBValid(O), OldPB(OP) { }
-
 };
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -1033,12 +1050,11 @@ protected:
   bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
   virtual bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
+  bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
-  bool isScalarSet(PointerBase& PB);
-  bool getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result);
-  bool updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop);
-  PointerBase updateUnaryScalarValues(Instruction* I, PointerBase &PB);
+  bool updateBinopValSet(Instruction* I, PointerBase& PB);
+  bool updateUnaryValSet(Instruction* I, PointerBase &PB);
   void queueUsersUpdatePB(Value* V);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);

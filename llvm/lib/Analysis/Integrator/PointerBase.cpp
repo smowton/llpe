@@ -14,10 +14,22 @@
 
 using namespace llvm;
 
-static bool extractCEBase(Constant* C, PointerBase& PB) {
+PointerBase PointerBase::get(ValCtx VC) {
+
+  ValCtx CEGlobal;
+  if(isa<Constant>(VC.first) && extractCEBase(cast<Constant>(VC.first), CEGlobal))
+    return get(CEGlobal, ValSetTypePB);
+  else if(isa<Constant>(VC.first) && (!VC.first->getType()->isPointerTy()))
+    return get(VC, ValSetTypeScalar);
+  else
+    return get(VC, ValSetTypePB);
+  
+}
+
+bool llvm::extractCEBase(Constant* C, ValCtx& VC) {
 
   if(isa<GlobalValue>(C)) {
-    PB = PointerBase::get(const_vc(C));
+    VC = const_vc(C);
     return true;
   }
 
@@ -33,27 +45,27 @@ static bool extractCEBase(Constant* C, PointerBase& PB) {
   case Instruction::ZExt:
   case Instruction::IntToPtr:
   case Instruction::PtrToInt:
-    return extractCEBase(CE->getOperand(0), PB);
+    return extractCEBase(CE->getOperand(0), VC);
   case Instruction::Add:
   case Instruction::Sub:
     {
-      PointerBase PB1, PB2;
-      bool PB1Valid, PB2Valid;
-      PB1Valid = extractCEBase(CE->getOperand(0), PB1);
-      PB2Valid = extractCEBase(CE->getOperand(1), PB2);
+      ValCtx VC1, VC2;
+      bool VC1Valid, VC2Valid;
+      VC1Valid = extractCEBase(CE->getOperand(0), VC1);
+      VC2Valid = extractCEBase(CE->getOperand(1), VC2);
       if(CE->getOpcode() == Instruction::Add) {
 
-	if(PB1Valid == PB2Valid)
+	if(VC1Valid == VC2Valid)
 	  return false;
-	PB = PB1Valid ? PB1 : PB2;
+	VC = VC1Valid ? VC1 : VC2;
 	return true;
 
       }
       else {
 
-	if((!PB1Valid) || PB2Valid)
+	if((!VC1Valid) || VC2Valid)
 	  return false;
-	PB = PB1;
+	VC = VC1;
 	return true;
 
       }
@@ -83,7 +95,8 @@ bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
   }
   else if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V)) {
 
-    return extractCEBase(CE, OutPB);
+    OutPB = PointerBase::get(const_vc(CE));
+    return true;
 
   }
 
@@ -211,22 +224,7 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
     
     Value* V = *it;
     PointerBase VPB;
-    if(!getPointerBase(V, VPB, I)) {
-
-      ValCtx Repl = getReplacement(V);
-      ValCtx ReplUO;
-      if(Repl.second)
-	ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
-      else
-	ReplUO = Repl;
-
-      if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
-	VPB = PointerBase::get(ReplUO);
-      }
-
-    }
-
-    if(VPB.Values.size() == 0 && !VPB.Overdef) {
+    if(!getValSetOrReplacement(V, VPB, I)) {
       if(finalise) {
 	NewPB = PointerBase::getOverdef();
 	return true;
@@ -297,136 +295,179 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
 
 }
 
-bool IntegrationAttempt::isScalarSet(PointerBase& PB) {
+bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
-  if(PB.Overdef)
+  PointerBase ArgPB;
+  if(!getPointerBase(I->getOperand(0), ArgPB, I))
     return false;
-  assert(PB.Values.size());
-
-  for(unsigned i = 0; i < PB.Values.size(); ++i) {
-  
-    if(PB.Values[i].first->getType()->isPointerTy())
-      return false;
-    if(PB.Values[i].second)
-      return false;
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(PB.Values[i].first)) {
-      PointerBase Ign;
-      if(extractCEBase(CE, Ign))
-	return false;
-    }
-
+  if(ArgPB.Overdef) {
+    PB = ArgPB;
+    return true;
   }
 
-  return true;
+  assert(ArgPB.Type != ValSetTypeUnknown);
 
-}
+  if(ArgPB.Type == ValSetTypeScalar) {
 
+    switch(I->getOpcode()) {
 
+    case Instruction::SExt:
+    case Instruction::ZExt:
+    case Instruction::Trunc:
+      break;
 
-bool IntegrationAttempt::getScalarSet(Value* V, Instruction* UserI, SmallVector<Constant*, 4>& Result) {
-
-  PointerBase PB;
-  bool found = getPointerBase(V, PB, UserI);
-  if(found) {
-    
-    if(!isScalarSet(PB))
+    default:
       return false;
 
-    // That *should* eliminate everything but integers, FP, and other things not related to pointers.
-    for(unsigned i = 0; i < PB.Values.size(); ++i) {
-      Result.push_back(cast<Constant>(PB.Values[i].first));
     }
+
+    if(ArgPB.Values.size() == 1)
+      return false;
+
+    for(unsigned i = 0; i < ArgPB.Values.size() && !PB.Overdef; ++i) {
+
+      PointerBase NewPB;
+
+      Constant* Expr = ConstantExpr::getCast(I->getOpcode(), cast<Constant>(ArgPB.Values[i].first), I->getType());
+      if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
+	Expr = ConstantFoldConstantExpression(CE, TD);
+
+      if((!Expr) || isa<ConstantExpr>(Expr))
+	NewPB = PointerBase::getOverdef();
+      else
+	NewPB = PointerBase::get(const_vc(Expr));
+    
+      PB.merge(NewPB);
+
+    }
+
+    return true;
+
+  }
+  else {
+
+    PB = ArgPB;
     return true;
 
   }
 
-  Constant* C = getConstReplacement(V);
-  if(!C)
-    return false;
+}
 
-  PointerBase Ign;
-  if(C->getType()->isPointerTy() || extractCEBase(C, Ign))
-    return false;
+bool IntegrationAttempt::getValSetOrReplacement(Value* V, PointerBase& PB, Instruction* UserI) {
 
-  Result.push_back(C);
-  return true;
+  bool found;
+  if(UserI)
+    found = getPointerBase(V, PB, UserI);
+  else
+    found = getPointerBaseFalling(V, PB);
+
+  if(found)
+    return true;
+
+  ValCtx Repl = getReplacement(V);
+  ValCtx ReplUO;
+  if(Repl.second)
+    ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
+  else
+    ReplUO = Repl;
+  if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
+    PB = PointerBase::get(ReplUO);
+    return true;
+  }
+
+  return false;
 
 }
 
-PointerBase IntegrationAttempt::updateUnaryScalarValues(Instruction* I, PointerBase &PB) {
+bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
 
-  PointerBase ret;
-  for(unsigned i = 0; i < PB.Values.size() && !ret.Overdef; ++i) { 
+  PointerBase Op1PB;
+  PointerBase Op2PB;
 
-    PointerBase NewPB;
+  bool Op1Valid = getValSetOrReplacement(I, Op1PB);
+  bool Op2Valid = getValSetOrReplacement(I, Op2PB);
 
-    Constant* Expr = ConstantExpr::getCast(I->getOpcode(), cast<Constant>(PB.Values[i].first), I->getType());
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
-      Expr = ConstantFoldConstantExpression(CE, TD);
+  if((!Op1Valid) && (!Op2Valid))
+    return false;
 
-    if((!Expr) || isa<ConstantExpr>(Expr))
-      NewPB = PointerBase::getOverdef();
-    else
-      NewPB = PointerBase::get(const_vc(Expr));
-    
-    ret.merge(NewPB);
+  if(Op1Valid && Op2Valid) {
+
+    if(Op1PB.Overdef || Op2PB.Overdef) {
+      PB = PointerBase::getOverdef();
+      return true;
+    }
 
   }
 
-  return ret;
+  ValSetType RetType = (Op1PB.Type == ValSetTypePB || Op2PB.Type == ValSetTypePB) ? ValSetTypePB : ValSetTypeScalar;
 
-}
+  if(RetType == ValSetTypePB) {
 
-bool IntegrationAttempt::updateBinopValues(Instruction* I, PointerBase& PB, bool& isScalarBinop) {
+    switch(I->getOpcode()) {
 
-  switch(I->getOpcode()) {
-  case Instruction::Add:
-  case Instruction::Sub:
-  case Instruction::And:
-  case Instruction::Or:
-  case Instruction::Xor:
-    break;
-  default:
-    return false;
-  }
-
-  SmallVector<Constant*, 4> Op1Vals;
-  SmallVector<Constant*, 4> Op2Vals;
-
-  if((!getScalarSet(I->getOperand(0), I, Op1Vals)) || (!getScalarSet(I->getOperand(1), I, Op2Vals)))
-    return false;
-
-  // Prevent treating these like pointer bases.
-  isScalarBinop = true;
-
-  if(Op1Vals.size() == 1 && Op2Vals.size() == 1) {
-
-    // Pointless, until the regular constant folder and this one are merged.
-    return false;
-
-  }
-
-  for(unsigned i = 0; i < Op1Vals.size() && !PB.Overdef; ++i) {
-    for(unsigned j = 0; j < Op2Vals.size() && !PB.Overdef; ++j) {
-    
-      Constant* Expr = ConstantExpr::get(I->getOpcode(), Op1Vals[i], Op2Vals[j]);
-      if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
-	Expr = ConstantFoldConstantExpression(CE, TD);
-
-      PointerBase ThisPB;
-
-      if(Expr)
-	ThisPB = PointerBase::get(const_vc(Expr));
-      else
-	ThisPB = PointerBase::getOverdef();
-
-      PB.merge(ThisPB);
+    case Instruction::Add:
+      {
+	if(Op1PB.Type == ValSetTypePB && Op2PB.Type == ValSetTypePB) {
+	  LPDEBUG("Add of 2 pointers\n");
+	  PB = PointerBase::getOverdef();
+	}
+	else {
+	  PB = Op1PB.Type == ValSetTypePB ? Op1PB : Op2PB;
+	}
+	return true;
+      }      
+    case Instruction::Sub:
+      {
+	if(Op1PB.Type == ValSetTypePB && Op2PB.Type == ValSetTypePB) {
+	  LPDEBUG("Subtract of 2 pointers (makes plain int)\n");
+	  PB = PointerBase::getOverdef();
+	}
+	else {
+	  PB = Op1PB.Type == ValSetTypePB ? Op1PB : Op2PB;
+	}
+	return true;
+      }
+    default:
+      return false;
 
     }
+
+  }
+  else {
+
+    if(Op1PB.Type != ValSetTypeScalar || Op2PB.Type != ValSetTypeScalar)
+      return false;
+
+    if(Op1PB.Values.size() == 1 && Op2PB.Values.size() == 1) {
+
+      // Pointless, until the regular constant folder and this one are merged.
+      return false;
+
+    }
+
+    for(unsigned i = 0; i < Op1PB.Values.size() && !PB.Overdef; ++i) {
+      for(unsigned j = 0; j < Op2PB.Values.size() && !PB.Overdef; ++j) {
+    
+	Constant* Expr = ConstantExpr::get(I->getOpcode(), cast<Constant>(Op1PB.Values[i].first), cast<Constant>(Op2PB.Values[j].first));
+	if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
+	  Expr = ConstantFoldConstantExpression(CE, TD);
+
+	PointerBase ThisPB;
+
+	if(Expr)
+	  ThisPB = PointerBase::get(const_vc(Expr));
+	else
+	  ThisPB = PointerBase::getOverdef();
+
+	PB.merge(ThisPB);
+
+      }
+    }
+
+    return true;
+
   }
 
-  return true;
-  
 }
 
 std::string IntegrationAttempt::describeLFA(LoadForwardAttempt& LFA) {
@@ -519,8 +560,6 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
     Instruction* I = cast<Instruction>(V);
 
-    bool handled = false;
-
     switch(I->getOpcode()) {
 
     case Instruction::GetElementPtr:
@@ -530,112 +569,53 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
     case Instruction::IntToPtr:
     case Instruction::PtrToInt:
 
-      {
-	PointerBase PB;
-	handled = true;
-	if(getPointerBase(I->getOperand(0), PB, I)) {
-	  if(isScalarSet(PB)) {
-	    assert(I->getOpcode() != Instruction::GetElementPtr);
-	    // Avoid duplicating pessimistic solver's work
-	    if(PB.Values.size() == 1)
-	      return false;
-	    NewPB = updateUnaryScalarValues(I, PB);
-	    handled = true;
-	  }
-	  else {
-	    NewPB = PB;
-	    handled = true;
-	  }
-	}
-	else
-	  return false;
-	break;
-      }
-
-    }
-
-    if(!handled) {
-
-      bool isScalarBinop = false;
-      if(updateBinopValues(I, NewPB, isScalarBinop))
-	handled = true;
-      else if(isScalarBinop)
+      if(!updateUnaryValSet(I, NewPB))
 	return false;
+      else
+	break;
 
-    }
-    
-    if(!handled) {
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::And:
+    case Instruction::Or:
+    case Instruction::Xor:      
+      
+      if(!updateBinopValSet(I, NewPB))
+	return false;
+      else
+	break;
 
-      switch(I->getOpcode()) {
-
-      case Instruction::Add:
-	{
-	  PointerBase PB1, PB2;
-	  bool found1 = getPointerBase(I->getOperand(0), PB1, I);
-	  bool found2 = getPointerBase(I->getOperand(1), PB2, I);
-	  if((!found1) && (!found2)) {
-	    return false;
-	  }
-
-	  if(found1 && found2) {
-	    LPDEBUG("Add of 2 pointers\n");
-	    NewPB = PointerBase::getOverdef();
-	  }
-	  else {
-	    NewPB = found1 ? PB1 : PB2;
-	  }
-
-	  break;
-	}      
-      case Instruction::Sub:
-	{
-	  PointerBase PB1, PB2;
-	  bool found1 = getPointerBase(I->getOperand(0), PB1, I);
-	  bool found2 = getPointerBase(I->getOperand(1), PB2, I);
-	  if(found1 && found2) {
-	    LPDEBUG("Subtract of 2 pointers (makes plain int)\n");
-	    return false;
-	  }
-	  else if(found1) {
-	    NewPB = PB1;
-	  }
-	  else {
-	    return false;
-	  }
-	  break;
-	}
-      case Instruction::PHI:
-	{
-	  bool NewPBValid;
-	  if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
-	    if(!NewPBValid)
-	      return false;
-	    else
-	      break;
-	  }
-	  // Else fall through:
-	}
-      case Instruction::Select:
-	{
-	  bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
-	  std::string RStr;
-	  raw_string_ostream RSO(RStr);
-	  printPB(RSO, NewPB);
-	  RSO.flush();
-	  if(!finalise)
-	    optimisticForwardStatus[I] = RStr;
-	  else
-	    pessimisticForwardStatus[I] = RStr;
-	  if(!mergeAnyInfo)
+    case Instruction::PHI:
+      {
+	bool NewPBValid;
+	if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
+	  if(!NewPBValid)
 	    return false;
 	  else
 	    break;
 	}
-      default:
-	// Unknown instruction, draw no conclusions.
-	return false;
+	// Else fall through:
       }
-
+    case Instruction::Select:
+      {
+	bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
+	std::string RStr;
+	raw_string_ostream RSO(RStr);
+	printPB(RSO, NewPB);
+	RSO.flush();
+	if(!finalise)
+	  optimisticForwardStatus[I] = RStr;
+	else
+	  pessimisticForwardStatus[I] = RStr;
+	if(!mergeAnyInfo)
+	  return false;
+	else
+	  break;
+      }
+    default:
+      // Unknown instruction, draw no conclusions.
+      return false;
+      
     }
 
   }
@@ -779,7 +759,7 @@ void IntegrationAttempt::printConsiderCount(DenseMap<ValCtx, int>& in, int n) {
 
 void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
 
-  if(isScalarSet(PB)) {
+  if(PB.Type == ValSetTypeScalar) {
     if(PB.Values.size() == 1) {
 
       // Feed the result to the ordinary constant folder, until the two get merged.
@@ -955,9 +935,9 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise) {
   DenseMap<ValCtx, int> considerCount;
 
   SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
-  
-  int i = 0;
 
+  //int i = 0;
+  
   while(PBQueue1.size() || PBQueue2.size()) {
 
     std::sort(ConsumeQ->begin(), ConsumeQ->end());
