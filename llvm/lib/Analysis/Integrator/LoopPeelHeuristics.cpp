@@ -1737,6 +1737,14 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     SmallVector<BasicBlock*, 4> StartBlocks;
     Iterations[iter]->getLoadForwardStartBlocks(StartBlocks, includeExitingBlocks);
 
+    LPDEBUG("Starting from ");
+    for(unsigned i = 0; i < StartBlocks.size(); ++i) {
+      if(i != 0)
+	DEBUG(dbgs() << ", ");
+      DEBUG(dbgs() << StartBlocks[i]->getName());
+    }
+    DEBUG(dbgs() << "\n");
+
     bool IterMayDependOnParent = false;
 
     if(!(Iterations[iter]->tryResolveExprUsing(LFAR, Result, &StartBlocks, IterMayDependOnParent))) {
