@@ -533,6 +533,35 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
+  // Quick escape for values we can't handle:
+
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+    switch(I->getOpcode()) {
+
+    case Instruction::GetElementPtr:
+    case Instruction::BitCast:
+    case Instruction::SExt:
+    case Instruction::ZExt:
+    case Instruction::IntToPtr:
+    case Instruction::PtrToInt:
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::And:
+    case Instruction::Or:
+    case Instruction::Xor:      
+    case Instruction::PHI:
+    case Instruction::Select:
+    case Instruction::Load:
+      break;
+    default:
+      // Unknown instruction, draw no conclusions.
+      return false;
+      
+    }
+
+  }
+
   // Don't duplicate the work of the pessimistic solver:
   if(getLoopContext() == getValueScope(V) && !isUnresolved(V))
     return false;
@@ -610,7 +639,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
 	std::string RStr;
 	raw_string_ostream RSO(RStr);
-	printPB(RSO, NewPB);
+	printPB(RSO, NewPB, true);
 	RSO.flush();
 	if(!finalise)
 	  optimisticForwardStatus[I] = RStr;
@@ -790,7 +819,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
   if(!isUnresolved(V))
     return;
 
-  if(isa<LoadInst>(V)) {
+  //  if(isa<LoadInst>(V)) {
     
     const Loop* MyL = getLoopContext();
     const Loop* VL = getValueScope(V);
@@ -800,6 +829,9 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
       // Check if there's a terminated loop above us which would cause this query
       // to malfunction (we'd jump into the last iteration without transiting
       // an exit edge; to fix?)
+
+      // Extend this to all values: if there's a terminated loop we can just identify its value
+      // per iteration as usual.
 
       if(MyL && !MyL->contains(VL))
 	return;
@@ -811,7 +843,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
 
       }
 
-    }
+      //    }
 
   }
 
@@ -903,19 +935,19 @@ void IntegrationAttempt::queuePBUpdateAllResolvedVCs() {
 // Actually clear everything for now, for simplicity's sake.
 void IntegrationAttempt::clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs) {
 
-  //  std::vector<Value*> toErase;
+  std::vector<Value*> toErase;
   
   for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
 
     OldPBs.insert(std::make_pair(make_vc(it->first, this), it->second));
-    // toErase.push_back(it->first);
+
+    if(it->second.Overdef || it->second.Values.size() > 1)
+      toErase.push_back(it->first);
 
   }
 
-  pointerBases.clear();
-
-  //  for(unsigned i = 0; i < toErase.size(); ++i)
-  //    pointerBases.erase(toErase[i]);
+  for(unsigned i = 0; i < toErase.size(); ++i)
+    pointerBases.erase(toErase[i]);
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
     it->second->clearSuboptimalPBResults(OldPBs);

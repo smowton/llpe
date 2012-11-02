@@ -229,7 +229,7 @@ bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
       if(iterStatus == IterationStatusUnknown)
 	checkFinalIteration();
     }
-    if(isOnlyExitingIteration() && isExitEdge) {
+    if(isExitEdge && parentPA->Iterations.back()->iterStatus == IterationStatusFinal) {
       checkExitEdge(FromBB, ToBB);
     }
 
@@ -696,7 +696,7 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
       // If the predecessor comes from a descendent of the PHI's loop
       if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
 
-	predValue = getReplacementUsingScopeRising(oldValue, predLoop);
+	predValue = getReplacementUsingScopeRising(cast<Instruction>(oldValue), *PI, PN->getParent(), predLoop);
 	if(predValue == VCNull) {
 	  onlyValue = VCNull;
 	  break;
@@ -1807,7 +1807,7 @@ void IntegrationAttempt::visitExitPHI(Instruction* UserI, VisitorContext& Visito
 void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
   // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI. It could however occur in any parent loop.
-  if(isOnlyExitingIteration()) {
+  if(parentPA->Iterations.back()->iterStatus == IterationStatusFinal) {
     assert(isa<PHINode>(UserI));
     // No need for getBlockScopeVariant: exit PHI already known to be at lower scope.
     const Loop* PHIL = LI[&F]->getLoopFor(UserI->getParent());

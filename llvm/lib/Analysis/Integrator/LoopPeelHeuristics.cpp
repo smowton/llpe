@@ -239,20 +239,38 @@ ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope
 
 }
 
-ValCtx IntegrationAttempt::getReplacementUsingScopeRising(Value* V, const Loop* LScope) {
+ValCtx IntegrationAttempt::getReplacementUsingScopeRising(Instruction* I, BasicBlock* ExitingBB, BasicBlock* ExitBB, const Loop* LScope) {
 
   const Loop* MyScope = getLoopContext();
 
   if(LScope == MyScope)
-    return getLocalReplacement(V);
+    return getLocalReplacement(I);
 
   // Read from child loop if appropriate:
   if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyScope, LScope))) {
 
-    PeelIteration* finalIter = PA->Iterations[PA->Iterations.size() - 1];
-    if(finalIter->isOnlyExitingIteration()) {
+    ValCtx OnlyDef = VCNull;
 
-      return finalIter->getReplacementUsingScopeRising(V, LScope);
+    if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
+
+      for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
+
+	PeelIteration* Iter = PA->Iterations[i];
+	if(Iter->edgeIsDead(ExitingBB, ExitBB))
+	  continue;
+
+	ValCtx ThisDef = Iter->getReplacementUsingScopeRising(I, ExitingBB, ExitBB, LScope);
+	if(ThisDef == VCNull)
+	  return ThisDef;
+
+	if(OnlyDef == VCNull)
+	  OnlyDef = ThisDef;
+	else if(OnlyDef != ThisDef)
+	  return VCNull;	
+
+      }
+
+      return OnlyDef;
 
     }
     else {
@@ -428,10 +446,35 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
     return edgeIsDeadWithScope(B1, B2, EdgeScope);
   
   if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
+
     PeelIteration* FinalIter = LPA->Iterations.back();
-    if(FinalIter->isOnlyExitingIteration()) {
-      return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
+    if(FinalIter->iterStatus == IterationStatusFinal) {
+
+      const Loop* B1Scope = getBlockScopeVariant(B1);
+      const Loop* B2Scope = getBlockScopeVariant(B2);
+
+      if(B1Scope != B2Scope && ((!B2Scope) || B2Scope->contains(B1Scope))) {
+	// Exit edge: dead if no iteration takes it.
+
+	for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
+	  
+	  if(!LPA->Iterations[i]->edgeIsDeadWithScopeRising(B1, B2, EdgeScope))
+	    return false;
+
+	}
+
+	return true;
+
+      }
+      else if(FinalIter->isOnlyExitingIteration()) {
+
+	// Edge within loop: check final iter if it's the sole exit iteration.
+	return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
+
+      }
+
     }
+
   }
     
   return false;
@@ -686,18 +729,14 @@ void PeelIteration::checkFinalIteration() {
 
     iterStatus = IterationStatusFinal;
 
-    if(isOnlyExitingIteration()) {
-
-      for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+    for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
       
-	checkExitEdge(EI->first, EI->second);
+      checkExitEdge(EI->first, EI->second);
 	
-      }
-    
-      // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
-      parent->queueCFGBlockedLoads();
-
     }
+    
+    // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
+    parent->queueCFGBlockedLoads();
 
   }
 

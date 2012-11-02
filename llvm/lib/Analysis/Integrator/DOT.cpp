@@ -216,8 +216,7 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     return;
   }
   if(getPointerBaseFalling(V, PB) && !PB.Overdef) {
-    Out << "BASE ";
-    printPB(Out, PB);
+    printPB(Out, PB, true);
     return;
   }
   DenseMap<Instruction*, std::string>::iterator optit = optimisticForwardStatus.find(I);

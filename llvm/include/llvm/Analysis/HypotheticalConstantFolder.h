@@ -804,7 +804,7 @@ protected:
   const Loop* getValueScope(Value*);
   ValCtx getLocalReplacement(Value*);
   ValCtx getReplacementUsingScope(Value* V, const Loop* LScope);
-  ValCtx getReplacementUsingScopeRising(Value* V, const Loop* LScope);
+  ValCtx getReplacementUsingScopeRising(Instruction* I, BasicBlock* ExitingBlock, BasicBlock* ExitBlock, const Loop* LScope);
   ValCtx getPtrAsIntReplacement(Value* V);
   void callWithScope(Callable& C, const Loop* LScope);
   ValCtx getDefaultVCWithScope(Value*, const Loop*);
