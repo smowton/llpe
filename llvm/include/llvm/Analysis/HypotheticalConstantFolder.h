@@ -725,6 +725,8 @@ protected:
 
   // Pointers resolved down to their base object, but not necessarily the offset:
   DenseMap<Value*, PointerBase> pointerBases;
+  DenseMap<LoadInst*, std::vector<ValCtx> > defOrClobberCache;
+  DenseMap<Instruction*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > > memWriterEffects;
   DenseMap<Instruction*, std::string> optimisticForwardStatus;
   DenseMap<Instruction*, std::string> pessimisticForwardStatus;
 
@@ -909,7 +911,7 @@ protected:
   bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
   void getDefn(const MemDepResult& Res, ValCtx& VCout);
   void getDependencies(LFAQueryable& LFA, SmallVector<BasicBlock*, 4>* StartBlocks, SmallVector<NonLocalDepResult, 4>& Results);
-  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
+  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results, bool populateCache);
   MemDepResult getUniqueDependency(LFAQueryable&, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent, bool& OnlyDependsOnParent);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
@@ -1079,6 +1081,7 @@ protected:
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
   bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
+  void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
   std::string describeLFA(LoadForwardAttempt& LFA);
   void printConsiderCount(DenseMap<ValCtx, int>& in, int n);
 
@@ -1493,6 +1496,7 @@ class LoadForwardAttempt : public LFAQueryable {
  public:
 
   SmallVector<std::string, 1> OverdefReasons;
+  SmallVector<ValCtx, 8> DefOrClobberInstructions;
 
   SmallSet<PeelAttempt*, 8> exploredLoops;
 

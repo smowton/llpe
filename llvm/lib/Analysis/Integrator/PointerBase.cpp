@@ -506,6 +506,12 @@ std::string IntegrationAttempt::describeLFA(LoadForwardAttempt& LFA) {
     
 }
   
+void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
+
+  memWriterEffects[I].push_back(std::make_pair(LI, Ctx));
+
+}
+
 // Do load forwarding, possibly in optimistic mode: this means that
 // stores that def but which have no associated PB are optimistically assumed
 // to be compatible with anything, the same as the mergepoint logic above
@@ -516,7 +522,76 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
   LoadForwardAttempt Attempt(LI, this, LFMPB, TD);
   Attempt.PBOptimistic = !finalise;
 
-  tryResolveLoad(Attempt);
+  DenseMap<LoadInst*, std::vector<ValCtx> >::iterator cacheIt = defOrClobberCache.find(LI);
+  if(cacheIt == defOrClobberCache.end()) {
+
+    tryResolveLoad(Attempt);
+    if(!Attempt.PB.Overdef) {
+
+      defOrClobberCache[LI].insert(defOrClobberCache[LI].begin(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
+      for(SmallVector<ValCtx, 8>::iterator it = Attempt.DefOrClobberInstructions.begin(), it2 = Attempt.DefOrClobberInstructions.end(); it != it2; ++it) {
+
+	if(it->second) {
+
+	  it->second->addMemWriterEffect(cast<Instruction>(it->first), LI, this);
+
+	}
+
+      }
+
+      // Otherwise we shouldn't get queried about this load again this cycle.
+
+    }
+
+  }
+  else {
+
+    // Mimic load forwarding:
+    Value* LPtr = LI->getOperand(0);
+    uint64_t LSize = AA->getTypeStoreSize(LI->getType());
+    SmallVector<NonLocalDepResult, 4> NLResults;
+
+    LPDEBUG("LFA cache hit: " << itcache(*LI) << " references " << cacheIt->second.size() << " instructions\n");
+
+    for(unsigned i = 0; i < cacheIt->second.size(); ++i) {
+
+      ValCtx DefOrClobberVC = cacheIt->second[i];
+      Instruction* Inst = cast<Instruction>(DefOrClobberVC.first);
+      IntegrationAttempt* ICtx = DefOrClobberVC.second;
+
+      if(AA->getModRefInfo(Inst, LI->getOperand(0), LSize, ICtx, this) == AliasAnalysis::NoModRef)
+	continue;
+      
+      MemDepResult NewMDR;
+
+      if(StoreInst* SI = dyn_cast<StoreInst>(Inst)) {
+
+	uint64_t SSize = AA->getTypeStoreSize(SI->getOperand(0)->getType());
+	switch(AA->aliasHypothetical(make_vc(SI->getPointerOperand(), ICtx), SSize, make_vc(LPtr, this), LSize)) {
+	case AliasAnalysis::NoAlias:
+	  continue;
+	case AliasAnalysis::MayAlias:
+	  NewMDR = MemDepResult::getClobber(SI, ICtx);
+	  break;
+	case AliasAnalysis::MustAlias:
+	  NewMDR = MemDepResult::getDef(SI, ICtx);
+	  break;
+	}
+
+      }
+      else {
+
+	NewMDR = MemDepResult::getClobber(Inst, ICtx);
+	
+      }
+
+      NLResults.push_back(NonLocalDepResult(0, NewMDR, 0)); // addPBResults doesn't reference either the BB or Address params
+
+    }
+
+    addPBResults(Attempt, NLResults, false);
+
+  }
 
   if(!finalise)
     optimisticForwardStatus[LI] = describeLFA(Attempt);
@@ -732,16 +807,12 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
     }
     else if(isa<StoreInst>(I)) {
 
-      DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = 
-	InstBlockedLoads.find(I);
-      if(it != InstBlockedLoads.end()) {
+      DenseMap<Instruction*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
+	memWriterEffects.find(I);
+      if(it != memWriterEffects.end()) {
 
-	for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator II = it->second.begin(),
-	      IE = it->second.end(); II != IE; ++II) {
-
-	  pass->queueUpdatePB(this, II->second);
-
-	}
+	for(unsigned i = 0; i < it->second.size(); ++i)
+	  pass->queueUpdatePB(it->second[i].second, it->second[i].first);
 
       }
 
@@ -934,6 +1005,10 @@ void IntegrationAttempt::queuePBUpdateAllResolvedVCs() {
 
 // Actually clear everything for now, for simplicity's sake.
 void IntegrationAttempt::clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs) {
+
+  // Discard the memdep cache, as edge killing / function inlining may have improved the definer set.
+  memWriterEffects.clear();
+  defOrClobberCache.clear();
 
   std::vector<Value*> toErase;
   

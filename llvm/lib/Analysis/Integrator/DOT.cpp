@@ -199,7 +199,7 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     if(isa<Function>(Repl.first))
       Out << "@" << Repl.first->getName();
     else
-      Out << escapeHTMLValue(Repl, this);
+      Out << itcache(Repl, true);
     if(Repl.isVaArg())
       Out << " vararg #" << Repl.va_arg;
     return;
@@ -240,14 +240,14 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
 	  Out << "{{ ";
 	  int i = 0;
 	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE && i < 3; ++i, ++NLI) {
-	    Out << escapeHTMLValue(NLI->getResult(), this, true) << ", ";
+	    Out << itcache(NLI->getResult(), true) << ", ";
 	  }
 	  Out << " }}";
 	  printed = true;
 	}
       }
       if(!printed)
-	Out << escapeHTMLValue(it->second, this, true);
+	Out << itcache(it->second, true);
       Out << ")";
     }
   }
@@ -379,7 +379,11 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
     Value* V = *VI;
     Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(V) << "\">";
     Out << escapeHTMLValue(V, this) << "</td><td>";
-    printRHS(V, Out);
+    std::string RHSStr;
+    raw_string_ostream RSO(RHSStr);
+    printRHS(V, RSO);
+    RSO.flush();
+    Out << escapeHTML(TruncStr(RSO.str(), 200));
     Out << "</td></tr>\n";
 
   }

@@ -1078,7 +1078,7 @@ void IntegrationAttempt::getDependencies(LFAQueryable& LFA, SmallVector<BasicBlo
 
 }
 
-void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& NLResults) {
+void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& NLResults, bool populateCache) {
 
   // Integrate the defs and clobbers found with the pointer base result.
 
@@ -1088,6 +1088,25 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
     const MemDepResult& Res = NLResults[i].getResult();
     IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
+
+    // Avoid caching instructions which don't really clobber, or which have more specific effects:
+    if(Res.isClobber()) {
+      if(Res.isEntryNonLocal())
+	continue;
+      Instruction* Inst = Res.getInst();
+      if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
+	// Expanded calls that clobber the concrete result don't clobber the pointer base
+	// unless it was already explicitly clobbered whilst investigating within the call.
+	if(ResCtx->getInlineAttempt(CI))
+	  continue;
+      }
+    }
+    else if(Res.isNonLocal()) {
+      continue;
+    }
+
+    if(populateCache && Res.getInst())
+      RealLFA.DefOrClobberInstructions.push_back(make_vc(Res.getInst(), ResCtx));
 
     // If we're in the optimistic phase, ignore anything but a define with an attached result.
     // The hope is that the optimistic assumption might remove some clobbers.
@@ -1150,21 +1169,12 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       }
 
     }
-    else if(Res.isClobber() && !Res.isEntryNonLocal()) {
+    else if(Res.isClobber()) {
 
       Instruction* Inst = Res.getInst();
-      if(CallInst* CI = dyn_cast<CallInst>(Inst)) {
-	
-	// Expanded calls that clobber the concrete result don't clobber the pointer base
-	// unless it was already explicitly clobbered whilst investigating within the call.
-	if(ResCtx->getInlineAttempt(CI))
-	  continue;
-
-      }
-
       std::string RStr;
       raw_string_ostream RSO(RStr);
-      RSO << "C " << itcache(make_vc(Res.getInst(), ResCtx), true);
+      RSO << "C " << itcache(make_vc(Inst, ResCtx), true);
       RSO.flush();
       RealLFA.setPBOverdef(RStr);
       RealLFA.PBNeverClobbered = false;
@@ -1285,7 +1295,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
     if(Seen != MemDepResult())
       LPDEBUG(itcache(*OriginalInst) << " defined by " << itcache(Seen) << "\n");
 
-    addPBResults(RealLFA, InstResults);
+    //addPBResults(RealLFA, InstResults, true);
   
     // Do we need to investigate the pointer base result more carefully?
     // Easy case 1: only depends on parent. Then PB result = normal result = no local defs or clobbers.
@@ -1319,7 +1329,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
 
     }
 
-    addPBResults(RealLFA, PBResults);
+    addPBResults(RealLFA, PBResults, true);
 
   }
   else {
