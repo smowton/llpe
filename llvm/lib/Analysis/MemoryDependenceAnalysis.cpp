@@ -269,8 +269,10 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       if (R == AliasAnalysis::NoAlias)
         continue;
       if (R == AliasAnalysis::MayAlias) {
-	if(LFA && LFA->PBOptimistic)
+	if(LFA && LFA->PBOptimistic) {
+	  LFA->IgnoredClobbers.push_back(make_vc(SI, this));
 	  continue;
+	}
         return MemDepResult::getClobber(Inst);
       }
       return MemDepResult::getDef(Inst);
@@ -336,8 +338,10 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       }
     }
 
-    if(LFA && LFA->PBOptimistic)
+    if(LFA && LFA->PBOptimistic) {
+      LFA->IgnoredClobbers.push_back(make_vc(Inst, this));
       continue;
+    }
     return MemDepResult::getClobber(Inst);
 
   }

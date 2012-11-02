@@ -203,28 +203,51 @@ bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instructio
 // e.g. in phase 1, PHI(def_1, overdef_0) = def_1, in phase 2 it is overdef_1.
 bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
 
-  SmallVector<Value*, 4> Vals;
+  SmallVector<std::pair<ValCtx, Instruction*>, 4> Vals;
   if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
 
-    Vals.push_back(SI->getTrueValue());
-    Vals.push_back(SI->getFalseValue());
+    Vals.push_back(std::make_pair(make_vc(SI->getTrueValue(), this), SI));
+    Vals.push_back(std::make_pair(make_vc(SI->getFalseValue(), this), SI));
+
+  }
+  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+    if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+      Function* F = getCalledFunction(CI);
+      for(Function::iterator it = F->begin(), it2 = F->end(); it != it2; ++it) {
+
+	if(ReturnInst* RI = dyn_cast<ReturnInst>(it->getTerminator())) {
+
+	  Vals.push_back(std::make_pair(make_vc(RI->getOperand(0), IA), RI));
+
+	}
+
+      }
+
+    }
+    else {
+      return false;
+    }
 
   }
   else {
 
     PHINode* PN = cast<PHINode>(I);
     for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i)
-      Vals.push_back(PN->getIncomingValue(i));
+      Vals.push_back(std::make_pair(make_vc(PN->getIncomingValue(i), this), PN));
 
   }
 
   bool anyInfo = false;
 
-  for(SmallVector<Value*, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
+  for(SmallVector<std::pair<ValCtx, Instruction*>, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
-    Value* V = *it;
+    Value* V = it->first.first;
+    IntegrationAttempt* VCtx = it->first.second;
+    Instruction* VUser = it->second;
     PointerBase VPB;
-    if(!getValSetOrReplacement(V, VPB, I)) {
+    if(!VCtx->getValSetOrReplacement(V, VPB, VUser)) {
       if(finalise) {
 	NewPB = PointerBase::getOverdef();
 	return true;
@@ -528,7 +551,9 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
     tryResolveLoad(Attempt);
     if(!Attempt.PB.Overdef) {
 
-      defOrClobberCache[LI].insert(defOrClobberCache[LI].begin(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
+      defOrClobberCache[LI].insert(defOrClobberCache[LI].end(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
+      defOrClobberCache[LI].insert(defOrClobberCache[LI].end(), Attempt.IgnoredClobbers.begin(), Attempt.IgnoredClobbers.end());
+
       for(SmallVector<ValCtx, 8>::iterator it = Attempt.DefOrClobberInstructions.begin(), it2 = Attempt.DefOrClobberInstructions.end(); it != it2; ++it) {
 
 	if(it->second) {
@@ -628,6 +653,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
     case Instruction::PHI:
     case Instruction::Select:
     case Instruction::Load:
+    case Instruction::Call:
       break;
     default:
       // Unknown instruction, draw no conclusions.
@@ -710,6 +736,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 	// Else fall through:
       }
     case Instruction::Select:
+    case Instruction::Call:
       {
 	bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
 	std::string RStr;
@@ -751,6 +778,13 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
 }
 
+void InlineAttempt::queueUpdateCall() {
+
+  if(parent)
+    pass->queueUpdatePB(parent, CI);
+
+}
+
 // This is different to HCF's investigateUsers code because it investigates different scopes.
 // We investigate: (1) the user's 'natural' scope (since this catches exit PHIs), and
 // (2) if the user is within our scope, all scopes between ours and its 
@@ -762,6 +796,12 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
   for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
 
     if(Instruction* UserI = dyn_cast<Instruction>(*UI)) {
+
+      if(isa<ReturnInst>(UserI)) {
+	
+	getFunctionRoot()->queueUpdateCall();
+	
+      }
 
       const Loop* UserL = getValueScope(UserI);
 

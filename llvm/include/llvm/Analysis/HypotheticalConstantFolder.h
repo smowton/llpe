@@ -171,12 +171,13 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   PointerBase& insert(ValCtx VC) {
     if(Overdef)
       return *this;
+    if(std::count(Values.begin(), Values.end(), VC))
+      return *this;
     if(Values.size() + 1 > PBMAX) {
       setOverdef();
     }
     else {
-      if(!std::count(Values.begin(), Values.end(), VC))
-	Values.push_back(VC);
+      Values.push_back(VC);
     }
     return *this;
   }
@@ -1451,6 +1452,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool ctxContains(IntegrationAttempt*);
 
   bool getArgBasePointer(Argument*, PointerBase&);
+  void queueUpdateCall();
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
@@ -1497,6 +1499,7 @@ class LoadForwardAttempt : public LFAQueryable {
 
   SmallVector<std::string, 1> OverdefReasons;
   SmallVector<ValCtx, 8> DefOrClobberInstructions;
+  SmallVector<ValCtx, 8> IgnoredClobbers;
 
   SmallSet<PeelAttempt*, 8> exploredLoops;
 
