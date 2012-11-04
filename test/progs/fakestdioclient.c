@@ -12,12 +12,16 @@ void fakeinit(struct fakestream* s);
 void fakeflush(struct fakestream* s);
 void fakewrite(struct fakestream* s, char c, int bytes);
 
+char privbuf[1024];
+
+struct fakestream s = {privbuf, privbuf};
+
 int main(int argc, char** argv) {
 
   x = 5;
-  struct fakestream s;
+  //  struct fakestream s;
   
-  fakeinit(&s);
+  //  fakeinit(&s);
 
   for(int i = 0; i < 5; ++i) {
     

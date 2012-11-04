@@ -89,6 +89,9 @@ void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, Lo
   this->parent = P;
   this->LFA = LFA;
   this->ignoreLoads = ignoreLoads;
+  // Ignore pointer base assertions when in optimistic mode in order to collect a conservative
+  // set of clobbering instructions. Use the knowledge when acting as normal LFA or in pessimistic resolution.
+  this->usePBKnowledge = LFA ? (!LFA->PBOptimistic) : true;
   if (PredCache == 0)
     PredCache.reset(new PredIteratorCache());
 
@@ -164,7 +167,7 @@ getCallSiteDependencyFrom(CallSite CS, bool isReadOnlyCall,
   bool isEntryBlock = (BB == &BB->getParent()->getEntryBlock()) || (parent && parent->getEntryBlock() == BB);
   if (!isEntryBlock)
     return MemDepResult::getNonLocal();
-  return MemDepResult::getClobber(ScanIt, 0, true);
+  return MemDepResult::getEntryClobber(ScanIt, 0);
 }
 
 /// getPointerDependencyFrom - Return the instruction on which a memory
@@ -231,7 +234,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       
       // If we found a pointer, check if it could be the same as our pointer.
       AliasAnalysis::AliasResult R =
-        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, parent);
+        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, parent, usePBKnowledge);
 
       //DEBUG(dbgs() << "Alias: " << *Pointer << " x " << *MemPtr << ": " << R << "\n");
 
@@ -254,7 +257,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       // If alias analysis can tell that this store is guaranteed to not modify
       // the query pointer, ignore it.  Use getModRefInfo to handle cases where
       // the query pointer points to constant memory etc.
-      if (AA->getModRefInfo(SI, MemPtr, MemSize, parent, parent) == AliasAnalysis::NoModRef)
+      if (AA->getModRefInfo(SI, MemPtr, MemSize, parent, parent, usePBKnowledge) == AliasAnalysis::NoModRef)
         continue;
 
       // Ok, this store might clobber the query pointer.  Check to see if it is
@@ -264,13 +267,13 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 
       // If we found a pointer, check if it could be the same as our pointer.
       AliasAnalysis::AliasResult R =
-        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, parent);
+        AA->aliasHypothetical(Pointer, PointerSize, MemPtr, MemSize, parent, usePBKnowledge);
       
       if (R == AliasAnalysis::NoAlias)
         continue;
       if (R == AliasAnalysis::MayAlias) {
 	if(LFA && LFA->PBOptimistic) {
-	  LFA->IgnoredClobbers.push_back(make_vc(SI, this));
+	  LFA->IgnoredClobbers.push_back(make_vc(SI, parent));
 	  continue;
 	}
         return MemDepResult::getClobber(Inst);
@@ -291,13 +294,13 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
       Value *AccessPtr = MemPtr->getUnderlyingObject();
       
       if (AccessPtr == Inst ||
-          AA->aliasHypothetical(Inst, 1, AccessPtr, 1, parent) == AliasAnalysis::MustAlias)
+          AA->aliasHypothetical(Inst, 1, AccessPtr, 1, parent, usePBKnowledge) == AliasAnalysis::MustAlias)
         return MemDepResult::getDef(Inst);
       continue;
     }
 
     // See if this instruction (e.g. a call or vaarg) mod/ref's the pointer.
-    switch (AA->getModRefInfo(Inst, MemPtr, MemSize, parent, parent)) {
+    switch (AA->getModRefInfo(Inst, MemPtr, MemSize, parent, parent, usePBKnowledge)) {
     case AliasAnalysis::NoModRef:
       // If the call has no effect on the queried pointer, just ignore it.
       continue;
@@ -324,10 +327,8 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 	MemDepResult parentResult;
 	bool MayDependOnParent = false;
 	if(parent->tryForwardLoadThroughCall(*LFA, CI, parentResult, MayDependOnParent)) {
-	  if(parentResult.isNonLocal())
-	    continue;
-	  else 
-	    return parentResult;
+	  // Result solely depends on parent.
+	  continue;
 	}
 	else if(LFA->Mode == LFMPB && LFA->PBIsViable() && MayDependOnParent) {
 	  // Keep looking for more definers if the ones at this scope
@@ -335,11 +336,33 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
 	  // Note that MayDependOnParent implies the call was explored.
 	  continue;
 	}
+	else {
+	  // No dependency on the parent: call conclusively clobbers or defines.
+	  bool shouldStopHere = true;
+
+	  if(LFA->PBOptimistic) {
+	    if(isa<MemIntrinsic>(CI))
+	      shouldStopHere = false;
+	    else if(Function* F = parent->getCalledFunction(CI)) {
+	      if(parent->isBlacklisted(F)) {
+		shouldStopHere = false;
+	      }
+	    }
+	  }
+
+	  if(shouldStopHere) {
+	    if(parentResult == MemDepResult())
+	      return MemDepResult::getClobber(Inst);
+	    else
+	      return parentResult;
+	  }
+	  // Otherwise fall through to note this as a clobber.
+	}
       }
     }
 
     if(LFA && LFA->PBOptimistic) {
-      LFA->IgnoredClobbers.push_back(make_vc(Inst, this));
+      LFA->IgnoredClobbers.push_back(make_vc(Inst, parent));
       continue;
     }
     return MemDepResult::getClobber(Inst);
@@ -351,7 +374,7 @@ getPointerDependencyFrom(Value *MemPtr, uint64_t MemSize, bool isLoad,
   bool isEntryBlock = (BB == &BB->getParent()->getEntryBlock()) || (parent && parent->getEntryBlock() == BB);
   if (!isEntryBlock)
     return MemDepResult::getNonLocal();
-  return MemDepResult::getClobber(ScanIt, 0, true);
+  return MemDepResult::getEntryClobber(ScanIt, 0);
 }
 
 /// getDependency - Return the instruction on which a memory operation
@@ -388,7 +411,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst) {
     if(!isEntryBlock)
       LocalCache = MemDepResult::getNonLocal();
     else
-      LocalCache = MemDepResult::getClobber(QueryInst, 0, true);
+      LocalCache = MemDepResult::getEntryClobber(QueryInst, 0);
   } else if (StoreInst *SI = dyn_cast<StoreInst>(QueryInst)) {
     // If this is a volatile store, don't mess around with it.  Just return the
     // previous instruction as a clobber.
@@ -967,7 +990,7 @@ getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t PointeeSize,
       if (PredPtrVal == 0) {
         // Add the entry to the Result list.
         NonLocalDepResult Entry(Pred,
-                                MemDepResult::getClobber(Pred->getTerminator()),
+                                MemDepResult::getPHITransClobber(Pred->getTerminator(), 0),
                                 PredPtrVal);
         Result.push_back(Entry);
 

@@ -100,14 +100,14 @@ namespace {
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0) {
+                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true) {
       assert(Vals.find(P) != Vals.end() && "Never seen value in AA before");
-      return AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx);
+      return AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx, usePBKnowledge);
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2,
-			       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
-      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx);
+			       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0, bool usePBKnowledge = true) {
+      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx, usePBKnowledge);
     }
     
     bool pointsToConstantMemory(const Value *P) {

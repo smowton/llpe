@@ -18,7 +18,7 @@ using namespace llvm;
 // 1. errno, modelled here as __errno_location, which is likely to be pretty brittle.
 // 2. an abstract location representing the buffer that's passed to a read call.
 
-static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PtrCtx) {
+static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PtrCtx, bool usePBKnowledge) {
 
   if(CSCtx && CSCtx->isSuccessfulVFSCall(CS.getInstruction())) {
 
@@ -51,9 +51,9 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ImmutableCallSite CS, c
 
 }
 
-static LibCallLocationInfo::LocResult aliasCheckAsLCI(const Value* Ptr1, IntegrationAttempt* Ptr1C, uint64_t Ptr1Size, const Value* Ptr2, IntegrationAttempt* Ptr2C, uint64_t Ptr2Size) {
+static LibCallLocationInfo::LocResult aliasCheckAsLCI(const Value* Ptr1, IntegrationAttempt* Ptr1C, uint64_t Ptr1Size, const Value* Ptr2, IntegrationAttempt* Ptr2C, uint64_t Ptr2Size, bool usePBKnowledge) {
 
-  AliasAnalysis::AliasResult AR = Ptr1C->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr1), Ptr1C), Ptr1Size, make_vc(const_cast<Value*>(Ptr2), Ptr2C), Ptr2Size);
+  AliasAnalysis::AliasResult AR = Ptr1C->getAA()->aliasHypothetical(make_vc(const_cast<Value*>(Ptr1), Ptr1C), Ptr1Size, make_vc(const_cast<Value*>(Ptr2), Ptr2C), Ptr2Size, usePBKnowledge);
 
   switch(AR) {
   case AliasAnalysis::MustAlias:
@@ -66,80 +66,80 @@ static LibCallLocationInfo::LocResult aliasCheckAsLCI(const Value* Ptr1, Integra
 
 }
 
-static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isReadBuf(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
   ConstantInt* ReadSize = cast_or_null<ConstantInt>(CSCtx->getConstReplacement(const_cast<Value*>(CS.getArgument(2))));
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize, usePBKnowledge);
 
 }
 
-static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isArg0(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isArg0Size24(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isArg0Size24(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, 24);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(0), CSCtx, 24, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isArg1(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isArg1(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(1), CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isArg2(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isArg2(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isArg3(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isArg3(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(3), CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(3), CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isReturnVal(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getInstruction(), CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
-static LibCallLocationInfo::LocResult isTermios(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isTermios(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, sizeof(struct termios));
+  return aliasCheckAsLCI(Ptr, PCtx, Size, CS.getArgument(2), CSCtx, sizeof(struct termios), usePBKnowledge);
 
 }
 
-static LibCallLocationInfo::LocResult isStdOut(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isStdOut(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
   Module& M = CSCtx->getModule();
   GlobalVariable* Stdout = M.getNamedGlobal("_stdio_streams");
   assert(Stdout);
-  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdout, CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdout, CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
 
 }
 
-static LibCallLocationInfo::LocResult isStdErr(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isStdErr(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
   Module& M = CSCtx->getModule();
   GlobalVariable* Stderr = M.getNamedGlobal("_stdio_streams");
   assert(Stderr);
-  return aliasCheckAsLCI(Ptr, PCtx, Size, Stderr, CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stderr, CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
 
 }
 
-static LibCallLocationInfo::LocResult isStdBufs(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+static LibCallLocationInfo::LocResult isStdBufs(ImmutableCallSite CS, const Value* Ptr, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
 
   Module& M = CSCtx->getModule();
   GlobalVariable* Stdbufs = M.getNamedGlobal("_fixed_buffers");
   assert(Stdbufs);
-  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdbufs, CSCtx, AliasAnalysis::UnknownSize);
+  return aliasCheckAsLCI(Ptr, PCtx, Size, Stdbufs, CSCtx, AliasAnalysis::UnknownSize, usePBKnowledge);
 
 }
 

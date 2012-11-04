@@ -223,8 +223,42 @@ size_t __stdio_fwrite(const unsigned char * __restrict buffer,
   return __stdio_WRITE(stream, buffer, bytes);
 }
 
+struct pt_buf {
 
-#define _outnstr(stream, string, len)	((len > 0) ? __stdio_fwrite((const unsigned char *)(string), len, stream) : 0)
+  void (*fun)(void*);
+  void* arg;
+
+};
+
+void thunk(void* v) { return; }
+
+void make_pt_buf(struct pt_buf* p, void (*f)(void*), void* a) {
+  
+  p->fun = f;
+  p->arg = a;
+
+}
+
+void run_pt_buf(struct pt_buf* p) {
+
+  (*(p->fun))(p->arg);
+
+}
+
+size_t fake_fwrite(const unsigned char * __restrict buffer,
+		   size_t bytes,
+		   register FILE * __restrict stream) 
+
+{
+
+  struct pt_buf b;
+  make_pt_buf(&b, thunk, 0);
+  __stdio_fwrite(buffer, bytes, stream);
+  run_pt_buf(&b);
+
+}
+
+#define _outnstr(stream, string, len)	((len > 0) ? fake_fwrite((const unsigned char *)(string), len, stream) : 0)
 #define OUTNSTR _outnstr
 
 size_t _charpad(FILE * __restrict stream, int padchar, size_t numpad)

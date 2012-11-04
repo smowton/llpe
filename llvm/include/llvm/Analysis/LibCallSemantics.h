@@ -50,7 +50,7 @@ namespace llvm {
       Yes, No, Unknown
     };
     LocResult (*isLocation)(ImmutableCallSite CS,
-			    const Value *Ptr, unsigned Size, IntegrationAttempt*, IntegrationAttempt*);
+			    const Value *Ptr, unsigned Size, IntegrationAttempt*, IntegrationAttempt*, bool);
 
   };
   

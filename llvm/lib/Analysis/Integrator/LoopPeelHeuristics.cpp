@@ -680,6 +680,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
   // Recheck any loads that were clobbered by this call
   queueWorkBlockedOn(CI);
+  dismissCallBlockedPBLoads(CI);
 
   // Try reading the return value right away, in case it's constant.
   pass->queueTryEvaluate(this, CI);
@@ -737,6 +738,7 @@ void PeelIteration::checkFinalIteration() {
     
     // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
     parent->queueCFGBlockedLoads();
+    parent->localCFGChanged();
 
   }
 
@@ -1067,7 +1069,6 @@ void IntegrationAttempt::getDependencies(LFAQueryable& LFA, SmallVector<BasicBlo
       if(MD.getNonLocalPointerDepFromBB(LAddr, PointeeSize, true, *it, NLResults, Visited, /*skipFirstBlock = */ StartBlocks == 0)) {
 
 	NLResults.clear();
-	NLResults.push_back(NonLocalDepResult(*it, MemDepResult::getClobber((*it)->begin()), LPointer));
 	break;
 	
       }
@@ -1082,11 +1083,30 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   // Integrate the defs and clobbers found with the pointer base result.
 
-  raw_ostream& prout = nulls();
+  bool verbose = false;
+  
+  raw_ostream& prout = verbose ? errs() : nulls();
 
-  for(unsigned int i = 0; i < NLResults.size() && !RealLFA.PBIsOverdef(); i++) {
+  // Continue even if the PB becomes overdef'd to ensure we gather a complete set of defining instructions.
+  for(unsigned int i = 0; i < NLResults.size(); i++) {
 
     const MemDepResult& Res = NLResults[i].getResult();
+
+    if(verbose) {
+
+      errs() << itcache(Res) << "\n";
+
+    }
+
+    // Fail early for PHI trans failures:
+    if(Res.isPHITransFailure()) {
+
+      RealLFA.setPBOverdef("PHI Fail");
+      RealLFA.CompletelyExplored = false;
+      break;
+
+    }
+
     IntegrationAttempt* ResCtx = Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this;
 
     // Avoid caching instructions which don't really clobber, or which have more specific effects:
@@ -1108,18 +1128,40 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
     if(populateCache && Res.getInst())
       RealLFA.DefOrClobberInstructions.push_back(make_vc(Res.getInst(), ResCtx));
 
-    // If we're in the optimistic phase, ignore anything but a define with an attached result.
-    // The hope is that the optimistic assumption might remove some clobbers.
+    // If we're in the optimistic phase, ignore anything but the following:
+    // * Defining stores with an associated PB
+    // * Defining alloca instructions
+    // * Calls that must be inlined before we can pass them (i.e. not memcpy, not blacklisted)
+    // Note we already know from the above that this isn't an inlined call clobber.
 
     if(RealLFA.PBOptimistic) {
 
-      if(!Res.isDef())
-	continue;
-      PointerBase ResPB;
-      StoreInst* SI = dyn_cast<StoreInst>(Res.getInst());
-      if(!SI)
-	continue;
-      if((!ResCtx->getPointerBase(SI->getOperand(0), ResPB, SI)) && ResCtx->isUnresolved(SI->getOperand(0)))
+      bool ignore = true;
+
+      if(Res.isDef()) {
+	if(isa<AllocaInst>(Res.getInst()))
+	  ignore = false;
+	else if(StoreInst* SI = dyn_cast<StoreInst>(Res.getInst())) {
+	  PointerBase ResPB;
+	  if(ResCtx->getPointerBase(SI->getOperand(0), ResPB, SI) || !ResCtx->isUnresolved(SI->getOperand(0)))
+	    ignore = false;
+	}
+      }
+      else if(Res.isClobber()) {
+	if(CallInst* CI = dyn_cast<CallInst>(Res.getInst())) {
+	  if(!isa<MemIntrinsic>(CI)) {
+	    Function* CF = getCalledFunction(CI);
+	    if(!CF)
+	      ignore = false;
+	    else {
+	      if(!functionIsBlacklisted(CF))
+		ignore = false;
+	    }
+	  }
+	}
+      }
+      
+      if(ignore)
 	continue;
 
     }
@@ -1132,9 +1174,17 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  prout << "Add PB ";
 	  printPB(prout, NewPB);
 	  prout << "\n";
-	  RealLFA.addPBDefn(NewPB);
-	  if(!NewPB.Overdef)
-	    RealLFA.PBDefined = true;
+	  // Actually addPBDefn will do the merge anyhow, but we annotate the LFA with a reason.
+	  if(NewPB.Overdef) {
+	    std::string RStr;
+	    raw_string_ostream RSO(RStr);
+	    RSO << "DO " << itcache(make_vc(Res.getInst(), ResCtx), true);
+	    RSO.flush();
+	    RealLFA.setPBOverdef(RStr);
+	  }
+	  else {
+	    RealLFA.addPBDefn(NewPB);
+	  }
 	}
 	else {
 	  // Try to find a concrete definition, since the concrete defns path is more advanced.
@@ -1148,7 +1198,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
 	    PointerBase PB = PointerBase::get(ReplUO);
 	    prout << "Add PB ";
-	    printPB(prout, NewPB);
+	    printPB(prout, PB);
 	    prout << "\n";
 	    RealLFA.addPBDefn(PB);
 	  }
@@ -1156,7 +1206,7 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	    prout << "Overdef (1) on " << itcache(Repl) << " / " << itcache(ReplUO) << "\n";
 	    std::string RStr;
 	    raw_string_ostream RSO(RStr);
-	    RSO << "D " << itcache(make_vc(Res.getInst(), ResCtx), true);
+	    RSO << "DN " << itcache(make_vc(Res.getInst(), ResCtx), true);
 	    RSO.flush();
 	    RealLFA.setPBOverdef(RStr);
 	  }
@@ -1164,8 +1214,11 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       }
       else {
 	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
-	RealLFA.setPBOverdef("Defn by non-store");
-	RealLFA.PBNeverClobbered = false;
+	std::string RStr;
+	raw_string_ostream RSO(RStr);
+	RSO << "DNS " << itcache(make_vc(Res.getInst(), ResCtx), true);
+	RSO.flush();
+	RealLFA.setPBOverdef(RStr);
       }
 
     }
@@ -1177,7 +1230,6 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
       RSO << "C " << itcache(make_vc(Inst, ResCtx), true);
       RSO.flush();
       RealLFA.setPBOverdef(RStr);
-      RealLFA.PBNeverClobbered = false;
 
     }
 
@@ -1233,7 +1285,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
 
   OnlyDependsOnParent = true;
 
-  if(LFA.getLFA().Mode != LFMPB) {
+  if(LFA.getLFA().Mode == LFMNormal) {
 
     SmallVector<NonLocalDepResult, 4> InstResults;
     getDependencies(LFA, StartBlocks, InstResults);
@@ -1243,7 +1295,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
 
       // Probably we're in a block which is dead, but has yet to be diagnosed as such.
       LFA.getLFA().setPBOverdef("No NLResults");
-      LFA.getLFA().PBNeverClobbered = false;
+      LFA.getLFA().CompletelyExplored = false;
       return MemDepResult();
 
     }
@@ -1307,11 +1359,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
       return Seen;
     
   }
-  else if(LFA.getLFA().Mode != LFMNormal) {
-
-    // If the pointer base result isn't conclusive yet, run MD again looking over calls and loops that may-define.
-    // Note we *cannot* calculate MayDependOnParent yet as the above result includes e.g. truncation due to
-    // calls that clobber the concrete result.
+  else if(LFA.getLFA().Mode == LFMPB) {
 
     SmallVector<NonLocalDepResult, 4> PBResults;
     getDependencies(LFA, StartBlocks, PBResults);
@@ -1358,11 +1406,9 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
   while(!isGlobalIdentifiedObject(Ultimate)) {
 
     ValCtx New;
-    if(Ultimate.second)
-      New = Ultimate.second->getReplacement(Ultimate.first);
-    else
-      New = Ultimate;
-    New = make_vc(New.first->getUnderlyingObject(), New.second);
+    New = make_vc(Ultimate.first->getUnderlyingObject(), Ultimate.second);
+    if(New.second)
+      New = New.second->getReplacement(New.first);
  
     if(New == Ultimate)
       break;
@@ -1518,6 +1564,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
   MemDepResult Res = tryResolveLoad(Attempt);
   ValCtx ForwardedVal = getForwardedValue(Attempt, Res);
 
+  /*
   if(Attempt.PBIsViable()) {
 
     LPDEBUG("Load PB " << itcache(*LoadI) << " defined to base ");
@@ -1527,7 +1574,6 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     resolvePointerBase(LoadI, Attempt.PB);
 
   }
-  /*
   else if(ForwardedVal != VCNull) {
 
     queueUsersUpdatePB(LoadI, true);
@@ -1669,9 +1715,14 @@ MemDepResult IntegrationAttempt::tryResolveLoad(LoadForwardAttempt& Attempt) {
 
   if(OnlyDependsOnParent || (MayDependOnParent && Attempt.PBIsViable())) {
 
-    if((!parent) || !Attempt.canBuildSymExpr()) {
-      Attempt.setPBOverdef((!parent) ? "Reached top" : "Unresolved expr");
-      Attempt.PBNeverClobbered = false;
+    if(!Attempt.canBuildSymExpr()) {
+      Attempt.setPBOverdef("Can't build expr");
+      Attempt.CompletelyExplored = false;
+      return MemDepResult();
+    }
+
+    if(!parent) {
+      addStartOfScopePB(Attempt);
       return MemDepResult();
     }
 
@@ -1726,14 +1777,13 @@ MemDepResult InlineAttempt::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(!parent) {
     LPDEBUG("Unable to pursue further; this function is the root\n");
-    LFA.setPBOverdef("Reached top (2)");
-    return MemDepResult::getClobber(F.getEntryBlock().begin(), this, true);
+    addStartOfScopePB(LFA);
+    return MemDepResult::getEntryClobber(F.getEntryBlock().begin(), this);
   }
   else {
     if(LFA.getBaseContext() == this) {
       LPDEBUG("Can't pursue LFA further because this is its base context\n");
-      LFA.PBNeverClobbered = false;
-      LFA.setPBOverdef("Out of scope (1)");
+      LFA.reachedTop("Out of scope (1)");
       return MemDepResult();
     }
     else {
@@ -1820,8 +1870,7 @@ bool PeelAttempt::tryForwardExprFromIter(LoadForwardAttempt& LFA, int originIter
     if(LFA.getBaseContext() == Iterations[iter]) {
       LPDEBUG("Abandoning resolution: " << itcache(LFA.getBaseVC()) << " is out of scope\n");
       Result = MemDepResult();
-      LFA.PBNeverClobbered = false;
-      LFA.setPBOverdef("Out of scope (2)");
+      LFA.reachedTop("Out of scope (2)");
       MayDependOnParent = false;
       return false;
     }
@@ -1859,8 +1908,7 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 
   if(LFA.getBaseContext() == this) {
     LPDEBUG("Can't pursue LFA further because this is its base context\n");
-    LFA.PBNeverClobbered = false;
-    LFA.setPBOverdef("Out of scope (3)");
+    LFA.reachedTop("Out of scope (3)");
     return MemDepResult();
   }
   else {
@@ -1872,6 +1920,8 @@ MemDepResult PeelIteration::tryForwardExprFromParent(LoadForwardAttempt& LFA) {
 // Try forwarding a load locally; return true if it is nonlocal or false if not, in which case
 // Result is set to the resolution result.
 bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent) {
+
+  LFAQ.getLFA().TraversedCtxs.push_back(this);
 
   bool OnlyDependsOnParent = false;
   Result = getUniqueDependency(LFAQ, StartBlocks, MayDependOnParent, OnlyDependsOnParent);
@@ -1961,16 +2011,7 @@ bool InlineAttempt::tryForwardLoadFromExit(LoadForwardAttempt& LFA, MemDepResult
 
   }
 
-  MayDependOnParent = false;
-  bool OnlyDependsOnParent = tryResolveExprFrom(LFA, RetBB->getTerminator(), Result, 0, MayDependOnParent);
-
-  if(OnlyDependsOnParent) {
-    Result = MemDepResult::getNonLocal();
-    return true;
-  }
-  else {
-    return Result.isDef() || Result.isClobber();
-  }
+  return tryResolveExprFrom(LFA, RetBB->getTerminator(), Result, 0, MayDependOnParent);
 
 }
 
@@ -1979,6 +2020,7 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
   InlineAttempt* IA = getInlineAttempt(CI);
 
   if(!IA) {
+    
     // Our caller is responsible for e.g. trying plain old getModRefInfo to circumvent this restriction
     LPDEBUG("Unable to pursue load through call " << itcache(*CI) << " as it has not yet been explored\n");
     return false;
@@ -1988,8 +2030,11 @@ bool IntegrationAttempt::tryForwardLoadThroughCall(LoadForwardAttempt& LFA, Call
   
   bool ret;
 
-  if(!LFA.canBuildSymExpr())
+  if(!LFA.canBuildSymExpr()) {
+    LFA.CompletelyExplored = false;
+    LFA.setPBOverdef("Can't build symexpr (call)");
     return false;
+  }
 
   ret = IA->tryForwardLoadFromExit(LFA, Result, MayDependOnParent);
 
@@ -2066,6 +2111,11 @@ bool IntegrationAttempt::tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAt
     }
 
     if(!LFA.canBuildSymExpr()) {
+      // Don't cache this CFG traversal, as an improved load pointer will likely
+      // enable us to walk through the loop from the terminator.
+      // No need to set overdef though; that will happen naturally if we can't
+      // traverse the loop in our current state.
+      LFA.CompletelyExplored = false;
       LPDEBUG("Raising " << itcache(*(LFA.getOriginalInst())) << " through loop " << (BBL->getHeader()->getName()) << " without per-iteration knowledge because the pointer cannot be represented simply\n");
       return false;
     }
@@ -3186,8 +3236,6 @@ LoadForwardAttempt::LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, Loa
     targetType = target;
 
   mayBuildFromBytes = !containsPointerTypes(targetType);
-  PBNeverClobbered = true;
-  PBDefined = false;
 
 }
 

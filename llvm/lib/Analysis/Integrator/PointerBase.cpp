@@ -6,11 +6,15 @@
 #include "llvm/Constants.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instruction.h"
+#include "llvm/IntrinsicInst.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/GlobalVariable.h"
+#include "llvm/Target/TargetData.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
 
 using namespace llvm;
 
@@ -212,6 +216,9 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
   }
   else if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
+    if(CI->getType()->isVoidTy())
+      return false;
+
     if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
       Function* F = getCalledFunction(CI);
@@ -353,9 +360,6 @@ bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
     }
 
-    if(ArgPB.Values.size() == 1)
-      return false;
-
     for(unsigned i = 0; i < ArgPB.Values.size() && !PB.Overdef; ++i) {
 
       PointerBase NewPB;
@@ -470,12 +474,16 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
     if(Op1PB.Type != ValSetTypeScalar || Op2PB.Type != ValSetTypeScalar)
       return false;
 
+    /*
     if(Op1PB.Values.size() == 1 && Op2PB.Values.size() == 1) {
 
       // Pointless, until the regular constant folder and this one are merged.
       return false;
 
     }
+    */
+    
+    // Need this to establish value recurrences, e.g. a loop with store-to-load (or phi-to-phi) feeds which circulates a known value or value set.
 
     for(unsigned i = 0; i < Op1PB.Values.size() && !PB.Overdef; ++i) {
       for(unsigned j = 0; j < Op2PB.Values.size() && !PB.Overdef; ++j) {
@@ -531,7 +539,85 @@ std::string IntegrationAttempt::describeLFA(LoadForwardAttempt& LFA) {
   
 void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
 
-  memWriterEffects[I].push_back(std::make_pair(LI, Ctx));
+  memWriterEffects[I].insert(std::make_pair(LI, Ctx));
+
+}
+
+void IntegrationAttempt::removeMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
+
+  memWriterEffects[I].erase(std::make_pair(LI, Ctx));
+
+}
+
+void IntegrationAttempt::zapDefOrClobberCache(LoadInst* LI) {
+  
+  failedLFACache.erase(LI);
+
+  DenseMap<LoadInst*, std::vector<ValCtx> >::iterator CacheIt = defOrClobberCache.find(LI);
+  if(CacheIt == defOrClobberCache.end())
+    return;
+
+  std::vector<ValCtx>& CEntry = CacheIt->second;
+
+  for(std::vector<ValCtx>::iterator it = CEntry.begin(), it2 = CEntry.end(); it != it2; ++it) {
+
+    // Unregister our dependency on various instructions:
+    if(!it->second)
+      continue;
+
+    if(StoreInst* SI = dyn_cast<StoreInst>(it->first)) {
+
+      it->second->removeMemWriterEffect(SI, LI, this);
+
+    }
+
+  }
+
+  defOrClobberCache.erase(LI);
+
+}
+
+void IntegrationAttempt::addCallBlockedPBLoad(CallInst* CI, LoadInst* LI, IntegrationAttempt* IA) {
+
+  callBlockedPBLoads[CI].push_back(std::make_pair(LI, IA));
+
+}
+
+void IntegrationAttempt::addCFGDependentPBLoad(LoadInst* LI, IntegrationAttempt* IA) {
+
+  CFGDependentPBLoads.insert(std::make_pair(LI, IA));
+
+}
+
+void IntegrationAttempt::dismissCallBlockedPBLoads(CallInst* CI) {
+
+  DenseMap<CallInst*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
+    callBlockedPBLoads.find(CI);
+  
+  if(it == callBlockedPBLoads.end())
+    return;
+
+  std::vector<std::pair<LoadInst*, IntegrationAttempt*> >& Loads = it->second;
+
+  for(std::vector<std::pair<LoadInst*, IntegrationAttempt*> >::iterator it = Loads.begin(), it2 = Loads.end(); it != it2; ++it) {
+
+    it->second->zapDefOrClobberCache(it->first);
+
+  }
+
+  callBlockedPBLoads.erase(CI);
+
+}
+
+void IntegrationAttempt::localCFGChanged() {
+
+  for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator it = CFGDependentPBLoads.begin(), it2 = CFGDependentPBLoads.end(); it != it2; ++it) {
+
+    it->second->zapDefOrClobberCache(it->first);
+
+  }
+
+  CFGDependentPBLoads.clear();
 
 }
 
@@ -544,32 +630,125 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
   LoadForwardAttempt Attempt(LI, this, LFMPB, TD);
   Attempt.PBOptimistic = !finalise;
+  Attempt.CompletelyExplored = !finalise;
+  Attempt.ReachedTop = false;
+  // In pessimistic mode, PB exploration stops early when it becomes hopeless.
+
+  pass->PBLFAs++;
+
+  bool verbose = false;
+
+  if(verbose) {
+
+    errs() << "=== START LFA for " << itcache(*LI) << "\n";
+
+    IntegrationAttempt* PrintCtx = this;
+    while(PrintCtx) {
+      errs() << PrintCtx->getShortHeader() << ", ";
+      PrintCtx = PrintCtx->parent;
+    }
+    errs() << "\n";
+
+  }
 
   DenseMap<LoadInst*, std::vector<ValCtx> >::iterator cacheIt = defOrClobberCache.find(LI);
-  if(cacheIt == defOrClobberCache.end()) {
+  DenseMap<LoadInst*, std::string>::iterator failCacheIt = failedLFACache.find(LI);
+
+  if(failCacheIt != failedLFACache.end()) {
+    
+    if(verbose)
+      errs() << "CACHED FAIL\n";
+    Attempt.reachedTop(failCacheIt->second);
+
+    /*
+    LoadForwardAttempt CheckAttempt(LI, this, LFMPB, TD);
+    CheckAttempt.PBOptimistic = !finalise;
+    CheckAttempt.CompletelyExplored = !finalise;
+    CheckAttempt.ReachedTop = false;
+    tryResolveLoad(CheckAttempt);
+
+    assert(Attempt.PB == CheckAttempt.PB);
+    */
+
+  }
+  else if(cacheIt == defOrClobberCache.end()) {
+
+    if(verbose)
+      errs() << "NO CACHE\n";
+
+    assert((!finalise) && "Instruction considered for the first time in pessimistic phase?");
 
     tryResolveLoad(Attempt);
-    if(!Attempt.PB.Overdef) {
 
-      defOrClobberCache[LI].insert(defOrClobberCache[LI].end(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
-      defOrClobberCache[LI].insert(defOrClobberCache[LI].end(), Attempt.IgnoredClobbers.begin(), Attempt.IgnoredClobbers.end());
+    if(Attempt.CompletelyExplored) {
 
-      for(SmallVector<ValCtx, 8>::iterator it = Attempt.DefOrClobberInstructions.begin(), it2 = Attempt.DefOrClobberInstructions.end(); it != it2; ++it) {
+      if(Attempt.ReachedTop) {
+	
+	if(verbose)
+	  errs() << "Caching failure\n";
+	failedLFACache[LI] = Attempt.ReachedTopStr;
 
-	if(it->second) {
+      }
+      else {
 
-	  it->second->addMemWriterEffect(cast<Instruction>(it->first), LI, this);
+	std::vector<ValCtx>& CEntry = defOrClobberCache[LI];
+
+	CEntry.insert(CEntry.end(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
+	CEntry.insert(CEntry.end(), Attempt.IgnoredClobbers.begin(), Attempt.IgnoredClobbers.end());
+
+	for(std::vector<ValCtx>::iterator it = CEntry.begin(), it2 = CEntry.end(); it != it2; ++it) {
+
+	  // Register our dependency on various instructions:
+	  if(!it->second)
+	    continue;
+
+	  if(StoreInst* SI = dyn_cast<StoreInst>(it->first)) {
+
+	    it->second->addMemWriterEffect(SI, LI, this);
+
+	  }
+	  else if(CallInst* CI = dyn_cast<CallInst>(it->first)) {
+
+	    if(!isa<MemIntrinsic>(CI)) {
+	      Function* CF = getCalledFunction(CI);
+	      if((!CF) || (!functionIsBlacklisted(CF)))
+		it->second->addCallBlockedPBLoad(CI, LI, this);
+
+	    }
+
+	  }
+
+	}
+
+	for(SmallVector<IntegrationAttempt*, 8>::iterator it = Attempt.TraversedCtxs.begin(), it2 = Attempt.TraversedCtxs.end(); it != it2; ++it) {
+
+	  (*it)->addCFGDependentPBLoad(LI, this);
 
 	}
 
       }
 
-      // Otherwise we shouldn't get queried about this load again this cycle.
+    }
+    else {
+      
+      if(verbose)
+	errs() << "Not caching (incomplete exploration)\n";
+
+      // Otherwise we were unable to explore to our natural limits (def instructions and blockers like
+      // unexpanded calls, which will zap the dependency cache when they expand).
+      // That might be due to failure to build a symexpr (indicating the load pointer is vague)
+      // or running a query in pessimistic mode.
+      // Do not cache the dependency set.
 
     }
 
   }
   else {
+
+    if(verbose)
+      errs() << "USING CACHE\n";
+
+    pass->PBLFAsCached++;
 
     // Mimic load forwarding:
     Value* LPtr = LI->getOperand(0);
@@ -581,33 +760,58 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
     for(unsigned i = 0; i < cacheIt->second.size(); ++i) {
 
       ValCtx DefOrClobberVC = cacheIt->second[i];
+
+      if(isa<Constant>(DefOrClobberVC.first)) {
+
+	// Cached global initialiser
+	PointerBase NewPB = PointerBase::get(DefOrClobberVC);
+	Attempt.addPBDefn(NewPB);
+	continue;
+	
+      }
+
       Instruction* Inst = cast<Instruction>(DefOrClobberVC.first);
       IntegrationAttempt* ICtx = DefOrClobberVC.second;
 
-      if(AA->getModRefInfo(Inst, LI->getOperand(0), LSize, ICtx, this) == AliasAnalysis::NoModRef)
-	continue;
-      
       MemDepResult NewMDR;
 
-      if(StoreInst* SI = dyn_cast<StoreInst>(Inst)) {
+      if(isa<AllocaInst>(Inst) || (isa<CallInst>(Inst) && extractMallocCall(Inst))) {
 
-	uint64_t SSize = AA->getTypeStoreSize(SI->getOperand(0)->getType());
-	switch(AA->aliasHypothetical(make_vc(SI->getPointerOperand(), ICtx), SSize, make_vc(LPtr, this), LSize)) {
-	case AliasAnalysis::NoAlias:
-	  continue;
-	case AliasAnalysis::MayAlias:
-	  NewMDR = MemDepResult::getClobber(SI, ICtx);
-	  break;
-	case AliasAnalysis::MustAlias:
-	  NewMDR = MemDepResult::getDef(SI, ICtx);
-	  break;
+	ValCtx LIUO = getUltimateUnderlyingObject(LI->getOperand(0));
+	if(LIUO == make_vc(Inst, ICtx)) {
+	  NewMDR = MemDepResult::getDef(Inst, ICtx);
 	}
-
+	else {
+	  continue;
+	}
+	
       }
       else {
 
-	NewMDR = MemDepResult::getClobber(Inst, ICtx);
+	if(AA->getModRefInfo(Inst, LI->getOperand(0), LSize, ICtx, this, /* usePBKnowledge = */ finalise) == AliasAnalysis::NoModRef)
+	  continue;
+      
+	if(StoreInst* SI = dyn_cast<StoreInst>(Inst)) {
+
+	  uint64_t SSize = AA->getTypeStoreSize(SI->getOperand(0)->getType());
+	  switch(AA->aliasHypothetical(make_vc(SI->getPointerOperand(), ICtx), SSize, make_vc(LPtr, this), LSize, /* usePBKnowledge = */ finalise)) {
+	  case AliasAnalysis::NoAlias:
+	    continue;
+	  case AliasAnalysis::MayAlias:
+	    NewMDR = MemDepResult::getClobber(SI, ICtx);
+	    break;
+	  case AliasAnalysis::MustAlias:
+	    NewMDR = MemDepResult::getDef(SI, ICtx);
+	    break;
+	  }
+
+	}
+	else {
+
+	  NewMDR = MemDepResult::getClobber(Inst, ICtx);
 	
+	}
+
       }
 
       NLResults.push_back(NonLocalDepResult(0, NewMDR, 0)); // addPBResults doesn't reference either the BB or Address params
@@ -616,7 +820,20 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
     addPBResults(Attempt, NLResults, false);
 
+    /*
+    LoadForwardAttempt CheckAttempt(LI, this, LFMPB, TD);
+    CheckAttempt.PBOptimistic = !finalise;
+    CheckAttempt.CompletelyExplored = !finalise;
+    CheckAttempt.ReachedTop = false;
+    tryResolveLoad(CheckAttempt);
+    
+    assert(Attempt.PB == CheckAttempt.PB);
+    */
+
   }
+
+  if(verbose)
+    errs() << "=== END LFA\n";
 
   if(!finalise)
     optimisticForwardStatus[LI] = describeLFA(Attempt);
@@ -628,6 +845,49 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
   NewPB = Attempt.PB;
   return true;
+
+}
+
+void IntegrationAttempt::addStartOfScopePB(LoadForwardAttempt& LFA) {
+
+  // Hacked out of tryResolveClobber to provide simple initializer-aggregate support
+  // until I get around to marrying the optimistic solver with full PartialLFA.
+
+  if(LFA.canBuildSymExpr()) {
+
+    ValCtx PointerVC = LFA.getBaseVC();
+    if(GlobalVariable* GV = dyn_cast<GlobalVariable>(PointerVC.first)) {
+	    
+      if(GV->hasDefinitiveInitializer()) {
+	
+	Constant* GVC = GV->getInitializer();
+	const Type* targetType = LFA.getOriginalInst()->getType();
+	uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
+	uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
+	uint64_t LoadSize = (TD->getTypeSizeInBits(targetType) + 7) / 8;
+	uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
+	if(FirstNotDef == LoadSize) {
+
+	  ValCtx FieldVC = extractAggregateMemberAt(GVC, ReadOffset, targetType, LoadSize, TD);
+	  if(FieldVC != VCNull) {
+
+	    assert(isa<Constant>(FieldVC.first));
+	    LFA.DefOrClobberInstructions.push_back(FieldVC);
+	    PointerBase NewPB = PointerBase::get(FieldVC);
+	    LFA.addPBDefn(NewPB);
+	    return;
+
+	  }
+
+	}
+
+      }
+
+    }
+
+  }
+
+  LFA.reachedTop("Reached main");
 
 }
 
@@ -739,14 +999,6 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
     case Instruction::Call:
       {
 	bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
-	std::string RStr;
-	raw_string_ostream RSO(RStr);
-	printPB(RSO, NewPB, true);
-	RSO.flush();
-	if(!finalise)
-	  optimisticForwardStatus[I] = RStr;
-	else
-	  pessimisticForwardStatus[I] = RStr;
 	if(!mergeAnyInfo)
 	  return false;
 	else
@@ -760,7 +1012,22 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
 
   }
 
+  assert(NewPB.Overdef || (NewPB.Type != ValSetTypeUnknown));
+
   if((!OldPBValid) || OldPB != NewPB) {
+
+    if(Instruction* I = dyn_cast<Instruction>(V)) {
+      if(!isa<LoadInst>(V)) {
+	std::string RStr;
+	raw_string_ostream RSO(RStr);
+	printPB(RSO, NewPB, true);
+	RSO.flush();
+	if(!finalise)
+	  optimisticForwardStatus[I] = RStr;
+	else
+	  pessimisticForwardStatus[I] = RStr;
+      }
+    }
 
     pointerBases[V] = NewPB;
 
@@ -847,12 +1114,12 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
     }
     else if(isa<StoreInst>(I)) {
 
-      DenseMap<Instruction*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
+      DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
 	memWriterEffects.find(I);
       if(it != memWriterEffects.end()) {
 
-	for(unsigned i = 0; i < it->second.size(); ++i)
-	  pass->queueUpdatePB(it->second[i].second, it->second[i].first);
+	for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator SI = it->second.begin(), SE = it->second.end(); SI != SE; ++SI)
+	  pass->queueUpdatePB(SI->second, SI->first);
 
       }
 
@@ -1043,12 +1310,7 @@ void IntegrationAttempt::queuePBUpdateAllResolvedVCs() {
 
 }
 
-// Actually clear everything for now, for simplicity's sake.
 void IntegrationAttempt::clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs) {
-
-  // Discard the memdep cache, as edge killing / function inlining may have improved the definer set.
-  memWriterEffects.clear();
-  defOrClobberCache.clear();
 
   std::vector<Value*> toErase;
   
@@ -1076,20 +1338,42 @@ void IntegrationAttempt::clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>&
 
 }
 
+static bool isBetterThanOrEqual(PointerBase& NewPB, PointerBase& OldPB) {
+
+  if(OldPB.Overdef)
+    return true;
+
+  if(NewPB.Overdef)
+    return false;
+
+  return NewPB.Values.size() <= OldPB.Values.size();
+
+}
+
 void IntegrationAttempt::queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, uint64_t& newVCs, uint64_t& changedVCs) {
 
   for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
 
+    DenseMap<ValCtx, PointerBase>::iterator OldPB = OldPBs.find(make_vc(it->first, this));
+
+    if(OldPB != OldPBs.end()) {
+      assert(isBetterThanOrEqual(it->second, OldPB->second));
+    }
+
     if(it->second.Overdef)
       continue;
 
-    DenseMap<ValCtx, PointerBase>::iterator OldPB = OldPBs.find(make_vc(it->first, this));
     bool queue = false;
     if(OldPB == OldPBs.end()) {
       newVCs++;
       queue = true;
     }
     else if(OldPB->second != it->second) {
+      /*
+      errs() << "Changed " << itcache(OldPB->first) << " to ";
+      printPB(errs(), it->second);
+      errs() << "\n";
+      */
       changedVCs++;
       queue = true;
     }
@@ -1111,13 +1395,13 @@ void IntegrationAttempt::queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, u
 
 }
 
-void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise) {
+void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* modifiedVCs) {
 
   DenseMap<ValCtx, int> considerCount;
 
   SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
 
-  //int i = 0;
+  int i = 0;
   
   while(PBQueue1.size() || PBQueue2.size()) {
 
@@ -1126,17 +1410,21 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise) {
     
     for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
 
-      /*
-      considerCount[*it]++;
+      
+      //considerCount[*it]++;
       if(++i == 10000) {
-	errs() << "----\n";
-	it->second->printConsiderCount(considerCount, 100);
-	errs() << "----\n";
+	errs() << ".";
+	//	errs() << "----\n";
+	//	it->second->printConsiderCount(considerCount, 100);
+	//	errs() << "----\n";
 	i = 0;
       }
-      */
 
-      it->second->updateBasePointer(it->first, finalise);
+      if(it->second->updateBasePointer(it->first, finalise)) {
+	if(modifiedVCs) {
+	  modifiedVCs->push_back(*it);
+	}
+      }
 
     }
 
@@ -1153,6 +1441,11 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
   
   uint64_t totalVCs = 0, newVCs = 0, changedVCs = 0;
 
+  PBLFAs = 0;
+  PBLFAsCached = 0;
+
+  errs() << "Start optimistic solver";
+
   // Step 1: discard all existing PB results that could be improved.
   RootIA->clearSuboptimalPBResults(OldPBs);
 
@@ -1164,19 +1457,30 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
   RootIA->queuePBUpdateAllUnresolvedVCs();
   totalVCs = PBProduceQ->size();
 
-  runPointerBaseSolver(false);
+  std::vector<ValCtx> updatedVCs;
+
+  runPointerBaseSolver(false, &updatedVCs);
 
   // Queue up anything of which we've asserted a non-overdef PB for reconsideration.
-  RootIA->queuePBUpdateAllResolvedVCs();
+  //RootIA->queuePBUpdateAllResolvedVCs();
+
+  std::sort(updatedVCs.begin(), updatedVCs.end());
+  std::vector<ValCtx>::iterator it, endit;
+  endit = std::unique(updatedVCs.begin(), updatedVCs.end());
+  for(it = updatedVCs.begin(); it != endit; ++it) {
+
+    queueUpdatePB(it->second, it->first);
+
+  }
 
   // Step 3: consider every result in pessimistic mode until stable: clobbers are back in,
   // and undefined == overdefined.
 
-  runPointerBaseSolver(true);
+  runPointerBaseSolver(true, 0);
 
   RootIA->queueNewPBWork(OldPBs, newVCs, changedVCs);
 
-  errs() << "Ran optimistic solver: considered " << totalVCs << ", found " << newVCs << " new and " << changedVCs << " changed\n";
+  errs() << "\nRan optimistic solver: considered " << totalVCs << ", found " << newVCs << " new and " << changedVCs << " changed (LFAs cached " << PBLFAsCached << "/" << PBLFAs << ")\n";
 
   return (newVCs + changedVCs) != 0;
 

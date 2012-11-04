@@ -36,12 +36,12 @@ namespace llvm {
     ~LibCallAliasAnalysis();
     
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0);
+                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
     
     ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
-			       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
+			       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0, bool usePBKnowledge = true) {
       // TODO: Could compare two direct calls against each other if we cared to.
-      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx);
+      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx, usePBKnowledge);
     }
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
@@ -66,7 +66,8 @@ namespace llvm {
                                        ImmutableCallSite CS,
                                        const Value *P, unsigned Size,
 				       IntegrationAttempt* CSCtx,
-				       IntegrationAttempt* PCtx);
+				       IntegrationAttempt* PCtx,
+				       bool usePBKnowledge);
   };
 }  // End of llvm namespace
 

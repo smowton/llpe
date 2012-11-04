@@ -37,7 +37,7 @@ namespace llvm {
   class IntegrationAttempt;
   class LoadForwardAttempt;
   class LoadInst;
-  
+
   /// MemDepResult - A memory dependence query can return one of three different
   /// answers, described below.
   class MemDepResult {
@@ -76,27 +76,41 @@ namespace llvm {
       /// predecessor blocks.
       NonLocal
     };
+    
+    enum ClobberType {
+      Normal,
+      Entry,
+      PHITransFailure
+    };
+
     typedef PointerIntPair<Instruction*, 2, DepType> PairTy;
     PairTy Value;
     IntegrationAttempt* Cookie;
-    bool isEntryBlockExit;
-    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0, bool E = false) : Value(V), Cookie(C), isEntryBlockExit(E) {}
+    ClobberType clobberType;
+    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0, ClobberType CT = Normal) : Value(V), Cookie(C), clobberType(CT) {}
   public:
-    MemDepResult() : Value(0, Invalid), Cookie(0), isEntryBlockExit(false) {}
+    MemDepResult() : Value(0, Invalid), Cookie(0), clobberType(Normal) {}
     
     /// get methods: These are static ctor methods for creating various
     /// MemDepResult kinds.
     static MemDepResult getDef(Instruction *Inst, IntegrationAttempt* C = 0) {
       return MemDepResult(PairTy(Inst, Def), C);
     }
-    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0, bool isEntryBlock = false) {
-      return MemDepResult(PairTy(Inst, Clobber), C, isEntryBlock);
+    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0) {
+      return MemDepResult(PairTy(Inst, Clobber), C);
     }
     static MemDepResult getNonLocal() {
       return MemDepResult(PairTy(0, NonLocal));
     }
+    static MemDepResult getEntryClobber(Instruction* Inst, IntegrationAttempt* C) {
+      return MemDepResult(PairTy(Inst, Clobber), C, Entry);
+    }
+    static MemDepResult getPHITransClobber(Instruction* Inst, IntegrationAttempt* C) {
+      return MemDepResult(PairTy(Inst, Clobber), C, PHITransFailure);
+    }
 
-    bool isEntryNonLocal() const { return isEntryBlockExit; }
+    bool isEntryNonLocal() const { return clobberType == Entry; }
+    bool isPHITransFailure() const { return clobberType == PHITransFailure; }
 
     /// isClobber - Return true if this MemDepResult represents a query that is
     /// a instruction clobber dependency.
@@ -270,6 +284,7 @@ namespace llvm {
     TargetData *TD;
     IntegrationAttempt* parent;
     bool ignoreLoads;
+    bool usePBKnowledge;
 
     LoadForwardAttempt* LFA;
 

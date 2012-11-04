@@ -45,7 +45,8 @@ void LibCallAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
                                             ImmutableCallSite CS, const Value *P,
-                                            unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+                                            unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx,
+					    bool usePBKnowledge) {
   // If we have a function, check to see what kind of mod/ref effects it
   // has.  Start by including any info globally known about the function.
   AliasAnalysis::ModRefResult MRInfo = FI->UniversalBehavior;
@@ -72,7 +73,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
     for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
       const LibCallLocationInfo &Loc =
       LCI->getLocationInfo(Details[i].LocationID);
-      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, CSCtx, PCtx);
+      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, CSCtx, PCtx, usePBKnowledge);
       if (Res != LibCallLocationInfo::Yes) continue;
       
       // If we find a match against a location that we 'do not' interact with,
@@ -93,7 +94,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   for (unsigned i = 0; Details[i].LocationID != ~0U && MRInfo != ModRef; ++i) {
     const LibCallLocationInfo &Loc =
     LCI->getLocationInfo(Details[i].LocationID);
-    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, CSCtx, PCtx);
+    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, CSCtx, PCtx, usePBKnowledge);
     if (Res == LibCallLocationInfo::No) continue;
     
     // If we don't know if this pointer points to the location, then we have to
@@ -109,7 +110,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
 //
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                    const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+                                    const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the
@@ -117,12 +118,12 @@ LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   if (LCI) {
     if (const Function *F = CS.getCalledFunction()) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
-        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, CSCtx, PCtx));
+        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, CSCtx, PCtx, usePBKnowledge));
         if (MRInfo == NoModRef) return NoModRef;
       }
     }
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo & AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx));
+  return (ModRefResult)(MRInfo & AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx, usePBKnowledge));
 }

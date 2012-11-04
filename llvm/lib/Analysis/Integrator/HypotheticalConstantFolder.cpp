@@ -174,6 +174,7 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 	  // Have the owner of the successor block re-check:
 	  checkLocalEdge(it->first, it->second);
 	  checkBlockPHIs(it->second);
+	  localCFGChanged();
 
 	}
 
@@ -565,6 +566,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
     queueCFGBlockedLoads();
     queueCFGBlockedOpens();
+    localCFGChanged();
 
   }
   else if(isCertain) {

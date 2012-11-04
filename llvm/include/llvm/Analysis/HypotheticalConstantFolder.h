@@ -153,6 +153,7 @@ enum ValSetType {
 };
 
 bool extractCEBase(Constant* C, ValCtx& VC);
+bool functionIsBlacklisted(Function*);
 
 struct PointerBase {
 
@@ -258,6 +259,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    static char ID;
 
+   uint64_t PBLFAs;
+   uint64_t PBLFAsCached;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      PBProduceQ = &PBQueue2;
@@ -309,7 +313,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
 
-   void runPointerBaseSolver(bool finalise);
+   void runPointerBaseSolver(bool finalise, std::vector<ValCtx>*);
    bool runPointerBaseSolver();
    void queueUpdatePB(IntegrationAttempt* IA, Value* V);
 
@@ -727,7 +731,10 @@ protected:
   // Pointers resolved down to their base object, but not necessarily the offset:
   DenseMap<Value*, PointerBase> pointerBases;
   DenseMap<LoadInst*, std::vector<ValCtx> > defOrClobberCache;
-  DenseMap<Instruction*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > > memWriterEffects;
+  DenseMap<LoadInst*, std::string> failedLFACache;
+  DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > > memWriterEffects;
+  DenseMap<CallInst*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > > callBlockedPBLoads;
+  DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > CFGDependentPBLoads;
   DenseMap<Instruction*, std::string> optimisticForwardStatus;
   DenseMap<Instruction*, std::string> pessimisticForwardStatus;
 
@@ -1083,6 +1090,16 @@ protected:
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
   bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
+  void removeMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx);
+  void addStartOfScopePB(LoadForwardAttempt&);
+
+  // PBA caching:
+  void zapDefOrClobberCache(LoadInst* LI);
+  void addCallBlockedPBLoad(CallInst* CI, LoadInst* LI, IntegrationAttempt* IA);
+  void addCFGDependentPBLoad(LoadInst* LI, IntegrationAttempt* IA);
+  void dismissCallBlockedPBLoads(CallInst* CI);
+  void localCFGChanged();
+
   std::string describeLFA(LoadForwardAttempt& LFA);
   void printConsiderCount(DenseMap<ValCtx, int>& in, int n);
 
@@ -1189,6 +1206,10 @@ protected:
   virtual void describeBrief(raw_ostream& Stream) const = 0;
   virtual std::string getFunctionName();
   virtual int getIterCount() = 0;
+
+  virtual bool isBlacklisted(Function* F) {
+    return functionIsBlacklisted(F);
+  }
 
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
@@ -1500,12 +1521,14 @@ class LoadForwardAttempt : public LFAQueryable {
   SmallVector<std::string, 1> OverdefReasons;
   SmallVector<ValCtx, 8> DefOrClobberInstructions;
   SmallVector<ValCtx, 8> IgnoredClobbers;
+  SmallVector<IntegrationAttempt*, 8> TraversedCtxs;
 
   SmallSet<PeelAttempt*, 8> exploredLoops;
 
   PointerBase PB;
-  bool PBNeverClobbered;
-  bool PBDefined;
+  bool ReachedTop;
+  std::string ReachedTopStr;
+  bool CompletelyExplored;
   bool PBOptimistic;
   LoadForwardMode Mode;
 
@@ -1552,15 +1575,19 @@ class LoadForwardAttempt : public LFAQueryable {
   }
 
   bool PBIsViable() {
-    return (!PB.Overdef) && (PB.Values.size() > 0 || PBOptimistic);
+    return PBOptimistic || ((!PB.Overdef) && PB.Values.size() > 0);
   }
 
   bool PBIsOverdef() {
     return PB.Overdef;
   }
 
-  bool shouldTryOptimisticMode() {
-    return PBNeverClobbered && PBDefined;
+  void reachedTop(std::string s) {
+    
+    setPBOverdef(s);
+    ReachedTop = true;
+    ReachedTopStr = s;
+
   }
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, LoadForwardMode M, TargetData*, const Type* T = 0);
@@ -1637,7 +1664,6 @@ class LFARMapping {
  // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
 
- bool functionIsBlacklisted(Function*);
  bool isGlobalIdentifiedObject(ValCtx VC);
 
 } // Namespace LLVM

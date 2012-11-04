@@ -158,12 +158,14 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  IntegrationAttempt* parent) {
+					  IntegrationAttempt* parent,
+					  bool usePBKnowledge) {
       return MayAlias;
     }
 
     virtual AliasResult aliasHypothetical(ValCtx V1, unsigned V1Size,
-					  ValCtx V2, unsigned V2Size) {
+					  ValCtx V2, unsigned V2Size,
+					  bool usePBKnowledge) {
       return MayAlias;
     }
 
@@ -176,11 +178,11 @@ namespace {
 
     virtual bool pointsToConstantMemory(const Value *P) { return false; }
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                       const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0) {
+                                       const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true) {
       return ModRef;
     }
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
-				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
+				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0, bool usePBKnowledge = true) {
       return ModRef;
     }
 
@@ -297,7 +299,7 @@ namespace {
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size) {
 
-      return aliasHypothetical(V1, V1Size, V2, V2Size, 0);
+      return aliasHypothetical(V1, V1Size, V2, V2Size, 0, true);
 
     }
 
@@ -350,7 +352,7 @@ namespace {
 
     virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
 					  const Value *V2, unsigned V2Size,
-					  IntegrationAttempt* parent) {
+					  IntegrationAttempt* parent, bool usePBKnowledge) {
       
       assert(Visited.empty() && "Visited must be cleared after use!");
       assert(notDifferentParent(V1, V2) &&
@@ -358,7 +360,7 @@ namespace {
       AliasResult Alias;
       if(parent) {
 	Alias = aliasCheck(parent->getDefaultVC(const_cast<Value*>(V1)), V1Size, parent->getDefaultVC(const_cast<Value*>(V2)), V2Size);
-	if(Alias == MayAlias)
+	if(Alias == MayAlias && usePBKnowledge)
 	  Alias = tryResolvePointerBases(V1, parent, V2, parent);
       }
       else
@@ -369,12 +371,12 @@ namespace {
     }
 
     virtual AliasResult aliasHypothetical(ValCtx V1, unsigned V1Size,
-					  ValCtx V2, unsigned V2Size) {
+					  ValCtx V2, unsigned V2Size, bool usePBKnowledge) {
 
       // I think I can ignore the not-different assertion!
       assert(Visited.empty() && "Visited must be cleared after use!");
       AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
-      if(Alias == MayAlias && (V1.second || V2.second))
+      if(Alias == MayAlias && (V1.second || V2.second) && usePBKnowledge)
 	Alias = tryResolvePointerBases(V1.first, V1.second, V2.first, V2.second);
       Visited.clear();
       return Alias;
@@ -383,12 +385,12 @@ namespace {
 
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
                                        const Value *P, unsigned Size, 
-				       IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0);
+				       IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
 
     virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
-				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0) {
+				       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0, bool usePBKnowledge = true) {
       // The AliasAnalysis base class has some smarts, lets use them.
-      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx);
+      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx, usePBKnowledge);
     }
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
@@ -815,51 +817,55 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 AliasAnalysis::ModRefResult
 BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
                                   const Value *P, unsigned Size, 
-				  IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx) {
+				  IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
   assert((notDifferentParent(CS.getInstruction(), P) || (CSCtx && PCtx)) &&
          "AliasAnalysis query involving multiple functions!");
 
   // Either both values have a context or neither one does.
   assert(!!CSCtx == !!PCtx);
 
-  const Value *Object = P->getUnderlyingObject();
+  if(CSCtx == PCtx) {
+
+    const Value *Object = P->getUnderlyingObject();
   
-  // If this is a tail call and P points to a stack location, we know that
-  // the tail call cannot access or modify the local stack.
-  // We cannot exclude byval arguments here; these belong to the caller of
-  // the current function not to the current function, and a tail callee
-  // may reference them.
-  if (isa<AllocaInst>(Object))
-    if (const CallInst *CI = dyn_cast<CallInst>(CS.getInstruction()))
-      if (CI->isTailCall())
-        return NoModRef;
+    // If this is a tail call and P points to a stack location, we know that
+    // the tail call cannot access or modify the local stack.
+    // We cannot exclude byval arguments here; these belong to the caller of
+    // the current function not to the current function, and a tail callee
+    // may reference them.
+    if (isa<AllocaInst>(Object))
+      if (const CallInst *CI = dyn_cast<CallInst>(CS.getInstruction()))
+	if (CI->isTailCall())
+	  return NoModRef;
   
-  // If the pointer is to a locally allocated object that does not escape,
-  // then the call can not mod/ref the pointer unless the call takes the pointer
-  // as an argument, and itself doesn't capture it.
-  if (!isa<Constant>(Object) && CS.getInstruction() != Object &&
-      isNonEscapingLocalObject(Object)) {
-    bool PassedAsArg = false;
-    unsigned ArgNo = 0;
-    for (ImmutableCallSite::arg_iterator CI = CS.arg_begin(), CE = CS.arg_end();
-         CI != CE; ++CI, ++ArgNo) {
-      // Only look at the no-capture pointer arguments.
-      if (!(*CI)->getType()->isPointerTy() ||
-          !CS.paramHasAttr(ArgNo+1, Attribute::NoCapture))
-        continue;
+    // If the pointer is to a locally allocated object that does not escape,
+    // then the call can not mod/ref the pointer unless the call takes the pointer
+    // as an argument, and itself doesn't capture it.
+    if (!isa<Constant>(Object) && CS.getInstruction() != Object &&
+	isNonEscapingLocalObject(Object)) {
+      bool PassedAsArg = false;
+      unsigned ArgNo = 0;
+      for (ImmutableCallSite::arg_iterator CI = CS.arg_begin(), CE = CS.arg_end();
+	   CI != CE; ++CI, ++ArgNo) {
+	// Only look at the no-capture pointer arguments.
+	if (!(*CI)->getType()->isPointerTy() ||
+	    !CS.paramHasAttr(ArgNo+1, Attribute::NoCapture))
+	  continue;
       
-      // If  this is a no-capture pointer argument, see if we can tell that it
-      // is impossible to alias the pointer we're checking.  If not, we have to
-      // assume that the call could touch the pointer, even though it doesn't
-      // escape.
-      if (!isNoAlias(make_vc(const_cast<Value*>(cast<Value>(CI)), CSCtx), UnknownSize, make_vc(const_cast<Value*>(P), PCtx), UnknownSize)) {
-        PassedAsArg = true;
-        break;
+	// If  this is a no-capture pointer argument, see if we can tell that it
+	// is impossible to alias the pointer we're checking.  If not, we have to
+	// assume that the call could touch the pointer, even though it doesn't
+	// escape.
+	if (!isNoAlias(make_vc(const_cast<Value*>(cast<Value>(CI)), CSCtx), UnknownSize, make_vc(const_cast<Value*>(P), PCtx), UnknownSize, usePBKnowledge)) {
+	  PassedAsArg = true;
+	  break;
+	}
       }
-    }
     
-    if (!PassedAsArg)
-      return NoModRef;
+      if (!PassedAsArg)
+	return NoModRef;
+    }
+
   }
 
   // Finally, handle specific knowledge of intrinsics.
@@ -874,8 +880,8 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
         Len = LenCI->getZExtValue();
       Value *Dest = II->getArgOperand(0);
       Value *Src = II->getArgOperand(1);
-      if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size)) {
-        if (isNoAlias(make_vc(Src, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size))
+      if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge)) {
+        if (isNoAlias(make_vc(Src, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
           return NoModRef;
         return Ref;
       }
@@ -887,7 +893,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(make_vc(II->getArgOperand(2), CSCtx)))) {
         unsigned Len = LenCI->getZExtValue();
         Value *Dest = II->getArgOperand(0);
-        if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size))
+        if (isNoAlias(make_vc(Dest, CSCtx), Len, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
           return NoModRef;
       }
       break;
@@ -906,7 +912,7 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
       if (TD) {
         Value *Op1 = II->getArgOperand(0);
         unsigned Op1Size = TD->getTypeStoreSize(Op1->getType());
-        if (isNoAlias(make_vc(Op1, CSCtx), Op1Size, make_vc(const_cast<Value*>(P), PCtx), Size))
+        if (isNoAlias(make_vc(Op1, CSCtx), Op1Size, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
           return NoModRef;
       }
       break;
@@ -915,21 +921,21 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
     case Intrinsic::invariant_start: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(0))->getZExtValue();
-      if (isNoAlias(make_vc(II->getArgOperand(1), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size))
+      if (isNoAlias(make_vc(II->getArgOperand(1), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
         return NoModRef;
       break;
     }
     case Intrinsic::invariant_end: {
       unsigned PtrSize =
         cast<ConstantInt>(II->getArgOperand(1))->getZExtValue();
-      if (isNoAlias(make_vc(II->getArgOperand(2), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size))
+      if (isNoAlias(make_vc(II->getArgOperand(2), CSCtx), PtrSize, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
         return NoModRef;
       break;
     }
     }
 
   // The AliasAnalysis base class has some smarts, lets use them.
-  return AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx);
+  return AliasAnalysis::getModRefInfo(CS, P, Size, CSCtx, PCtx, usePBKnowledge);
 }
 
 
