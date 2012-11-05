@@ -226,6 +226,9 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 
 	if(ReturnInst* RI = dyn_cast<ReturnInst>(it->getTerminator())) {
 
+	  if(IA->blockIsDead(RI->getParent()))
+	    continue;
+	  
 	  Vals.push_back(std::make_pair(make_vc(RI->getOperand(0), IA), RI));
 
 	}
@@ -241,8 +244,11 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
   else {
 
     PHINode* PN = cast<PHINode>(I);
-    for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i)
+    for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
+      if(blockIsDead(PN->getIncomingBlock(i)))
+	continue;
       Vals.push_back(std::make_pair(make_vc(PN->getIncomingValue(i), this), PN));
+    }
 
   }
 
@@ -629,10 +635,10 @@ void IntegrationAttempt::localCFGChanged() {
 bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
 
   LoadForwardAttempt Attempt(LI, this, LFMPB, TD);
+  // In pessimistic mode, PB exploration stops early when it becomes hopeless.
   Attempt.PBOptimistic = !finalise;
   Attempt.CompletelyExplored = !finalise;
   Attempt.ReachedTop = false;
-  // In pessimistic mode, PB exploration stops early when it becomes hopeless.
 
   pass->PBLFAs++;
 
@@ -1093,6 +1099,16 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
 
   if(getLoopContext() == IL) {
 
+    if(blockIsDead(I->getParent()))
+      return;
+
+    if(getValueScope(I) == getLoopContext() && !isUnresolved(I)) {
+
+      // No point investigating instructions whose concrete values are already known.
+      return;
+
+    }
+
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
@@ -1146,17 +1162,20 @@ void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, 
 void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
 
   const Loop* MyL = getLoopContext();
+  bool investigateHere = true;
 
-  // Investigate here:
-  queueUsersUpdatePBFalling(I, MyL, V);
-  
-  // And at inner contexts if possible.
   if(TargetL != MyL) {
 
-    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(getLoopContext(), TargetL)))
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(getLoopContext(), TargetL))) {
+      if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
+	investigateHere = false;
       PA->queueUsersUpdatePBRising(I, TargetL, V);
+    }
 
   }
+
+  if(investigateHere)
+    queueUsersUpdatePBFalling(I, MyL, V);
 
 }
 
@@ -1178,16 +1197,21 @@ void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
   if(PB.Type == ValSetTypeScalar) {
     if(PB.Values.size() == 1) {
 
-      // Feed the result to the ordinary constant folder, until the two get merged.
-      setReplacement(V, PB.Values[0]);
-      investigateUsers(V);
+      if(getValueScope(V) == getLoopContext()) {
+	// Feed the result to the ordinary constant folder, until the two get merged.
+	setReplacement(V, PB.Values[0]);
+	investigateUsers(V);
+      }
 
     }
   }
   else {
     // Set of pointer bases. Retry any load that might benefit (i.e. those at the affected scope
     // and its children).
-    investigateUsers(V);
+    if(Instruction* I = dyn_cast<Instruction>(V)) {
+      if(shouldQueueOnInst(I, this))
+	queueWorkBlockedOn(I);
+    }
   }
 
 }
@@ -1197,31 +1221,27 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
   if(!isUnresolved(V))
     return;
 
-  //  if(isa<LoadInst>(V)) {
-    
-    const Loop* MyL = getLoopContext();
-    const Loop* VL = getValueScope(V);
+  const Loop* MyL = getLoopContext();
+  const Loop* VL = getValueScope(V);
 				     
-    if(MyL != VL) {
+  if(MyL != VL) {
 
-      // Check if there's a terminated loop above us which would cause this query
-      // to malfunction (we'd jump into the last iteration without transiting
-      // an exit edge; to fix?)
+    // Check if there's a terminated loop above us which would cause this query
+    // to malfunction (we'd jump into the last iteration without transiting
+    // an exit edge; to fix?)
 
-      // Extend this to all values: if there's a terminated loop we can just identify its value
-      // per iteration as usual.
+    // Extend this to all values: if there's a terminated loop we can just identify its value
+    // per iteration as usual.
 
-      if(MyL && !MyL->contains(VL))
+    if(MyL && !MyL->contains(VL))
+      return;
+
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyL, VL))) {
+
+      if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
 	return;
 
-      if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyL, VL))) {
-
-	if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
-	  return;
-
-      }
-
-      //    }
+    }
 
   }
 

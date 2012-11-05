@@ -416,11 +416,46 @@ void PeelAttempt::setEnabled(bool en) {
 
 }
 
+bool IntegrationAttempt::isVararg() {
+
+  return (!getLoopContext()) && F.isVarArg();
+
+}
+
 bool IntegrationAttempt::isAvailable() {
 
+  // Not enabled?
+  if(!isEnabled())
+    return false;
+
+  // Not getting inlined/unrolled at all?
   if(parent && !parent->isAvailable())
     return false;
-  return isEnabled();
+
+  return true;
+
+}
+
+bool IntegrationAttempt::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
+
+  if(!isAvailable())
+    return false;
+
+  // Values not directly available due to intervening varargs?
+  // Walk ourselves and the other down til we hit a varargs barrier.
+  IntegrationAttempt* AvailCtx1 = this;
+  while(AvailCtx1 && !AvailCtx1->isVararg())
+    AvailCtx1 = AvailCtx1->parent;
+
+  IntegrationAttempt* AvailCtx2 = OtherIA;
+  while(AvailCtx2 && !AvailCtx2->isVararg())
+    AvailCtx2 = AvailCtx2->parent;
+
+  // If we hit different barriers we'll end up integrated into different functions.
+  if(AvailCtx1 != AvailCtx2)
+    return false;
+
+  return true;
 
 }
 
@@ -442,6 +477,8 @@ void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
 
     if(LI && isa<Instruction>(it->second.first)) {
 
+      // No need for isAvailableFromCtx, as were that true it wouldn't be dead to begin with
+      // as iAFC would have returned false all along.
       if(revert) {
 	if(!it->second.second->isAvailable()) {
 

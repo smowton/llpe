@@ -1114,6 +1114,8 @@ protected:
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
   bool isAvailable();
+  bool isAvailableFromCtx(IntegrationAttempt*);
+  bool isVararg();
   void revertDSEandDAE();
   void revertDeadValue(Value*);
   void tryKillAndQueue(Instruction*);
@@ -1665,7 +1667,7 @@ class LFARMapping {
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
 
  bool isGlobalIdentifiedObject(ValCtx VC);
-
+ bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
 } // Namespace LLVM
 
 #endif

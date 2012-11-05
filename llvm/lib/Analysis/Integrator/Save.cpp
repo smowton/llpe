@@ -721,6 +721,9 @@ void IntegrationAttempt::foldVFSCalls() {
     }
 
     // Insert a seek call if the next user isn't resolved:
+    // No need for isAvailableFromCtx here and several more times in the VFS resolution
+    // code because we just want to know if the next user will be folded, we don't need to
+    // actually forward values there.
     if(it->second.NextUser == VCNull || !it->second.NextUser.second->isAvailable()) {
 
       const Type* Int64Ty = IntegerType::get(Context, 64);
@@ -937,7 +940,7 @@ void IntegrationAttempt::commitLocalPointers() {
     if(isa<Constant>(it->second.first))
       continue;
 
-    if(!it->second.second->isAvailable())
+    if(!it->second.second->isAvailableFromCtx(this))
       continue;
 
     if(it->second.isPtrAsInt())
@@ -959,6 +962,13 @@ void IntegrationAttempt::commitLocalPointers() {
     //assert(replaceWith && "Couldn't get a replacement for a resolved pointer!");
 
     I = cast<Instruction>(VI->second);
+
+    if(I->getType() != replaceWith->getType()) {
+
+      assert(I->getType()->isPointerTy() && replaceWith->getType()->isPointerTy());
+      replaceWith = new BitCastInst(replaceWith, I->getType(), "speccast", I);
+
+    }
 
     I->replaceAllUsesWith(replaceWith);
     I->eraseFromParent();

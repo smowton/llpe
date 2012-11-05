@@ -348,6 +348,7 @@ Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
 // Only ever called on things that belong in this scope, thanks to shouldIgnoreBlock et al.
 void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
 
+  assert(getValueScope(V) == getLoopContext());
   improvedValues[V] = R;
 
 }
@@ -1555,6 +1556,8 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 
   LPDEBUG("Trying to forward load: " << itcache(*LoadI) << "\n");
 
+  assert(getValueScope(LoadI) == getLoopContext());
+
   LoadForwardAttempt Attempt(LoadI, this, LFMNormal, TD);
 
   ValCtx ConstResult;
@@ -2136,7 +2139,11 @@ void IntegrationAttempt::addBlockedLoad(Instruction* BlockedOn, IntegrationAttem
 }
 
 void IntegrationAttempt::addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
-
+  
+  // This is probably a LFAPB attempt. Don't record it here because we'd inappropriately
+  // retry in the wrong scope.
+  if(RetryCtx->getValueScope(RetryLI) != RetryCtx->getLoopContext())
+    return;
   CFGBlockedLoads.push_back(std::make_pair(RetryCtx, RetryLI));
 
 }
@@ -4289,6 +4296,7 @@ DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Fu
 void IntegrationHeuristicsPass::queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
 
   assert(ctx && val && "Queued a null value");
+  assert(ctx->getLoopContext() == ctx->getValueScope(val));
   produceQueue->push_back(IntegratorWQItem(ctx, val));
      
 }
@@ -4303,6 +4311,7 @@ void IntegrationHeuristicsPass::queueCheckBlock(IntegrationAttempt* ctx, BasicBl
 void IntegrationHeuristicsPass::queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
 
   assert(ctx && LI && "Queued a null load");
+  assert(ctx->getLoopContext() == ctx->getValueScope(LI));
   produceQueue->push_back(IntegratorWQItem(ctx, LI));
 
 }

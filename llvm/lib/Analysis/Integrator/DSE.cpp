@@ -319,7 +319,7 @@ bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx
 
 	ValCtx Res = getReplacement(LI);
 
-	if(Res == getDefaultVC(LI) || (Res.second && ((!Res.second->isAvailable()) || (Res.isVaArg())))) {
+	if(Res == getDefaultVC(LI) || (Res.second && ((!Res.second->isAvailableFromCtx(StorePtr.second)) || (Res.isVaArg())))) {
 	  
 	  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
 	  if(R != AliasAnalysis::NoAlias) {

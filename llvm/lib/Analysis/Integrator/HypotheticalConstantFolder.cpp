@@ -1609,7 +1609,7 @@ void PeelIteration::queueTryEvaluateOwnCall() {
 
 }
 
-static bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx) {
+bool llvm::shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx) {
 
   if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
@@ -1930,10 +1930,24 @@ bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
   // The other value will be replaced with this V, so it will remain a user.
   if(VC == OtherVC)
     return false;
-  if(VC != getDefaultVC(V) && (!VC.isVaArg()) && (!VC.isPtrAsInt()) && ((!VC.second) || VC.second->isAvailable()))
-    return true;
 
-  return false;
+  // Didn't improve?
+  if(VC == getDefaultVC(V))
+    return false;
+
+  // Value types that don't get replaced on commit:
+  if(VC.isVaArg())
+    return false;
+  if(VC.isPtrAsInt())
+    return false;
+
+  // Will we be able to fold the replacement?
+  if(VC.second) {
+    if(!VC.second->isAvailableFromCtx(this))
+      return false;
+  }
+
+  return true;
 
 }
 
