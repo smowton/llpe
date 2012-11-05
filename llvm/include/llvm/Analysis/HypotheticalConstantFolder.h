@@ -76,7 +76,7 @@ typedef struct {
 } ValCtx;
 
 inline bool operator==(ValCtx V1, ValCtx V2) {
-  return V1.first == V2.first && V1.second == V2.second;
+  return V1.first == V2.first && V1.second == V2.second && V1.offset == V2.offset && V1.va_arg == V2.va_arg;
 }
 
 inline bool operator!=(ValCtx V1, ValCtx V2) {
@@ -84,7 +84,16 @@ inline bool operator!=(ValCtx V1, ValCtx V2) {
 }
 
 inline bool operator<(ValCtx V1, ValCtx V2) {
-  return V1.first < V2.first || (V1.first == V2.first && V1.second < V2.second);
+  if(V1.first != V2.first)
+    return V1.first < V2.first;
+
+  if(V1.second != V2.second)
+    return V1.second < V2.second;
+
+  if(V1.offset != V2.offset)
+    return V1.offset < V2.offset;
+
+  return V1.va_arg < V2.va_arg;
 }
 
 inline bool operator<=(ValCtx V1, ValCtx V2) {
@@ -380,7 +389,7 @@ raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
  
-inline ValCtx make_vc(Value* V, IntegrationAttempt* H, uint64_t Off = ValCtx::noOffset, uint64_t VaArg = ValCtx::noOffset) {
+inline ValCtx make_vc(Value* V, IntegrationAttempt* H, int64_t Off = ValCtx::noOffset, int64_t VaArg = ValCtx::noOffset) {
 
   ValCtx newCtx = {V, H, Off, VaArg};
   return newCtx;
@@ -809,8 +818,8 @@ protected:
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
   virtual bool blockIsDead(BasicBlock*);
 
-  // Helpers for the above:
-
+  Function& getFunction() { return F; }
+  
   const Loop* getValueScope(Value*);
   ValCtx getLocalReplacement(Value*);
   ValCtx getReplacementUsingScope(Value* V, const Loop* LScope);
@@ -878,6 +887,7 @@ protected:
   ValCtx tryFoldPtrToInt(Instruction*);
   ValCtx tryFoldIntToPtr(Instruction*);
   bool tryFoldPtrAsIntOp(BinaryOperator*, ValCtx&);
+  //bool tryFoldVarargAdd(BinaryOperator*, ValCtx&);
 
   // CFG analysis:
 
@@ -1668,6 +1678,8 @@ class LFARMapping {
 
  bool isGlobalIdentifiedObject(ValCtx VC);
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
+ uint32_t getInitialBytesOnStack(Function& F);
+
 } // Namespace LLVM
 
 #endif

@@ -681,6 +681,9 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
   BasicBlock* BB = PN->getParent();
   ValCtx onlyValue = VCNull;
 
+  if(getIterCount() == 4)
+    errs() << "Start\n";
+
   if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
     LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
@@ -711,6 +714,10 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 	predValue = getReplacement(oldValue);
 
       }
+
+      if(getIterCount() == 4)
+	errs() << predValue.va_arg << "\n";
+
       if(onlyValue == VCNull)
 	onlyValue = predValue;
       else if(onlyValue != predValue) {
@@ -721,6 +728,10 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
     }
     
   }
+
+  if(getIterCount() == 4)
+    errs() << "End\n";
+
   if(onlyValue.first && shouldForwardValue(onlyValue)) {
     LPDEBUG("Improved to " << itcache(onlyValue) << "\n");
     return onlyValue;
@@ -1239,6 +1250,27 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved
   return false;
 
 }
+/*
+bool IntegrationAttempt::tryFoldVarargAdd(BinaryOperator* BOp, ValCtx& Improved) {
+
+  if(BOp->getOpcode() != Instruction::Add)
+    return false;
+
+  ValCtx LHS = getReplacement(BOp->getOperand(0));
+  ValCtx RHS = getReplacement(BOp->getOperand(1));
+
+  if(LHS.isVaArg() && isa<Constant>(RHS.first)) {
+
+    LPDEBUG("Adding " << itcache(RHS) << " to " << itcache(LHS) << " to bump vaarg offset\n");
+    Improved = make_vc(LHS.first, LHS.second, ValCtx::noOffset, LHS.va_arg + 1);
+    return true;
+
+  }
+
+  return false;
+
+}
+*/
 
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
@@ -1504,11 +1536,30 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	ValCtx Base = getReplacement(GEP->getPointerOperand());
 	if(Base.isVaArg()) {
 
-	  if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices() && isa<Constant>(GEP->idx_begin())) {
+	  if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
 
-	    LPDEBUG("Assuming GEP " << itcache(*GEP) << " bumps vararg " << itcache(Base) << " " << Base.va_arg << "\n");
-	    Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, Base.va_arg + 1);
-	    tryConstFold = false;
+	    if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(*(GEP->idx_begin())))) {
+
+	      uint64_t GEPOff = CI->getLimitedValue();
+	      assert(GEPOff % 8 == 0);
+	      Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, (Base.va_arg + (GEPOff / 8)));
+	      tryConstFold = false;
+
+	    }
+	    /*
+	    else {
+	      ValCtx OpRepl = getReplacement(*(GEP->idx_begin()));
+	      if(OpRepl.isVaArg()) {
+
+		assert(OpRepl.first == Base.first && OpRepl.second == Base.second);
+		LPDEBUG("Assuming GEP " << itcache(*GEP) << " idx by symbolic offset " << itcache(OpRepl) << " is vararg indexing operation\n");
+		Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, Base.va_arg + OpRepl.va_arg);
+		tryConstFold = false;
+
+	      }	      
+
+	    }
+	    */
 
 	  }
 	  
@@ -1518,7 +1569,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
       else if(BinaryOperator* BOp = dyn_cast<BinaryOperator>(I)) {
 
-	tryConstFold = !tryFoldPtrAsIntOp(BOp, Improved);
+	tryConstFold = /*(!tryFoldVarargAdd(BOp, Improved)) && */(!tryFoldPtrAsIntOp(BOp, Improved));
 	    
       }
 

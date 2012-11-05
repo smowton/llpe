@@ -320,6 +320,35 @@ PartialVal IntegrationAttempt::tryForwardFromCopy(LoadForwardAttempt& LFA, ValCt
 
 }
 
+uint32_t llvm::getInitialBytesOnStack(Function& F) {
+
+  uint32_t total = 0;
+
+  for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
+
+    // AFAIK the rules are: pointers and integer types take up 8 bytes.
+    // FP types take up nothing.
+
+    const Type* T = AI->getType();
+    if(T->isPointerTy())
+      total += 8;
+    else if(T->isIntegerTy())
+      total += 8;
+    else if(T->isFloatingPointTy()) {
+
+    }
+    else {
+
+      assert(0 && "Unhandled vararg argument type");
+
+    }
+
+  }
+
+  return total;
+
+}
+
 // Try to improve a load which got clobbered. Cope with cases where:
 // * It's defined by a store that subsumes but is not identical to the load
 // * It's defined by a memcpy in similar fashion
@@ -521,28 +550,32 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(0), Clobber.second, 24*8, FirstDef, FirstNotDef, loadOffset))
 	return PVNull;
 
+      int32_t initialOffset = getInitialBytesOnStack(Clobber.second->getFunction());
+
       if(loadOffset == 0) {
 	
-	LPDEBUG("Load from va_start field 0: return 100\n");
-	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt64Ty(CI->getContext()), 100)));
-
+	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
+	// Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
+	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
       }
       else if(loadOffset == 4) {
 
-	LPDEBUG("Load from va_start field 1: return 0\n");
-	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt8Ty(CI->getContext()), 100)));
+	LPDEBUG("Load from va_start field 1!\n");
+	assert(0 && "vaarg field 1 accessed?");
 
       }
       else if(loadOffset == 8) {
 
-	LPDEBUG("Load from va_start field 2: return va_arg ptr\n");
-	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, 0));
+	LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
+	// Pointer to first vararg, or first vararg after 48 bytes of real args.
+	int64_t initialVararg = initialOffset >= 48 ? 0 : ((48 - initialOffset) / 8);
+	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
 
       }
       else if(loadOffset == 16) {
-
-	LPDEBUG("Load from va_start field 3: return null ptr\n");
-	return PartialVal::getTotal(const_vc(Constant::getNullValue(Type::getInt8PtrTy(CI->getContext()))));
+	LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
+	int64_t initialVararg = -(initialOffset / 8);
+	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
 
       }
 
