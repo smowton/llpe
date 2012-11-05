@@ -370,9 +370,8 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
   { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
   { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
-  //  { "_charpad", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, CharPadMR, 0 },
-  //  { "fputs_unlocked", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FputsMR, 0 },
-  //  { "__stdio_fwrite", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, StdioFwriteMR, 0 },
+  { "__libc_fcntl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "posix_fadvise", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

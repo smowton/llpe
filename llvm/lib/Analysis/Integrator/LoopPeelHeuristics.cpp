@@ -576,7 +576,7 @@ bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
 
   if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
 
-    if(PeelAttempt* LPA = getPeelAttempt(BlockL)) {
+    if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyL, BlockL))) {
 
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
       if(FinalIter->isOnlyExitingIteration()) {
@@ -623,7 +623,9 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "write" || 
 	  F->getName() == "__time_localtime_tzi" ||
 	  F->getName() == "memset_byte_fn" ||
-	  F->getName() == "nl_langinfo");
+	  F->getName() == "nl_langinfo" ||
+	  F->getName() == "__libc_fcntl" ||
+	  F->getName() == "posix_fadvise");
 
 }
 

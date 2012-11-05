@@ -245,7 +245,7 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 
     PHINode* PN = cast<PHINode>(I);
     for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
-      if(blockIsDead(PN->getIncomingBlock(i)))
+      if(edgeIsDead(PN->getIncomingBlock(i), PN->getParent()))
 	continue;
       Vals.push_back(std::make_pair(make_vc(PN->getIncomingValue(i), this), PN));
     }
