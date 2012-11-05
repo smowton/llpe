@@ -1853,6 +1853,9 @@ void PeelIteration::visitVariant(Instruction* VI, const Loop* VILoop, VisitorCon
 
 void PeelAttempt::visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor) {
 
+  if(Iterations.back()->iterStatus != IterationStatusFinal)
+    Visitor.notifyUsersMissed();
+
   // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
   if(VILoop == L && VI->getParent() == L->getHeader() && isa<PHINode>(VI)) {
 

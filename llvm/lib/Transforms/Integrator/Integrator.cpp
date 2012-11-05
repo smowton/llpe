@@ -366,7 +366,7 @@ public:
 };
 
 IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, const wxSize& size)
-  : wxFrame(NULL, -1, title, pos, size), brief(true) {
+  : wxFrame(NULL, -1, title, pos, size), currentIA(0), brief(true) {
 
   if(!mkdtemp(workdir)) {
     errs() << "Failed to create a temporary directory: " << strerror(errno) << "\n";
