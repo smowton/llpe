@@ -349,6 +349,103 @@ uint32_t llvm::getInitialBytesOnStack(Function& F) {
 
 }
 
+uint32_t llvm::getInitialFPBytesOnStack(Function& F) {
+
+  uint32_t total = 0;
+
+  for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
+
+    // FP types take up 16 bytes
+    // Other types fill no space.
+
+    const Type* T = AI->getType();
+    if(T->isPointerTy())
+      total += 0;
+    else if(T->isIntegerTy())
+      total += 0;
+    else if(T->isFloatingPointTy()) {
+      total += 16;
+    }
+    else {
+
+      assert(0 && "Unhandled vararg argument type");
+
+    }
+
+  }
+
+  return total;
+
+}
+
+int64_t IntegrationAttempt::getSpilledVarargAfter(CallInst* CI, int64_t OldArg) {
+
+  Function* F = getCalledFunction(CI);
+  assert(F && F->isVarArg());
+
+  int32_t nonFPBytesLeft = 48;
+  int32_t FPBytesLeft = 128;
+
+  nonFPBytesLeft -= getInitialBytesOnStack(*F);
+  FPBytesLeft -= getInitialFPBytesOnStack(*F);
+
+  bool returnNext = (OldArg == ValCtx::not_va_arg);
+
+  // For each vararg:
+  unsigned nonFPArgs = 0;
+  unsigned FPArgs = 0;
+  for(unsigned i = F->getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
+
+    const Type* T = CI->getArgOperand(i)->getType();
+    if(T->isPointerTy() || T->isIntegerTy()) {
+
+      if(nonFPBytesLeft <= 0) {
+	if(returnNext)
+	  return nonFPArgs;
+	else if(OldArg == nonFPArgs)
+	  returnNext = true;
+      }
+      nonFPBytesLeft -= 8;
+      nonFPArgs++;
+
+    }
+    else if(T->isFloatingPointTy()) {
+      
+      if(FPBytesLeft <= 0) {
+	if(returnNext)
+	  return (FPArgs + ValCtx::first_fp_arg);
+	else if(OldArg == FPArgs + ValCtx::first_fp_arg)
+	  returnNext = true;
+      }
+      FPBytesLeft -= 16;
+      FPArgs++;
+
+    }
+    else {
+
+      assert(0 && "Unhandled vararg type");
+
+    }
+
+  }
+
+  return ValCtx::not_va_arg;
+
+}
+
+int64_t InlineAttempt::getSpilledVarargAfter(int64_t arg) {
+
+  return parent->getSpilledVarargAfter(CI, arg);
+  
+}
+
+static int64_t getFirstSpilledVararg(IntegrationAttempt* IA) {
+
+  InlineAttempt* BaseIA = IA->getFunctionRoot();
+  return BaseIA->getSpilledVarargAfter(ValCtx::not_va_arg);
+
+}
+
 // Try to improve a load which got clobbered. Cope with cases where:
 // * It's defined by a store that subsumes but is not identical to the load
 // * It's defined by a memcpy in similar fashion
@@ -551,6 +648,7 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 	return PVNull;
 
       int32_t initialOffset = getInitialBytesOnStack(Clobber.second->getFunction());
+      int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(Clobber.second->getFunction());
 
       if(loadOffset == 0) {
 	
@@ -560,22 +658,24 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       }
       else if(loadOffset == 4) {
 
-	LPDEBUG("Load from va_start field 1!\n");
-	assert(0 && "vaarg field 1 accessed?");
+	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
+	// Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
+	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
 
       }
       else if(loadOffset == 8) {
 
 	LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
 	// Pointer to first vararg, or first vararg after 48 bytes of real args.
-	int64_t initialVararg = initialOffset >= 48 ? 0 : ((48 - initialOffset) / 8);
+	int64_t initialVararg = getFirstSpilledVararg(Clobber.second);
+	if(initialVararg == ValCtx::not_va_arg)
+	  return PVNull;
 	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
 
       }
       else if(loadOffset == 16) {
 	LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-	int64_t initialVararg = -(initialOffset / 8);
-	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
+	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, ValCtx::va_baseptr));
 
       }
 

@@ -38,10 +38,10 @@ int vf(int n, va_list l) {
 
 }
 
-int f(int n, ...) {
+int f(int n, char crap, char crap2, ...) {
 
 	va_list l;
-	va_start(l, n);
+	va_start(l, crap2);
 
 	int ret = vf(n, l);
 
@@ -53,6 +53,6 @@ int f(int n, ...) {
 
 int main(int argc, char** argv) {
 
-	return f(5, 1, 2, 3, 4, 5);
+	return f(5, 'x', 'y', 1, 2, 3, 4, 5);
 
 }

@@ -56,6 +56,15 @@ template<class> class DominatorTreeBase;
 class BBWrapper;
 template<class> class DomTreeNodeBase;
 
+enum va_arg_type {
+  
+  va_arg_type_none,
+  va_arg_type_baseptr,
+  va_arg_type_fp,
+  va_arg_type_nonfp
+
+};
+
 typedef struct { 
 
   Value* first; 
@@ -65,12 +74,47 @@ typedef struct {
 
   static const int64_t noOffset = LLONG_MAX;
 
+  // Values of va_arg:
+  static const int64_t not_va_arg = -1;
+  static const int64_t va_baseptr = -2;
+  static const int64_t first_nonfp_arg = 0;
+  static const int64_t first_fp_arg = 0x00010000;
+  static const int64_t max_arg = 0x00020000;
+
   bool isPtrAsInt() {
     return offset != noOffset;
   }
 
   bool isVaArg() {
-    return va_arg != noOffset;
+    return va_arg != not_va_arg;
+  }
+
+  int getVaArgType() {
+
+    if(va_arg == not_va_arg)
+      return va_arg_type_none;
+    else if(va_arg == va_baseptr)
+      return va_arg_type_baseptr;
+    else if(va_arg >= first_nonfp_arg && va_arg < first_fp_arg)
+      return va_arg_type_nonfp;
+    else if(va_arg >= first_fp_arg && va_arg < max_arg)
+      return va_arg_type_fp;
+    else
+      assert(0 && "Bad va_arg value\n");
+
+  }
+
+  int64_t getVaArg() {
+
+    switch(getVaArgType()) {
+    case va_arg_type_fp:
+      return va_arg - first_fp_arg;
+    case va_arg_type_nonfp:
+      return va_arg;
+    default:
+      assert(0);
+    }
+
   }
 
 } ValCtx;
@@ -389,7 +433,7 @@ raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
 #define VCNull (make_vc(0, 0))
  
-inline ValCtx make_vc(Value* V, IntegrationAttempt* H, int64_t Off = ValCtx::noOffset, int64_t VaArg = ValCtx::noOffset) {
+inline ValCtx make_vc(Value* V, IntegrationAttempt* H, int64_t Off = ValCtx::noOffset, int64_t VaArg = ValCtx::not_va_arg) {
 
   ValCtx newCtx = {V, H, Off, VaArg};
   return newCtx;
@@ -1023,7 +1067,8 @@ protected:
   // Load forwarding extensions for varargs:
   void queueBlockedVAs();
   void blockVA(ValCtx);
-  virtual void getVarArg(uint64_t, ValCtx&) = 0;
+  virtual void getVarArg(int64_t, ValCtx&) = 0;
+  int64_t getSpilledVarargAfter(CallInst* CI, int64_t OldArg);
   
   // Dead store and allocation elim:
 
@@ -1299,7 +1344,7 @@ public:
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
   virtual void localPrepareCommit();
 
-  virtual void getVarArg(uint64_t, ValCtx&);
+  virtual void getVarArg(int64_t, ValCtx&);
 
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
 
@@ -1478,7 +1523,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
 
-  virtual void getVarArg(uint64_t, ValCtx&);
+  virtual void getVarArg(int64_t, ValCtx&);
 
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
 
@@ -1488,6 +1533,8 @@ class InlineAttempt : public IntegrationAttempt {
   void queueUpdateCall();
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
+
+  int64_t getSpilledVarargAfter(int64_t arg);
 
   virtual int getIterCount() {
     return -1;
@@ -1679,6 +1726,7 @@ class LFARMapping {
  bool isGlobalIdentifiedObject(ValCtx VC);
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
  uint32_t getInitialBytesOnStack(Function& F);
+ uint32_t getInitialFPBytesOnStack(Function& F);
 
 } // Namespace LLVM
 

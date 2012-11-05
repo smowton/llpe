@@ -681,9 +681,6 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
   BasicBlock* BB = PN->getParent();
   ValCtx onlyValue = VCNull;
 
-  if(getIterCount() == 4)
-    errs() << "Start\n";
-
   if(!getLoopHeaderPHIValue(PN, onlyValue)) {
 
     LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
@@ -715,9 +712,6 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
 
       }
 
-      if(getIterCount() == 4)
-	errs() << predValue.va_arg << "\n";
-
       if(onlyValue == VCNull)
 	onlyValue = predValue;
       else if(onlyValue != predValue) {
@@ -728,9 +722,6 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
     }
     
   }
-
-  if(getIterCount() == 4)
-    errs() << "End\n";
 
   if(onlyValue.first && shouldForwardValue(onlyValue)) {
     LPDEBUG("Improved to " << itcache(onlyValue) << "\n");
@@ -1542,7 +1533,37 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	      uint64_t GEPOff = CI->getLimitedValue();
 	      assert(GEPOff % 8 == 0);
-	      Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, (Base.va_arg + (GEPOff / 8)));
+	      GEPOff /= 8;
+
+	      int64_t newVaArg;
+	      switch(Base.getVaArgType()) {
+	      case va_arg_type_baseptr:
+		// This is indexing off the frame base pointer.
+		// Determine which zone it's in:
+		if(GEPOff < 6) {
+		  // Non-FP zone:
+		  newVaArg = GEPOff - (getInitialBytesOnStack(Base.second->getFunction()) / 8);
+		}
+		else if(GEPOff >= 6 && GEPOff < 22) {
+		  newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(Base.second->getFunction()) / 16)) + ValCtx::first_fp_arg;
+		}
+		else {
+		  newVaArg = ValCtx::not_va_arg;
+		}
+		break;
+	      case va_arg_type_fp:
+	      case va_arg_type_nonfp:
+		assert(GEPOff == 1);
+		// In the spilled zone. Find the next spilled argument:
+		newVaArg = Base.second->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
+		break;
+	      default:
+		assert(0);
+	      }
+
+	      if(newVaArg != ValCtx::not_va_arg) {
+		Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, newVaArg);
+	      }
 	      tryConstFold = false;
 
 	    }

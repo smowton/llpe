@@ -1407,7 +1407,7 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
   while(!isGlobalIdentifiedObject(Ultimate)) {
 
     ValCtx New;
-    New = make_vc(Ultimate.first->getUnderlyingObject(), Ultimate.second);
+    New = make_vc(Ultimate.first->getUnderlyingObject(), Ultimate.second, ValCtx::noOffset, Ultimate.va_arg);
     if(New.second)
       New = New.second->getReplacement(New.first);
  
@@ -1440,23 +1440,45 @@ void IntegrationAttempt::queueBlockedVAs() {
 
 }
 
-void InlineAttempt::getVarArg(uint64_t idx, ValCtx& Result) {
+void InlineAttempt::getVarArg(int64_t idx, ValCtx& Result) {
 
-  if(idx >= (CI->getNumArgOperands() - F.arg_size())) {
+  unsigned numNonFPArgs = 0;
+  unsigned numFPArgs = 0;
+
+  Value* Found = 0;
+
+  for(unsigned i = F.arg_size(); i < CI->getNumArgOperands(); ++i) {
+
+    Value* Arg = CI->getArgOperand(i);
+    if(Arg->getType()->isPointerTy() || Arg->getType()->isIntegerTy()) {
+      if(idx < ValCtx::first_fp_arg && idx == numNonFPArgs) {
+	Found = Arg;
+	break;
+      }
+      numNonFPArgs++;
+    }
+    else if(Arg->getType()->isFloatingPointTy()) {
+      if(idx >= ValCtx::first_fp_arg && (idx - ValCtx::first_fp_arg) == numFPArgs) {
+	Found = Arg;
+	break;
+      }
+      numFPArgs++;
+    }
+
+  }
+
+  if(Found)
+    Result = parent->getReplacement(Found);
+  else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
     Result = VCNull;
 
   }
-  else {
-
-    Result = parent->getReplacement(CI->getArgOperand(F.arg_size() + idx));
-
-  }
 
 }
 
-void PeelIteration::getVarArg(uint64_t idx, ValCtx& Result) {
+void PeelIteration::getVarArg(int64_t idx, ValCtx& Result) {
 
   parent->getVarArg(idx, Result);
 
@@ -1469,11 +1491,15 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
   ValCtx LPtr = getReplacement(LoadI->getPointerOperand());
   LPtr = make_vc(LPtr.first->stripPointerCasts(), LPtr.second, LPtr.offset, LPtr.va_arg);
 
-  if(LPtr.isVaArg()) {
+  if(LPtr.isVaArg() && LPtr.getVaArgType() != ValCtx::va_baseptr) {
     
     LPtr.second->getVarArg(LPtr.va_arg, Result);
     LPDEBUG("va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n");
-    // Is this va_arg read out of bounds?
+    
+    if(Result.first && Result.first->getType() != LoadI->getType())
+      Result = VCNull;
+
+    // Is this va_arg read out of bounds or wrong type?
     if(Result == VCNull)
       return true;
 
