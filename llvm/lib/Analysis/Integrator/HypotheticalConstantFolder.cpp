@@ -1133,9 +1133,9 @@ ValCtx IntegrationAttempt::getPtrAsIntReplacement(Value* V) {
 
 }
 
-bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved) {
+bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
 
-  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub)
+  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And)
     return false;
 
   ValCtx Op0 = getPtrAsIntReplacement(BOp->getOperand(0));
@@ -1226,6 +1226,12 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(BinaryOperator* BOp, ValCtx& Improved
       Align = GV->getAlignment();
     else if(AllocaInst* AI = dyn_cast<AllocaInst>(PtrBase.first))
       Align = AI->getAlignment();
+    else if(CallInst* CI = dyn_cast<CallInst>(PtrBase.first)) {
+      Function* F = PtrBase.second->getCalledFunction(CI);
+      if(F && F->getName() == "malloc") {
+	Align = pass->getMallocAlignment();
+      }
+    }
       
     uint64_t Mask = MaskC->getLimitedValue();
 	
@@ -1588,9 +1594,9 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
       }
 
-      else if(BinaryOperator* BOp = dyn_cast<BinaryOperator>(I)) {
+      else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And) {
 
-	tryConstFold = /*(!tryFoldVarargAdd(BOp, Improved)) && */(!tryFoldPtrAsIntOp(BOp, Improved));
+	tryConstFold = /*(!tryFoldVarargAdd(BOp, Improved)) && */(!tryFoldPtrAsIntOp(I, Improved));
 	    
       }
 

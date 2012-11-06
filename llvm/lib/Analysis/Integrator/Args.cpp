@@ -61,6 +61,8 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
 
   }
 
+  // Conclude with 2 nulls to signal we don't supply an ELF header at spec time.
+  lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
   lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
 			    
   const ArrayType* PtrArrT = ArrayType::get(lineStartConsts[0]->getType(), lineStartConsts.size());

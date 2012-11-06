@@ -21,9 +21,14 @@ using namespace llvm;
 PointerBase PointerBase::get(ValCtx VC) {
 
   ValCtx CEGlobal;
+  const PointerType* PTy = dyn_cast<PointerType>(VC.first->getType());
+  bool isFunctionTy = PTy && PTy->getElementType()->isFunctionTy();
+
+  // Treat function pointers like scalars, since they're not indexable objects.
+
   if(isa<Constant>(VC.first) && extractCEBase(cast<Constant>(VC.first), CEGlobal))
     return get(CEGlobal, ValSetTypePB);
-  else if(isa<Constant>(VC.first) && (!VC.first->getType()->isPointerTy()))
+  else if(isa<Constant>(VC.first) && (isFunctionTy || !PTy))
     return get(VC, ValSetTypeScalar);
   else
     return get(VC, ValSetTypePB);
@@ -1193,6 +1198,16 @@ void IntegrationAttempt::printConsiderCount(DenseMap<ValCtx, int>& in, int n) {
 }
 
 void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
+  
+  if(PB.Values.size()) {
+    const Type* Ty = PB.Values[0].first->getType();
+    if(const PointerType* PT = dyn_cast<PointerType>(Ty)) {
+      if(PT->getElementType()->isFunctionTy()) {
+	if(getValueScope(V) == getLoopContext())
+	  investigateUsers(V);
+      }
+    }
+  }
 
   if(PB.Type == ValSetTypeScalar) {
     if(PB.Values.size() == 1) {

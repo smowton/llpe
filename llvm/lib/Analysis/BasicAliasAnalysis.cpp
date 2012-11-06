@@ -824,10 +824,18 @@ BasicAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   // Either both values have a context or neither one does.
   assert(!!CSCtx == !!PCtx);
 
-  if(CSCtx == PCtx) {
+  ValCtx PUO;
+  if(!PCtx)
+    PUO = make_vc(const_cast<Value*>(P->getUnderlyingObject()), 0);
+  else {
+    bool ignored;
+    PUO = getUltimateUnderlyingObject(make_vc(const_cast<Value*>(P), PCtx), ignored, false);
+  }
 
-    const Value *Object = P->getUnderlyingObject();
-  
+  if(PUO.second == CSCtx) {
+
+    Value* Object = PUO.first;
+    
     // If this is a tail call and P points to a stack location, we know that
     // the tail call cannot access or modify the local stack.
     // We cannot exclude byval arguments here; these belong to the caller of

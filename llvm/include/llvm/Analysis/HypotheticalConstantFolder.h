@@ -308,6 +308,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
    bool cacheDisabled;
 
+   unsigned mallocAlignment;
+
  public:
 
    static char ID;
@@ -321,6 +323,7 @@ class IntegrationHeuristicsPass : public ModulePass {
      produceDIEQueue = &dieQueue2;
      produceQueue = &workQueue2;
      PBGeneration = 0;
+     mallocAlignment = 0;
 
    }
 
@@ -400,6 +403,8 @@ class IntegrationHeuristicsPass : public ModulePass {
        return false;
      return it->second == C;
    }
+
+   unsigned getMallocAlignment();
 
    IntegrationAttempt* getRoot() { return RootIA; }
    void commit();
@@ -930,7 +935,7 @@ protected:
   bool tryFoldPointerCmp(CmpInst* CmpI, ValCtx&);
   ValCtx tryFoldPtrToInt(Instruction*);
   ValCtx tryFoldIntToPtr(Instruction*);
-  bool tryFoldPtrAsIntOp(BinaryOperator*, ValCtx&);
+  bool tryFoldPtrAsIntOp(Instruction*, ValCtx&);
   //bool tryFoldVarargAdd(BinaryOperator*, ValCtx&);
 
   // CFG analysis:
@@ -1010,8 +1015,9 @@ protected:
   bool setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS);
   ValCtx getSuccessorVC(BasicBlock* BB);
   void queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble, const Loop* SuccLoop);
-  void queueSuccessorVCs(BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble);
-  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
+  void queueSuccessorVCs(ValCtx, ValCtx, BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble);
+  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
+  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   bool tryFoldOpenCmp(CmpInst* CmpI, ValCtx&);
@@ -1315,7 +1321,8 @@ public:
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
 
-  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
   virtual InlineAttempt* getFunctionRoot();
 
@@ -1495,7 +1502,8 @@ class InlineAttempt : public IntegrationAttempt {
   
   ValCtx getImprovedCallArgument(Argument* A);
 
-  virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
+  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
   virtual InlineAttempt* getFunctionRoot();
 
@@ -1710,7 +1718,7 @@ class LFARMapping {
 
 };
 
- ValCtx extractAggregateMemberAt(Constant* From, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
+ ValCtx extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
  Constant* constFromBytes(unsigned char*, const Type*, TargetData*);
  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
  bool allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData*);

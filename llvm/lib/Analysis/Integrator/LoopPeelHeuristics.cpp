@@ -61,6 +61,7 @@ static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
 static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
 static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
+static cl::opt<unsigned> MallocAlignment("int-malloc-alignment", cl::init(0));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
@@ -338,6 +339,42 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
 
   Constant* C = getConstReplacement(CI->getCalledValue()->stripPointerCasts());
+
+  if(!C) {
+
+    Constant* OnlyVal = 0;
+    PointerBase PB;
+    if(getPointerBaseFalling(CI->getCalledValue()->stripPointerCasts(), PB)) {
+     
+      if(!PB.Overdef) {
+
+	for(unsigned i = 0; i < PB.Values.size(); ++i) {
+
+	  Constant* ThisVal = dyn_cast<Constant>(PB.Values[i].first);
+	  if(!ThisVal) {
+	    OnlyVal = 0;
+	    break;
+	  }
+	  if(ThisVal->isNullValue())
+	    continue;
+	  if(!OnlyVal)
+	    OnlyVal = ThisVal;
+	  else if(OnlyVal != ThisVal) {
+	    OnlyVal = 0;
+	    break;
+	  }
+
+	}
+
+	if(OnlyVal)
+	  C = OnlyVal;
+
+      }
+
+    }
+
+  }
+
   if(!C)
     return 0;
 
@@ -1215,6 +1252,13 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 	  }
 	}
       }
+      else if(AllocaInst* AI = dyn_cast<AllocaInst>(Res.getInst())) {
+
+	// Allocas have no defined initial value, so just assume null.
+	PointerBase NewPB = PointerBase::get(const_vc(Constant::getNullValue(AI->getType())));
+	RealLFA.addPBDefn(NewPB);
+
+      }
       else {
 	prout << "Overdef (2) on " << itcache(*(Res.getInst())) << "\n";
 	std::string RStr;
@@ -1524,6 +1568,13 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     if(GV->isConstant()) {
 
       uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
+      const Type* FromType = GV->getInitializer()->getType();
+      uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
+
+      if(Offset < 0 || Offset + LoadSize > FromSize) {
+	Result = VCNull;
+	return true;
+      }
 
       Result = extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD);
       if(Result != VCNull)
@@ -2320,6 +2371,8 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
   SmallVector<ValCtx, 8>* PList = &Worklist1;  
   SmallVector<ValCtx, 8>* CList = &Worklist2;
 
+  std::vector<IntegrationAttempt*> Traversed;
+
   Visited.insert(NextStart);
   PList->push_back(NextStart);
 
@@ -2328,6 +2381,7 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
     for(unsigned i = 0; i < CList->size(); ++i) {
 
       ValCtx ThisStart = (*CList)[i];
+      Traversed.push_back(ThisStart.second);
       NextStart = ThisStart;
       // Return false means do not explore successors; this block contains a definition or clobber.
       if(!NextStart.second->tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst, Defs, Clobbers))
@@ -2341,7 +2395,7 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
       }
       else {
       
-	queueSuccessorVCs(cast<Instruction>(ThisStart.first)->getParent(), Visited, *PList, CFGTrouble);
+	ThisStart.second->queueSuccessorVCs(make_vc(OpenI, this), OpenProgress, cast<Instruction>(ThisStart.first)->getParent(), Visited, *PList, CFGTrouble);
 
       }
 
@@ -2357,18 +2411,29 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
   if(Defs.size() + Clobbers.size() > 1)
     CFGTrouble = true;
 
+  LPDEBUG(Clobbers.size() + Defs.size() << "\n");
+  for(unsigned i = 0; i < Clobbers.size(); ++i) {
+    LPDEBUG("Clobber: " << itcache(Clobbers[i]) << "\n");
+  }
+
+  for(unsigned i = 0; i < Defs.size(); ++i) {
+    LPDEBUG("Def: " <<  itcache(Defs[i]) << "\n");
+  }
+
   if(CFGTrouble) {
 
-    for(unsigned i = 0; i < Defs.size(); ++i)
-      Defs[i].second->addBlockedOpen(make_vc(OpenI, this), OpenProgress);
+    std::sort(Traversed.begin(), Traversed.end());
 
-    for(unsigned i = 0; i < Clobbers.size(); ++i)
-      Clobbers[i].second->addBlockedOpen(make_vc(OpenI, this), OpenProgress);
+    std::vector<IntegrationAttempt*>::iterator it, it2;
+    it2 = std::unique(Traversed.begin(), Traversed.end());
+
+    for(it = Traversed.begin(); it != it2; ++it)
+      (*it)->addBlockedOpen(make_vc(OpenI, this), OpenProgress);
 
   }
   else if(Defs.size() == 1 && Clobbers.size() == 0) {
 
-    setVFSSuccessor(cast<CallInst>(Defs[0].first), make_vc(OpenI, this), OpenProgress, OS);
+    Defs[0].second->setVFSSuccessor(cast<CallInst>(Defs[0].first), make_vc(OpenI, this), OpenProgress, OS);
 
   }
   
@@ -2391,7 +2456,7 @@ void IntegrationAttempt::queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx
 
 }
 
-void IntegrationAttempt::queueSuccessorVCs(BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble) {
+void IntegrationAttempt::queueSuccessorVCs(ValCtx OpenInst, ValCtx OpenProgress, BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble) {
 
   for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
@@ -2401,9 +2466,16 @@ void IntegrationAttempt::queueSuccessorVCs(BasicBlock* BB, SmallSet<ValCtx, 8>& 
       continue;
 
     ValCtx Start;
-    if(checkLoopIterationOrExit(BB, SB, Start)) {
-      if(Visited.insert(Start))
-	PList.push_back(Start);
+
+    if(checkOrQueueLoopIteration(OpenInst, OpenProgress, BB, SB, Start)) {
+      if(Start == VCNull) {
+	// Couldn't iterate because next iteration doesn't exist yet.
+	CFGTrouble = true;
+      }
+      else {
+	if(Visited.insert(Start))
+	  PList.push_back(Start);
+      }
       continue;
     }
 
@@ -2470,7 +2542,7 @@ ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
   if(UniqueSuccessor) {
 
     ValCtx Start;
-    if(checkLoopIterationOrExit(BB, UniqueSuccessor, Start))
+    if(checkLoopIteration(BB, UniqueSuccessor, Start))
       return Start;
 
     const Loop* SuccLoop = getBlockScopeVariant(UniqueSuccessor);
@@ -2576,10 +2648,14 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
 	  Function* calledF = getCalledFunction(CI);
 
-	  if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
+	  // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
+	  bool ignore = false;
+	  if(isa<MemIntrinsic>(CI) || isa<DbgInfoIntrinsic>(CI) || (calledF && functionIsBlacklisted(calledF)))
+	    ignore = true;
+	  else if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
 	    callMayUseFD = true;
 
-	  if(!callMayUseFD) {
+	  if((!callMayUseFD) && (!ignore)) {
 
 	    for(unsigned i = 0; i < CI->getNumArgOperands() && !callMayUseFD; ++i) {
 
@@ -2642,13 +2718,19 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
 }
 
-bool InlineAttempt::checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+bool InlineAttempt::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
 
   return false;
 
 }
 
-bool PeelIteration::checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+bool InlineAttempt::checkOrQueueLoopIteration(ValCtx OpenInst, ValCtx OpenProgress, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  return false;
+
+}
+
+bool PeelIteration::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
 
   if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
 
@@ -2668,11 +2750,32 @@ bool PeelIteration::checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBloc
     }
 
   }
-  else if(!L->contains(NextBlock)) {
 
-    // LCSSA, so this must be our parent
-    Start = make_vc(NextBlock->begin(), parent);
-    return true;
+  return false;
+
+}
+
+bool PeelIteration::checkOrQueueLoopIteration(ValCtx OpenInst, ValCtx OpenProgress, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
+
+    PeelIteration* nextIter = getNextIteration();
+    if(!nextIter) {
+
+      LPDEBUG("Can't continue to pursue open call because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
+
+      addBlockedOpen(OpenInst, OpenProgress);
+
+      Start = VCNull;
+      return true;
+
+    }
+    else {
+
+      Start = make_vc(L->getHeader()->begin(), nextIter);
+      return true;
+
+    }
 
   }
 
@@ -2750,6 +2853,9 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
   shouldRequeue = false;
   
   Function* Callee = getCalledFunction(VFSCall);
+  if(!Callee)
+    return false;
+
   StringRef CalleeName = Callee->getName();
   if(CalleeName == "read") {
     
@@ -2779,7 +2885,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     }
     
     Value* readBytes = VFSCall->getArgOperand(2);
-    ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
+    ConstantInt* intBytes = dyn_cast_or_null<ConstantInt>(getConstReplacement(readBytes));
     if(!intBytes) {
       LPDEBUG("Can't push " << itcache(OpenInst) << " further: read amount uncertain\n");
       shouldRequeue = true;
@@ -2812,7 +2918,7 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     return true;
     
   }
-  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "llseek64") {
+  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "lseek64") {
     
     const FunctionType* FT = Callee->getFunctionType();
     if(FT->getNumParams() != 3 || (!FT->getParamType(0)->isIntegerTy(32)) || (!FT->getParamType(1)->isIntegerTy()) || (!FT->getParamType(2)->isIntegerTy(32))) {
@@ -2864,7 +2970,7 @@ bool IntegrationAttempt::setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, Val
     }
 
     Value* readBytes = VFSCall->getArgOperand(2);
-    ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
+    ConstantInt* intBytes = cast<ConstantInt>(getConstReplacement(readBytes));
     
     int cBytes = (int)intBytes->getLimitedValue();
 
@@ -2915,7 +3021,7 @@ bool IntegrationAttempt::setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, Val
     return true;
 
   }
-  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "llseek64") {
+  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "lseek64") {
 
     Constant* whence = getConstReplacement(VFSCall->getArgOperand(2));
     Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
@@ -3772,7 +3878,7 @@ static ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target) {
 
 }
 
-ValCtx llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
+ValCtx llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
 
   const Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
@@ -3786,7 +3892,7 @@ ValCtx llvm::extractAggregateMemberAt(Constant* FromC, uint64_t Offset, const Ty
     return VCNull;
   }
 
-  if(Offset + TargetSize > FromSize) {
+  if(Offset < 0 || Offset + TargetSize > FromSize) {
 
     DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
     return VCNull;
@@ -4862,6 +4968,8 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
 
 void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 
+  this->mallocAlignment = MallocAlignment;
+  
   if(EnvFileAndIdx != "") {
 
     long idx;
@@ -5032,6 +5140,12 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
     maxLoopIters[std::make_pair(LF, HBB)] = Count;
 
   }
+
+}
+
+unsigned IntegrationHeuristicsPass::getMallocAlignment() {
+
+  return mallocAlignment;
 
 }
 
