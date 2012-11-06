@@ -1006,8 +1006,11 @@ protected:
   void tryPromoteAllCalls();
   void queueInitialWork();
   void tryPushOpen(CallInst*, ValCtx);
-  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool);
+  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool, SmallVector<ValCtx, 2>& Defs, SmallVector<ValCtx, 2>& Clobbers);
+  bool setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS);
   ValCtx getSuccessorVC(BasicBlock* BB);
+  void queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble, const Loop* SuccLoop);
+  void queueSuccessorVCs(BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble);
   virtual bool checkLoopIterationOrExit(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
   bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);

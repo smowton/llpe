@@ -1044,7 +1044,7 @@ static bool shouldBlockOnInst(Instruction* I, IntegrationAttempt* ICtx) {
 void IntegrationAttempt::getDependencies(LFAQueryable& LFA, SmallVector<BasicBlock*, 4>* StartBlocks, SmallVector<NonLocalDepResult, 4>& NLResults) {
 
   MemoryDependenceAnalyser MD;
-  MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */);
+  MD.init(AA, this, &(LFA.getLFA()), true /* Ignore dependencies on load instructions */, true /* Resolve even volatile operations */);
 
   LoadInst* QueryInst = LFA.getQueryInst();
 
@@ -1498,8 +1498,10 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     LPtr.second->getVarArg(LPtr.va_arg, Result);
     LPDEBUG("va_arg " << itcache(LPtr) << " " << LPtr.va_arg << " yielded " << itcache(Result) << "\n");
     
-    if(Result.first && Result.first->getType() != LoadI->getType())
-      Result = VCNull;
+    if(Result.first && Result.first->getType() != LoadI->getType()) {
+      if(!(Result.first->getType()->isPointerTy() && LoadI->getType()->isPointerTy()))
+	Result = VCNull;
+    }
 
     // Is this va_arg read out of bounds or wrong type?
     if(Result == VCNull)
@@ -2308,10 +2310,142 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
 
   ValCtx NextStart = OpenProgress;
   bool skipFirst = true;
+  SmallSet<ValCtx, 8> Visited;
+  SmallVector<ValCtx, 8> Worklist1;
+  SmallVector<ValCtx, 8> Worklist2;
+  SmallVector<ValCtx, 2> Defs;
+  SmallVector<ValCtx, 2> Clobbers;
+  bool CFGTrouble = false;
+  
+  SmallVector<ValCtx, 8>* PList = &Worklist1;  
+  SmallVector<ValCtx, 8>* CList = &Worklist2;
 
-  while(NextStart.second->tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst)) {
-    LPDEBUG("Continuing from " << itcache(NextStart) << "\n");
-    skipFirst = false;
+  Visited.insert(NextStart);
+  PList->push_back(NextStart);
+
+  while((PList->size() || CList->size()) && (Defs.size() + Clobbers.size() < 2)) {
+
+    for(unsigned i = 0; i < CList->size(); ++i) {
+
+      ValCtx ThisStart = (*CList)[i];
+      NextStart = ThisStart;
+      // Return false means do not explore successors; this block contains a definition or clobber.
+      if(!NextStart.second->tryPushOpenFrom(NextStart, make_vc(OpenI, this), OpenProgress, OS, skipFirst, Defs, Clobbers))
+	continue;
+      if(NextStart != VCNull) {
+
+	// Found function entry or exit, queue successor:
+	if(Visited.insert(NextStart))
+	  PList->push_back(NextStart);
+
+      }
+      else {
+      
+	queueSuccessorVCs(cast<Instruction>(ThisStart.first)->getParent(), Visited, *PList, CFGTrouble);
+
+      }
+
+      skipFirst = false;
+
+    }
+
+    CList->clear();
+    std::swap(PList, CList);
+
+  }
+
+  if(Defs.size() + Clobbers.size() > 1)
+    CFGTrouble = true;
+
+  if(CFGTrouble) {
+
+    for(unsigned i = 0; i < Defs.size(); ++i)
+      Defs[i].second->addBlockedOpen(make_vc(OpenI, this), OpenProgress);
+
+    for(unsigned i = 0; i < Clobbers.size(); ++i)
+      Clobbers[i].second->addBlockedOpen(make_vc(OpenI, this), OpenProgress);
+
+  }
+  else if(Defs.size() == 1 && Clobbers.size() == 0) {
+
+    setVFSSuccessor(cast<CallInst>(Defs[0].first), make_vc(OpenI, this), OpenProgress, OS);
+
+  }
+  
+}
+
+void IntegrationAttempt::queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble, const Loop* SuccLoop) {
+
+  if(SuccLoop == getLoopContext()) {
+
+    ValCtx St = make_vc(I, this);
+    if(Visited.insert(St))
+      PList.push_back(St);
+
+  }
+  else {
+
+    parent->queueSuccessorVCFalling(I, Visited, PList, CFGTrouble, SuccLoop);
+
+  }
+
+}
+
+void IntegrationAttempt::queueSuccessorVCs(BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble) {
+
+  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+
+    BasicBlock* SB = *SI;
+
+    if(edgeIsDead(BB, SB))
+      continue;
+
+    ValCtx Start;
+    if(checkLoopIterationOrExit(BB, SB, Start)) {
+      if(Visited.insert(Start))
+	PList.push_back(Start);
+      continue;
+    }
+
+    const Loop* SuccLoop = getBlockScopeVariant(SB);
+    if(SuccLoop != getLoopContext()) {
+
+      if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
+
+	if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
+
+	  assert(SuccLoop->getHeader() == SB);
+	  ValCtx St = make_vc(SB->begin(), LPA->Iterations[0]);
+	  if(Visited.insert(St))
+	    PList.push_back(St);
+
+	}
+	else {
+	      
+	  LPDEBUG("Progress impeded by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
+	  // Don't walk into the loop in invariant context, as this forward analysis is not suited
+	  // to identify situations like e.g. a read in a loop dominated by an outside open.
+	  CFGTrouble = true;
+	  continue;
+
+	}
+
+      }
+      else {
+
+	queueSuccessorVCFalling(SB->begin(), Visited, PList, CFGTrouble, SuccLoop);
+
+      }
+
+    }
+    else {
+	  
+      ValCtx St = make_vc(SB->begin(), this);
+      if(Visited.insert(St))
+	PList.push_back(St);
+
+    }
+
   }
 
 }
@@ -2407,13 +2541,15 @@ ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
 
 // Called in the context of Start.second. OpenInst is the open instruction we're pursuing, and the context where OS is stored.
 // ReadInst is the entry in the chain of VFS operations that starts at OpenInst.
-bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst) {
+bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst, SmallVector<ValCtx, 2>& Defs, SmallVector<ValCtx, 2>& Clobbers) {
 
   Instruction* StartI = cast<Instruction>(Start.first);
   BasicBlock* BB = StartI->getParent();
   BasicBlock::iterator BI(StartI);
 
-  while(1) {
+  Start = VCNull;
+
+  for(; BI != BB->end(); ++BI) {
 
     if(!skipFirst) {
 
@@ -2425,6 +2561,10 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 	    // Queue to retry when we know more about the call.
 	    LPDEBUG("Inst blocked on " << itcache(*CI) << "\n");
 	    InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
+	    Clobbers.push_back(make_vc(CI, this));
+	  }
+	  else {
+	    Defs.push_back(make_vc(CI, this));
 	  }
 	  return false;
 	}
@@ -2467,6 +2607,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
 	      LPDEBUG("Unexpanded call " << itcache(*CI) << " may affect FD from " << itcache(OpenInst) << "\n");
 	      InstBlockedOpens[CI].push_back(std::make_pair(OpenInst, ReadInst));
+	      Clobbers.push_back(make_vc(CI, this));
 	      return false;
 
 	    }
@@ -2479,36 +2620,25 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
     }
 
-    skipFirst = false;
+  }
 
-    ++BI;
-    if(BI == BB->end()) {
+  if(isa<ReturnInst>(BB->getTerminator())) {
 
-      Start = getSuccessorVC(BB);
+    if(!parent) {
 
-      if(Start == VCNull) {
-
-	LPDEBUG("CFG blocked: " << BB->getName() << " has no unique successor\n");
-	addBlockedOpen(OpenInst, ReadInst);
-	return false;
-
-      }
-      else if(Start.second != this) {
-
-	return true;
-
-      }
-      else {
-
-	StartI = cast<Instruction>(Start.first);
-	BB = StartI->getParent();
-	BI = BasicBlock::iterator(StartI);
-
-      }
+      LPDEBUG("Instruction chain reaches end of main!\n");
+      return false;
 
     }
 
+    BasicBlock::iterator CallIt(getEntryInstruction());
+    ++CallIt;
+    Start = make_vc(CallIt, parent);
+    return true;
+
   }
+
+  return true;
 
 }
 
@@ -2613,16 +2743,16 @@ void IntegrationAttempt::setNextUser(OpenStatus& OS, ValCtx U) {
 }
 
 bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
-
+  
   // Call to read() or close()?
-
+  
   isVfsCall = false;
   shouldRequeue = false;
-
+  
   Function* Callee = getCalledFunction(VFSCall);
   StringRef CalleeName = Callee->getName();
   if(CalleeName == "read") {
-
+    
     const FunctionType *FT = Callee->getFunctionType();
     if (FT->getNumParams() != 3 || !FT->getParamType(0)->isIntegerTy(32) ||
 	!FT->getParamType(1)->isPointerTy() || !FT->getParamType(2)->isIntegerTy() ||
@@ -2630,26 +2760,25 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
       LPDEBUG("Assuming call to " << *Callee << " is not 'read' due to its weird signature\n");
       return false;
     }
-
+    
     isVfsCall = true;
-
+    
     Value* readFD = VFSCall->getArgOperand(0);
     if(isUnresolved(readFD)) {
-
+      
       LPDEBUG("Can't forward open because FD argument of " << itcache(*VFSCall) << " is unresolved\n");
       shouldRequeue = true;
       return true;
-
+      
     }
     else if(getReplacement(readFD) != OpenInst) {
-
+      
       LPDEBUG("Ignoring " << itcache(*VFSCall) << " which references a different file\n");
       return false;
-
+      
     }
-
+    
     Value* readBytes = VFSCall->getArgOperand(2);
-
     ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
     if(!intBytes) {
       LPDEBUG("Can't push " << itcache(OpenInst) << " further: read amount uncertain\n");
@@ -2657,6 +2786,75 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
       return true;
     }
 
+    return true;
+    
+  }
+  
+  else if(CalleeName == "close") {
+    const FunctionType *FT = Callee->getFunctionType();
+    if(FT->getNumParams() != 1 || !FT->getParamType(0)->isIntegerTy(32)) {
+      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really 'close' due to weird signature\n");
+      return false;
+    }
+    
+    isVfsCall = true;
+    
+    Value* closeFD = VFSCall->getArgOperand(0);
+    if(isUnresolved(closeFD)) {
+      shouldRequeue = true;
+      return true;
+    }
+    else if(getReplacement(closeFD) != OpenInst) {
+      return false;
+    }
+    
+    LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which closes the file\n");
+    return true;
+    
+  }
+  else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "llseek64") {
+    
+    const FunctionType* FT = Callee->getFunctionType();
+    if(FT->getNumParams() != 3 || (!FT->getParamType(0)->isIntegerTy(32)) || (!FT->getParamType(1)->isIntegerTy()) || (!FT->getParamType(2)->isIntegerTy(32))) {
+      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really an [l]lseek due to weird signature\n");
+      return false;
+    }
+    
+    isVfsCall = true;
+    
+    Value* seekFD = VFSCall->getArgOperand(0);
+    if(isUnresolved(seekFD)) {
+      shouldRequeue = true;
+      return true;
+    }
+    else if(getReplacement(seekFD) != OpenInst) {
+      return false;
+    }
+    
+    Constant* whence = getConstReplacement(VFSCall->getArgOperand(2));
+    Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
+    
+    if((!newOffset) || (!whence)) {
+      LPDEBUG("Unable to push " << itcache(OpenInst) << " further due to uncertainty of " << itcache(*VFSCall) << " seek offset or whence");
+      shouldRequeue = true;
+      return true;
+    }
+
+    return true;
+    
+  }
+  
+  return false;
+  
+}
+
+bool IntegrationAttempt::setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS) {
+
+  Function* Callee = getCalledFunction(VFSCall);
+  StringRef CalleeName = Callee->getName();
+  const FunctionType *FT = Callee->getFunctionType();
+
+  if(CalleeName == "read") {
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
     int64_t incomingOffset;
     if(LastReadInst == OpenInst)
@@ -2665,14 +2863,17 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
       incomingOffset = LastReadInst.second->tryGetIncomingOffset(LastReadInst.first);
     }
 
+    Value* readBytes = VFSCall->getArgOperand(2);
+    ConstantInt* intBytes = dyn_cast<ConstantInt>(getConstReplacement(readBytes));
+    
     int cBytes = (int)intBytes->getLimitedValue();
 
     struct stat file_stat;
     if(::stat(OS.Name.c_str(), &file_stat) == -1) {
       
       LPDEBUG("Failed to stat " << OS.Name << "\n");
-      return true;
-
+      return false;
+      
     }
     
     int bytesAvail = file_stat.st_size - incomingOffset;
@@ -2684,16 +2885,16 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
 
     LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which reads " << cBytes << " bytes\n");
-
+    
     resolveReadCall(VFSCall, ReadFile(&OS, incomingOffset, cBytes));
     ValCtx thisReader = make_vc(VFSCall, this);
     setNextUser(OS, thisReader);
     OS.LatestResolvedUser = thisReader;
     pass->queueOpenPush(OpenInst, thisReader);
-
+    
     // Investigate anyone that refs the buffer
     investigateUsers(VFSCall->getArgOperand(1));
-
+    
     // The number of bytes read is also the return value of read.
     setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt64Ty(VFSCall->getContext()), cBytes)));
     investigateUsers(VFSCall);
@@ -2702,67 +2903,26 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
 
   }
   else if(CalleeName == "close") {
-    const FunctionType *FT = Callee->getFunctionType();
-    if(FT->getNumParams() != 1 || !FT->getParamType(0)->isIntegerTy(32)) {
-      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really 'close' due to weird signature\n");
-      return false;
-    }
-
-    isVfsCall = true;
-
-    Value* closeFD = VFSCall->getArgOperand(0);
-    if(isUnresolved(closeFD)) {
-      shouldRequeue = true;
-      return true;
-    }
-    else if(getReplacement(closeFD) != OpenInst) {
-      return false;
-    }
-
-    LPDEBUG("Successfully forwarded to " << itcache(*VFSCall) << " which closes the file\n");
 
     ValCtx ThisCall = make_vc(VFSCall, this);
     setNextUser(OS, ThisCall);
     OS.LatestResolvedUser = ThisCall;
     resolvedCloseCalls[VFSCall] = CloseFile(&OS);
-
+    
     setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
     investigateUsers(VFSCall);
-
+    
     return true;
 
   }
   else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "llseek64") {
 
-    const FunctionType* FT = Callee->getFunctionType();
-    if(FT->getNumParams() != 3 || (!FT->getParamType(0)->isIntegerTy(32)) || (!FT->getParamType(1)->isIntegerTy()) || (!FT->getParamType(2)->isIntegerTy(32))) {
-      LPDEBUG("Assuming call to " << itcache(*Callee) << " is not really an [l]lseek due to weird signature\n");
-      return false;
-    }
-
-    isVfsCall = true;
-
-    Value* seekFD = VFSCall->getArgOperand(0);
-    if(isUnresolved(seekFD)) {
-      shouldRequeue = true;
-      return true;
-    }
-    else if(getReplacement(seekFD) != OpenInst) {
-      return false;
-    }
-
     Constant* whence = getConstReplacement(VFSCall->getArgOperand(2));
     Constant* newOffset = getConstReplacement(VFSCall->getArgOperand(1));
-    
-    if((!newOffset) || (!whence)) {
-      LPDEBUG("Unable to push " << itcache(OpenInst) << " further due to uncertainty of " << itcache(*VFSCall) << " seek offset or whence");
-      shouldRequeue = true;
-      return true;
-    }
 
     uint64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
     int32_t seekWhence = (int32_t)cast<ConstantInt>(whence)->getSExtValue();
-
+    
     switch(seekWhence) {
     case SEEK_CUR:
       {
@@ -2799,19 +2959,19 @@ bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, V
     // Seek's return value is the new offset.
     setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
     investigateUsers(VFSCall);
-
+    
     resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
-
+    
     ValCtx seekCall = make_vc(VFSCall, this);
     setNextUser(OS, seekCall);
     OS.LatestResolvedUser = seekCall;
     pass->queueOpenPush(OpenInst, seekCall);
-
+    
     return true;
 
   }
 
-  return false;
+  assert(0 && "Bad callee in setnextvfsuser");
 
 }
 

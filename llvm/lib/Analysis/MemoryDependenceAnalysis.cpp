@@ -83,12 +83,13 @@ bool MemoryDependenceAnalysis::runOnFunction(Function &) {
   return false;
 }
 
-void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA, bool ignoreLoads) {
+void MemoryDependenceAnalyser::init(AliasAnalysis* AA, IntegrationAttempt* P, LoadForwardAttempt* LFA, bool ignoreLoads, bool ignoreVolatile) {
 
   this->AA = AA;
   this->parent = P;
   this->LFA = LFA;
   this->ignoreLoads = ignoreLoads;
+  this->ignoreVolatile = ignoreVolatile;
   // Ignore pointer base assertions when in optimistic mode in order to collect a conservative
   // set of clobbering instructions. Use the knowledge when acting as normal LFA or in pessimistic resolution.
   this->usePBKnowledge = LFA ? (!LFA->PBOptimistic) : true;
@@ -424,7 +425,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst) {
   } else if (LoadInst *LI = dyn_cast<LoadInst>(QueryInst)) {
     // If this is a volatile load, don't mess around with it.  Just return the
     // previous instruction as a clobber.
-    if (LI->isVolatile())
+    if (LI->isVolatile() && !ignoreVolatile)
       LocalCache = MemDepResult::getClobber(--BasicBlock::iterator(ScanPos));
     else {
       MemPtr = LI->getPointerOperand();
