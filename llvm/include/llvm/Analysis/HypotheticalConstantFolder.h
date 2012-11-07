@@ -264,6 +264,16 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
+struct PendingPB {
+
+  ValCtx VC;
+  Value* Used;
+  bool isStoreToLoad;
+
+PendingPB(ValCtx _VC, Value* _Used, bool S) : VC(_VC), Used(_Used), isStoreToLoad(S) { }
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -300,6 +310,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<ValCtx, 64>* PBProduceQ;
 
+   std::vector<PendingPB> pendingPBChecks;
+
    uint64_t PBGeneration;
 
    IntegrationAttempt* RootIA;
@@ -316,6 +328,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    uint64_t PBLFAs;
    uint64_t PBLFAsCached;
+
+   SmallSet<std::pair<IntegrationAttempt*, const Loop*>, 8> loopsQueuedThisRun;
+   DenseMap<ValCtx, PointerBase> PBsConsideredThisRun;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -372,6 +387,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void runPointerBaseSolver(bool finalise, std::vector<ValCtx>*);
    bool runPointerBaseSolver();
    void queueUpdatePB(IntegrationAttempt* IA, Value* V);
+   void queueNewPBWork(uint64_t& newVCs, uint64_t& changedVCs);
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
@@ -403,6 +419,12 @@ class IntegrationHeuristicsPass : public ModulePass {
        return false;
      return it->second == C;
    }
+
+   void queuePendingPBUpdate(ValCtx VC, Value* V, bool isStoreToLoad) {
+     pendingPBChecks.push_back(PendingPB(VC, V, isStoreToLoad));
+   }
+
+   void addPessimisticSolverWork();
 
    unsigned getMallocAlignment();
 
@@ -928,7 +950,7 @@ protected:
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   void tryEvaluate(Value*);
   virtual ValCtx tryEvaluateResult(Value*);
-  virtual void investigateUsers(Value* V);
+  virtual void investigateUsers(Value* V, bool queueOptimistic = true);
 
   void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
 
@@ -1132,22 +1154,23 @@ protected:
   bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
   virtual bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
+  void erasePointerBase(Value*);
   bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise);
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
   void queueUsersUpdatePB(Value* V);
+  void queueUserUpdatePB(Value*, Instruction* User);
   void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
   void resolvePointerBase(Value* V, PointerBase&);
   void queueWorkFromUpdatedPB(Value* V, PointerBase&);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L);
   void queuePBUpdateIfUnresolved(Value *V);
-  void queuePBUpdateAllUnresolvedVCs();
+  void queueUpdatePBWholeLoop(const Loop*);
   void queuePBUpdateAllResolvedVCs();
   void clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs);
-  void queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, uint64_t& newVCs, uint64_t& changedVCs);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
   void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
@@ -1156,6 +1179,9 @@ protected:
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
   void removeMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx);
   void addStartOfScopePB(LoadForwardAttempt&);
+  void addStoreToLoadSolverWork(Value* V);
+  std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(const Loop* childLoop);
+  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop() = 0;
 
   // PBA caching:
   void zapDefOrClobberCache(LoadInst* LI);
@@ -1362,6 +1388,8 @@ public:
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
+  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1546,6 +1574,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
   int64_t getSpilledVarargAfter(int64_t arg);
+
+  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
 
   virtual int getIterCount() {
     return -1;

@@ -613,6 +613,7 @@ void IntegrationAttempt::dismissCallBlockedPBLoads(CallInst* CI) {
   for(std::vector<std::pair<LoadInst*, IntegrationAttempt*> >::iterator it = Loads.begin(), it2 = Loads.end(); it != it2; ++it) {
 
     it->second->zapDefOrClobberCache(it->first);
+    pass->queuePendingPBUpdate(make_vc(it->first, it->second), 0, true);
 
   }
 
@@ -625,6 +626,7 @@ void IntegrationAttempt::localCFGChanged() {
   for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator it = CFGDependentPBLoads.begin(), it2 = CFGDependentPBLoads.end(); it != it2; ++it) {
 
     it->second->zapDefOrClobberCache(it->first);
+    pass->queuePendingPBUpdate(make_vc(it->first, it->second), 0, true);
 
   }
 
@@ -1069,35 +1071,41 @@ void InlineAttempt::queueUpdateCall() {
 // (since our new invariant information might be useful at many scopes).
 void IntegrationAttempt::queueUsersUpdatePB(Value* V) {
 
-  const Loop* MyL = getLoopContext();
-  
   for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
 
     if(Instruction* UserI = dyn_cast<Instruction>(*UI)) {
 
-      if(isa<ReturnInst>(UserI)) {
-	
-	getFunctionRoot()->queueUpdateCall();
-	
-      }
-
-      const Loop* UserL = getValueScope(UserI);
-
-      if((!MyL) || (UserL && MyL->contains(UserL))) {
-	  
-	queueUsersUpdatePBRising(UserI, UserL, V);
-	
-      }
-      else {
-	
-	queueUsersUpdatePBFalling(UserI, UserL, V);
-
-      }
+      queueUserUpdatePB(V, UserI);
 
     }
 
   }
 
+}
+
+void IntegrationAttempt::queueUserUpdatePB(Value* V, Instruction* UserI) {
+
+  const Loop* MyL = getLoopContext();
+  
+  if(isa<ReturnInst>(UserI)) {
+	
+    getFunctionRoot()->queueUpdateCall();
+	
+  }
+
+  const Loop* UserL = getValueScope(UserI);
+
+  if((!MyL) || (UserL && MyL->contains(UserL))) {
+	  
+    queueUsersUpdatePBRising(UserI, UserL, V);
+	
+  }
+  else {
+	
+    queueUsersUpdatePBFalling(UserI, UserL, V);
+
+  }
+  
 }
 
 void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V) {
@@ -1139,8 +1147,11 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
 	memWriterEffects.find(I);
       if(it != memWriterEffects.end()) {
 
-	for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator SI = it->second.begin(), SE = it->second.end(); SI != SE; ++SI)
-	  pass->queueUpdatePB(SI->second, SI->first);
+	for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator SI = it->second.begin(), SE = it->second.end(); SI != SE; ++SI) {
+
+	  SI->second->addStoreToLoadSolverWork(SI->first);
+
+	}
 
       }
 
@@ -1167,20 +1178,35 @@ void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, 
 void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V) {
 
   const Loop* MyL = getLoopContext();
+  const Loop* NextL = immediateChildLoop(getLoopContext(), TargetL);
   bool investigateHere = true;
+  bool unboundHere = false;
 
   if(TargetL != MyL) {
 
-    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(getLoopContext(), TargetL))) {
+    if(PeelAttempt* PA = getPeelAttempt(NextL)) {
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
 	investigateHere = false;
+      else
+	unboundHere = true;
       PA->queueUsersUpdatePBRising(I, TargetL, V);
+    }
+    else {
+      unboundHere = true;
     }
 
   }
 
   if(investigateHere)
     queueUsersUpdatePBFalling(I, MyL, V);
+
+  if(unboundHere) {
+
+    if(pass->loopsQueuedThisRun.insert(std::make_pair(this, NextL))) {
+      queueUpdatePBWholeLoop(NextL);
+    }    
+
+  }
 
 }
 
@@ -1204,7 +1230,7 @@ void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
     if(const PointerType* PT = dyn_cast<PointerType>(Ty)) {
       if(PT->getElementType()->isFunctionTy()) {
 	if(getValueScope(V) == getLoopContext())
-	  investigateUsers(V);
+	  investigateUsers(V, false);
       }
     }
   }
@@ -1215,7 +1241,7 @@ void IntegrationAttempt::queueWorkFromUpdatedPB(Value* V, PointerBase& PB) {
       if(getValueScope(V) == getLoopContext()) {
 	// Feed the result to the ordinary constant folder, until the two get merged.
 	setReplacement(V, PB.Values[0]);
-	investigateUsers(V);
+	investigateUsers(V, false);
       }
 
     }
@@ -1271,7 +1297,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
 
 void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L) {
 
-  if(!getLoopContext()) {
+  if((!getLoopContext()) && !L) {
 
     for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
 
@@ -1302,20 +1328,22 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L) {
 
 }
 
-void IntegrationAttempt::queuePBUpdateAllUnresolvedVCs() {
+void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L) {
 
-  queuePBUpdateAllUnresolvedVCsInScope(getLoopContext());
+  queuePBUpdateAllUnresolvedVCsInScope(L);
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
-    it->second->queuePBUpdateAllUnresolvedVCs();
+    if(L->contains(it->first->getParent()))
+      it->second->queuePBUpdateAllUnresolvedVCsInScope(0);
 
   }
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
-    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
-      it->second->Iterations[i]->queuePBUpdateAllUnresolvedVCs();
+    if(L->contains(it->first))
+      for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+	it->second->Iterations[i]->queuePBUpdateAllUnresolvedVCsInScope(it->first);
 
   }
 
@@ -1385,25 +1413,28 @@ static bool isBetterThanOrEqual(PointerBase& NewPB, PointerBase& OldPB) {
 
 }
 
-void IntegrationAttempt::queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, uint64_t& newVCs, uint64_t& changedVCs) {
+void IntegrationHeuristicsPass::queueNewPBWork(uint64_t& newVCs, uint64_t& changedVCs) {
 
-  for(DenseMap<Value*, PointerBase>::iterator it = pointerBases.begin(), it2 = pointerBases.end(); it != it2; ++it) {
+  for(DenseMap<ValCtx, PointerBase>::iterator it = PBsConsideredThisRun.begin(), it2 = PBsConsideredThisRun.end(); it != it2; ++it) {
 
-    DenseMap<ValCtx, PointerBase>::iterator OldPB = OldPBs.find(make_vc(it->first, this));
+    PointerBase NewPB;
+    if(!it->first.second->getPointerBaseFalling(it->first.first, NewPB))
+      continue;
 
-    if(OldPB != OldPBs.end()) {
-      assert(isBetterThanOrEqual(it->second, OldPB->second));
+    PointerBase NullPB;
+    if(it->second != NullPB) {
+      assert(isBetterThanOrEqual(NewPB, it->second));
     }
 
-    if(it->second.Overdef)
+    if(NewPB.Overdef)
       continue;
 
     bool queue = false;
-    if(OldPB == OldPBs.end()) {
+    if(it->second == NullPB) {
       newVCs++;
       queue = true;
     }
-    else if(OldPB->second != it->second) {
+    else if(NewPB != it->second) {
       /*
       errs() << "Changed " << itcache(OldPB->first) << " to ";
       printPB(errs(), it->second);
@@ -1414,19 +1445,15 @@ void IntegrationAttempt::queueNewPBWork(DenseMap<ValCtx, PointerBase>& OldPBs, u
     }
 
     if(queue)
-      queueWorkFromUpdatedPB(it->first, it->second);
+      it->first.second->queueWorkFromUpdatedPB(it->first.first, NewPB);
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
-    it->second->queueNewPBWork(OldPBs, newVCs, changedVCs);
+}
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+void IntegrationAttempt::erasePointerBase(Value* V) {
 
-    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
-      it->second->Iterations[i]->queueNewPBWork(OldPBs, newVCs, changedVCs);
-
-  }
+  pointerBases.erase(V);
 
 }
 
@@ -1442,9 +1469,25 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, std::vector<
 
     std::sort(ConsumeQ->begin(), ConsumeQ->end());
     SmallVector<ValCtx, 64>::iterator endit = std::unique(ConsumeQ->begin(), ConsumeQ->end());
-    
+
     for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
 
+      if(!PBsConsideredThisRun.count(*it)) {
+
+	assert(modifiedVCs); // Shouldn't encounter for the first time in pessimistic phase
+
+	PointerBase OldPB;
+	if(it->second->getPointerBaseFalling(it->first, OldPB))
+	  PBsConsideredThisRun[*it] = OldPB;
+	else
+	  PBsConsideredThisRun[*it] = PointerBase();
+	it->second->erasePointerBase(it->first);
+
+      }
+
+    }
+    
+    for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
       
       //considerCount[*it]++;
       if(++i == 10000) {
@@ -1454,7 +1497,7 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, std::vector<
 	//	errs() << "----\n";
 	i = 0;
       }
-
+      
       if(it->second->updateBasePointer(it->first, finalise)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
@@ -1470,10 +1513,116 @@ void IntegrationHeuristicsPass::runPointerBaseSolver(bool finalise, std::vector<
 
 }
 
+std::pair<IntegrationAttempt*, const Loop*> IntegrationAttempt::getOutermostUnboundLoop(const Loop* childLoop) {
+
+  if(childLoop && immediateChildLoop(getLoopContext(), childLoop) != childLoop) {
+
+    // Spotted one or more ignored loops.
+    std::pair<IntegrationAttempt*, const Loop*> SubResult = getOutermostUnboundLoop();
+    if(!SubResult.first)
+      return std::make_pair(this, immediateChildLoop(getLoopContext(), childLoop));
+    else
+      return SubResult;
+
+  }
+  else {
+
+    return getOutermostUnboundLoop();
+
+  }
+
+}
+
+std::pair<IntegrationAttempt*, const Loop*> PeelIteration::getOutermostUnboundLoop() {
+
+  if(parentPA->Iterations.back()->iterStatus == IterationStatusFinal)
+    return parent->getOutermostUnboundLoop(L);
+  else
+    return std::make_pair((IntegrationAttempt*)0, (const Loop*)0);
+  
+}
+
+std::pair<IntegrationAttempt*, const Loop*> InlineAttempt::getOutermostUnboundLoop() {
+
+  return parent->getOutermostUnboundLoop(0);
+  
+}
+
+void IntegrationAttempt::addStoreToLoadSolverWork(Value* V) {
+
+  assert(isa<LoadInst>(V));
+  Instruction* I = cast<Instruction>(V);
+  
+  const Loop* MyL = getLoopContext();
+  const Loop* VL = immediateChildLoop(MyL, LI[&F]->getLoopFor(I->getParent()));
+
+  bool unboundLoopHere = false;
+  bool queueHere = true;
+
+  if(VL != MyL) {
+    
+    if(PeelAttempt* PA = getPeelAttempt(VL)) {
+
+      if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
+	queueHere = false;
+      else
+	unboundLoopHere = true;
+
+    }
+    else {
+      unboundLoopHere = true;
+    }
+
+  }
+
+  if(queueHere) {
+
+    pass->queueUpdatePB(this, V);
+
+  }
+
+  // Now find the outermost enclosing unbound loop:
+  std::pair<IntegrationAttempt*, const Loop*> outermostUB = getOutermostUnboundLoop();
+  if((!outermostUB.first) && unboundLoopHere)
+    outermostUB = std::make_pair(this, VL);
+
+  if(outermostUB.first) {
+    if(pass->loopsQueuedThisRun.insert(outermostUB)) {
+      outermostUB.first->queueUpdatePBWholeLoop(outermostUB.second);
+    }
+  }
+
+}
+
+void IntegrationHeuristicsPass::addPessimisticSolverWork() {
+
+  for(unsigned i = 0; i < pendingPBChecks.size(); ++i) {
+    
+    ValCtx nextVC = pendingPBChecks[i].VC;
+    Value* used = pendingPBChecks[i].Used;
+    bool isStoreToLoad = pendingPBChecks[i].isStoreToLoad;
+
+    if(isStoreToLoad) {
+
+      // A store to load dependency makes someone think they've improved nextVC.
+      // Queue it, plus if it's part of an unbounded loop, queue the entire loop.
+      nextVC.second->addStoreToLoadSolverWork(nextVC.first);
+
+    }
+    else {
+
+      // Update due to a direct operand changing. Queue it, any unbounded loops,
+      // and any loop variants instances of the same instruction.
+      nextVC.second->queueUserUpdatePB(used, cast<Instruction>(nextVC.first));
+
+    }
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
-  DenseMap<ValCtx, PointerBase> OldPBs;
-  
   uint64_t totalVCs = 0, newVCs = 0, changedVCs = 0;
 
   PBLFAs = 0;
@@ -1481,23 +1630,22 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
   errs() << "Start optimistic solver";
 
-  // Step 1: discard all existing PB results that could be improved.
-  RootIA->clearSuboptimalPBResults(OldPBs);
+  PBsConsideredThisRun.clear();
+  loopsQueuedThisRun.clear();
+
+  // Step 1: check which instructions the pessimistic solvers want rechecking, and queue any
+  // extra checks based on the current status of loops they reside in.
+  addPessimisticSolverWork();
 
   // Step 2: consider every result in optimistic mode until stable.
   // In this mode, undefineds are ok and clobbers are ignored on the supposition that
   // they might turn into known pointers.
   // Overdefs are still bad.
 
-  RootIA->queuePBUpdateAllUnresolvedVCs();
-  totalVCs = PBProduceQ->size();
-
   std::vector<ValCtx> updatedVCs;
-
   runPointerBaseSolver(false, &updatedVCs);
 
-  // Queue up anything of which we've asserted a non-overdef PB for reconsideration.
-  //RootIA->queuePBUpdateAllResolvedVCs();
+  totalVCs = PBsConsideredThisRun.size();
 
   std::sort(updatedVCs.begin(), updatedVCs.end());
   std::vector<ValCtx>::iterator it, endit;
@@ -1513,7 +1661,7 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
   runPointerBaseSolver(true, 0);
 
-  RootIA->queueNewPBWork(OldPBs, newVCs, changedVCs);
+  queueNewPBWork(newVCs, changedVCs);
 
   errs() << "\nRan optimistic solver: considered " << totalVCs << ", found " << newVCs << " new and " << changedVCs << " changed (LFAs cached " << PBLFAsCached << "/" << PBLFAs << ")\n";
 

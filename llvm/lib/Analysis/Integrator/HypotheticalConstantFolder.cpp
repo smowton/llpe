@@ -1784,6 +1784,20 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
     pass->queueCheckLoad(this, LI);
 
   }
+  else if(StoreInst* SI = dyn_cast<StoreInst>(UserI)) {
+    
+    // Queue optimistic rechecking of any load dependent on this store.
+
+    DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
+      memWriterEffects.find(SI);
+    if(it != memWriterEffects.end()) {
+      
+      for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator UpI = it->second.begin(), UpE = it->second.end(); UpI != UpE; ++UpI)
+	pass->queuePendingPBUpdate(make_vc(UpI->first, UpI->second), 0, true);
+      
+    }
+
+  }
   else if(UserI->getType()->isPointerTy()) {
 
     // Explore the use graph further looking for loads and stores.
@@ -1974,7 +1988,7 @@ void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
 
 }
 
-void IntegrationAttempt::investigateUsers(Value* V) {
+void IntegrationAttempt::investigateUsers(Value* V, bool queueOptimistic) {
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
     if(shouldQueueOnInst(I, this))
@@ -1982,6 +1996,23 @@ void IntegrationAttempt::investigateUsers(Value* V) {
   }
   InvestigateVisitor IV(V);
   visitUsers(V, IV);
+
+  if(queueOptimistic) {
+
+    for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+
+      Instruction* U = dyn_cast<Instruction>(*UI);
+      if(!U)
+	continue;
+
+      if(blockIsDead(U->getParent()))
+	continue;
+
+      pass->queuePendingPBUpdate(make_vc(U, this), V, false);
+
+    }
+
+  }
 
 }
 
