@@ -102,6 +102,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
     OS << (!CI ? "Root " : "") << "Function " << F.getName();
     if(CI && !CI->getType()->isVoidTy())
       OS << " at " << itcache(*CI, true);
+    SeqNumber = Pass->getSeq();
+    OS << " / " << SeqNumber;
   }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
@@ -116,6 +118,8 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 
   raw_string_ostream OS(HeaderStr);
   OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
+  SeqNumber = Pass->getSeq();
+  OS << " / " << SeqNumber;
 
 }
 
@@ -130,6 +134,8 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 
   raw_string_ostream OS(HeaderStr);
   OS << "Loop " << L->getHeader()->getName();
+  SeqNumber = Pass->getSeq();
+  OS << " / " << SeqNumber;
   
   L->getExitEdges(ExitEdges);
   LoopBlocks = L->getBlocks();
@@ -1338,6 +1344,20 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
     getDependencies(LFA, StartBlocks, InstResults);
     checkOnlyDependsOnParent(InstResults, OnlyDependsOnParent);
   
+    bool verbose = false;
+
+    if(verbose) {
+
+      errs() << "Results from ctx " << getShortHeader() << "\n";
+
+      for(unsigned i = 0; i < InstResults.size(); ++i) {
+      
+	errs() << itcache(InstResults[i].getResult()) << "\n";
+
+      }
+
+    }
+
     if(InstResults.size() == 0) {
 
       // Probably we're in a block which is dead, but has yet to be diagnosed as such.
@@ -3164,14 +3184,14 @@ bool IntegrationAttempt::isUnusedReadCall(CallInst* CI) {
 
 void PeelIteration::describe(raw_ostream& Stream) const {
 
-  Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << ")";
+  Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << "/" << SeqNumber << ")";
 
 }
 
 
 void InlineAttempt::describe(raw_ostream& Stream) const {
 
-  Stream << "(" << F.getName() << ")";
+  Stream << "(" << F.getName() << "/" << SeqNumber << ")";
 
 }
 
@@ -4711,6 +4731,9 @@ bool IntegrationHeuristicsPass::runQueue() {
 
     for(it = consumeQueue->begin(); it != itend; ++it) {
 
+      if(it->ctx && it->ctx->contextIsDead)
+	continue;
+      
       DEBUG(dbgs() << "Dequeue: ");
       DEBUG(it->describe(dbgs()));
       DEBUG(dbgs() << "\n");

@@ -455,6 +455,26 @@ void PeelAttempt::eraseBlockValues(BasicBlock* BB) {
 
 }
 
+void IntegrationAttempt::markContextDead() {
+
+  contextIsDead = true;
+
+   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+     it->second->markContextDead();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->markContextDead();
+
+  }
+
+
+}
+
 void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
 
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
@@ -462,8 +482,11 @@ void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
     improvedValues.erase(BI);
     // This can happen when calls are always-inlined.
     // Cowardly non-deletion here, TODO delete it and deal with the fallout.
-    if(const CallInst* CI = dyn_cast<CallInst>(BI))
-      inlineChildren.erase(const_cast<CallInst*>(CI));
+    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+      if(InlineAttempt* IA = getInlineAttempt(CI))
+	IA->markContextDead();
+      inlineChildren.erase(CI);
+    }
     
   }
   
@@ -2613,11 +2636,30 @@ void IntegrationAttempt::tryPromoteAllCalls() {
 
 }
 
+void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+    if(L && !L->contains(BB))
+      continue;
+
+    for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+      if(!isa<CallInst>(II))
+	pass->queuePendingPBUpdate(make_vc(II, this), 0, false);
+
+    }
+
+  }
+
+}
+
 void IntegrationAttempt::queueInitialWork() {
 
   queueCheckAllInstructionsInScope(getLoopContext());
   queueCheckAllLoadsInScope(getLoopContext());
-  //queuePBCheckAllInstructionsInScope(getLoopContext());
+  queuePBCheckAllInstructionsInScope(getLoopContext());
 
   if(const Loop* L = getLoopContext()) {
 

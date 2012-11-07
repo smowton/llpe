@@ -313,6 +313,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<PendingPB> pendingPBChecks;
 
    uint64_t PBGeneration;
+   uint64_t SeqNumber;
 
    IntegrationAttempt* RootIA;
 
@@ -339,6 +340,7 @@ class IntegrationHeuristicsPass : public ModulePass {
      produceQueue = &workQueue2;
      PBGeneration = 0;
      mallocAlignment = 0;
+     SeqNumber = 0;
 
    }
 
@@ -427,6 +429,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    void addPessimisticSolverWork();
 
    unsigned getMallocAlignment();
+
+   uint64_t getSeq() {
+     return SeqNumber++;
+   }
 
    IntegrationAttempt* getRoot() { return RootIA; }
    void commit();
@@ -833,8 +839,11 @@ protected:
   std::string nestingIndent() const;
 
   int nesting_depth;
+  uint64_t SeqNumber;
 
  public:
+
+  bool contextIsDead;
 
   struct IntegratorTag tag;
 
@@ -870,6 +879,7 @@ protected:
     CommittedValues(2),
     commitStarted(false),
     nesting_depth(depth),
+    contextIsDead(false),
     parent(P),
     inlineChildren(1),
     peelChildren(1)
@@ -884,6 +894,7 @@ protected:
 
   virtual AliasAnalysis* getAA();
 
+  void markContextDead();
   virtual ValCtx getDefaultVC(Value*);
   virtual ValCtx getReplacement(Value* V);
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
@@ -1020,6 +1031,7 @@ protected:
   void queueCFGBlockedLoads();
   void queueCheckAllLoadsInScope(const Loop*);
   void queueCheckAllInstructionsInScope(const Loop*);
+  void queuePBCheckAllInstructionsInScope(const Loop*);
 
   void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
 
@@ -1181,7 +1193,9 @@ protected:
   void addStartOfScopePB(LoadForwardAttempt&);
   void addStoreToLoadSolverWork(Value* V);
   std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(const Loop* childLoop);
+  std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(CallInst*);
   virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop() = 0;
+  bool shouldCheckPB(Value*);
 
   // PBA caching:
   void zapDefOrClobberCache(LoadInst* LI);
@@ -1408,6 +1422,8 @@ class PeelAttempt {
    IntegrationHeuristicsPass* pass;
    IntegrationAttempt* parent;
    Function& F;
+
+   uint64_t SeqNumber;
 
    std::string HeaderStr;
 
