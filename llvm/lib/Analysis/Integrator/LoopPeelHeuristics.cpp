@@ -1131,6 +1131,9 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   bool verbose = false;
   
+  if(RealLFA.getOriginalCtx()->SeqNumber <= 10250 && RealLFA.getOriginalCtx()->SeqNumber > 10240 && RealLFA.getOriginalCtx()->getFunctionName() == "__stdio_fwrite")
+    verbose = true;
+
   raw_ostream& prout = verbose ? errs() : nulls();
 
   // Continue even if the PB becomes overdef'd to ensure we gather a complete set of defining instructions.
@@ -1139,8 +1142,11 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
     const MemDepResult& Res = NLResults[i].getResult();
 
     if(verbose) {
-
-      errs() << itcache(Res) << "\n";
+      
+      errs() << itcache(Res);
+      if(!Res.getCookie())
+	errs() << " at " << getShortHeader() << "\n";
+      errs() << "\n";
 
     }
 
@@ -3098,6 +3104,7 @@ bool IntegrationAttempt::setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, Val
   }
 
   assert(0 && "Bad callee in setnextvfsuser");
+  return false;
 
 }
 
@@ -4673,6 +4680,8 @@ inline bool operator==(IntegratorWQItem W1, IntegratorWQItem W2) {
     assert(0 && "Bad WQ item type!");
   }
 
+  return false;
+
 }
 
 inline bool operator!=(IntegratorWQItem W1, IntegratorWQItem W2) {
@@ -4698,6 +4707,7 @@ inline bool operator<(IntegratorWQItem W1, IntegratorWQItem W2) {
   default:
     assert(0 && "Bad WQ item type!");
   }
+  return false;
 }
 
 inline bool operator<=(IntegratorWQItem W1, IntegratorWQItem W2) {
@@ -4880,7 +4890,7 @@ static void parseFBB(const char* paramName, const std::string& arg, Module& M, F
 
   std::string FName, BB1Name, BB2Name;
   size_t firstComma = arg.find(',');
-  size_t secondComma;
+  size_t secondComma = std::string::npos;
   if(firstComma != std::string::npos)
     secondComma = arg.find(',', firstComma+1);
   if(firstComma == std::string::npos || secondComma == std::string::npos) {
@@ -4924,7 +4934,7 @@ static void parseFBI(const char* paramName, const std::string& arg, Module& M, F
 
   std::string FName, BBName, IStr;
   size_t firstComma = arg.find(',');
-  size_t secondComma;
+  size_t secondComma = std::string::npos;
   if(firstComma != std::string::npos)
     secondComma = arg.find(',', firstComma+1);
   if(firstComma == std::string::npos || secondComma == std::string::npos) {

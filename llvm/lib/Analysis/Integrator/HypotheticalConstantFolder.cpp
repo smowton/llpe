@@ -1815,8 +1815,11 @@ void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used
       memWriterEffects.find(SI);
     if(it != memWriterEffects.end()) {
       
-      for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator UpI = it->second.begin(), UpE = it->second.end(); UpI != UpE; ++UpI)
-	pass->queuePendingPBUpdate(make_vc(UpI->first, UpI->second), 0, true);
+      for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator UpI = it->second.begin(), UpE = it->second.end(); UpI != UpE; ++UpI) {
+
+	pass->queuePendingPBUpdate(make_vc(UpI->first, UpI->second));
+
+      }
       
     }
 
@@ -2022,18 +2025,7 @@ void IntegrationAttempt::investigateUsers(Value* V, bool queueOptimistic) {
 
   if(queueOptimistic) {
 
-    for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
-
-      Instruction* U = dyn_cast<Instruction>(*UI);
-      if(!U)
-	continue;
-
-      if(blockIsDead(U->getParent()))
-	continue;
-
-      pass->queuePendingPBUpdate(make_vc(U, this), V, false);
-
-    }
+    queueUsersUpdatePB(V, /* queueInLoopNow = */ false, /* pendInLoop = */ true, /* pendOutOfLoop = */ true);
 
   }
 
@@ -2647,7 +2639,7 @@ void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
     for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
       if(!isa<CallInst>(II))
-	pass->queuePendingPBUpdate(make_vc(II, this), 0, false);
+	pass->queuePendingPBUpdate(make_vc(II, this));
 
     }
 

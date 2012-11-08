@@ -101,6 +101,7 @@ typedef struct {
       return va_arg_type_fp;
     else
       assert(0 && "Bad va_arg value\n");
+    return va_arg_type_none;
 
   }
 
@@ -264,16 +265,6 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
-struct PendingPB {
-
-  ValCtx VC;
-  Value* Used;
-  bool isStoreToLoad;
-
-PendingPB(ValCtx _VC, Value* _Used, bool S) : VC(_VC), Used(_Used), isStoreToLoad(S) { }
-
-};
-
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -310,10 +301,11 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<ValCtx, 64>* PBProduceQ;
 
-   std::vector<PendingPB> pendingPBChecks;
+   std::vector<ValCtx> pendingPBChecks1;
+   std::vector<ValCtx> pendingPBChecks2;
+   std::vector<ValCtx>* producePendingPBChecks;
 
    uint64_t PBGeneration;
-   uint64_t SeqNumber;
 
    IntegrationAttempt* RootIA;
 
@@ -327,15 +319,17 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    static char ID;
 
+   uint64_t SeqNumber;
+
    uint64_t PBLFAs;
    uint64_t PBLFAsCached;
 
-   SmallSet<std::pair<IntegrationAttempt*, const Loop*>, 8> loopsQueuedThisRun;
    DenseMap<ValCtx, PointerBase> PBsConsideredThisRun;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      PBProduceQ = &PBQueue2;
+     producePendingPBChecks = &pendingPBChecks2;
      produceDIEQueue = &dieQueue2;
      produceQueue = &workQueue2;
      PBGeneration = 0;
@@ -422,8 +416,8 @@ class IntegrationHeuristicsPass : public ModulePass {
      return it->second == C;
    }
 
-   void queuePendingPBUpdate(ValCtx VC, Value* V, bool isStoreToLoad) {
-     pendingPBChecks.push_back(PendingPB(VC, V, isStoreToLoad));
+   void queuePendingPBUpdate(ValCtx VC) {
+     producePendingPBChecks->push_back(VC);
    }
 
    void addPessimisticSolverWork();
@@ -1172,17 +1166,16 @@ protected:
   bool updateBasePointer(Value* V, bool finalise);
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
-  void queueUsersUpdatePB(Value* V);
-  void queueUserUpdatePB(Value*, Instruction* User);
-  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V);
-  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
+  void queueUpdatePB(IntegrationAttempt*, Value*, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUsersUpdatePB(Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUserUpdatePB(Value*, Instruction* User, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
   void resolvePointerBase(Value* V, PointerBase&);
-  void queueWorkFromUpdatedPB(Value* V, PointerBase&);
+  void queuePendingWorkFromUpdatedPB(Value* V, PointerBase&);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L);
   void queuePBUpdateIfUnresolved(Value *V);
   void queueUpdatePBWholeLoop(const Loop*);
-  void queuePBUpdateAllResolvedVCs();
-  void clearSuboptimalPBResults(DenseMap<ValCtx, PointerBase>& OldPBs);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
   void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
@@ -1195,6 +1188,7 @@ protected:
   std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(const Loop* childLoop);
   std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(CallInst*);
   virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop() = 0;
+  std::pair<IntegrationAttempt*, const Loop*> getOutermostLoop(Value* V);
   bool shouldCheckPB(Value*);
 
   // PBA caching:
@@ -1502,7 +1496,7 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
    
-   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V);
+   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
 
    void dumpMemoryUsage(int indent);
 
@@ -1585,7 +1579,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool ctxContains(IntegrationAttempt*);
 
   bool getArgBasePointer(Argument*, PointerBase&);
-  void queueUpdateCall();
+  void queueUpdateCall(bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
