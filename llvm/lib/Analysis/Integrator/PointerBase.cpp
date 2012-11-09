@@ -656,8 +656,6 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
   pass->PBLFAs++;
 
   bool verbose = false;
-  if(SeqNumber <= 10250 && SeqNumber > 10240 && F.getName() == "__stdio_fwrite")
-    verbose = true;
 
   if(verbose) {
 
@@ -917,8 +915,6 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
   // Quick escape for values we can't handle:
 
   bool verbose = false;
-  if(SeqNumber <= 10250 && SeqNumber > 10240 && F.getName() == "__stdio_fwrite")
-    verbose = true;
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
 
@@ -1126,7 +1122,7 @@ void IntegrationAttempt::queueUserUpdatePB(Value* V, Instruction* UserI, bool qu
 void IntegrationAttempt::queueUpdatePB(IntegrationAttempt* Ctx, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop) {
 
   bool inLoop = pass->PBsConsideredThisRun.count(make_vc(V, Ctx));
-  
+
   assert(!(queueInLoopNow && pendInLoop));
 
   if(queueInLoopNow && inLoop) {
@@ -1337,12 +1333,25 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V) {
     // Zap and save the old value:
     PointerBase oldPB;
     bool oldPBValid = getPointerBaseLocal(V, oldPB);
-    if(oldPBValid)
+    if(oldPBValid) {
+      LPDEBUG("Cleardown " << itcache(make_vc(V, this)) << " formerly ");
+      DEBUG(printPB(dbgs(), oldPB));
+      DEBUG(dbgs() << "\n");
       pass->PBsConsideredThisRun[make_vc(V, this)] = oldPB;
-    else
+    }
+    else {
+      LPDEBUG("Cleardown " << itcache(make_vc(V, this)) << " (never defined before)\n");
       pass->PBsConsideredThisRun[make_vc(V, this)] = PointerBase();
+    }
 
+    erasePointerBase(V);
+    
     pass->queueUpdatePB(this, V);
+
+  }
+  else {
+
+    LPDEBUG("Shouldn't check " << itcache(make_vc(V, this)) << "\n");
 
   }
 
@@ -1383,7 +1392,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L) {
 
 void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L) {
 
-  errs() << "QUEUE WHOLE LOOP " << (L ? L->getHeader()->getName() : F.getName()) << "\n";
+  //errs() << "QUEUE WHOLE LOOP " << (L ? L->getHeader()->getName() : F.getName()) << "\n";
 
   bool verbose = false;
   if(L && L->getHeader()->getName() == "4" && L->getHeader()->getParent()->getName() == "_charpad")
@@ -1438,7 +1447,7 @@ void IntegrationHeuristicsPass::queueNewPBWork(uint64_t& newVCs, uint64_t& chang
     // e.g. if we're talking about a downstream loop that depends on us, our value cannot have got worse
     // (we assert) and the downstream loop cannot draw a better conclusion based on overdef.
     if(NewPB.Overdef)
-      return;
+      continue;
 
     bool queue = false;
     if(it->second == NullPB) {
@@ -1635,7 +1644,7 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 	continue;
 
       std::pair<IntegrationAttempt*, const Loop*> nextVCLoop = nextVC.second->getOutermostLoop(nextVC.first);
-      if(!nextVCLoop.first) {
+      if(nextVCLoop.first) {
 
 	LoopsToCheck.push_back(nextVCLoop);
 
@@ -1670,13 +1679,19 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
       // Just make a single, simple check:
       it->second->erasePointerBase(it->first);
+      it->second->updateBasePointer(it->first, false);
       it->second->updateBasePointer(it->first, true);
 
       queueNewPBWork(newVCs, changedVCs);
+      PBsConsideredThisRun.clear();
 
     }
 
+    ValuesToCheck.clear();
+
     for(std::vector<std::pair<IntegrationAttempt*, const Loop*> >::iterator it = LoopsToCheck.begin(); it != lastLoop; ++it) {
+      
+      errs() << "Consider entire loop " << it->second->getHeader()->getName() << " in ctx " << it->first->getShortHeader() << "\n";
 
       // Step 1: queue (and clear existing PBs) for VCs falling within this loop.
 
@@ -1709,8 +1724,11 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
       // Finally see if this changed anything and, if so, queue work for the pessimistic solver
       // and for ourselves.
       queueNewPBWork(newVCs, changedVCs);
+      PBsConsideredThisRun.clear();
 
     }
+
+    LoopsToCheck.clear();
 
   }
 

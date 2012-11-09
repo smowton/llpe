@@ -280,6 +280,7 @@ void IntegrationAttempt::checkBlockPHIs(BasicBlock* BB) {
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
     
     visitUser(BI, IV);
+    queueUpdatePB(this, BI, false, true, true);
 
   }
 

@@ -1131,9 +1131,6 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
 
   bool verbose = false;
   
-  if(RealLFA.getOriginalCtx()->SeqNumber <= 10250 && RealLFA.getOriginalCtx()->SeqNumber > 10240 && RealLFA.getOriginalCtx()->getFunctionName() == "__stdio_fwrite")
-    verbose = true;
-
   raw_ostream& prout = verbose ? errs() : nulls();
 
   // Continue even if the PB becomes overdef'd to ensure we gather a complete set of defining instructions.
