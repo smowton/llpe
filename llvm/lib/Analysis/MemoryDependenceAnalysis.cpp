@@ -416,7 +416,7 @@ MemDepResult MemoryDependenceAnalyser::getDependency(Instruction *QueryInst) {
   } else if (StoreInst *SI = dyn_cast<StoreInst>(QueryInst)) {
     // If this is a volatile store, don't mess around with it.  Just return the
     // previous instruction as a clobber.
-    if (SI->isVolatile())
+    if (SI->isVolatile() && !ignoreVolatile)
       LocalCache = MemDepResult::getClobber(--BasicBlock::iterator(ScanPos));
     else {
       MemPtr = SI->getPointerOperand();

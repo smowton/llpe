@@ -938,6 +938,7 @@ protected:
   virtual void setReplacement(Value*, ValCtx);
   void eraseReplacement(Value*);
   bool isUnresolved(Value*);
+  bool hasResolvedPB(Value*);
   void setEdgeDead(BasicBlock*, BasicBlock*);
   void setBlockDead(BasicBlock*);
 

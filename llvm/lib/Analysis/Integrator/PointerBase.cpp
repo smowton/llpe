@@ -88,6 +88,21 @@ bool llvm::extractCEBase(Constant* C, ValCtx& VC) {
 
 }
 
+bool IntegrationAttempt::hasResolvedPB(Value* V) {
+
+  // A little different to isUnresolved: that would call GEP of X where X has a known replacement resolved. We explicitly eval that GEP.
+  // This method will become the one true method once the two folders merge.
+
+  if(isa<AllocaInst>(V) || isNoAliasCall(V))
+    return true;
+
+  if(getReplacement(V) != getDefaultVC(V))
+    return true;
+
+  return false;
+
+}
+
 bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
 
   if(isa<AllocaInst>(V) || isNoAliasCall(V)) {
@@ -354,7 +369,8 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
 bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
   PointerBase ArgPB;
-  if(!getPointerBase(I->getOperand(0), ArgPB, I))
+
+  if(!getValSetOrReplacement(I->getOperand(0), ArgPB, I))
     return false;
   if(ArgPB.Overdef) {
     PB = ArgPB;
@@ -408,15 +424,6 @@ bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
 bool IntegrationAttempt::getValSetOrReplacement(Value* V, PointerBase& PB, Instruction* UserI) {
 
-  bool found;
-  if(UserI)
-    found = getPointerBase(V, PB, UserI);
-  else
-    found = getPointerBaseFalling(V, PB);
-
-  if(found)
-    return true;
-
   ValCtx Repl = getReplacement(V);
   ValCtx ReplUO;
   if(Repl.second)
@@ -427,6 +434,15 @@ bool IntegrationAttempt::getValSetOrReplacement(Value* V, PointerBase& PB, Instr
     PB = PointerBase::get(ReplUO);
     return true;
   }
+
+  bool found;
+  if(UserI)
+    found = getPointerBase(V, PB, UserI);
+  else
+    found = getPointerBaseFalling(V, PB);
+
+  if(found)
+    return true;
 
   return false;
 
@@ -917,7 +933,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
   bool verbose = false;
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
-
+    
     switch(I->getOpcode()) {
 
     case Instruction::GetElementPtr:
@@ -945,7 +961,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise) {
   }
 
   // Don't duplicate the work of the pessimistic solver:
-  if(getLoopContext() == getValueScope(V) && !isUnresolved(V))
+  if(getLoopContext() == getValueScope(V) && hasResolvedPB(V))
     return false;
 
   if(verbose)
@@ -1143,12 +1159,23 @@ void IntegrationAttempt::queueUpdatePB(IntegrationAttempt* Ctx, Value* V, bool q
 
 void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop) {
 
+  if(Instruction* UserI = dyn_cast<Instruction>(V)) {
+
+    if(UserI->getParent()->getName() == "9" && SeqNumber == 7054) {
+
+      errs() << "Queue for " << itcache(make_vc(V, this)) << "'s user " << itcache(make_vc(I, this)) << "\n";
+      errs() << "Instruction loop is " << (IL ? IL->getHeader()->getName() : "none") << ", mine is " << (getLoopContext() ? getLoopContext()->getHeader()->getName() : "none") << ", inst already done: " << hasResolvedPB(I) << "\n";
+
+    }
+
+  }
+
   if(getLoopContext() == IL) {
 
     if(blockIsDead(I->getParent()))
       return;
 
-    if(getValueScope(I) == getLoopContext() && !isUnresolved(I)) {
+    if((!isa<CallInst>(I)) && getValueScope(I) == getLoopContext() && hasResolvedPB(I)) {
 
       // No point investigating instructions whose concrete values are already known.
       return;
@@ -1156,6 +1183,14 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
     }
 
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+      if(Instruction* UsedI = dyn_cast<Instruction>(V)) {
+	if(UsedI->getParent()->getName() == "653" && UsedI->getParent()->getParent()->getName() == "vasnprintf") {
+	  
+	  errs() << itcache(make_vc(UsedI, this)) << " used by call " << itcache(make_vc(CI, this)) << ", has IA " << !!(getInlineAttempt(CI)) << "\n";
+
+	}
+      }
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
@@ -1282,15 +1317,29 @@ void IntegrationAttempt::queuePendingWorkFromUpdatedPB(Value* V, PointerBase& PB
 
 bool IntegrationAttempt::shouldCheckPB(Value* V) {
 
-  if(contextIsDead)
-    return false;
+  bool verbose = false;
 
-  if(!isUnresolved(V))
+  if(verbose)
+    errs() << "shouldCheckPB " << itcache(make_vc(V, this)) << "\n";
+
+  if(contextIsDead) {
+    if(verbose)
+      errs() << "Ctx dead\n";
     return false;
+  }
+
+  if(hasResolvedPB(V)) {
+    if(verbose)
+      errs() << "Resolved already: repl " << itcache(getReplacement(V)) << " vs default " << itcache(getDefaultVC(V)) << "\n";
+    return false;
+  }
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
-    if(blockIsDead(I->getParent()))
+    if(blockIsDead(I->getParent())) {
+      if(verbose)
+	errs() << "Block dead\n";
       return false;
+    }
   }
 
   const Loop* MyL = getLoopContext();
@@ -1305,13 +1354,19 @@ bool IntegrationAttempt::shouldCheckPB(Value* V) {
     // Extend this to all values: if there's a terminated loop we can just identify its value
     // per iteration as usual.
 
-    if(MyL && !MyL->contains(VL))
+    if(MyL && !MyL->contains(VL)) {
+      if(verbose)
+	errs() << "Not within context loop\n";
       return false;
+    }
 
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyL, VL))) {
 
-      if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
+      if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
+	if(verbose)
+	  errs() << "Under a terminated loop\n";
 	return false;
+      }
 
     }
 
@@ -1319,9 +1374,14 @@ bool IntegrationAttempt::shouldCheckPB(Value* V) {
 
   PointerBase PB;
   bool PBValid = getPointerBaseFalling(V, PB);
-  if(PBValid && PB.Values.size() == 1)
+  if(PBValid && PB.Values.size() == 1) {
+    if(verbose)
+      errs() << "Has optimal PB\n";
     return false;
+  }
 
+  if(verbose)
+    errs() << "Will check\n";
   return true;
 
 }
@@ -1395,8 +1455,6 @@ void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L) {
   //errs() << "QUEUE WHOLE LOOP " << (L ? L->getHeader()->getName() : F.getName()) << "\n";
 
   bool verbose = false;
-  if(L && L->getHeader()->getName() == "4" && L->getHeader()->getParent()->getName() == "_charpad")
-    verbose = true;
 
   queuePBUpdateAllUnresolvedVCsInScope(L);
 
@@ -1691,7 +1749,7 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
 
     for(std::vector<std::pair<IntegrationAttempt*, const Loop*> >::iterator it = LoopsToCheck.begin(); it != lastLoop; ++it) {
       
-      errs() << "Consider entire loop " << it->second->getHeader()->getName() << " in ctx " << it->first->getShortHeader() << "\n";
+      LPDEBUG("Consider entire loop " << it->second->getHeader()->getName() << " in ctx " << it->first->getShortHeader() << "\n");
 
       // Step 1: queue (and clear existing PBs) for VCs falling within this loop.
 

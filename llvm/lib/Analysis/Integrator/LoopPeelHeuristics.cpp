@@ -393,6 +393,9 @@ void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
 
   assert(getValueScope(V) == getLoopContext());
   improvedValues[V] = R;
+  // Because we might have previously discovered an overly negative result, but won't reconsider it now it has a concrete value.
+  // In other words, improvedValues trumps pointerBases and this ensures we can assume that one or the other is set.
+  erasePointerBase(V);
 
 }
 
