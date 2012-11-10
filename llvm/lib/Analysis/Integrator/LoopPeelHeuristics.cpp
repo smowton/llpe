@@ -1387,9 +1387,18 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
       }
       else {
 	
+	SmallVector<NonLocalDepResult, 4> SaveInstResults;
+	for(unsigned i = 0; i < InstResults.size(); ++i) {
+	  NonLocalDepResult SaveNLDR = InstResults[i];
+	  MemDepResult SaveRes = SaveNLDR.getResult();
+	  if(!SaveRes.getCookie())
+	    SaveRes.setCookie(this);
+	  SaveInstResults.push_back(NonLocalDepResult(SaveNLDR.getBB(), SaveRes, SaveNLDR.getAddress()));
+	}
+
 	LPDEBUG(itcache(*OriginalInst) << " is overdefined: depends on at least " << itcache(Seen) << " and " << itcache(Res) << "\n");
 	IntegrationAttempt* OrigCtx = LFA.getOriginalCtx();
-	OrigCtx->setLoadOverdef(OriginalInst, InstResults);
+	OrigCtx->setLoadOverdef(OriginalInst, SaveInstResults);
 
 	for(unsigned int i = 0; i < InstResults.size(); i++) {
 		

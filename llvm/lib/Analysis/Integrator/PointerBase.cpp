@@ -1159,17 +1159,6 @@ void IntegrationAttempt::queueUpdatePB(IntegrationAttempt* Ctx, Value* V, bool q
 
 void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop) {
 
-  if(Instruction* UserI = dyn_cast<Instruction>(V)) {
-
-    if(UserI->getParent()->getName() == "9" && SeqNumber == 7054) {
-
-      errs() << "Queue for " << itcache(make_vc(V, this)) << "'s user " << itcache(make_vc(I, this)) << "\n";
-      errs() << "Instruction loop is " << (IL ? IL->getHeader()->getName() : "none") << ", mine is " << (getLoopContext() ? getLoopContext()->getHeader()->getName() : "none") << ", inst already done: " << hasResolvedPB(I) << "\n";
-
-    }
-
-  }
-
   if(getLoopContext() == IL) {
 
     if(blockIsDead(I->getParent()))
@@ -1183,14 +1172,6 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* I
     }
 
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
-
-      if(Instruction* UsedI = dyn_cast<Instruction>(V)) {
-	if(UsedI->getParent()->getName() == "653" && UsedI->getParent()->getParent()->getName() == "vasnprintf") {
-	  
-	  errs() << itcache(make_vc(UsedI, this)) << " used by call " << itcache(make_vc(CI, this)) << ", has IA " << !!(getInlineAttempt(CI)) << "\n";
-
-	}
-      }
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
@@ -1307,10 +1288,7 @@ void IntegrationAttempt::queuePendingWorkFromUpdatedPB(Value* V, PointerBase& PB
   else {
     // Set of pointer bases. Retry any load that might benefit (i.e. those at the affected scope
     // and its children).
-    if(Instruction* I = dyn_cast<Instruction>(V)) {
-      if(shouldQueueOnInst(I, this))
-	queueWorkBlockedOn(I);
-    }
+    investigateUsers(V, false);
   }
 
 }

@@ -215,17 +215,20 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
     Out << "DEAD";
     return;
   }
+  bool PBPrinted = false;
   if(getPointerBaseFalling(V, PB) && !PB.Overdef) {
     printPB(Out, PB, true);
-    return;
+    PBPrinted = true;
   }
   DenseMap<Instruction*, std::string>::iterator optit = optimisticForwardStatus.find(I);
   DenseMap<Instruction*, std::string>::iterator pesit = pessimisticForwardStatus.find(I);
-  if(optit != optimisticForwardStatus.end()) {
-    Out << "OPT (" << optit->second << "), ";
-  }
-  if(pesit != pessimisticForwardStatus.end()) {
-    Out << "PES (" << pesit->second << "), ";
+  if(!PBPrinted) {
+    if(optit != optimisticForwardStatus.end()) {
+      Out << "OPT (" << optit->second << "), ";
+    }
+    if(pesit != pessimisticForwardStatus.end()) {
+      Out << "PES (" << pesit->second << "), ";
+    }
   }
   if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
 
