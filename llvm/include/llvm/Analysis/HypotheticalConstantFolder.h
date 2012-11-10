@@ -196,7 +196,7 @@ IntegratorWQItem() { }
 // undefined (implied by absence from map)
 // Note Value members may be null (signifying a null pointer) without being Overdef.
 
-#define PBMAX 4
+#define PBMAX 16
 
 enum ValSetType {
 
