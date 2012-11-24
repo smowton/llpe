@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="574pt" height="530pt"
+ viewBox="0.00 0.00 200.00 180.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+
+<g font-family="Helvetica,sans-Serif" font-size="12.00">
+
+  <text x="20" y="20" alignment-baseline="middle">Function main()</text>
+  <line x1="25" x2="25" y1="25" y2="35" stroke-width="1" stroke="black"/>
+  <line x1="25" x2="35" y1="35" y2="35" stroke-width="1" stroke="black"/>
+  <text x="40" y="40">Loop BB1</text>
+  <line x1="45" x2="45" y1="45" y2="135" stroke-width="1" stroke="black"/>
+  <line x1="45" x2="55" y1="55" y2="55" stroke-width="1" stroke="black"/>
+  <text x="60" y="60">Iteration 1</text>
+  <line x1="65" x2="65" y1="65" y2="75" stroke-width="1" stroke="black"/>
+  <line x1="65" x2="75" y1="75" y2="75" stroke-width="1" stroke="black"/>
+  <text x="80" y="80">Function f(%arg_x)</text>
+
+  <line x1="45" x2="55" y1="95" y2="95" stroke-width="1" stroke="black"/>
+  <text x="60" y="100">Iteration 2</text>
+  <line x1="65" x2="65" y1="105" y2="115" stroke-width="1" stroke="black"/>
+  <line x1="65" x2="75" y1="115" y2="115" stroke-width="1" stroke="black"/>
+  <text x="80" y="120">Function f(%arg_x)</text>
+
+  <line x1="45" x2="55" y1="135" y2="135" stroke-width="1" stroke="black"/>
+  <text x="60" y="140">Iteration 3</text>
+  <line x1="65" x2="65" y1="145" y2="155" stroke-width="1" stroke="black"/>
+  <line x1="65" x2="75" y1="155" y2="155" stroke-width="1" stroke="black"/>
+  <text x="80" y="160">Function f(%arg_x)</text>
+
+</g>
+
+</svg>

@@ -1,0 +1,57 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+F [shape=plaintext,fontsize=10,label=<
+      <table border="0" cellborder="1" cellspacing="0">
+	<tr><td align="left"><font point-size="14">Function f(%arg_x)      </font></td></tr>
+	<tr><td align="left">%1 = load %arg_x</td></tr>
+	<tr><td align="left">%2 = load %1</td></tr>
+	<tr><td align="left">store 5 -&gt; %1</td></tr>
+	<tr><td align="left">ret %2</td></tr>
+      </table>
+>];
+
+MainBB0 [shape=plaintext, fontsize=10, label=<
+
+      <table border="0" cellborder="1" cellspacing="0">
+	<tr><td align="left"><font point-size="14">Function main()      </font></td></tr>
+	<tr><td align="left">%1 = alloca i32*</td></tr>
+	<tr><td align="left">%2 = alloca i32</td></tr>
+	<tr><td align="left">store 7 -&gt; %2</td></tr>
+	<tr><td align="left">store %2 -&gt; %1</td></tr>
+	<tr><td align="left">br BB1</td></tr>
+      </table>
+
+>];
+
+MainBB0 -> MainBB1;
+
+MainBB1 [shape=plaintext, fontsize=10, label=<
+
+      <table border="0" cellborder="1" cellspacing="0">
+	<tr><td align="left"><font point-size="12">BB1</font></td></tr>
+	<tr><td align="left">%3 = phi [ BB0 -&gt; 0, BB1 -&gt; %5 ]      </td></tr>
+	<tr><td align="left">%4 = call f(%1)</td></tr>
+	<tr><td align="left">%5 = add %3, %4</td></tr>
+	<tr><td align="left">%6 = cmp gt %5, 10</td></tr>
+	<tr><td align="left">br %6, BB2, BB1</td></tr>
+      </table>
+
+>];
+
+MainBB1 -> MainBB1;
+MainBB1 -> MainBB2;
+
+MainBB2 [shape=plaintext, fontsize=10, label=<
+
+      <table border="0" cellborder="1" cellspacing="0">
+	<tr><td align="left"><font point-size="12">BB2</font></td></tr>
+	<tr><td align="left">ret %5  </td></tr>
+      </table>
+
+
+>];
+
+}

@@ -1,0 +1,2885 @@
+#LyX 2.0 created this file. For more info see http://www.lyx.org/
+\lyxformat 413
+\begin_document
+\begin_header
+\textclass sigplanconf
+\use_default_options true
+\maintain_unincluded_children false
+\language english
+\language_package none
+\inputencoding auto
+\fontencoding global
+\font_roman default
+\font_sans default
+\font_typewriter default
+\font_default_family default
+\use_non_tex_fonts false
+\font_sc false
+\font_osf false
+\font_sf_scale 100
+\font_tt_scale 100
+
+\graphics default
+\default_output_format default
+\output_sync 0
+\bibtex_command default
+\index_command default
+\paperfontsize default
+\spacing single
+\use_hyperref false
+\papersize default
+\use_geometry false
+\use_amsmath 1
+\use_esint 1
+\use_mhchem 1
+\use_mathdots 1
+\cite_engine basic
+\use_bibtopic false
+\use_indices false
+\paperorientation portrait
+\suppress_date false
+\use_refstyle 1
+\index Index
+\shortcut idx
+\color #008000
+\end_index
+\secnumdepth 3
+\tocdepth 3
+\paragraph_separation indent
+\paragraph_indentation default
+\quotes_language english
+\papercolumns 1
+\papersides 1
+\paperpagestyle default
+\tracking_changes false
+\output_changes false
+\html_math_output 0
+\html_css_as_file 0
+\html_be_strict false
+\end_header
+
+\begin_body
+
+\begin_layout Standard
+\begin_inset ERT
+status open
+
+\begin_layout Plain Layout
+
+
+\backslash
+conferenceinfo{PLDI 2013}{16--21 June 2013, Seattle, USA} 
+\backslash
+copyrightyear{2012} 
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Title
+Practical Specialisation for LLVM Programs
+\begin_inset ERT
+status open
+
+\begin_layout Plain Layout
+
+
+\backslash
+authorinfo{Chris Smowton and Dr.
+ Steven Hand} {University of Cambridge} {
+\backslash
+{first.last
+\backslash
+}@cl.cam.ac.uk}
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Section
+Introduction
+\end_layout
+
+\begin_layout Standard
+The software we use on a day-to-day is often much more general than it needs
+ to be for the task for which it is employed.
+ Specialised software can consume less memory, energy and execution time,
+ but specialisation of large programs for a specific task is seldom seen
+ in practice.
+ This is because hand-specialising programs is time-consuming and error-prone,
+ with the development and testing time likely to outweigh the resources
+ saved running the specialised software.
+ By automating the specialisation process, specialisation can be turned
+ from a task of weeks to one of hours, and therefore made practically applicable
+ to everyday real-world programs.
+\end_layout
+
+\begin_layout Standard
+We have designed a specialiser for real-world-scale LLVM programs, which
+ takes specialisation criteria in the form of a command-line, environment
+ and/or filesystem image, and emits reduced LLVM programs containing only
+ the code necessary for that specific use case.
+ Our specialiser combines existing optimisation techniques such as procedure
+ inlining, loop peeling, constant propagation, dead code elimination and
+ aggressive interprocedural alias analysis to fully explore the expected
+ dynamic control flow of the specialised program.
+ It then selectively peels loops and inlines functions, specialising code
+ in each case, to achieve minimal code size, minimal execution time, or
+ both.
+ It explores the program automatically as far as possible, but also permits
+ simple, easy-to-use annotations by the user to improve results where automatic
+ analysis fails.
+\end_layout
+
+\begin_layout Standard
+We have implemented a prototype realising a large portion of our design.
+ In section Blah we describe our implementation, along with the challenges
+ we anticipate in fully realising our design.
+ We evaluated our prototype on 3 mid-sized programs (10,000s of source lines
+ of code, including libraries), producing code size reductions of up to
+ X% and runtime improvements of up to Y%.
+\end_layout
+
+\begin_layout Section
+Motivation
+\end_layout
+
+\begin_layout Standard
+It is very common for very general software to be used where a more specialised
+ program would have done the job.
+ Apache, with its cornucopia of modules and features, is often used to serve
+ static content; grep is used when its search expression is so simple that
+ it boils down to strstr; fully-featured databases with support for ACID
+ transactions and clustering are used in applications that in fact only
+ call for a single-user hash table.
+ This usually happens out of expediency: the tool exists, is familiar to
+ the user, definitely does the required job (despite doing many dozens of
+ other things as well), and there is little motivation to invent a better
+ solution when resources (CPU cycles, memory) are plentiful.
+\end_layout
+
+\begin_layout Standard
+It is also common to need to employ such general-purpose, inefficient prototypes
+ in a setting where resource consumption is important.
+ This might be because the prototype will be run in a cloud computing environmen
+t which is billed per CPU cycle or byte of memory consumed, or because the
+ ultimate target is an embedded environment with physical resource restrictions,
+ or because a network service became unexpectedly popular to the point that
+ it taxes its host hardware.
+ In such cases we'd like to use the same all-purpose tools we're familiar
+ with, but we need to compromise to meet our resource budget.
+ We could customise the software by hand, but the development and debugging
+ costs of such modifications may be excessive.
+ We could sacrifice functionality and use a system designed explicitly for
+ restricted environments (such as trading in GNU coreutils for busybox),
+ but such an alternative might not be readily available, and the replacement
+ is likely to have subtly different behaviour and bugs to the original,
+ or may offer a restricted feature subset that is not convenient to our
+ needs.
+\end_layout
+
+\begin_layout Standard
+Using program specialisation we can have our cake and eat it too: the existing,
+ large program can be specialised with respect to invariants that we know
+ about its operating context to produce a smaller, faster program that behaves
+ identically to the original so long as the invariants are maintained and
+ the specialiser is correct.
+\end_layout
+
+\begin_layout Subsection
+Program Specialisation
+\end_layout
+
+\begin_layout Standard
+Program specialisation, also known as partial evaluation or staged compilation,
+ describes the evaluation of part of a program, usually assuming some specialisa
+tion conditions, and emission of a residual program which is observationally
+ equivalent to the original so long as those specialisation conditions are
+ obeyed.
+\end_layout
+
+\begin_layout Standard
+As a trivial example, one could specialise the 'printf' function to assume
+ that its first argument will be "%d".
+ Under this assumption, printf reduces to a function that prints a single
+ integer in decimal form.
+ The resulting code will be smaller, as printf's other output routines can
+ be discarded, and faster to execute, because instructions that examine
+ the format string can be statically evaluated.
+ In the particular case of printf the resulting function can use a more
+ efficient calling convention because it no longer has a variable-length
+ argument list.
+ The specialised function might also be small enough to consider inlining,
+ which will eliminate the cost of a call/return sequence entirely.
+ The emitted specialisation of printf is equivalent to the original so long
+ as the specialisation condition (that the first parameter is "%d") is true.
+\end_layout
+
+\begin_layout Standard
+Specialisation of entire programs extends the idea of the function specialisatio
+n described above by specialising with respect to the arguments supplied
+ to the program's entry point (i.e.
+ its command-line arguments or environment), as well as implicit parameters
+ examined using system calls, such as the contents of the filesystem.
+ Whilst specialisation conditions for internal functions can be proven by
+ the specialiser (for example, it will never emit code using its specialised
+ 'printf' unless it is sure the parameters are appropriate), specialisation
+ with respect to external state requires that we either depend on the user
+ to obey those conditions (with undefined behaviour of they don't), or that
+ the specialiser emits code to check those conditions (called guards).
+ For example, if the printf example above were to take its format string
+ from a command-line argument, we would either note that calling with a
+ different format string will fail in an unspecified manner or emit a guard
+ which checks that the format string is as expected and exits otherwise.
+ Which of these is appropriate depends on context: in an embedded context
+ we can likely guarantee appropriate usage because we have full control
+ over device firmware, whilst for personal use it is probably more useful
+ to provide informative errors at the expense of code size and runtime.
+\end_layout
+
+\begin_layout Standard
+Program specialisation can take place ahead of time (sometimes called static
+ or offline partial evaluation), in which specialisation conditions are
+ specified in advance and a specialised program is produced but the specialiser
+ plays no further role at runtime, or can take place at runtime (called
+ a dynamic or online partial evaluator), in which the specialiser is present
+ in the executable and generates code in response to dynamic profiling of
+ the executing code, akin to a just-in-time compiler.
+ 
+\end_layout
+
+\begin_layout Section
+Design
+\end_layout
+
+\begin_layout Standard
+We present the design of an ahead-of-time LLVM bitcode specialiser with
+ optional guards.
+ It combines well-known analyses using a novel specialisation strategy to
+ produce a specialiser capable of processing real-world programs, surpassing
+ previous work in the scale of its input programs and its coverage of the
+ source language.
+\end_layout
+
+\begin_layout Standard
+Our high-level design goals are as follows:
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Correctness
+\emph default
+.
+ We specialise programs using properties which we can establish for certain
+ given the specialisation conditions, and make no further assumptions about
+ the program's input or the behaviour of the target machine beyond those
+ embodied in the LLVM specification and the target data provided by the
+ frontend compiler.
+ Naturally the threat of bugs in the specialiser remains, but we seek the
+ minimise the risk by using well-exercised kernels from core LLVM transformation
+ passes as much as possible.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Scalability
+\emph default
+.
+ In order to effectively specialise large programs, it is necessary to prove
+ relations which involve the entire dynamic execution flow: for example,
+ that a global variable accessed late in execution still has its initialiser
+ value requires us to establish that no intervening instruction has written
+ that variable.
+ We achieve scalability using multiple levels of analysis, characterising
+ functions' and loops' behaviour in a context-insensitive manner, then again
+ considering their parameters, and then finally, if necessary, considering
+ their dynamic execution context.
+ This enables us to abbreviate program analysis by dealing in entire functions
+ and loops wherever possible, only considering their fine details where
+ necessary.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Tolerance of dynamic effects
+\emph default
+.
+ Only the most basic cases of specialistion provide all the information
+ relevant to running a program (e.g.
+ providing a complete filesystem image, environment and command-line to
+ a program that does not interact with the network, system timer, or other
+ sources of non-determinism).
+ Inevitably therefore there will be aspects of the program whose behaviour
+ remains unknown.
+ If entirely unknown these dynamic regions of the program can act as optimisatio
+n barriers because they must be assumed to affect any memory location.
+ We avoid this situation by supporting multiple levels of understanding
+ of the effects of instructions and functions: they can be understood to
+ affect particular memory addresses, or entire objects or allocations.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Usability
+\emph default
+.
+ Inevitably, automatic analysis will sometimes fail to fully exploit the
+ available information and produce suboptimal output.
+ For these cases we support easy to understand and use annotations, allowing
+ the user to provide extra guidance without threatening correctness.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Practicality
+\emph default
+.
+ We choose to operate on LLVM bitcode in order to support programs written
+ in many low-level programming languages, including C and C++, whilst providing
+ a source language whose semantics are well specified and which is small
+ enough that broad coverage is practical.
+\end_layout
+
+\begin_layout Standard
+We will describe the detailed design of our specialiser starting with a
+ simple core design which is then augmented to take advantage of more specialisa
+tion opportunities and to improve efficiency.
+ We use a series of illustrative example programs which are expressed in
+ LLVM-like pseudocode.
+\end_layout
+
+\begin_layout Subsection
+Concrete Specialisation
+\end_layout
+
+\begin_layout Standard
+At its core, our specialiser seeks to explore the complete dynamic execution
+ path of a program and to calculate the result of every dynamically executed
+ instruction.
+ The specialiser is context-sensitive (it specialises called functions seperatel
+y for each dynamic call) and flow-sensitive with respect to loops (it assigns
+ values to each iteration of a loop, rather than attempting to identify
+ invariants) but not with respect to non-loop-structured control flow, in
+ that if a basic block has multiple predecessors we do not specialise the
+ block dependent on which predecessor actually executed.
+ The values assigned to each dynamic instruction may be constants or concrete
+ pointers (identified by their base address, represented as an allocation
+ instruction or global variable, plus an offset).
+ Control flow instructions are evaluated in order to eliminate dead basic
+ blocks, and phi instructions are resolved by taking that dead block information
+ into account.
+ Load operations are resolved by walking backwards through each basic block
+ to find a store operation that accesses the same location, using pointer
+ information established earlier to determine whether indirect accesses
+ may alias the load's target location.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\begin_inset Graphics
+	filename integrator-diagrams/fig1a.svg
+	width 100col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+An example program that incorporates a loop (BB1), a call within a loop
+ (call f within BB1), and memory operations
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\begin_inset Graphics
+	filename integrator-diagrams/fig1b.svg
+	width 100col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+The same program as figure 1, annotated with the constant and pointer results
+ computed for each dynamic instruction
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+Figure 1 shows a simple example program involving 2 functions, 
+\family typewriter
+main
+\family default
+ and 
+\family typewriter
+f
+\family default
+, and Figure 2 shows the values our analysis computes for each iteration
+ of the loop BB1 and each invocation of the call to 
+\family typewriter
+f
+\family default
+.
+ Note that we calculate seperate values for each iteration of the loop BB1
+ and each invocation of 
+\family typewriter
+f
+\family default
+ within it.
+ We are able to calculate values for 
+\family typewriter
+%2 = load %1
+\family default
+ within 
+\family typewriter
+f
+\family default
+ by establishing in each case a unique store that defines that load (in
+ the first case this is 
+\family typewriter
+store 7 -> %2
+\family default
+ in the entry block of 
+\family typewriter
+main()
+\family default
+, in the second it is 
+\family typewriter
+store 5 -> %1
+\family default
+ within the first call to 
+\family typewriter
+f
+\family default
+).
+ By contrast ordinary LLVM program analysis would assume 
+\family typewriter
+f
+\family default
+ can have any effect because it writes through the pointer 
+\family typewriter
+%1
+\family default
+, whose referent object depends on the function's arguments.
+ When emitting specialised code we inline functions and peel loops to write
+ the straightened control flow graph we have established will be executed,
+ replacing instructions with constants and pointers as we go.
+ As all instructions are either evaluated to constants or dead (without
+ users) when constant instructions are disregarded, the output program is
+ simply 
+\family typewriter
+ret 12
+\family default
+.
+\end_layout
+
+\begin_layout Standard
+We only calculate results for functions and loop iterations when we are
+ certain that they will be executed because loop exit branches or branches
+ that bypass calls have been eliminated.
+ Formally, we investigate loops when their header block post-dominates their
+ containing function's exit block, and calls when the basic block containing
+ the call instruction post-dominates the exit.
+ This enables us to aggressively explore deep into the program's dynamic
+ control flow without the risk of non-termination unless the program itself
+ does not terminate, because in order to explore an infinite chain of calls
+ and loop iterations we would have to prove that that chain would be executed
+ at runtime.
+\end_layout
+
+\begin_layout Standard
+We assume that all functions used in the program are defined (i.e.
+ the function body is available for analysis), with the exception of system
+ calls and the basic string functions: 
+\family typewriter
+memcpy
+\family default
+, 
+\family typewriter
+memmove
+\family default
+, 
+\family typewriter
+memset
+\family default
+.
+ This is typically achieved by running the specialiser against a fully staticall
+y linked program; however our specialiser does not in principle preclude
+ using shared objects in the final binary, as library functions could be
+ externalised post-analysis and dynamically re-linked at runtime.
+ We do not currently implement this functionality, however.
+ If it were implemented, the user would have to be careful that the dynamically
+ available version matches that which was used for specialisation, so dynamic
+ linking could be used to save memory by sharing code and read-only data
+ pages, but not to permit library upgrades without recompilation.
+ This is because the specialiser will have both inlined instances of the
+ function as described at specialisation time and forwarded memory operations
+ over calls to the function based on its characterisation of its side-effects.
+\end_layout
+
+\begin_layout Standard
+A significant limitation of the design as described so far is that it assigns
+ each instruction either a concrete result (a constant or known pointer)
+ or else assumes the instruction could have any result at all, even if its
+ range remains limited: for example, according to LLVM semantics a pointer
+ derived from another by pointer arithmetic must continue to point to the
+ same allocated object (global variable, stack allocation or 
+\family typewriter
+malloc
+\family default
+ call).
+ Knowing that a pointer addresses a particular object is very useful, even
+ if its exact address is unknown, because a store to a pointer that could
+ address any object is a significant barrier to further specialisation,
+ preventing us from establishing the result of any load instruction whose
+ value may be defined before that store.
+ To address this limitation, we extend our notion of instruction results
+ to include two new kinds of information: value sets, and fuzzy pointers.
+\end_layout
+
+\begin_layout Subsection
+Partially Dynamic Values
+\end_layout
+
+\begin_layout Standard
+We extend our design as described so far by adding a new type of instruction
+ result: a small set of result values, each of which is either a constant
+ or pointer.
+ Phi instructions map predecessor basic blocks onto instructions or constants.
+ If more than one of their predecessor blocks are alive, their result is
+ the union of the value sets for each argument value, where an argument
+ which is constant or has been evaluated to a concrete value is treated
+ as a singleton set.
+ Select instructions, which pick between two operands based on a boolean
+ like C's 
+\family typewriter
+x ? y : z
+\family default
+ ternary operator, are treated like two-argument Phi instructions if 
+\family typewriter
+x
+\family default
+ has not been established to be either true or false.
+ Lastly, load instructions may depend on any number of store instructions.
+ If a load can be established to only depend on a finite set of store instructio
+ns, each of which is known to access the same pointer, the load is assigned
+ a set in the same way as a Phi drawing on the stored values as operands.
+ Arithmetic and bitwise operations can be assigned value sets if one or
+ more of their operands have been assigned sets: for example, if 
+\family typewriter
+%1
+\family default
+ were assigned 
+\family typewriter
+{1, 2}
+\family default
+ and 
+\family typewriter
+%2
+\family default
+ were assigned 
+\family typewriter
+{4, 8}
+\family default
+ then 
+\family typewriter
+add %1, %2
+\family default
+ would be assigned 
+\family typewriter
+{5, 6, 9, 10}.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename integrator-diagrams/fig2a.svg
+	height 30theight%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Example program illustrating value sets: because BB2's predecessor may be
+ either the entry block or BB1, phi node %4 is assigned the union of the
+ values of its arguments, but %5 is nontheless assigned a single value.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+In figure 3 we give an example showing how tracking value sets per instruction
+ can improve specialisation opportunities.
+ The phi instruction 
+\family typewriter
+%4
+\family default
+ can have two possible values because the condition for the branch at 
+\family typewriter
+%2
+\family default
+ is dynamically controlled, leaving all shown blocks live.
+ At 
+\family typewriter
+%5
+\family default
+ however the 
+\family typewriter
+and
+\family default
+ operation masks the dynamic element of its operand out, leaving a single
+ concrete value which can be used to expose further opportunities for specialisa
+tion.
+ This limits the scope of the uncertainty implied by dynamic parameter 
+\family typewriter
+%dynamic
+\family default
+.
+ In order to limit the specialiser's memory consumption, once a value set
+ grows larger than a user-controllable threshold it is considered wholly
+ dynamic (i.e.
+ we assume it may take any value, as for an instruction with no result calculate
+d).
+ This threshold can be adjusted to trade memory consumption for quality
+ of specialisation.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\begin_inset Graphics
+	filename integrator-diagrams/fig2b.svg
+	width 100col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Example program illustrating fuzzy pointers: the notation 
+\begin_inset Quotes eld
+\end_inset
+
+
+\family typewriter
+pointer %1@main + ?
+\family default
+
+\begin_inset Quotes erd
+\end_inset
+
+ indicates the pointer has a known base object (
+\family typewriter
+%1
+\family default
+, a stack allocated object) but an unknown offset.
+ This is enough to establish that 
+\family typewriter
+store 6 -> %4
+\family default
+ does not modify the distinct object 
+\family typewriter
+%2
+\family default
+ and therefore the 
+\family typewriter
+load %6
+\family default
+'s value can be established for certain.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+A special case of a value set is a fuzzy pointer: this is a pointer whose
+ base object is known, but whose offset within that object is not.
+ In figure 4 we see a known pointer is indexed by a dynamic offset and then
+ stored to.
+ Without a fuzzy pointer association for the resulting pointer 
+\family typewriter
+%4
+\family default
+ we would need to assume that the store operation alters all memory, but
+ knowing its base object we can assume that pointers with other known base
+ objects do not alias the store operation.
+ Thus whilst the load 
+\family typewriter
+%5
+\family default
+ cannot be completed because its value may or may not be affected by the
+ store to 
+\family typewriter
+%4
+\family default
+, the 
+\family typewriter
+load %6
+\family default
+ can as it is known to reference a different object.
+ Value sets and fuzzy pointers can be combined to produce a value which
+ notionally points to one of several possible objects with an unknown offset.
+ This value may alias another pointer if any of its set of bases may alias.
+\end_layout
+
+\begin_layout Standard
+Instructions whose calculated values remain sets or fuzzy pointers at the
+ end of specialisation are retained in the output program.
+ However if their users were evaluated, as in this case, they will be identified
+ as dead instructions and removed in a final cleanup pass.
+\end_layout
+
+\begin_layout Standard
+This support for partially dynamic values improves our ability to specialise
+ around dynamic arguments.
+ Next we describe how deal with loops with an unbounded iteration count
+ and call instructions within them.
+\end_layout
+
+\begin_layout Subsection
+Dynamic Loops and Calls
+\end_layout
+
+\begin_layout Standard
+Another limitation of our design described so far is that because we try
+ to establish values for instructions in loops for a specific iteration,
+ and we only explore the next iteration when we are certain the loop will
+ iterate, our progress will be severely limited when the input program contains
+ a loop whose iteration count cannot be statically established because it
+ depends on user input or a nondeterministic system call.
+ We now expand our analysis of loops to try to establish both per-iteration
+ values and invariant values.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide true
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename integrator-diagrams/fig3a.svg
+	width 80text%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+An example program illustrating the value of loop invariant analysis.
+ The per-iteration analysis on the right is forestalled by uncertainty about
+ the latch branch, whilst the invariant analysis on the left limits the
+ loop's side effects such that 
+\family typewriter
+%7
+\family default
+ can be established.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+In Figure 5 we show an example program in which the dynamic argument 
+\family typewriter
+%dynamic
+\family default
+ controls a loop which iterates through a buffer, writing some number of
+ null bytes.
+ Our simple strategy of exploring the program's dynamic execution flow is
+ inadequate here, because we don't know how many times the loop will iterate.
+ Instead, we consider the loop at two different scales: we try to investigate
+ each iteration, as well as to establish invariants regarding the loop body.
+ The per-iteration (flow-sensitive) investigation, represented by the block
+ labelled 
+\begin_inset Quotes eld
+\end_inset
+
+BB1 (iteration 1)
+\begin_inset Quotes erd
+\end_inset
+
+ stalls quickly, establishing the exact object and offset modified by 
+\family typewriter
+store 0 -> %2
+\family default
+, but unable to proceed further because it is uncertain whether the loop
+ will iterate or not (and in fact we would have to explore a potentially
+ infinite number of iterations to establish the loop's results and effects).
+ The invariant analysis, on the other hand, establishes that instructions
+ 
+\family typewriter
+%2
+\family default
+ and 
+\family typewriter
+%4
+\family default
+ always refer to a pointer within the buffer 
+\family typewriter
+%1
+\family default
+.
+ This does not improve the emitted program, because no concrete values are
+ established, however critically it establishes that 
+\family typewriter
+store 0 -> %2
+\family default
+ does not modify 
+\family typewriter
+@global
+\family default
+, since it is distinct from the stack allocation 
+\family typewriter
+%1
+\family default
+, permitting us to forward the load 
+\family typewriter
+%7
+\family default
+ through the loop despite not knowing how many times it will iterate.
+\end_layout
+
+\begin_layout Standard
+Our loop invariant analysis includes considering call instructions within
+ an invariant context.
+ For example, if the program in Figure 5 defined a trivial two argument
+ function 
+\family typewriter
+f(%x, %y) { store %x -> %y }
+\family default
+ and called 
+\family typewriter
+f(0, %2)
+\family default
+ in place of 
+\family typewriter
+store 0 -> %2
+\family default
+, we would consider the call to 
+\family typewriter
+f
+\family default
+ both in the BB1 (invariants) context and the BB1 (iteration 1) context.
+ We would establish that the call in this particular context only affects
+ the stack object 
+\family typewriter
+%1
+\family default
+ and so achieve the same successful forwarding of 
+\family typewriter
+%7
+\family default
+.
+\end_layout
+
+\begin_layout Standard
+When invariant contexts include instructions which depend on instructions
+ that statically succeed them we determine the most specific values that
+ can be assigned to the instructions within the loop.
+ We achieve this by initially assigning every instruction within the loop
+ a value based only on its loop invariant arguments, then propagating constants
+ and forwarding loads until all instructions within the loop are stable.
+ Each computation of a result can only lower the precision of an instruction's
+ result value, adding more values to a set-typed result, or downgrading
+ an exact pointer to a fuzzy pointer, or concluding that the result is entirely
+ unknown ('overdefined', meaning the instruction may produce any value).
+ For example, Figure 6 shows an example program which features a loop that
+ repeatedly calls 
+\family typewriter
+bset
+\family default
+.
+ 
+\family typewriter
+bset
+\family default
+ is modelled on a highly simplified 
+\family typewriter
+fwrite
+\family default
+ function, in that it takes a pointer into a buffer, writes some number
+ of bytes then stores a pointer to the next byte to be written.
+ Whilst 
+\family typewriter
+fwrite
+\family default
+ keeps that pointer within 
+\family typewriter
+struct FILE
+\family default
+ rather than taking it directly, 
+\family typewriter
+bset
+\family default
+ exhibits the key challenge in analysing an 
+\family typewriter
+fwrite
+\family default
+ loop: establishing that 
+\emph on
+every
+\emph default
+ call to 
+\family typewriter
+fwrite
+\family default
+ can only modify a particular buffer.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide true
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename integrator-diagrams/fig6.svg
+	width 80text%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+An example program illustrating exploring a function in a loop-invariant
+ context.
+ We successfully prove that every call to 
+\family typewriter
+bset
+\family default
+ within the left-hand loop writes only to the buffer 
+\family typewriter
+%buf
+\family default
+, limiting the side-effects of the unbounded loop.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+By exploring 
+\family typewriter
+bset
+\family default
+ in the context of 
+\family typewriter
+main
+\family default
+'s loop we establish that 
+\family typewriter
+bset
+\family default
+'s parameter 
+\family typewriter
+%pptr
+\family default
+ is always 
+\family typewriter
+main
+\family default
+'s stack allocated 
+\family typewriter
+%pptr
+\family default
+, and that 
+\family typewriter
+bset
+\family default
+'s instruction 
+\family typewriter
+%1 = load %pptr
+\family default
+ is always defined by either 
+\family typewriter
+main
+\family default
+'s 
+\family typewriter
+store %buf -> %pptr
+\family default
+ or 
+\family typewriter
+bset
+\family default
+'s own 
+\family typewriter
+store %7 -> %pptr
+\family default
+, both of which write pointers into 
+\family typewriter
+%buf
+\family default
+.
+ Therefore 
+\family typewriter
+store c -> %2
+\family default
+ always only affects 
+\family typewriter
+%buf
+\family default
+ and so we are able to limit the side-effects of the call to 
+\family typewriter
+bset
+\family default
+ and so the whole unbounded loop in 
+\family typewriter
+main
+\family default
+.
+ Both the loop in main and the loop in bset would in fact be investigated
+ on a per-iteration basis as well, like in Figure 5, but they fail in the
+ same way because neither loop's termination condition can be statically
+ determined and we omit them from the diagram for brevity.
+ Note that if main called 
+\family typewriter
+bset
+\family default
+ with a fixed 
+\family typewriter
+%n
+\family default
+ parameter then the loop within 
+\family typewriter
+bset
+\family default
+ would be expanded to all its iterations rather than being analysed to discover
+ loop invariants, though the outcome would be the same as 
+\family typewriter
+main
+\family default
+'s loop's termination condition remains unknown.
+\end_layout
+
+\begin_layout Subsection
+Context-insensitive Analysis
+\end_layout
+
+\begin_layout Standard
+Our design as elaborated thus far is effective, but inefficient.
+ In part this is because functions called in many different contexts are
+ explored once per dynamic invocation.
+ This may be useful if we are looking to establish their dynamic results,
+ but often we are only interested in their side-effects, for example because
+ their parameters are dynamic and so we are solely concerned with preventing
+ them from obstructing memory operations that cross the call site.
+ To make our program analysis faster, and save the memory that would be
+ consumed exploring the function's effects at every callsite, we introduce
+ a context-insensitive characterisation of functions' memory side-effects
+ that is calculated the first time a function's side-effects present an
+ obstacle to specialisation.
+\end_layout
+
+\begin_layout Standard
+We calculate for each function a set of modified locations, defined in terms
+ of the function's pointer-typed arguments, global variables and escaping
+ allocation calls (calls which have the LLVM 'noalias' attribute attached
+ to their return value, which binds them to return a fresh pointer; such
+ calls include 
+\family typewriter
+malloc
+\family default
+ as well as custom allocators obeying a similar contract).
+ The function's set of side-effects is calculated by running our specialiser
+ in the restricted context of the function under investigation, regarding
+ pointer-typed arguments as first-class objects.
+\end_layout
+
+\begin_layout Standard
+Sub-calls to other functions are represented as an inclusion along with
+ a substitution: for example, if function f has two pointer-typed parameters,
+ 
+\family typewriter
+x
+\family default
+ and 
+\family typewriter
+y
+\family default
+, and modifies 
+\family typewriter
+x
+\family default
+ but then calls itself recursively with the parameters reversed, we represent
+ it as modifying 
+\family typewriter
+x
+\family default
+, plus its own modification set under the substitution 
+\family typewriter
+[x/y, y/x]
+\family default
+.
+ For this purpose allocation instructions are represented as static callsites.
+ Once all functions are so characterised, we have a recurrence relation
+ between functions' modification sets.
+ We solve by iterating the inclusion and substitution of other functions'
+ sets of modified locations.
+ This is guaranteed to terminate because there are a finite number of arguments,
+ global variables and static allocation sites in the program.
+\end_layout
+
+\begin_layout Standard
+The upshot of this pre-pass is that load forwarding across a call to a function
+ which has been established to have simple effects can proceed without needing
+ to investigate the function at each callsite.
+ We investigate the function at each callsite regardless if we have concrete
+ values for its arguments, since these may provide specialisation opportunities,
+ or reduce its side-effects further.
+\end_layout
+
+\begin_layout Subsection
+Adaptive program exploration
+\end_layout
+
+\begin_layout Standard
+In order to avoid the possibility of analysis non-termination, we usually
+ only analyse a function in the context of a callsite when we are certain
+ it will be called at that site (i.e.
+ when we can establish that the call instruction post-dominates the program
+ exit), and similarly we only analyse a further iteration of a loop once
+ we have established that all exiting edges are dead in the previous iteration.
+ This ensures that if the analysis does not terminate then neither does
+ the original program, since code paths are only explored once we are certain
+ they will be followed at runtime.
+ However, if too many branch conditions cannot be decided at specialisation
+ time it will limit our exploitation of the available opportunities for
+ specialisation.
+\end_layout
+
+\begin_layout Standard
+We improve over this using three simple heuristics to determine whether
+ or not to investigate a function or iteration: (1) do we know concrete
+ values for the function parameters or values entering the loop? If so these
+ represent specialisation opportunities.
+ (2) are any load forwarding attempts blocked by the loop or function? If
+ so we should explore it in order to discover its side-effects, as this
+ may expose more specialisation opportunities further downstream.
+ Finally, (3) given the code size of the function or iteration, and the
+ number of call/entry-sites, how much of its code would we need to eliminate
+ in order to cause an overall code-size reduction? For example, if the function
+ f is called at 50 different sites and consists of 100 instructions, we
+ would need to reduce it to 2 instructions at every site in order to reduce
+ the overall code size.
+ In this case we refrain from investigating it unless we need to due to
+ condition (2).
+ We can still avoid the possibility of non-termination by either only analysing
+ non-recursive functions, or restricting how many calls or loop iterations
+ deep we will look when a function is not certain to execute.
+\end_layout
+
+\begin_layout Subsection
+System Call Support
+\end_layout
+
+\begin_layout Standard
+We support a subset of system calls commonly used to import information
+ that constitutes a specialisation condition, such as the contents of the
+ filesystem, and understand file descriptors as first-class objects.
+ We establish the sequence of system calls operating on a file descriptor
+ by trying to find a unique predecessor call for each such system call,
+ thus constructing a chain of operations leading from an 
+\family typewriter
+open
+\family default
+ call to one or more 
+\family typewriter
+close
+\family default
+ calls.
+ We track a file descriptor's current file position along with the descriptor,
+ and if we are able to prove the file and position going into a 
+\family typewriter
+read
+\family default
+ call we can solve load instructions that draw from the buffer passed to
+ that call.
+ We can completely eliminate VFS system calls if we can identify and resolve
+ every use of an open call.
+ 
+\end_layout
+
+\begin_layout Standard
+We also hard-code knowledge of the side-effects of other system calls that
+ don't provide useful information: for example, we document that 
+\family typewriter
+clock_gettime
+\family default
+ writes through its arguments, writing dynamic data, and sets 
+\family typewriter
+errno
+\family default
+ but has no other effects to avoid system calls presenting a barrier to
+ most memory forwarding operations.
+\end_layout
+
+\begin_layout Subsection
+Program Annotations
+\end_layout
+
+\begin_layout Standard
+For any specialisation algorithm there will be programs which present specialisa
+tion opportunities the analysis does not discover.
+ Our specialiser in particular might fall short of ideal specialisation
+ because it does not analyse a call or loop iteration because we do not
+ expect the analysis to be profitable.
+ We might also overestimate the memory side-effects of a section of code,
+ either because we did not analyse enough of its calls and loops to fully
+ characterise its effects, or because its effects were too complex to describe
+ and we were compelled to fall back to supposing it writes all of memory.
+ To address both these cases, we support simple, expressive program annotations
+ which the user can apply to improve specialisation results.
+ The available annotations are:
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Assume edge taken
+\emph default
+: this authorises the specialiser to analyse calls and loops downstream
+ of the assumed edge as aggressively as if the edge was certain to be taken.
+ It does not render the output incorrect if the branch goes the other way
+ at runtime.
+ This is useful if the specialiser is reluctant to explore loop iterations
+ due to an exit edge which remains alive but which the programmer knows
+ is unlikely to be taken, e.g.
+ an exit edge dealing with memory allocation failure.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Expected exit edge
+\emph default
+: of a loop, this nominates a particular edge as the expected way to leave
+ a loop, authorising the specialiser to investigate the next iteration as
+ soon as the nominated edge is killed in the current iteration.
+ A more aggressive version of the 
+\emph on
+assume edge taken
+\emph default
+ annotation, this should be used for loops which may exit on many unusual
+ error conditions, but which normally have a known iteration count.
+\end_layout
+
+\begin_layout Itemize
+
+\emph on
+Always/never inline
+\emph default
+: override the specialiser's heuristics and always/never inline a particular
+ function.
+\end_layout
+
+\begin_layout Standard
+In discussing our evaluation in section 6 we describe how and why these
+ annotations were used in practice.
+ We anticipate significantly reducing the need for annotations as our heuristic
+ analysis improves.
+\end_layout
+
+\begin_layout Section
+Implementation
+\end_layout
+
+\begin_layout Standard
+We have implemented a prototype that includes most features of our design.
+ We have not yet implemented the context-insensitive analysis step, which
+ we approximate by investigating every call-site independently at the cost
+ of some analysis time and memory, or the adaptive exploration method, using
+ annotations in its place for the time being.
+ We describe how many annotations were necessary and why in our evaluation.
+\end_layout
+
+\begin_layout Standard
+Our prototype is written as an LLVM 2.8 program analysis/transformation pass.
+ We use and adapt many existing LLVM analyses and transformations, including
+ their implementation of sparse conditional constant propagation (SCCP),
+ their basic alias analysis and memory dependence analysis (MDA), and their
+ loop peeling and function inlining utilities.
+ 
+\end_layout
+
+\begin_layout Standard
+To specialise a program we start at a nominated entry function, supplying
+ the specialisation conditions (e.g.
+ command-line arguments) as constant inputs to the entry point, then repeatedly
+ use SCCP to assign values to instructions and kill control flow graph (CFG)
+ edges, and MDA to find the values of load instructions.
+ We track the dependencies between instructions, re-analysing each whenever
+ its result may have changed.
+ Normal instructions depends their arguments, phi instructions depend on
+ their arguments and the control flow graph (CFG), and load instructions
+ depend on stores that may define it and the CFG.
+ For example, if we use MDA to try to resolve a load instruction but find
+ that it is blocked because a store modifies all of memory and some call
+ instruction has unknown side-effects, we record these dependencies and
+ retry MDA whenever (1) SCCP improves the arguments to the store instruction,
+ (2) we analyse the blocking callsite, since this will clarify its side-effects,
+ or (3) branch instructions become resolved such that the store, call or
+ both are killed.
+\end_layout
+
+\begin_layout Standard
+We represent the program as a tree of 'integration contexts'.
+ Each context corresponds to a dynamic function invocation or loop iteration,
+ and assigns result values to instructions in that scope.
+ The meaning of a particular context corresponds to its chain of ancestors:
+ for example, a function f with a child g with a child "loop 0 iteration
+ 3" contains values which correspond to the third iteration of that loop,
+ executed in the context of f's call to g.
+ Figure 7 shows part of the tree of integration contexts that would be produced
+ investigating the example program shown in figure 1.
+ The loop BB1 in this program consists of a single block, but could contain
+ multiple blocks.
+ Our concept of a loop is the same as that used by LLVM's 
+\family typewriter
+loops
+\family default
+ analysis, which constructs a tree of loops each of which is characterised
+ by a header block which dominates the rest of the loop, and which is unique
+ (i.e.
+ the block is not also the header of another loop), and a single backedge.
+ 
+\family typewriter
+for
+\family default
+ and 
+\family typewriter
+while
+\family default
+ loops have this structure, but more complicated loop structures can be
+ built using goto or may be emitted by compilers even if the user's code
+ is simple: for these cases we preprocess the program using LLVM's standard
+ 
+\family typewriter
+loopsimplify
+\family default
+ pass, which automatically simplifies some loops to fit the tree-of-loops
+ constraint.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename integrator-diagrams/fig7.svg
+	width 50col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Excerpt from the tree of integration contexts produced analysing the program
+ in Figure 1.
+ Iterations after 3 are omitted.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+We now describe in detail our modifications to the constant propagation
+ and memory dependence algorithms.
+\end_layout
+
+\begin_layout Subsection
+Constant Propagation
+\end_layout
+
+\begin_layout Standard
+We perform constant propagation using the standard Sparse Conditional Constant
+ Propagation algorithm, as already implemented in an LLVM optimisation pass.
+ The existing implementation identifies instructions which have constant
+ results and branch instructions which have fixed targets, including using
+ branch knowledge to determine which basic blocks are dead and on this basis
+ evaluate 
+\family typewriter
+phi
+\family default
+ instructions.
+\end_layout
+
+\begin_layout Standard
+We extended the existing constant propagator to support our additional types
+ of result that can be assigned to a function, such as concrete and fuzzy
+ pointers, file descriptors and value sets.
+ We also support propagation between integration contexts: when SCCP calculates
+ a set of constants used by a call instruction we copy the result to the
+ corresponding formal argument in the integration context representing that
+ call, and conversely propagate return values into their parent context.
+ We handle loops by special-casing the evaluation of 
+\family typewriter
+phi
+\family default
+ nodes in the loop's header block.
+ Since this block is the target of the loop's unique back-edge, in the context
+ of the loop's first iteration we ignore phi arguments concerning that edge,
+ and in other iterations we ignore phi arguments concerning other edges
+ (i.e.
+ edges which come from the loop's predecessor blocks).
+\end_layout
+
+\begin_layout Standard
+We also add support for limited pointer arithmetic to the constant folding
+ algorithm used by SCCP: when 
+\family typewriter
+ptrtoint
+\family default
+ instructions are used to convert a pointer into an integer we track the
+ pointer they refer to, and propagate that information when 
+\family typewriter
+add
+\family default
+ and 
+\family typewriter
+sub
+\family default
+ instructions are used to calculate derived pointers.
+\end_layout
+
+\begin_layout Subsection
+Load Forwarding
+\end_layout
+
+\begin_layout Standard
+We forward memory operations using LLVM's existing alias analysis and a
+ significantly modified version of its memory dependence analysis (MDA)
+ pass.
+ The existing MDA pass pursues all paths within a function, working backwards
+ from a query instruction (a load) searching for a store instruction which
+ may or must define the loaded value.
+ It discovers stores that affect the load by alias analysis of their pointer
+ operands: if they store to a pointer that 
+\emph on
+must alias
+\emph default
+ the loaded pointer then the stored value may be forwarded to resolve the
+ load; if they 
+\emph on
+may alias
+\emph default
+ the loaded pointer then they prevent load-forwarding because the result
+ is uncertain; finally if they 
+\emph on
+do not alias
+\emph default
+ the loaded pointer then they are ignored.
+\end_layout
+
+\begin_layout Standard
+We augment this analysis by integrating it with SCCP, exploiting its knowledge
+ of dead basic blocks to avoid exploring paths which will not be executed,
+ and using its knowledge of established constant and pointer values to greatly
+ enhance alias analysis.
+ If SCCP has established the object and offset that a store instruction
+ accesses we can convert a 
+\emph on
+may-alias
+\emph default
+ into a 
+\emph on
+no-alias
+\emph default
+ or 
+\emph on
+must-alias
+\emph default
+, both of which are much more useful since they permit us to ignore the
+ instruction and forward its value operand respectively.
+ Even if SCCP has only established a fuzzy pointer (i.e.
+ a pointer whose base object is known but whose offset is not), or a set
+ of concrete or fuzzy pointers (e.g.
+ it is known to refer to 
+\family typewriter
+@global1 + 10
+\family default
+ or 
+\family typewriter
+@global2 + ?
+\family default
+), whilst establishing a must-alias relationship is impossible we can still
+ establish a no-alias relationship if fuzzy pointers reference different
+ objects or every pointer in a set does not alias the loaded pointer.
+\end_layout
+
+\begin_layout Standard
+We further augment the analysis by supporting interprocedural analysis.
+ When standard MDA walks over a call instruction it only uses LLVM's very
+ simple 'read-only' or 'no-memory-access' function attributes, plus some
+ specific knowledge of functions such as memset.
+ We extend this to use our hardcoded knowledge of system calls' effects,
+ and if the call has an associated integration context we walk within the
+ function starting from its return block in the same way as MDA ordinarily
+ walks backwards from a load to find store instructions.
+ Loops are addressed similarly: if a loop has been fully expanded (we have
+ an integration context for each of its iterations, the last of which is
+ known to exit) then we pursue the load starting at the final iteration,
+ walking from the loop exit edge into its exiting block, back through each
+ iteration and eventually to its header block.
+ If, on the other hand, we don't yet know that the loop terminates we walk
+ through the loop blocks in the loop's parent context, checking whether
+ we can determine the loop's effects using only loop-invariant information.
+ This is the main reason why we try to establish loop invariants: variant
+ pointers can often be established to point into a given buffer as an invariant,
+ in which case we can judge that they don't alias any other identified location.
+\end_layout
+
+\begin_layout Standard
+Our load resolution code is capable of resolving almost any pointer operation
+ that can be expressed in LLVM: pointers can be cast into pointers of other
+ types and used without difficulty, as LLVM precisely defines the byte layout
+ of all scalar and structure types given knowledge of its target architecture.
+ Pointers can be used to load and store other pointers and symbolic file
+ descriptors.
+ Loads can also be forwarded if they are defined by multiple stores (e.g.
+ 2 
+\family typewriter
+i16
+\family default
+ stores that define an 
+\family typewriter
+i32
+\family default
+ load), or if they are defined by a memcpy instruction, which is handled
+ by reissuing a load forwarding query against the memcpy source parameter.
+ The main outstanding limitation is that whilst we support pointers being
+ manipulated as integers, we only support certain operations in this context:
+ pointers can be added to and subtracted from (we regard these as effectively
+ getelementptr indexing operations), and their lower bits can be examined
+ if we know their alignment and so the low bits of their address.
+ They can be compared arbitrarily with other pointers that have a common
+ base object, and compared for equality whether they have a common base
+ or not.
+ We do not support arbitrary inspection of the high bits of a pointer, as
+ a hash table might use to determine the pointer's hash bucket, or comparison
+ of pointers without a common base as might be used to sort an array of
+ pointers.
+ We discuss the impact and potential resolution of these limits in the future
+ work section below.
+\end_layout
+
+\begin_layout Subsection
+Loop Invariants
+\end_layout
+
+\begin_layout Standard
+Normally our memory dependence and constant propagation analyses examine
+ a single instruction at a time, propagating information forwards through
+ the program.
+ However, when attempting to establish loop invariants we need to consider
+ the loop as a whole.
+ When any outside source of information to the loop changes (e.g.
+ when a value directly used within the loop, or the value operand of a store
+ which is known to feed a load within the loop becomes defined), we discard
+ all known information regarding that loop and analyse it anew.
+ We do this in two phases: first we attempt to determine 
+\emph on
+optimistic
+\emph default
+ values for each instruction in the loop.
+ This means that we conduct standard constant propagation and load forwarding,
+ but ignore inputs with unknown values or memory accesses with unknown target
+ pointers.
+ We iterate constant propagation and load forwarding until each instruction
+ in the loop has been assigned a result.
+ We then iterate once more, only this time considering unknown inputs and
+ memory-writing instructions with unknown targets to overdefine the result,
+ meaning we must conclude we have no useful information.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+wide true
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename integrator-diagrams/fig8.svg
+	width 80text%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Two example (infinite) loops whose affects are analysed using our optimistic
+ invariant analysis, successfully on the left and unsuccessfully on the
+ right.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+Figure 8 shows a simple example of this process applied to two different
+ loops: L1 and L2.
+ The column 
+\begin_inset Quotes eld
+\end_inset
+
+Opt
+\begin_inset Quotes erd
+\end_inset
+
+ gives an instruction's optimistic value, found by ignoring the side-effects
+ of their first store instruction since the object to which it stores is
+ not known at this point.
+ The column 
+\begin_inset Quotes eld
+\end_inset
+
+Fin
+\begin_inset Quotes erd
+\end_inset
+
+ then shows the final results calculated for each instruction.
+ In the case of L1 we discover we have found a stable set of results: if
+ we suppose that 
+\family typewriter
+%1
+\family default
+ and 
+\family typewriter
+%2
+\family default
+ point into 
+\family typewriter
+%buf
+\family default
+ then 
+\family typewriter
+store 0 -> %1
+\family default
+ writes to 
+\family typewriter
+%buf
+\family default
+ which does not alias 
+\family typewriter
+%bufptr
+\family default
+ and so the results remain unchanged.
+ Loop L2 on the other hand did not have a stable solution: supposing that
+ 
+\family typewriter
+store 0 -> %buf2
+\family default
+ does not affect 
+\family typewriter
+%bufptr
+\family default
+ did not assign a value to 
+\family typewriter
+%buf2
+\family default
+, so we must still assume the store affects all of memory and in particular
+ 
+\family typewriter
+%bufptr
+\family default
+.
+ Therefore we end up with no result for the load 
+\family typewriter
+%1
+\family default
+.
+ Note that we needed the optimistic phase to arrive at a solution because
+ of the cyclical dependency in that we cannot determine the side-effects
+ of store 0 -> %1 without knowing what %1 points to, which in turn cannot
+ be determined if we assume the store instruction has arbitrary side-effects.
+\end_layout
+
+\begin_layout Standard
+Finally note that the particular case of L2 is easy to analyse by other
+ means: because 
+\family typewriter
+%buf2
+\family default
+ is passed into the function and 
+\family typewriter
+%bufptr
+\family default
+ is a local object the two cannot possibly alias.
+ An example that can only be solved using our optimistic analysis would
+ be considerably longer: we would declare 
+\family typewriter
+%buf2
+\family default
+ and 
+\family typewriter
+%bufptr
+\family default
+ in the same scope and introduce possible aliasing using unresolved phi
+ instructions or by passing them via memory.
+\end_layout
+
+\begin_layout Subsection
+Dead Store Elimination
+\end_layout
+
+\begin_layout Standard
+After the program has been fully explored, we eliminate dead stores and
+ instructions that could not be resolved to a constant or known pointer.
+ Stores are pursued by the logical opposite of the load forwarding operation:
+ they are pursued forwards through the control flow graph searching for
+ another store or stores that writes the same bytes without an intervening
+ unresolved load instruction that may alias the stored pointer, or for the
+ end of the stored-to object's lifespan (i.e.
+ a call to free, or the end of a function implying stack deallocation).
+ This then leads to dead instructions, which are tagged as dead and their
+ arguments investigated in a mirror image of the constant propagation process.
+\end_layout
+
+\begin_layout Section
+Evaluation
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float table
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Tabular
+<lyxtabular version="3" rows="5" columns="4">
+<features tabularvalignment="middle">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Original (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Specialised (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Reduction (%)
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Stored
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+300456
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+240968
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+19.8
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.text
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+68704
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+24472
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+64.4
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.rodata
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+229504
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+214688
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+6.5
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.bss
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+16528
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+13568
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+17.9
+\end_layout
+
+\end_inset
+</cell>
+</row>
+</lyxtabular>
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Results for 
+\family typewriter
+date
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float table
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Tabular
+<lyxtabular version="3" rows="5" columns="4">
+<features tabularvalignment="middle">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Original (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Specialised (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Reduction (%)
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Stored
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+284024
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+255360
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+10.1
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.text
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+59520
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+38184
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+35.8
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.rodata
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+220536
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+214320
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+2.8
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.bss
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+14216
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+13392
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+5.8
+\end_layout
+
+\end_inset
+</cell>
+</row>
+</lyxtabular>
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Results for 
+\family typewriter
+printf
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float table
+wide false
+sideways false
+status open
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Tabular
+<lyxtabular version="3" rows="5" columns="4">
+<features tabularvalignment="middle">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<column alignment="center" valignment="top" width="0">
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Original (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Specialised (b)
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Reduction (%)
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Stored
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+256168
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+240640
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+6.1
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.text
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+35776
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+27848
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+22.2
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.rodata
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+218776
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+211090
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+3.5
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+.bss
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+13944
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+13328
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" topline="true" bottomline="true" leftline="true" rightline="true" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+4.4
+\end_layout
+
+\end_inset
+</cell>
+</row>
+</lyxtabular>
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption
+
+\begin_layout Plain Layout
+Results for 
+\family typewriter
+md5sum
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+We evaluated our prototype specialiser using 3 sample programs from the
+ GNU coreutils: 
+\family typewriter
+date
+\family default
+, 
+\family typewriter
+printf
+\family default
+ and 
+\family typewriter
+md5sum
+\family default
+.
+ All were statically linked against uclibc.
+\end_layout
+
+\begin_layout Standard
+
+\family typewriter
+date
+\family default
+ was specialised with respect to its environment, which sets the LC family
+ of locale variables to en_GB.UTF-8 and its command line, which is empty.
+ It is also specialised with respect to the contents of /etc/timezone and
+ /etc/TZ, which give the local system's preferred timezone.
+ This yields a date program which is specialised to display the time (discarding
+ the ability to set the time) in a particular timezone and with the program's
+ default format.
+ We discuss the program's structure and the code eliminated in detail below.
+\end_layout
+
+\begin_layout Standard
+
+\family typewriter
+printf
+\family default
+ was specialised with respect to its environment, which sets the LC variables
+ as for 
+\family typewriter
+date
+\family default
+, and partially with respect to its command line: we specify that its first
+ argument is 
+\family typewriter
+
+\begin_inset Quotes eld
+\end_inset
+
+%d %s
+\begin_inset Quotes erd
+\end_inset
+
+
+\family default
+ and that the total number of arguments is (appropriately) 3, but leave
+ the other two arguments unspecified.
+ This produces a printf program which renders exactly one number and then
+ one string, allowing us to discard formatting code for other types.
+ This models the kind of specialisation we could make if we saw a script
+ which contained the text 
+\family typewriter
+'/usr/bin/printf 
+\begin_inset Quotes eld
+\end_inset
+
+%d %s
+\begin_inset Quotes erd
+\end_inset
+
+ $1 $2'
+\family default
+.
+ The code size reduction for this program results mainly from eliminating
+ several functions in the printf family: in particular we are able to discard
+ large sections of code dedicated to dealing with wide character strings
+ as we are able to establish that with this format string those routines
+ will never be called.
+\end_layout
+
+\begin_layout Standard
+Finally, 
+\family typewriter
+md5sum
+\family default
+ was specialised with respect to its command-line and the contents of the
+ file it digests.
+ Perhaps surprisingly this does not lead to much of a reduction in code
+ size: this is because the implementation of the md5 algorithm is quite
+ small.
+ The residual code is mostly part of the 
+\family typewriter
+stdio
+\family default
+ library, used to print the now-known result to stdout.
+ We are also forced to retain error-reporting code paths that are exercised
+ when printing to stdout fails.
+\end_layout
+
+\begin_layout Standard
+Tables 1, 2 and 3 summarise the code size reductions achieved, giving the
+ byte sizes for each program as stored on disk, as well as the ELF file's
+ given size for the text, rodata and bss segments, representing the elimination
+ of code, constant data and global variables respectively.
+ No other segments contributed more than 1% of any object's size.
+\end_layout
+
+\begin_layout Subsection
+Discussion
+\end_layout
+
+\begin_layout Standard
+To give an example of the kind of optimisation opportunities available through
+ specialisation, we describe an example in detail: the date program.
+\end_layout
+
+\begin_layout Standard
+The program is ostensibly simple: all it must do is print and set the system
+ time.
+ However, despite the time being necessarily a dynamic parameter, it is
+ possible to specialise the date program to a significant degree, improving
+ both its running time and its code and date size.
+\end_layout
+
+\begin_layout Standard
+We specialise the date program with respect to its environment, which defines
+ the locale rules for printing numbers, dates and times using the LC_ family
+ of variables, the command-line, which we define to be empty (yielding a
+ program that just prints the date), and the files /etc/TZ and /etc/timezone,
+ which specify the local timezone.
+\end_layout
+
+\begin_layout Standard
+The program's structure is more complicated than it would intuitively seem,
+ because of support for several different operations (setting the time,
+ reading a file timestamp, reading a file that itself lists files), and
+ because of support for many different locales with different conventions
+ for time representation.
+\end_layout
+
+\begin_layout Standard
+Its implementation is also inefficient due to expediency on the part of
+ the developers: they wished to support specification of the date format
+ string using a language which is similar to, but slightly extended from,
+ that accepted by strftime.
+ In order to avoid rewriting strftime in its entirety, they filter its output,
+ repeatedly calling it with short (single-replacement) format strings.
+ However, each call to strftime results in two calls to tzset, both of which
+ read anew the local machine's timezone information, stored in /etc/TZ or
+ /etc/timezone.
+\end_layout
+
+\begin_layout Standard
+The result is that the apparently simple task of printing the date string
+ is achieved by two large parsers (each of strftime and the wrapper function
+ fills roughly 8K in the binary image).
+ Along with fscanf and strptime, which are only used in the time-setting
+ path, inlining these functions reduces the program's code size by around
+ 20%, and statically evaluating the repeated calls to tzset, including their
+ filesystem operations, reduces running time by 10% with a hot page cache
+ (i.e., with the /etc/timezone file already in memory).
+\end_layout
+
+\begin_layout Standard
+The largest gain, however, is as-yet unrealised: we need to eliminate the
+ locale database.
+ This is a large (200k) structure stored as inline read-only data which
+ provides formatting information for different locales; however, it is only
+ needed when calling date with certain format strings that print a locale-specif
+ic representation.
+ Its elimination would reduce the binary size by 80%.
+ However in order to achieve this benefit we need to extend our analysis
+ somewhat: see Future Work below for details.
+\end_layout
+
+\begin_layout Standard
+The date program also presents some challenges to specialisation, requiring
+ annotation in some places.
+ The loops of both strftime and its wrapper contain a number of error exit
+ paths, making it difficult to establish whether the loop should be peeled
+ another iteration or whether this would simply inflate the output code
+ size with specialised code that will usually be bypassed.
+ We annotate these edges as unlikely, meaning the specialiser assumes that
+ the loop will usually terminate for a different reason and goes on to explore
+ further iterations (in fact the usual termination condition is reaching
+ the end of the format string).
+ We also annotate functions which the specialiser does not explore because
+ they are not certain to be executed.
+ Of the N annotations for the date program, M are of this kind and we expect
+ these to become unnecessary as we improve the specialiser's exploration
+ strategy.
+\end_layout
+
+\begin_layout Standard
+A second problem is that the date program features a lot of difficult-to-analyse
+ pointer arithmetic, mostly stemming from the stdio library.
+ Rather than store indices and use these to index into arrays, the library
+ stores pointers which it increments and decrements as the user calls stdio
+ functions.
+ These manifest in LLVM as getelementptr instructions, deriving one pointer
+ from another, with a non-constant base address.
+ These cases can be dealt with fully automatically, however: the specialiser
+ is able to establish that the loops within fwrite and related functions
+ always deal with pointers ultimately derived from a particular base object
+ (a statically allocated buffer), and consequently these stdio functions
+ do not present an insurmountable barrier to alias analysis and therefore
+ further exploration of the program.
+\end_layout
+
+\begin_layout Section
+Future Work
+\end_layout
+
+\begin_layout Standard
+We plan to improve the specialiser's exploitation of specialisation opportunitie
+s, and to explore novel applications for a tool of this kind.
+\end_layout
+
+\begin_layout Standard
+On the first matter, we intend to extend its notion of value slightly further
+ by allowing instructions to be assigned range types, derived primarily
+ from tests which dominate the instruction.
+ This is an example of driving.
+ In particular this extension will allow us to reduce code much more for
+ all cases mentioned here by eliminating large pieces of read only data
+ which the program can be proved never to access.
+\end_layout
+
+\begin_layout Standard
+We also intend to develop the specialiser's exploration strategy much more
+ in order to reduce the annotations required for programs such as those
+ evaluated here to near-zero.
+ In particular we intend to improve its ability to determine which functions
+ and loops to consider in more detail by observing the data flow dependencies
+ within the program, favouring functions and loops which block a lot of
+ data flow paths, and we intend to improve its ability to analyse loops
+ in order to recognise those such as strftime which could be established
+ to always make forward progress through a buffer, allowing us to prove
+ they will terminate and justify exploring in more depth even when exit
+ edges remain alive.
+\end_layout
+
+\begin_layout Standard
+Regarding applications we intend to explore using the specialiser in multi-proce
+ss and multi-threaded environments.
+ We envisage several interesting use cases:
+\end_layout
+
+\begin_layout Standard
+* Specialisation with respect to inter-process communication: we could analyse
+ two bitcode files in parallel, analysing BSD sockets calls using the same
+ treatment as for open, and read system calls at present.
+ This would be useful for embedded applications where a developer might
+ want to eliminate dependency on a daemon such as gconf which they expect
+ to return constant results in that fixed setting.
+\end_layout
+
+\begin_layout Section
+Related work
+\end_layout
+
+\begin_layout Standard
+TODO
+\end_layout
+
+\begin_layout Standard
+Early partial evaluators were able to specialise code written in functional
+ languages according to known-constant parameters, and later work could
+ specialise imperative programs written in C according to their explicit
+ parameters.
+ However, to our knowledge whilst certain limited kernel specialisation
+ has been attempted, particularly for embedded systems, nobody has brought
+ full partial evaluation to bear on implicit program parameters derived
+ from persistent system state, and in particular the results of system calls.
+ ((from make world paper, to expand))
+\end_layout
+
+\begin_layout Standard
+Conclusion
+\end_layout
+
+\begin_layout Standard
+TODO
+\end_layout
+
+\begin_layout Standard
+
+\end_layout
+
+\end_body
+\end_document

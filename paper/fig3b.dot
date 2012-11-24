@@ -1,0 +1,22 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+MainBB1[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="2"><font point-size="14">Function main(</font></td></tr>
+  <tr><td align="left">Instruction</td><td>Result</td></tr>
+  <tr><td align="left">%2 = phi [ BB0 -&gt; %1, BB1 -&gt; %4 ]</td><td>pointer %1@main + ?</td></tr>
+  <tr><td align="left">%3 = phi [ BB0 -&gt; 0, BB1 -&gt; %5 ]</td><td>?</td></tr>
+  <tr><td align="left">store 0 -&gt; %2</td><td>(Modifies all of %1)</td></tr>
+  <tr><td align="left">%4 = getelementptr %2, 1</td><td>pointer %1@main + ?</td></tr>
+  <tr><td align="left">%5 = add %3, 1</td><td>?</td></tr>
+  <tr><td align="left">%6 = cmp eq %5, %dynamic</td><td>?</td></tr>
+  <tr><td align="left">br %6, BB2, BB1</td><td>?</td></tr>
+</table>
+
+>];
+
+}

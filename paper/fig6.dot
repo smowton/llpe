@@ -1,0 +1,97 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica", splines=true ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+BSetEntry [shape=plaintext, fontsize=10, pos="300,300!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left" colspan="2"><font point-size="14">bset(i8**% pptr, i8 %c, i8 %n)</font></td></tr>
+	<tr><td align="left"><b>Instruction</b></td><td><b>Result</b></td></tr>
+	<tr><td align="left">%1 = load %pptr</td><td>%buf@main + ?</td></tr>
+	<tr><td align="left">%2 = cmp eq %n, 0</td><td>false</td></tr>
+	<tr><td align="left">br %2, Exit, Loop</td><td>Loop</td></tr>
+      </table>
+
+>];
+
+BSetEntry -> BSetExit [ color = lightgray ];
+BSetEntry -> BSetLoop;
+
+BSetLoop [shape=plaintext, fontsize=10, pos="300,150!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left" colspan="2"><font point-size="12">Loop</font></td></tr>
+	<tr><td align="left"><b>Instruction</b></td><td><b>Result</b></td></tr>
+	<tr><td align="left">%2 = phi [ entry -&gt; %1, loop -&gt; %4 ]</td><td>%buf@main + ?</td></tr>
+	<tr><td align="left">%3 = phi [ entry -&gt; 0, loop -&gt; %5 ]</td><td>?</td></tr>
+	<tr><td align="left">store c -&gt; %2</td><td></td>(only modifies %buf@main)</tr>	
+	<tr><td align="left">%4 = getelementptr %2, 1</td><td>%buf@main + ?</td></tr>
+	<tr><td align="left">%5 = add %3, 1</td><td>?</td></tr>
+	<tr><td align="left">%6 = cmp eq %n, %3</td><td>?</td></tr>
+	<tr><td align="left">br %6, Exit, Loop</td><td></td></tr>
+      </table>
+
+>];
+
+BSetLoop:se -> BSetLoop:ne;
+BSetLoop -> BSetExit;
+
+BSetExit [shape=plaintext, fontsize=10, pos="300,0!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left" colspan="2"><font point-size="12">Exit</font></td></tr>
+	<tr><td align="left"><b>Instruction</b></td><td><b>Comment</b></td></tr>
+	<tr><td align="left">%7 = phi [ Entry -&gt; %1, Loop -&gt; %4 ]</td><td>(Pointer to next byte)</td></tr>
+	<tr><td align="left">store %7 -&gt; %pptr</td><td>(Store pointer for next time)</td></tr>
+	<tr><td align="left">ret</td></tr>
+      </table>
+
+>];
+
+BSetExit -> MainLoop:call_bset;
+
+MainEntry [shape=plaintext, fontsize=10, pos="0,300!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left" colspan="2"><font point-size="14">main(%dynamic)   </font></td></tr>
+	<tr><td align="left"><b>Instruction</b></td><td><b>Result</b></td></tr>
+	<tr><td align="left">%bytes = mul %dynamic, %dynamic</td><td>?</td></tr>
+	<tr><td align="left">%buf = alloca [ %bytes x i8 ]</td><td></td></tr>
+	<tr><td align="left">%pptr = alloca i8**</td><td></td></tr>
+	<tr><td align="left">store %buf -&gt; %pptr</td><td></td></tr>
+	<tr><td align="left">br Loop</td><td></td></tr>
+      </table>
+
+>];
+
+MainEntry -> MainLoop;
+
+MainLoop [shape=plaintext, fontsize=10, pos="0,150!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left" colspan="2"><font point-size="12">Loop</font></td></tr>
+	<tr><td align="left"><b>Instruction</b></td><td><b>Result</b></td></tr>
+	<tr><td align="left">%count = phi [ entry -&gt; 0, loop -&gt; %1 ]</td><td>?</td></tr>
+	<tr><td align="left">call bset(%pptr, 0, %bytes)</td><td port="call_bset"></td></tr>
+	<tr><td align="left">%1 = add %count, 1</td><td>?</td></tr>
+	<tr><td align="left">%2 = cmp eq %1, %dynamic</td><td>?</td></tr>
+	<tr><td align="left">br %2, Exit, Loop</td><td>?</td></tr>
+      </table>
+
+>];
+
+MainLoop:sw -> MainLoop:nw;
+MainLoop:call_bset -> BSetEntry;
+MainLoop -> MainExit;
+
+MainExit [shape=plaintext, fontsize=10, pos="0,0!", label=<
+
+      <table border="0" cellspacing="0" cellborder="1">
+	<tr><td align="left"><font point-size="12">Exit</font></td></tr>
+	<tr><td align="left">ret</td></tr>
+      </table>
+
+>];
+
+}

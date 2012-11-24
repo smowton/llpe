@@ -1,0 +1,46 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+MainBB0[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="2"><font point-size="14">Function main(i32 %dynamic)</font></td></tr>
+  <tr><td align="left">Instruction</td><td>Result</td></tr>
+  <tr><td align="left">%1 = 0</td><td>0</td></tr>
+  <tr><td align="left">%2 = cmp eq %dynamic, 1   </td><td>?</td></tr>
+  <tr><td align="left">br %2, BB1, BB2</td><td>?</td></tr>
+</table>
+					       
+>];
+
+MainBB0 -> MainBB1;
+MainBB0 -> MainBB2;
+
+MainBB1[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="2"><font point-size="12">BB1</font></td></tr>
+  <tr><td align="left">Iinstruction</td><td>Result</td></tr>
+  <tr><td align="left">%3 = or %1, 16</td><td>16</td></tr>
+  <tr><td align="left">br BB2</td><td>BB2</td></tr>
+</table>
+
+>];
+
+MainBB1 -> MainBB2;
+
+MainBB2[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="2"><font point-size="12">BB2</font></td></tr>
+  <tr><td align="left">Instruction</td><td>Result</td></tr>
+  <tr><td align="left">%4 = phi [ Entry -&gt; %1, BB1 -&gt; %3 ]   </td><td>{ 0, 16 }</td></tr>
+  <tr><td align="left">%5 = and %4, 32</td><td>0</td></tr>
+  <tr><td align="left">ret %5</td><td>0</td></tr>
+</table>
+
+>];
+
+}

@@ -1,0 +1,65 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+F1Entry[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left"><font point-size="14">Function f1()</font></td></tr>
+  <tr><td align="left">%buf = alloca [ i8 x ... ]</td></tr>
+  <tr><td align="left">%bufptr = alloca i8*</td></tr>
+  <tr><td align="left">store %buf -&gt; %bufptr</td></tr>
+  <tr><td align="left">br L1</td></tr>
+</table>
+					       
+>];
+
+F1L1[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="3"><font point-size="12">L1</font></td></tr>
+  <tr><td>Instruction</td><td>Opt</td><td>Fin</td></tr>
+  <tr><td align="left">%1 = load %bufptr</td><td>%buf + ?</td><td>%buf + ?</td></tr>
+  <tr><td align="left">%2 = getelementptr %1, 1</td><td>%buf + ?</td><td>%buf + ?</td></tr>
+  <tr><td align="left">store %2 -&gt; %bufptr</td><td>(writes %bufptr)</td><td>(writes %bufptr)</td></tr>
+  <tr><td align="left">store 0 -&gt; %1</td><td>(effects ignored)</td><td>(writes %buf)</td></tr>
+  <tr><td align="left">br L1</td><td></td><td></td></tr>
+</table>
+					       
+>];
+
+F1Entry -> F1L1
+F1L1:sw -> F1L1:nw
+
+
+F2Entry[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left"><font point-size="14">Function f2(i8* %buf2)   </font></td></tr>
+  <tr><td align="left">%buf = alloca [ i8 x ... ]</td></tr>
+  <tr><td align="left">%bufptr = alloca i8*</td></tr>
+  <tr><td align="left">store %buf -&gt; %bufptr</td></tr>
+  <tr><td align="left">br L2</td></tr>
+</table>
+					       
+>];
+
+F2L1[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="3"><font point-size="12">L2</font></td></tr>
+  <tr><td>Instruction</td><td>Opt</td><td>Fin</td></tr>
+  <tr><td align="left">%1 = load %bufptr</td><td>%buf + ?</td><td>?</td></tr>
+  <tr><td align="left">%2 = getelementptr %1, 1</td><td>%buf + ?</td><td>?</td></tr>
+  <tr><td align="left">store %2 -&gt; %bufptr</td><td>(writes %bufptr)</td><td>(writes %bufptr)</td></tr>
+  <tr><td align="left">store 0 -&gt; %buf2</td><td>(effects ignored)</td><td>(may write %bufptr)</td></tr>
+  <tr><td align="left">br L2</td><td></td><td></td></tr>
+</table>
+					       
+>];
+
+F2Entry -> F2L1
+F2L1:sw -> F2L1:nw
+
+}

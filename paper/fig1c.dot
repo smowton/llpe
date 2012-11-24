@@ -1,0 +1,15 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+MainBB2 [shape=plaintext, fontsize=10, label=<
+
+      <table border="0" cellborder="1" cellspacing="0">
+	<tr><td align="left"><font point-size="12">BB2</font></td></tr>
+	<tr><td align="left">ret 12</td></tr>
+      </table>
+
+>];
+
+}

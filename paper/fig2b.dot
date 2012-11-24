@@ -1,0 +1,24 @@
+digraph "Toplevel" {
+graph [ fontname = "Helvetica" ];
+node [fontname = "helvetica"];
+edge [fontname = "helvetica"];
+
+MainBB0[shape=plaintext, fontsize=10, label=<
+
+<table border="0" cellborder="1" cellspacing="0">
+  <tr><td align="left" colspan="2"><font point-size="14">Function main(i32 %dynamic)</font></td></tr>
+  <tr><td align="left">Instruction</td><td>Result</td></tr>
+  <tr><td align="left">%1 = alloca [ 10 x i32 ]</td><td></td></tr>
+  <tr><td align="left">%2 = alloca i64</td><td></td></tr>
+  <tr><td align="left">%3 = getelementptr %1, 3</td><td>pointer %1@main + 3</td></tr>
+  <tr><td align="left">%4 = getelementptr %1, %dynamic</td><td>pointer %1@main + ?</td></tr>
+  <tr><td align="left">store 80 -&gt; %2</td><td>(Modifies %2)</td></tr>
+  <tr><td align="left">store 5 -&gt; %3</td><td>(Modifies %3 = (%1[3]))</td></tr>
+  <tr><td align="left">store 6 -&gt; %4</td><td>(Modifies all of %1)</td></tr>
+  <tr><td align="left">%5 = load %3</td><td>? (store 6 -&gt; %4 interferes)</td></tr>
+  <tr><td align="left">%6 = load %2</td><td>80 (neither store 5 nor store 6 interferes)  </td></tr>
+</table>
+					       
+>];
+
+}
