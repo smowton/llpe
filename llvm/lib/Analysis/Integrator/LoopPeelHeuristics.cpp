@@ -671,7 +671,9 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "memset_byte_fn" ||
 	  F->getName() == "nl_langinfo" ||
 	  F->getName() == "__libc_fcntl" ||
-	  F->getName() == "posix_fadvise");
+	  F->getName() == "posix_fadvise" ||
+	  F->getName() == "exit" ||
+	  F->getName() == "atexit");
 
 }
 
