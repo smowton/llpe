@@ -1,0 +1,47 @@
+TARGET_PROGS = date md5sum printf
+PRE_BCS = $(patsubst %,%-pre.bc,$(TARGET_PROGS))
+TARGET_BCS = $(patsubst %,%.bc,$(TARGET_PROGS))
+OPT_PROGS = $(patsubst %,%-opt,$(TARGET_PROGS))
+TIMED_PROGS = $(patsubst %,%-timed,$(TARGET_PROGS))
+TIMED_OPT_PROGS = $(patsubst %,%-opt-timed,$(TARGET_PROGS))
+STRIPPED_PROGS = $(patsubst %,%-stripped,$(TARGET_PROGS))
+STRIPPED_OPT_PROGS = $(patsubst %,%-opt-stripped,$(TARGET_PROGS))
+
+.PHONY: allbase allopt clean
+
+allbase: $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(STRIPPED_PROGS)
+
+allopt: $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_OPT_PROGS)
+
+md5sum.bc md5sum: md5sum-md5sum.o
+	/usr/bin/llvm-gcc-uclibc -std=gnu99   -g -O2 -Wl,--as-needed  -o $@ $^ timeprogram.o libver.a ../lib/libcoreutils.a  ../lib/libcoreutils.a -Wl,--plugin-opt,also-emit-llvm,-u,__uClibc_main_timed
+
+%.bc %: %.o
+	/usr/bin/llvm-gcc-uclibc -std=gnu99   -g -O2 -Wl,--as-needed  -o $@ $^ timeprogram.o libver.a ../lib/libcoreutils.a  ../lib/libcoreutils.a -Wl,--plugin-opt,also-emit-llvm,-u,__uClibc_main_timed
+
+%-elim.bc: %.bc
+	~/integrator/scripts/opt-with-mods.sh -define-exts -null-symbol __h_errno_location $^ -null-symbol __pthread_initialize_minimal -null-symbol __preinit_array_start -null-symbol __preinit_array_end -null-symbol __init_array_start -null-symbol __init_array_end -o $@
+
+%-pre.bc: %-elim.bc
+	~/integrator/scripts/prepare-int.sh $^ -o $@
+
+%-opt-int.bc: %-opt.bc
+	opt -internalize -internalize-public-api-list=__uClibc_main -std-compile-opts $^ -o $@
+
+%-opt-timed-int.bc: %-opt.bc
+	opt -internalize -internalize-public-api-list=__uClibc_main_timed -std-compile-opts $^ -o $@
+
+%-opt: %-opt-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspec.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-timed: %.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crt1time.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-opt-timed: %-opt-timed-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspectime.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-stripped: %
+	strip $^ -o $@
+
+clean:
+	-rm -f $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_PROGS) $(STRIPPED_OPT_PROGS)
