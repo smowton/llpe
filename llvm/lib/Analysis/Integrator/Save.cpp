@@ -13,6 +13,8 @@
 
 #include "../../VMCore/LLVMContextImpl.h"
 
+#include <unistd.h>
+
 using namespace llvm;
 
 // Root entry point for saving our results:
@@ -871,7 +873,7 @@ void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM
 
     I = cast<Instruction>(VI->second);
 
-    Value* oldMapping;
+    Value* oldMapping = 0;
     if(isa<CallInst>(I))
       oldMapping = VM[I];
 

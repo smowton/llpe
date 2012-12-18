@@ -221,7 +221,7 @@ void IntegrationAttempt::revertDeadValue(Value* V) {
 
 void IntegrationAttempt::tryKillAndQueue(Instruction* I) {
 
-  bool killed;
+  bool killed = false;
   if(StoreInst* SI = dyn_cast<StoreInst>(I))
     killed = tryKillStore(SI);
   else if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(I))
@@ -232,6 +232,9 @@ void IntegrationAttempt::tryKillAndQueue(Instruction* I) {
     assert(resolvedReadCalls.count(CI));
     ReadFile& RF = resolvedReadCalls[CI];
     killed = tryKillRead(CI, RF);
+  }
+  else {
+    assert(0 && "Bad instruction type passed to tryKillAndQueue");
   }
 
   if(killed) {

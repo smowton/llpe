@@ -1565,7 +1565,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	      assert(GEPOff % 8 == 0);
 	      GEPOff /= 8;
 
-	      int64_t newVaArg;
+	      int64_t newVaArg = -1;
 	      switch(Base.getVaArgType()) {
 	      case va_arg_type_baseptr:
 		// This is indexing off the frame base pointer.

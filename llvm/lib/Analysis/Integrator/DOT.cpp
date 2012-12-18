@@ -162,6 +162,8 @@ static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA, bool brief=
 
 }
 
+// Now unused
+/*
 static std::string escapeHTMLValue(ValCtx V, IntegrationAttempt* IA, bool brief=false) {
 
   std::string Esc;
@@ -179,6 +181,7 @@ static std::string escapeHTMLValue(MemDepResult MDR, IntegrationAttempt* IA, boo
   return escapeHTML(TruncStr(RSO.str(), 500));
 
 }
+*/
 
 void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   

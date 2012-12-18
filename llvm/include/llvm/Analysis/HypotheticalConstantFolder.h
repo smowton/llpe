@@ -572,6 +572,8 @@ public:
   static inline bool classof(const SymExpr*) { return true; }
   virtual void describe(raw_ostream& OS, IntegrationAttempt*) = 0;
   virtual int getSymType() const = 0;
+  
+  virtual ~SymExpr() { }
 
 };
 
@@ -882,7 +884,7 @@ protected:
 	this->tag.type = IntegratorTypeIA;
       }
 
-  ~IntegrationAttempt();
+  virtual ~IntegrationAttempt();
 
   Module& getModule();
 
@@ -988,7 +990,9 @@ protected:
   // Child (inlines, peels) management
 
   InlineAttempt* getInlineAttempt(CallInst* CI);
-  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
+  virtual bool stackIncludesCallTo(Function*) = 0;
+  bool shouldInlineFunctionNow(CallInst* CI, Function* FCalled, bool requireCertainty);
+  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty = true);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -1399,6 +1403,8 @@ public:
 
   virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
 
+  virtual bool stackIncludesCallTo(Function*);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1592,6 +1598,8 @@ class InlineAttempt : public IntegrationAttempt {
     return -1;
   }
 
+  virtual bool stackIncludesCallTo(Function*);
+
 };
 
 class LoadForwardAttempt;
@@ -1702,7 +1710,7 @@ class LoadForwardAttempt : public LFAQueryable {
   }
 
   LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, LoadForwardMode M, TargetData*, const Type* T = 0);
-  ~LoadForwardAttempt();
+  virtual ~LoadForwardAttempt();
 
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
@@ -1737,7 +1745,7 @@ class LFARealization : public LFAQueryable {
   virtual LoadForwardAttempt& getLFA();
 
   LFARealization(LoadForwardAttempt& LFA, IntegrationAttempt* Ctx, Instruction* Insert);
-  ~LFARealization();
+  virtual ~LFARealization();
 
   Instruction* getFakeBase();
 
@@ -1755,7 +1763,7 @@ class LFARMapping {
  public:
 
   LFARMapping(LFARealization& LFAR, IntegrationAttempt* Ctx);
-  ~LFARMapping();
+  virtual ~LFARMapping();
 
 };
 

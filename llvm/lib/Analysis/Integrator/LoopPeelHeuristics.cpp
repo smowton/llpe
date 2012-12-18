@@ -677,7 +677,53 @@ bool llvm::functionIsBlacklisted(Function* F) {
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
+bool PeelIteration::stackIncludesCallTo(Function* FCalled) {
+
+  return parent->stackIncludesCallTo(FCalled);
+
+}
+
+bool InlineAttempt::stackIncludesCallTo(Function* FCalled) {
+
+  if((&F) == FCalled)
+    return true;
+  else if(!parent)
+    return false;
+  
+  return parent->stackIncludesCallTo(FCalled);
+
+}
+
+bool IntegrationAttempt::shouldInlineFunctionNow(CallInst* CI, Function* FCalled, bool requireCertainty) {
+
+  if(certainBlocks.count(CI->getParent()))
+    return true;
+
+  if(requireCertainty)
+    return false;
+
+  if(pass->shouldAlwaysInline(FCalled))
+    return true;
+
+  // Inline if (a) at least one load is blocked on this function and (b) this wouldn't be a recursive call
+  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = 
+    InstBlockedLoads.find(CI);
+  
+  if(it != InstBlockedLoads.end() && it->second.size() != 0) {
+
+    if(!stackIncludesCallTo(FCalled)) {
+
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty) {
 
   if(ignoreIAs.count(CI))
     return 0;
@@ -696,8 +742,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if((!pass->shouldAlwaysInline(FCalled)) && !certainBlocks.count(CI->getParent())) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it is not yet certain to execute\n");
+  if(!shouldInlineFunctionNow(CI, FCalled, requireCertainty)) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined at this time (not certain, or similar)\n");
     return 0;
   }
 

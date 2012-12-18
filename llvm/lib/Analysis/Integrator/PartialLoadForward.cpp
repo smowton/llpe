@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <alloca.h>
+#include <unistd.h>
 
 using namespace llvm;
 

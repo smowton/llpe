@@ -1254,7 +1254,7 @@ void IntegrationAttempt::printConsiderCount(DenseMap<ValCtx, int>& in, int n) {
 
   std::sort(results.begin(), results.end());
   
-  for(int i = results.size() - 1; i >= 0 && i >= (results.size() - (n + 1)); --i)
+  for(int i = results.size() - 1; i >= 0 && i >= (int)(results.size() - (n + 1)); --i)
     errs() << itcache(results[i].second) << ": " << results[i].first << "\n";
 
 }
@@ -1432,7 +1432,7 @@ void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L) {
 
   //errs() << "QUEUE WHOLE LOOP " << (L ? L->getHeader()->getName() : F.getName()) << "\n";
 
-  bool verbose = false;
+  //bool verbose = false;
 
   queuePBUpdateAllUnresolvedVCsInScope(L);
 
@@ -1454,6 +1454,8 @@ void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L) {
 
 }
 
+// Currently unused:
+/*
 static bool isBetterThanOrEqual(PointerBase& NewPB, PointerBase& OldPB) {
 
   if(OldPB.Overdef)
@@ -1465,6 +1467,7 @@ static bool isBetterThanOrEqual(PointerBase& NewPB, PointerBase& OldPB) {
   return NewPB.Values.size() <= OldPB.Values.size();
 
 }
+*/
 
 void IntegrationHeuristicsPass::queueNewPBWork(uint64_t& newVCs, uint64_t& changedVCs) {
 
@@ -1745,11 +1748,11 @@ bool IntegrationHeuristicsPass::runPointerBaseSolver() {
       totalVCs += PBsConsideredThisRun.size();
 
       std::sort(updatedVCs.begin(), updatedVCs.end());
-      std::vector<ValCtx>::iterator it, endit;
+      std::vector<ValCtx>::iterator startit, endit;
       endit = std::unique(updatedVCs.begin(), updatedVCs.end());
-      for(it = updatedVCs.begin(); it != endit; ++it) {
+      for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 	
-	queueUpdatePB(it->second, it->first);
+	queueUpdatePB(startit->second, startit->first);
 
       }
 
