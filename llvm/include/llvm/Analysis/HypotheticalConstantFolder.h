@@ -991,8 +991,9 @@ protected:
 
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
-  bool shouldInlineFunctionNow(CallInst* CI, Function* FCalled, bool requireCertainty);
+  bool shouldInlineFunctionNow(CallInst* CI);
   InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty = true);
+  bool tryInlineUsedCall(CallInst*);
   bool checkInlineAllCalls();
  
   PeelAttempt* getPeelAttempt(const Loop*);

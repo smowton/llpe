@@ -694,13 +694,9 @@ bool InlineAttempt::stackIncludesCallTo(Function* FCalled) {
 
 }
 
-bool IntegrationAttempt::shouldInlineFunctionNow(CallInst* CI, Function* FCalled, bool requireCertainty) {
+bool IntegrationAttempt::shouldInlineFunctionNow(CallInst* CI) {
 
-  if(certainBlocks.count(CI->getParent()))
-    return true;
-
-  if(requireCertainty)
-    return false;
+  Function* FCalled = getCalledFunction(CI);
 
   if(pass->shouldAlwaysInline(FCalled))
     return true;
@@ -710,6 +706,19 @@ bool IntegrationAttempt::shouldInlineFunctionNow(CallInst* CI, Function* FCalled
     InstBlockedLoads.find(CI);
   
   if(it != InstBlockedLoads.end() && it->second.size() != 0) {
+
+    if(!stackIncludesCallTo(FCalled)) {
+
+      return true;
+
+    }
+    
+  }
+
+  DenseMap<CallInst*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it2 = 
+    callBlockedPBLoads.find(CI);
+  
+  if(it2 != callBlockedPBLoads.end() && it2->second.size() != 0) {
 
     if(!stackIncludesCallTo(FCalled)) {
 
@@ -742,7 +751,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool r
     return 0;
   }
 
-  if(!shouldInlineFunctionNow(CI, FCalled, requireCertainty)) {
+  if(requireCertainty && !certainBlocks.count(CI->getParent())) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined at this time (not certain, or similar)\n");
     return 0;
   }
@@ -4817,9 +4826,30 @@ bool IntegrationHeuristicsPass::runQueue() {
 
 }
 
+bool IntegrationAttempt::tryInlineUsedCall(CallInst* CI) {
+
+  if(blockIsDead(CI->getParent()))
+    return false;
+  
+  Function* FCalled = getCalledFunction(CI);
+  if(stackIncludesCallTo(FCalled))
+    return false;
+
+  if(inlineChildren.count(CI))
+    return false;
+
+  return !!getOrCreateInlineAttempt(CI, false);
+
+}
+
 bool IntegrationAttempt::checkInlineAllCalls() {
 
   bool inlinedAnyHere = false;
+
+  // Reasons to inline a call at this point:
+  // 1. Loads are clobbered by stores through the return value
+  // 2. Loads are clobbered by the call site
+  // 3. Call is tagged always-inline
 
   // Check child contexts first to avoid immediately re-exploring our children (as opposed to
   // checking for dead blocks first, to save exploring needlessly).
@@ -4843,6 +4873,39 @@ bool IntegrationAttempt::checkInlineAllCalls() {
 
   const Loop* MyL = getLoopContext();
 
+  // 1. Look for blockages against a value derived from a callsite:
+  // Careful here: getOrCreateInlineAttempt dismisses loads and so modifies this map. Therefore, record intended actions first.
+
+  SmallVector<ValCtx, 8> callsitesToCheck;
+
+  for(DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator blockit = InstBlockedLoads.begin(), 
+	blockend = InstBlockedLoads.end(); blockit != blockend; ++blockit) {
+
+    // SI is in our context.
+    if(StoreInst* SI = dyn_cast<StoreInst>(blockit->first)) {
+
+      if(blockIsDead(SI->getParent()))
+	continue;
+
+      Value* StoredThrough = SI->getPointerOperand();
+      ValCtx StoredUO = getUltimateUnderlyingObject(StoredThrough);
+
+      if(isa<CallInst>(StoredUO.first))
+	callsitesToCheck.push_back(StoredUO);
+
+    }
+
+  }
+
+  for(SmallVector<ValCtx, 8>::iterator it = callsitesToCheck.begin(), it2 = callsitesToCheck.end(); it != it2; ++it) {
+    
+    CallInst* CI = cast<CallInst>(it->first);
+    inlinedAnyHere |= it->second->tryInlineUsedCall(CI);
+
+  }
+
+  // 2. Check all calls not yet dealt with for always-inline or loads blocked on them.
+
   for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
 
     BasicBlock* BB = BI;
@@ -4861,7 +4924,7 @@ bool IntegrationAttempt::checkInlineAllCalls() {
 	  if(inlineChildren.count(CI))
 	    continue;
 
-	  if(getOrCreateInlineAttempt(CI, false))
+	  if(shouldInlineFunctionNow(CI) && getOrCreateInlineAttempt(CI, false))
 	    inlinedAnyHere = true;
 
 	}
@@ -4869,7 +4932,7 @@ bool IntegrationAttempt::checkInlineAllCalls() {
       }
 
     }
-
+    
   }
 
   return inlinedAnyHere;
