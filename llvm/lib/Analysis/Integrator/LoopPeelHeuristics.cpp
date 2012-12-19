@@ -4817,14 +4817,89 @@ bool IntegrationHeuristicsPass::runQueue() {
 
 }
 
+bool IntegrationAttempt::checkInlineAllCalls() {
+
+  bool inlinedAnyHere = false;
+
+  // Check child contexts first to avoid immediately re-exploring our children (as opposed to
+  // checking for dead blocks first, to save exploring needlessly).
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    inlinedAnyHere |= it->second->checkInlineAllCalls();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    unsigned iterCount = it->second->Iterations.size();
+    for(unsigned i = 0; i < iterCount; ++i) {
+
+      inlinedAnyHere |= it->second->Iterations[i]->checkInlineAllCalls();
+
+    }
+
+  }
+
+  const Loop* MyL = getLoopContext();
+
+  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
+
+    BasicBlock* BB = BI;
+
+    if(blockIsDead(BB))
+      continue;
+
+    const Loop* BBL = getBlockScopeVariant(BB);
+
+    if((!MyL) || MyL->contains(BBL)) {
+
+      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+	if(CallInst* CI = dyn_cast<CallInst>(II)) {
+
+	  if(inlineChildren.count(CI))
+	    continue;
+
+	  if(getOrCreateInlineAttempt(CI, false))
+	    inlinedAnyHere = true;
+
+	}
+
+      }
+
+    }
+
+  }
+
+  return inlinedAnyHere;
+
+}
+
 void IntegrationHeuristicsPass::runQueues() { 
 
   while(1) {
 
-    if(!runQueue())
+    while(1) {
+    
+      if(!runQueue())
+	break;
+      if(!runPointerBaseSolver())
+	break;
+
+    }
+
+    // See if we should inline any functions that aren't certain:
+
+    errs() << "Checking for uncertain inlines:\n";
+
+    if(!RootIA->checkInlineAllCalls()) {
+
       return;
-    if(!runPointerBaseSolver())
-      return;
+
+    }
+
+    errs() << "Uncertain inlines complete\n";
 
   }
 
