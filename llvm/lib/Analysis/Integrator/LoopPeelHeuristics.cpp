@@ -4842,6 +4842,16 @@ bool IntegrationAttempt::tryInlineUsedCall(CallInst* CI) {
 
 }
 
+static Value* getWrittenPointer(Instruction* I) {
+
+  if(StoreInst* SI = dyn_cast<StoreInst>(I))
+    return SI->getPointerOperand();
+  else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(I))
+    return MI->getDest();
+  return 0;
+
+}
+
 bool IntegrationAttempt::checkInlineAllCalls() {
 
   bool inlinedAnyHere = false;
@@ -4881,15 +4891,34 @@ bool IntegrationAttempt::checkInlineAllCalls() {
   for(DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator blockit = InstBlockedLoads.begin(), 
 	blockend = InstBlockedLoads.end(); blockit != blockend; ++blockit) {
 
-    // SI is in our context.
-    if(StoreInst* SI = dyn_cast<StoreInst>(blockit->first)) {
+    if(blockIsDead(blockit->first->getParent()))
+      continue;
 
-      if(blockIsDead(SI->getParent()))
-	continue;
+    Value* StoredThrough = getWrittenPointer(blockit->first);
+    
+    if(StoredThrough) {
 
-      Value* StoredThrough = SI->getPointerOperand();
       ValCtx StoredUO = getUltimateUnderlyingObject(StoredThrough);
 
+      if(isa<CallInst>(StoredUO.first))
+	callsitesToCheck.push_back(StoredUO);
+
+    }
+
+  }
+
+  // Also check for stores that are blocking PB loads:
+
+  for(DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator blockit = memWriterEffects.begin(),
+	blockend = memWriterEffects.end(); blockit != blockend; ++blockit) {
+
+    if(blockIsDead(blockit->first->getParent()))
+      continue;
+
+    Value* StoredThrough = getWrittenPointer(blockit->first);
+    if(StoredThrough) {
+
+      ValCtx StoredUO = getUltimateUnderlyingObject(StoredThrough);
       if(isa<CallInst>(StoredUO.first))
 	callsitesToCheck.push_back(StoredUO);
 
