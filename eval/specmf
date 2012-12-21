@@ -2,9 +2,9 @@ TARGET_PROGS = date md5sum printf
 PRE_BCS = $(patsubst %,%-pre.bc,$(TARGET_PROGS))
 TARGET_BCS = $(patsubst %,%.bc,$(TARGET_PROGS))
 OPT_PROGS = $(patsubst %,%-opt,$(TARGET_PROGS))
-TIMED_PROGS = $(patsubst %,%-timed,$(TARGET_PROGS))
+TIMED_PROGS = $(patsubst %,%-orig-timed,$(TARGET_PROGS))
 TIMED_OPT_PROGS = $(patsubst %,%-opt-timed,$(TARGET_PROGS))
-STRIPPED_PROGS = $(patsubst %,%-stripped,$(TARGET_PROGS))
+STRIPPED_PROGS = $(patsubst %,%-orig-stripped,$(TARGET_PROGS))
 STRIPPED_OPT_PROGS = $(patsubst %,%-opt-stripped,$(TARGET_PROGS))
 
 .PHONY: allbase allopt clean
@@ -34,13 +34,16 @@ md5sum.bc md5sum: md5sum-md5sum.o
 %-opt: %-opt-int.bc
 	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspec.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
 
-%-timed: %.bc
-	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crt1time.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
-
 %-opt-timed: %-opt-timed-int.bc
 	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspectime.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
 
+%-orig-timed: %.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crt1time.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
 %-stripped: %
+	strip $^ -o $@
+
+%-orig-stripped: %
 	strip $^ -o $@
 
 clean:

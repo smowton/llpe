@@ -332,21 +332,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "llvm.va_start", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, VAStartMR, 0 },
   { "llvm.va_copy", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, VACopyMR, 0 },
   { "llvm.va_end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
-  // HACK! Workaround for shortcomings working on the date program:
-  { "__time_localtime_tzi", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, LocaltimeTZIMR, 0 },
-  { "fwrite", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, FwriteMR, 0 },
-  { "memset_byte_fn", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, MemsetByteMR, 0 },
-  { "nl_langinfo_l", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, LanginfoLMR, 0 },
-  { "nl_langinfo", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, LanginfoMR, 0 },
-  { "__error", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, ErrorMR, 0 },
-  { "verify_numeric", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, ErrorMR, 0 },
-  { "strtol", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StrToLMR, 0 },
-  { "ferror", AliasAnalysis::Ref, LibCallFunctionInfo::DoesOnly, FerrorMR, 0 },
-  { "_uintmaxtostr", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, FreeMR, 0 },
   { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
   { "__libc_fcntl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "posix_fadvise", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "atexit", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 
