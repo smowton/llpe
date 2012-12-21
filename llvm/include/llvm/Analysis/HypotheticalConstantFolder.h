@@ -361,9 +361,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool runQueue();
    void runDIEQueue();
 
-   void revertLoadsFromFoldedContexts();
-   void retryLoadsFromFoldedContexts();
-
    PostDominatorTree* getPostDomTree(Function*);
    DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, BasicBlock*);
 
@@ -384,6 +381,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool runPointerBaseSolver();
    void queueUpdatePB(IntegrationAttempt* IA, Value* V);
    void queueNewPBWork(uint64_t& newVCs, uint64_t& changedVCs);
+
+   void estimateIntegrationBenefit();
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
@@ -791,7 +790,9 @@ protected:
   DenseSet<ValCtx> unusedWritersTraversingThisContext;
 
   int improvableInstructions;
+  int improvableInstructionsIncludingLoops;
   int improvedInstructions;
+  int64_t residualInstructions;
   SmallVector<CallInst*, 4> unexploredCalls;
   SmallVector<const Loop*, 4> unexploredLoops;
 
@@ -843,6 +844,8 @@ protected:
 
   struct IntegratorTag tag;
 
+  int64_t totalIntegrationGoodness;
+
   IntegrationAttempt* parent;
 
   DenseMap<CallInst*, InlineAttempt*> inlineChildren;
@@ -864,6 +867,7 @@ protected:
     unusedWritersTraversingThisContext(2),
     improvableInstructions(0),
     improvedInstructions(0),
+    residualInstructions(-1),
     InstBlockedLoads(4),
     InstBlockedOpens(2),
     forwardableOpenCalls(2),
@@ -876,6 +880,7 @@ protected:
     commitStarted(false),
     nesting_depth(depth),
     contextIsDead(false),
+    totalIntegrationGoodness(0),
     parent(P),
     inlineChildren(1),
     peelChildren(1)
@@ -1211,24 +1216,30 @@ protected:
   // Enabling / disabling exploration:
 
   void enablePeel(const Loop*);
-  void disablePeel(const Loop*);
+  uint64_t disablePeel(const Loop*, bool simulateOnly);
   bool loopIsEnabled(const Loop*);
   void enableInline(CallInst*);
-  void disableInline(CallInst*);
+  uint64_t disableInline(CallInst*, bool simulateOnly);
   bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
   bool isAvailable();
   bool isAvailableFromCtx(IntegrationAttempt*);
   bool isVararg();
-  void revertDSEandDAE();
-  void revertDeadValue(Value*);
+  uint64_t revertDSEandDAE(bool simulateOnly);
+  uint64_t revertDeadValue(Value*, bool simulateOnly);
   void tryKillAndQueue(Instruction*);
   void getRetryStoresAndAllocs(std::vector<ValCtx>&);
   void retryStoresAndAllocs(std::vector<ValCtx>&);
-  void revertLoadsFromFoldedContexts();
+  uint64_t revertLoadsFromFoldedContexts(bool simulateOnly);
   void retryLoadsFromFoldedContexts();
-  void walkLoadsFromFoldedContexts(bool revert);
+  uint64_t walkLoadsFromFoldedContexts(bool revert, bool simulateOnly);
+
+  // Estimating inlining / unrolling benefit:
+
+  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
+  virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
+  int64_t getResidualInstructions();
 
   // DOT export:
 
@@ -1276,6 +1287,7 @@ protected:
   virtual bool canDisable() = 0;
   unsigned getTotalInstructions();
   unsigned getElimdInstructions();
+  int64_t getTotalInstructionsIncludingLoops();
 
   // Saving our results as a bitcode file:
 
@@ -1440,12 +1452,16 @@ class PeelAttempt {
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
    DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
 
+   int64_t residualInstructions;
+
    int nesting_depth;
    int debugIndent;
 
  public:
 
    struct IntegratorTag tag;
+
+   int64_t totalIntegrationGoodness;
 
    std::vector<BasicBlock*> LoopBlocks;
    std::vector<PeelIteration*> Iterations;
@@ -1473,12 +1489,12 @@ class PeelAttempt {
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
    
-   void revertDSEandDAE();
-   void revertExternalUsers();
+   uint64_t revertDSEandDAE(bool);
+   uint64_t revertExternalUsers(bool);
    void callExternalUsers(ProcessExternalCallback& PEC);
    void retryExternalUsers();
    void getRetryStoresAndAllocs(std::vector<llvm::ValCtx>&);
-   void walkLoadsFromFoldedContexts(bool);
+   uint64_t walkLoadsFromFoldedContexts(bool, bool);
    
    void describeTreeAsDOT(std::string path);
 
@@ -1508,6 +1524,9 @@ class PeelAttempt {
    void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
 
    void dumpMemoryUsage(int indent);
+
+   int64_t getResidualInstructions();
+   void findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty);
 
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
@@ -1601,6 +1620,9 @@ class InlineAttempt : public IntegrationAttempt {
   }
 
   virtual bool stackIncludesCallTo(Function*);
+
+  virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
+  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
 
 };
 

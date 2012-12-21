@@ -9,7 +9,7 @@
 
 using namespace llvm;
 
-void IntegrationAttempt::disablePeel(const Loop* L) {
+uint64_t IntegrationAttempt::disablePeel(const Loop* L, bool simulateOnly) {
 
   // It's up to the caller whether we end up trying to inline the children of the loop.
   // e.g. if there are child calls and loops (and loops within calls within loops),
@@ -24,9 +24,9 @@ void IntegrationAttempt::disablePeel(const Loop* L) {
 
   PeelAttempt* PA = getPeelAttempt(L);
   if(!ignorePAs.insert(L).second)
-    return;
+    return 0;
   if(!PA)
-    return;
+    return 0;
 
   // First, queue an improvement attempt against the loop's headers, and load forwarding attempts
   // against all within the loop:
@@ -63,25 +63,32 @@ void IntegrationAttempt::disablePeel(const Loop* L) {
   // Similarly the formerly dead instructions which return to life because they now have a user shouldn't
   // be re-tested because we've just exhibited a concrete user: they're certainly alive now.
   
-  PA->revertDSEandDAE();
+  uint64_t totalResurrected = 0;
+
+  totalResurrected += PA->revertDSEandDAE(simulateOnly);
 
   // Another reason why values might return to life: they're conventionally used, either as
   // loop header PHI arguments or as invariants.
   
-  PA->revertExternalUsers();
+  totalResurrected += PA->revertExternalUsers(simulateOnly);
 
   // Another reason: loads which resolved to pointers which are now folded and so unavailable may now need to
   // be carried out for real, because e.g. if %x resolved to some instruction in a function which won't
   // be inlined and which was then passed out by way of memory, we'd need to introduce extra out parameters
-  // to route the relevant pointer to the use site. It's simpler just to load to life.
+  // to route the relevant pointer to the use site. It's simpler just to return the load to life.
 
-  pass->getRoot()->revertLoadsFromFoldedContexts();
+  totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
 
-  pass->getRoot()->collectStats();
+  if(simulateOnly)
+    ignorePAs.erase(L);
+  else
+    pass->getRoot()->collectStats();
+
+  return totalResurrected;
 
 }
 
-void IntegrationAttempt::disableInline(CallInst* CI) {
+uint64_t IntegrationAttempt::disableInline(CallInst* CI, bool simulateOnly) {
 
   // Much like the above, but disabling an inline attempt rather than a peel. This is rather simpler
   // because instructions can only be directly used via the arguments. The DSE / DAE situation is
@@ -89,39 +96,54 @@ void IntegrationAttempt::disableInline(CallInst* CI) {
 
   InlineAttempt* IA = getInlineAttempt(CI);
   if(!ignoreIAs.insert(CI).second)
-    return;
+    return 0;
   if(!IA)
-    return;
+    return 0;
 
-  IA->revertDSEandDAE();
+  uint64_t totalResurrected = 0;
+
+  totalResurrected += IA->revertDSEandDAE(simulateOnly);
 
   for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
 
-    revertDeadValue(CI->getArgOperand(i));
+    totalResurrected += revertDeadValue(CI->getArgOperand(i), simulateOnly);
 
   }
 
-  pass->getRoot()->revertLoadsFromFoldedContexts();
+  totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
 
-  pass->getRoot()->collectStats();
+  if(simulateOnly)
+    ignoreIAs.erase(CI);
+  else
+    pass->getRoot()->collectStats();
+
+  return totalResurrected;
 
 }
 
-void IntegrationAttempt::revertDSEandDAE() {
+uint64_t IntegrationAttempt::revertDSEandDAE(bool simulateOnly) {
+
+  uint64_t resurrected = 0;
 
   for(DenseSet<ValCtx>::iterator it = unusedWritersTraversingThisContext.begin(),
 	it2 = unusedWritersTraversingThisContext.end(); it != it2; ++it) {
 
-    it->second->revertDeadValue(it->first);
+    resurrected += it->second->revertDeadValue(it->first, simulateOnly);
 
   }
 
+  return resurrected;
+
 }
 
-void PeelAttempt::revertDSEandDAE() {
+uint64_t PeelAttempt::revertDSEandDAE(bool simulateOnly) {
+
+  uint64_t resurrected = 0;
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->revertDSEandDAE();
+    resurrected += Iterations[i]->revertDSEandDAE(simulateOnly);
+
+  return resurrected;
 
 }
 
@@ -145,12 +167,18 @@ public:
 };
 
 class RevertExternalCallback : public ProcessExternalCallback {
-public:
-  
-  RevertExternalCallback(const Loop* _L) : ProcessExternalCallback(_L)  {}
 
+  bool sim;
+
+public:
+
+  uint64_t resurrected;
+  
+  RevertExternalCallback(const Loop* _L, bool simulateOnly) : ProcessExternalCallback(_L), sim(simulateOnly),
+							      resurrected(0) {}
+  
   virtual void processExtOperand(IntegrationAttempt* Ctx, Value* V) {
-    Ctx->revertDeadValue(V);
+    resurrected += Ctx->revertDeadValue(V, sim);
   }
 
 };
@@ -184,10 +212,11 @@ void PeelAttempt::callExternalUsers(ProcessExternalCallback& PEC) {
 
 }
 
-void PeelAttempt::revertExternalUsers() {
+uint64_t PeelAttempt::revertExternalUsers(bool simulateOnly) {
 
-  RevertExternalCallback REC(L);
+  RevertExternalCallback REC(L, simulateOnly);
   callExternalUsers(REC);
+  return REC.resurrected;
 
 }
 
@@ -199,23 +228,34 @@ void PeelAttempt::retryExternalUsers() {
 }
 
 class RevertDeadValueCallback : public OpCallback {
+  
+  bool simulateOnly;
+
 public:
+
+  uint64_t resurrected;
+
+  RevertDeadValueCallback(bool sim) : simulateOnly(sim), resurrected(0) {}
 
   virtual void callback(IntegrationAttempt* Ctx, Value* V) {
 
-    Ctx->revertDeadValue(V);
+    resurrected += Ctx->revertDeadValue(V, simulateOnly);
 
   }
 
 };
 
-void IntegrationAttempt::revertDeadValue(Value* V) {
+uint64_t IntegrationAttempt::revertDeadValue(Value* V, bool simulateOnly) {
 
-  if((!unusedWriters.erase(V)) && (!deadValues.erase(V)))
-    return;
+  if(simulateOnly && (!unusedWriters.count(V)) && (!deadValues.count(V)))
+    return 0;
+  else if((!unusedWriters.erase(V)) && (!deadValues.erase(V)))
+    return 0;
 
-  RevertDeadValueCallback CB;
+  RevertDeadValueCallback CB(simulateOnly);
   walkOperands(V, CB);
+
+  return CB.resurrected;
 
 }
 
@@ -320,7 +360,7 @@ void IntegrationAttempt::enablePeel(const Loop* L) {
   // Relatedly some loads which resolved to pointers will once again be valid, meaning we
   // can once again kill the stores and allocations involved.
 
-  pass->retryLoadsFromFoldedContexts();
+  pass->getRoot()->retryLoadsFromFoldedContexts();
 
   std::vector<ValCtx> VCs;
   PA->getRetryStoresAndAllocs(VCs);
@@ -347,7 +387,7 @@ void IntegrationAttempt::enableInline(CallInst* CI) {
   if(!IA)
     return;
 
-  pass->retryLoadsFromFoldedContexts();
+  pass->getRoot()->retryLoadsFromFoldedContexts();
 
   std::vector<ValCtx> VCs;
   IA->getRetryStoresAndAllocs(VCs);
@@ -400,7 +440,7 @@ void InlineAttempt::setEnabled(bool en) {
   if(en)
     parent->enableInline(CI);
   else
-    parent->disableInline(CI);
+    parent->disableInline(CI, false);
 
 }
 
@@ -415,7 +455,7 @@ void PeelAttempt::setEnabled(bool en) {
   if(en)
     parent->enablePeel(L);
   else
-    parent->disablePeel(L);
+    parent->disablePeel(L, false);
 
 }
 
@@ -462,17 +502,23 @@ bool IntegrationAttempt::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
 
 }
 
-void PeelAttempt::walkLoadsFromFoldedContexts(bool revert) {
+uint64_t PeelAttempt::walkLoadsFromFoldedContexts(bool revert, bool simulateOnly) {
+
+  uint64_t resurrected = 0;
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
 
-    (*it)->walkLoadsFromFoldedContexts(revert);
+    resurrected += (*it)->walkLoadsFromFoldedContexts(revert, simulateOnly);
 
   }
 
+  return resurrected;
+
 }
 
-void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
+uint64_t IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert, bool simulateOnly) {
+
+  uint64_t resurrected = 0;
 
   for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
 
@@ -485,7 +531,7 @@ void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
       if(revert) {
 	if(!it->second.second->isAvailable()) {
 
-	  revertDeadValue(LI->getPointerOperand());
+	  resurrected += revertDeadValue(LI->getPointerOperand(), simulateOnly);
 
 	}
       }
@@ -506,23 +552,25 @@ void IntegrationAttempt::walkLoadsFromFoldedContexts(bool revert) {
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(!ignoreIAs.count(it->first))
-      it->second->walkLoadsFromFoldedContexts(revert);
+      resurrected += it->second->walkLoadsFromFoldedContexts(revert, simulateOnly);
 
   }
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     if(!ignorePAs.count(it->first))
-      it->second->walkLoadsFromFoldedContexts(revert);
+      resurrected += it->second->walkLoadsFromFoldedContexts(revert, simulateOnly);
 
   }
 
+  return resurrected;
+
 }
 
-void IntegrationAttempt::revertLoadsFromFoldedContexts() {
-  walkLoadsFromFoldedContexts(true);
+uint64_t IntegrationAttempt::revertLoadsFromFoldedContexts(bool simulateOnly) {
+  return walkLoadsFromFoldedContexts(true, simulateOnly);
 }
 
 void IntegrationAttempt::retryLoadsFromFoldedContexts() {
-  walkLoadsFromFoldedContexts(false);
+  walkLoadsFromFoldedContexts(false, false);
 }

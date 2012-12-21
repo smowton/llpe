@@ -126,7 +126,7 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 			 DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
 			 DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth) 
-  : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), nesting_depth(depth)
+  : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), residualInstructions(-1), nesting_depth(depth), totalIntegrationGoodness(0)
 {
 
   this->tag.ptr = (void*)this;
@@ -3294,34 +3294,49 @@ void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
       
     const Loop* L = getValueScope(BI);
-    
-    if(MyL != L)
-      continue;
+    if(MyL != L && ((!MyL) || MyL->contains(L))) {
 
-    if(instructionCounts(BI)) { 
-
-      //if(BB == getEntryBlock() && isa<PHINode>(BI))
-      //  continue;
-
-      improvableInstructions++;
-
-      if(blockIsDead(BB))
-	improvedInstructions++;
-      else if(improvedValues.find(BI) != improvedValues.end())
-	improvedInstructions++;
-      else if(deadValues.count(BI))
-	improvedInstructions++;
-      else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
-	if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
-	  improvedInstructions++;
-      }
+      // Count unexplored loops as part of my own context.
+      if(!peelChildren.count(immediateChildLoop(MyL, L)))
+	L = MyL;
 
     }
 
-    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-      DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
-      if(it == inlineChildren.end())
-	unexploredCalls.push_back(CI);
+    if(MyL != L) {
+
+      if(instructionCounts(BI))
+	improvableInstructionsIncludingLoops++;
+
+    }
+    else {
+
+      if(instructionCounts(BI)) { 
+
+	//if(BB == getEntryBlock() && isa<PHINode>(BI))
+	//  continue;
+
+	improvableInstructions++;
+	improvableInstructionsIncludingLoops++;
+
+	if(blockIsDead(BB))
+	  improvedInstructions++;
+	else if(improvedValues.find(BI) != improvedValues.end())
+	  improvedInstructions++;
+	else if(deadValues.count(BI))
+	  improvedInstructions++;
+	else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
+	  if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
+	    improvedInstructions++;
+	}
+
+      }
+
+      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
+	if(it == inlineChildren.end())
+	  unexploredCalls.push_back(CI);
+      }
+
     }
 
   }
@@ -3378,6 +3393,7 @@ void IntegrationAttempt::collectStats() {
   unexploredLoops.clear();
   improvedInstructions = 0;
   improvableInstructions = 0;
+  improvableInstructionsIncludingLoops = 0;
 
   collectAllBlockStats();
   collectAllLoopStats();
@@ -3463,6 +3479,12 @@ unsigned IntegrationAttempt::getTotalInstructions() {
 unsigned IntegrationAttempt::getElimdInstructions() {
 
   return improvedInstructions;
+
+}
+
+int64_t IntegrationAttempt::getTotalInstructionsIncludingLoops() {
+  
+  return improvableInstructionsIncludingLoops;
 
 }
 
@@ -5016,18 +5038,6 @@ void IntegrationHeuristicsPass::runDIEQueue() {
 
 }
 
-void IntegrationHeuristicsPass::revertLoadsFromFoldedContexts() {
-
-  RootIA->revertLoadsFromFoldedContexts();
-
-}
-
-void IntegrationHeuristicsPass::retryLoadsFromFoldedContexts() {
-
-  RootIA->retryLoadsFromFoldedContexts();
-
-}
-
 void IntegrationHeuristicsPass::commit() {
   RootIA->commit();
 }
@@ -5463,6 +5473,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   runDIEQueue();
 
   IA->collectStats();
+  estimateIntegrationBenefit();
 
   if(!GraphOutputDirectory.empty()) {
 
