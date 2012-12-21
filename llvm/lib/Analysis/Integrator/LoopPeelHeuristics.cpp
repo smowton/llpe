@@ -68,6 +68,7 @@ static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMo
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
+static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -667,9 +668,6 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "llseek" || F->getName() == "lseek" ||
 	  F->getName() == "lseek64" || F->getName() == "close" ||
 	  F->getName() == "write" || 
-	  F->getName() == "__time_localtime_tzi" ||
-	  F->getName() == "memset_byte_fn" ||
-	  F->getName() == "nl_langinfo" ||
 	  F->getName() == "__libc_fcntl" ||
 	  F->getName() == "posix_fadvise" ||
 	  F->getName() == "exit" ||
@@ -5473,7 +5471,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   runDIEQueue();
 
   IA->collectStats();
-  estimateIntegrationBenefit();
+  
+  if(!SkipBenefitAnalysis)
+    estimateIntegrationBenefit();
 
   if(!GraphOutputDirectory.empty()) {
 
