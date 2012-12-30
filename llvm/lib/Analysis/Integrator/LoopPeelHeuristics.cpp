@@ -127,7 +127,8 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
 			 DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
 			 DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth) 
-  : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), residualInstructions(-1), nesting_depth(depth), totalIntegrationGoodness(0)
+  : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), 
+    residualInstructions(-1), nesting_depth(depth), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
   this->tag.ptr = (void*)this;
@@ -5474,6 +5475,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   
   if(!SkipBenefitAnalysis)
     estimateIntegrationBenefit();
+
+  IA->disableVarargsContexts();
 
   if(!GraphOutputDirectory.empty()) {
 

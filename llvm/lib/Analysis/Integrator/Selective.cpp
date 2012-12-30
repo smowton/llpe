@@ -77,7 +77,9 @@ uint64_t IntegrationAttempt::disablePeel(const Loop* L, bool simulateOnly) {
   // be inlined and which was then passed out by way of memory, we'd need to introduce extra out parameters
   // to route the relevant pointer to the use site. It's simpler just to return the load to life.
 
-  totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
+  // Callers that set simulateOnly approximate this for themselves, and this method is expensive.
+  if(!simulateOnly)
+    totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
 
   if(simulateOnly)
     ignorePAs.erase(L);
@@ -110,7 +112,9 @@ uint64_t IntegrationAttempt::disableInline(CallInst* CI, bool simulateOnly) {
 
   }
 
-  totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
+  // Callers that set simulateOnly approximate this for themselves, and this method is expensive.
+  if(!simulateOnly)
+    totalResurrected += pass->getRoot()->revertLoadsFromFoldedContexts(simulateOnly);
 
   if(simulateOnly)
     ignoreIAs.erase(CI);

@@ -833,6 +833,8 @@ protected:
   // The LoopInfo belonging to the function which is being specialised
   LoopInfo* MasterLI;
 
+  bool contextTaintedByVarargs;
+
   std::string nestingIndent() const;
 
   int nesting_depth;
@@ -845,6 +847,7 @@ protected:
   struct IntegratorTag tag;
 
   int64_t totalIntegrationGoodness;
+  int64_t nDependentLoads;
 
   IntegrationAttempt* parent;
 
@@ -878,9 +881,11 @@ protected:
     ignorePAs(2),
     CommittedValues(2),
     commitStarted(false),
+    contextTaintedByVarargs(false),
     nesting_depth(depth),
     contextIsDead(false),
     totalIntegrationGoodness(0),
+    nDependentLoads(0),
     parent(P),
     inlineChildren(1),
     peelChildren(1)
@@ -1118,6 +1123,8 @@ protected:
   void blockVA(ValCtx);
   virtual void getVarArg(int64_t, ValCtx&) = 0;
   int64_t getSpilledVarargAfter(CallInst* CI, int64_t OldArg);
+  void disableChildVarargsContexts();
+  bool isVarargsTainted();
   
   // Dead store and allocation elim:
 
@@ -1240,6 +1247,9 @@ protected:
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   int64_t getResidualInstructions();
+  virtual void reduceDependentLoads(int64_t) = 0;
+  void countDependentLoads();
+  void propagateDependentLoads();
 
   // DOT export:
 
@@ -1419,6 +1429,8 @@ public:
 
   virtual bool stackIncludesCallTo(Function*);
 
+  virtual void reduceDependentLoads(int64_t);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1462,6 +1474,7 @@ class PeelAttempt {
    struct IntegratorTag tag;
 
    int64_t totalIntegrationGoodness;
+   int64_t nDependentLoads;
 
    std::vector<BasicBlock*> LoopBlocks;
    std::vector<PeelIteration*> Iterations;
@@ -1523,10 +1536,16 @@ class PeelAttempt {
    
    void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
 
+   void reduceDependentLoads(int64_t);
+
    void dumpMemoryUsage(int indent);
 
    int64_t getResidualInstructions();
    void findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty);
+   void countDependentLoads();
+   void propagateDependentLoads();
+
+   void disableVarargsContexts();
 
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
@@ -1615,6 +1634,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
 
+  virtual void reduceDependentLoads(int64_t);
+
   virtual int getIterCount() {
     return -1;
   }
@@ -1623,6 +1644,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
+
+  void disableVarargsContexts();
 
 };
 

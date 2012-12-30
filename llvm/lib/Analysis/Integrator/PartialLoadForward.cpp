@@ -447,6 +447,74 @@ static int64_t getFirstSpilledVararg(IntegrationAttempt* IA) {
 
 }
 
+// Regrettably for now we must fold contexts that are tainted by varargs results because
+// low-level understanding of DragonEgg's implementation of va_xxx gets broken when e.g.
+// dead arguments are eliminated from emitted functions.
+// This can go away when we forward port to an LLVM version that uses the va_arg instruction
+// instead of having the frontend lower by itself!
+
+bool IntegrationAttempt::isVarargsTainted() {
+
+  return contextTaintedByVarargs;
+
+}
+
+void IntegrationAttempt::disableChildVarargsContexts() {
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->disableVarargsContexts();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    it->second->disableVarargsContexts();
+
+  }
+
+}
+
+void InlineAttempt::disableVarargsContexts() {
+
+  if(parent && isVarargsTainted()) {
+
+    errs() << "*** DISABLE " << getShortHeader() << " due to varargs instructions\n";
+    parent->disableInline(CI, false);
+
+  }
+  else {
+
+    disableChildVarargsContexts();
+
+  }
+
+}
+
+void PeelAttempt::disableVarargsContexts() {
+
+  for(unsigned i = 0; i < Iterations.size(); ++i) {
+
+    if(Iterations[i]->isVarargsTainted()) {
+
+      errs() << "*** DISABLE " << getShortHeader() << " due to varargs instructions\n";     
+      parent->disablePeel(L, false);
+      return;
+
+    }
+
+  }
+
+  // Else if no iteration contains varargs results:
+
+  for(unsigned i = 0; i < Iterations.size(); ++i) {
+
+    Iterations[i]->disableChildVarargsContexts();
+
+  }  
+
+}
+
 // Try to improve a load which got clobbered. Cope with cases where:
 // * It's defined by a store that subsumes but is not identical to the load
 // * It's defined by a memcpy in similar fashion
@@ -650,6 +718,8 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
       int32_t initialOffset = getInitialBytesOnStack(Clobber.second->getFunction());
       int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(Clobber.second->getFunction());
+
+      contextTaintedByVarargs = true;
 
       if(loadOffset == 0) {
 	
