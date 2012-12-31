@@ -295,9 +295,10 @@ PartialVal IntegrationAttempt::tryForwardFromCopy(LoadForwardAttempt& LFA, ValCt
   // Adjust the offset-from-symbolic-expression-base
   // if we're only interested in an offset from the memop source:
   SubLFA.setSymExprOffset(SubLFA.getSymExprOffset() + ReadOffset);
-
+  
+  bool subloadTainted = false;
   // Realise the symbolic expression before the memcpy and query it.
-  ValCtx copyInstResult = ((IntegrationAttempt*)Clobber.second)->tryForwardLoad(SubLFA, copyInst);
+  ValCtx copyInstResult = ((IntegrationAttempt*)Clobber.second)->tryForwardLoad(SubLFA, copyInst, &subloadTainted);
 
   if(copyInstResult == VCNull) {
     LPDEBUG("Memcpy sub-forwarding attempt failed\n");
@@ -305,11 +306,15 @@ PartialVal IntegrationAttempt::tryForwardFromCopy(LoadForwardAttempt& LFA, ValCt
   }
   else if(FirstNotDef - FirstDef == LoadSize) {
     LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " (using as whole result)\n");
-    return PartialVal::getTotal(copyInstResult);
+    PartialVal retPV = PartialVal::getTotal(copyInstResult);
+    retPV.isVarargTainted = subloadTainted;
+    return retPV;
   }
   else if(Constant* C = dyn_cast<Constant>(copyInstResult.first)) {
     LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " (using as partial)\n");
-    return PartialVal::getPartial(FirstDef, FirstNotDef, C, 0);
+    PartialVal retPV = PartialVal::getPartial(FirstDef, FirstNotDef, C, 0);
+    retPV.isVarargTainted = subloadTainted;
+    return retPV;
   }
   else {
     LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " but that kind of value cannot partially define a result\n");
@@ -719,19 +724,19 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       int32_t initialOffset = getInitialBytesOnStack(Clobber.second->getFunction());
       int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(Clobber.second->getFunction());
 
-      contextTaintedByVarargs = true;
+      PartialVal retPV;
 
       if(loadOffset == 0) {
 	
 	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
 	// Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
+	retPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
       }
       else if(loadOffset == 4) {
 
 	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
 	// Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-	return PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+	retPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
 
       }
       else if(loadOffset == 8) {
@@ -741,14 +746,17 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 	int64_t initialVararg = getFirstSpilledVararg(Clobber.second);
 	if(initialVararg == ValCtx::not_va_arg)
 	  return PVNull;
-	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
+	retPV = PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
 
       }
       else if(loadOffset == 16) {
 	LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-	return PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, ValCtx::va_baseptr));
+	retPV = PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, ValCtx::va_baseptr));
 
       }
+
+      retPV.isVarargTainted = true;
+      return retPV;
 
     }
     else if(CalledF->getName() == "llvm.va_copy") {

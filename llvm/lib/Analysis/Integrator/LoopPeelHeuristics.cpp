@@ -670,9 +670,9 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "lseek64" || F->getName() == "close" ||
 	  F->getName() == "write" || 
 	  F->getName() == "__libc_fcntl" ||
-	  F->getName() == "posix_fadvise" ||
+	  F->getName() == "posix_fadvise"/* ||
 	  F->getName() == "exit" ||
-	  F->getName() == "atexit");
+	  F->getName() == "atexit"*/);
 
 }
 
@@ -1737,7 +1737,11 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
     return ConstResult;
 
   MemDepResult Res = tryResolveLoad(Attempt);
-  ValCtx ForwardedVal = getForwardedValue(Attempt, Res);
+  bool resultIsTainted = false;
+  ValCtx ForwardedVal = getForwardedValue(Attempt, Res, &resultIsTainted);
+
+  if(resultIsTainted)
+    contextTaintedByVarargs = true;
 
   /*
   if(Attempt.PBIsViable()) {
@@ -1772,7 +1776,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LoadI) {
 }
 
 // Alternative entry point for users who've pre-created a symbolic expression
-ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* StartBefore) {
+ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* StartBefore, bool* pvIsTainted) {
 
   ValCtx ConstVC = VCNull;
 
@@ -1782,12 +1786,12 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadForwardAttempt& LFA, Instruction* 
     return ConstVC;
   }
   else {
-    return getForwardedValue(LFA, Res);
+    return getForwardedValue(LFA, Res, pvIsTainted);
   }
 
 }
 
-ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResult Res) {
+ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResult Res, bool* pvIsTainted) {
 
   LoadInst* LoadI = LFA.getOriginalInst();
   IntegrationAttempt* ResAttempt = (Res.getCookie() ? (IntegrationAttempt*)Res.getCookie() : this);
@@ -1797,6 +1801,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
   if(Res.isClobber()) {
     // See if we can do better for clobbers by misaligned stores, memcpy, read calls, etc.
     PV = tryResolveClobber(LFA, make_vc(Res.getInst(), ResAttempt), Res.isEntryNonLocal());
+    *pvIsTainted = PV.isVarargTainted;
   }
   else if(Res.isDef()) {
     ValCtx DefResult;

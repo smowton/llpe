@@ -516,13 +516,14 @@ struct PartialVal {
   uint64_t FirstNotDef;
   Constant* C;
   uint64_t ReadOffset;
+  bool isVarargTainted;
 
  PartialVal(ValCtx Total) : 
-  type(PVTotal), TotalVC(Total), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0) { }
+  type(PVTotal), TotalVC(Total), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0), isVarargTainted(false) { }
  PartialVal(uint64_t FD, uint64_t FND, Constant* _C, uint64_t Off) : 
-  type(PVPartial), TotalVC(VCNull), FirstDef(FD), FirstNotDef(FND), C(_C), ReadOffset(Off) { }
+  type(PVPartial), TotalVC(VCNull), FirstDef(FD), FirstNotDef(FND), C(_C), ReadOffset(Off), isVarargTainted(false) { }
  PartialVal() :
-  type(PVInvalid), TotalVC(VCNull), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0) { }
+  type(PVInvalid), TotalVC(VCNull), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0), isVarargTainted(false) { }
 
   bool isPartial() { return type == PVPartial; }
   bool isTotal() { return type == PVTotal; }
@@ -1013,10 +1014,10 @@ protected:
 
   void checkLoad(LoadInst* LI);
   ValCtx tryForwardLoad(LoadInst*);
-  ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore);
+  ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore, bool* pvIsTainted = 0);
   MemDepResult tryResolveLoad(LoadForwardAttempt&);
   MemDepResult tryResolveLoad(LoadForwardAttempt&, Instruction* StartBefore, ValCtx& ConstResult);
-  ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res);
+  ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res, bool* pvTainted = 0);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
   
   bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
