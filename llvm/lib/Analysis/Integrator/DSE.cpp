@@ -220,6 +220,37 @@ bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
 
 }
 
+bool InlineAttempt::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  return false;
+
+}
+
+bool PeelIteration::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
+
+  if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
+
+    PeelIteration* nextIter = getNextIteration();
+    if(!nextIter) {
+
+      LPDEBUG("Can't continue to pursue open call because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
+      Start = VCNull;
+      return true;
+
+    }
+    else {
+
+      Start = make_vc(L->getHeader()->begin(), nextIter);
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
 ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
 
   BasicBlock* UniqueSuccessor = 0;

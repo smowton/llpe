@@ -215,89 +215,6 @@ void IntegrationAttempt::tryPushOpen(CallInst* OpenI, ValCtx OpenProgress) {
   
 }
 
-void IntegrationAttempt::queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble, const Loop* SuccLoop) {
-
-  if(SuccLoop == getLoopContext()) {
-
-    ValCtx St = make_vc(I, this);
-    if(Visited.insert(St))
-      PList.push_back(St);
-
-  }
-  else {
-
-    parent->queueSuccessorVCFalling(I, Visited, PList, CFGTrouble, SuccLoop);
-
-  }
-
-}
-
-void IntegrationAttempt::queueSuccessorVCs(ValCtx OpenInst, ValCtx OpenProgress, BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble) {
-
-  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-    BasicBlock* SB = *SI;
-
-    if(edgeIsDead(BB, SB))
-      continue;
-
-    ValCtx Start;
-
-    if(checkOrQueueLoopIteration(OpenInst, OpenProgress, BB, SB, Start)) {
-      if(Start == VCNull) {
-	// Couldn't iterate because next iteration doesn't exist yet.
-	CFGTrouble = true;
-      }
-      else {
-	if(Visited.insert(Start))
-	  PList.push_back(Start);
-      }
-      continue;
-    }
-
-    const Loop* SuccLoop = getBlockScopeVariant(SB);
-    if(SuccLoop != getLoopContext()) {
-
-      if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
-
-	if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
-
-	  assert(SuccLoop->getHeader() == SB);
-	  ValCtx St = make_vc(SB->begin(), LPA->Iterations[0]);
-	  if(Visited.insert(St))
-	    PList.push_back(St);
-
-	}
-	else {
-	      
-	  LPDEBUG("Progress impeded by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
-	  // Don't walk into the loop in invariant context, as this forward analysis is not suited
-	  // to identify situations like e.g. a read in a loop dominated by an outside open.
-	  CFGTrouble = true;
-	  continue;
-
-	}
-
-      }
-      else {
-
-	queueSuccessorVCFalling(SB->begin(), Visited, PList, CFGTrouble, SuccLoop);
-
-      }
-
-    }
-    else {
-	  
-      ValCtx St = make_vc(SB->begin(), this);
-      if(Visited.insert(St))
-	PList.push_back(St);
-
-    }
-
-  }
-
-}
-
 // Called in the context of Start.second. OpenInst is the open instruction we're pursuing, and the context where OS is stored.
 // ReadInst is the entry in the chain of VFS operations that starts at OpenInst.
 bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx ReadInst, OpenStatus& OS, bool skipFirst, SmallVector<ValCtx, 2>& Defs, SmallVector<ValCtx, 2>& Clobbers) {
@@ -405,39 +322,7 @@ bool IntegrationAttempt::tryPushOpenFrom(ValCtx& Start, ValCtx OpenInst, ValCtx 
 
 }
 
-
-bool InlineAttempt::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
-
-  return false;
-
-}
-
 bool InlineAttempt::checkOrQueueLoopIteration(ValCtx OpenInst, ValCtx OpenProgress, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
-
-  return false;
-
-}
-
-bool PeelIteration::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
-
-  if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
-
-    PeelIteration* nextIter = getNextIteration();
-    if(!nextIter) {
-
-      LPDEBUG("Can't continue to pursue open call because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
-      Start = VCNull;
-      return true;
-
-    }
-    else {
-
-      Start = make_vc(L->getHeader()->begin(), nextIter);
-      return true;
-
-    }
-
-  }
 
   return false;
 
@@ -535,7 +420,7 @@ void IntegrationAttempt::setNextUser(OpenStatus& OS, ValCtx U) {
 
 bool IntegrationAttempt::vfsCallBlocksOpen(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS, bool& isVfsCall, bool& shouldRequeue) {
   
-  // Call to read() or close()?
+  // Call to read(), one of the seek family or close()?
   
   isVfsCall = false;
   shouldRequeue = false;

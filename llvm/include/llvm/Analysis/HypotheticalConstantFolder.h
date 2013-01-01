@@ -265,6 +265,15 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
+typedef struct _BIC {
+  BasicBlock::iterator it;
+  BasicBlock* BB;
+  IntegrationAttempt* ctx;
+
+_BIC(BasicBlock::iterator _it, BasicBlock* BB, IntegrationAttempt* _ctx) : it(_it), ctx(_ctx) { }
+_BIC(Instruction* I, IntegrationAttempt* _ctx);  
+} BIC;
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -767,8 +776,6 @@ protected:
   TargetData* TD;
   AliasAnalysis* AA;
 
-  Function& F;
-
   std::string HeaderStr;
 
   DenseMap<Instruction*, const Loop*>& invariantInsts;
@@ -842,6 +849,8 @@ protected:
   uint64_t SeqNumber;
 
  public:
+
+  Function& F;
 
   bool contextIsDead;
 
@@ -1046,6 +1055,14 @@ protected:
   void queuePBCheckAllInstructionsInScope(const Loop*);
 
   void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
+
+  // Support functions for the generic IA graph walkers:
+  void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker);
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker) = 0;
+  void queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
+  void queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker);
+  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker);
+  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker) = 0;
 
   // VFS call forwarding:
 
@@ -1432,6 +1449,9 @@ public:
 
   virtual void reduceDependentLoads(int64_t);
 
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
+  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1646,6 +1666,10 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
 
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
+  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker);
+  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
+
   void disableVarargsContexts();
 
 };
@@ -1813,6 +1837,55 @@ class LFARMapping {
   LFARMapping(LFARealization& LFAR, IntegrationAttempt* Ctx);
   virtual ~LFARMapping();
 
+};
+
+enum WalkInstructionResult {
+
+  WIRContinue,
+  WIRStopThisPath,
+  WIRStopWholeWalk
+
+};
+
+class IAWalker {
+
+  SmallSet<BIC, 8> Visited;
+  SmallVector<BIC, 8> Worklist1;
+  SmallVector<BIC, 8> Worklist2;
+
+  SmallVector<BIC, 8>* PList;
+  SmallVector<BIC, 8>* CList;
+  
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*) = 0;
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
+
+ public:
+
+  queueWalkFrom(BIC);
+
+};
+
+class BackwardIAWalker : public IAWalker {
+  
+  void walkFromInst(BIC);
+  
+ public:
+
+  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst);
+  void walk();
+  
+};
+
+class ForwardIAWalker : public IAWalker {
+  
+  void walkFromInst(BIC);
+  
+ public:
+
+  ForwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst);
+  void walk();
+  
 };
 
  ValCtx extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
