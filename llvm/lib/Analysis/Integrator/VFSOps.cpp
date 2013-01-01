@@ -84,7 +84,7 @@ void IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	    pass->queueOpenPush(make_vc(CI, this), make_vc(CI, this));
 	  }
 	  else {
-	    LPDEBUG("Marking open of " << Filename << " as not existing\n");
+	    LPDEBUG("Open of " << Filename << " returning ENOENT\n");
 	  }
 
 	  // Also investigate users, since we now know it'll emit non-negative FD or return -1 with ENOENT.
@@ -293,95 +293,6 @@ void IntegrationAttempt::queueSuccessorVCs(ValCtx OpenInst, ValCtx OpenProgress,
 	PList.push_back(St);
 
     }
-
-  }
-
-}
-
-ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
-
-  BasicBlock* UniqueSuccessor = 0;
-  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-    if(edgeIsDead(BB, *SI))
-      continue;
-    else if(UniqueSuccessor) {
-      UniqueSuccessor = 0;
-      break;
-    }
-    else {
-      UniqueSuccessor = *SI;
-    }
-
-  }
-
-  if(UniqueSuccessor) {
-
-    ValCtx Start;
-    if(checkLoopIteration(BB, UniqueSuccessor, Start))
-      return Start;
-
-    const Loop* SuccLoop = getBlockScopeVariant(UniqueSuccessor);
-    if(SuccLoop != getLoopContext()) {
-
-      if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
-
-	if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
-
-	  assert(SuccLoop->getHeader() == UniqueSuccessor);
-	  return make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
-
-	}
-	else {
-	      
-	  LPDEBUG("Progress blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
-	  return VCNull;
-
-	}
-
-      }
-      else {
-
-	return make_vc(UniqueSuccessor->begin(), parent);
-
-      }
-
-    }
-    else {
-	  
-      if(!certainBlocks.count(UniqueSuccessor)) {
-
-	LPDEBUG("Progress blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
-	return VCNull;
-
-      }
-      else {
-
-	return make_vc(UniqueSuccessor->begin(), this);
-
-      }
-
-    }
-
-  }
-  else {
-
-    if(isa<ReturnInst>(BB->getTerminator())) {
-
-      if(!parent) {
-
-	LPDEBUG("Instruction chain reaches end of main!\n");
-	return VCNull;
-
-      }
-      BasicBlock::iterator CallIt(getEntryInstruction());
-      ++CallIt;
-      return make_vc(CallIt, parent);
-
-    }
-
-    LPDEBUG("Progress blocked because block " << BB->getName() << " has no unique successor\n");
-    return VCNull;
 
   }
 
