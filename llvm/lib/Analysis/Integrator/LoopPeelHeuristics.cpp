@@ -4543,6 +4543,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   DEBUG(dbgs() << "Finding dead allocations\n");
   IA->tryKillAllAllocs();
 
+  DEBUG(dbgs() << "Finding dead VFS operations\n");
+  IA->tryKillAllVFSOps();
+
   DEBUG(dbgs() << "Finding remaining dead instructions\n");
 
   IA->queueAllLiveValues();

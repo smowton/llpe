@@ -636,21 +636,23 @@ struct OpenStatus {
   std::string Name;
   bool success;
   bool FDEscapes;
+  bool MayDelete;
 
-OpenStatus(std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc) { }
-OpenStatus() : Name(""), success(false), FDEscapes(false) {}
+OpenStatus(std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc), MayDelete(false) { }
+OpenStatus() : Name(""), success(false), FDEscapes(false), MayDelete(false) {}
 
 };
 
 struct ReadFile {
 
-  ValCtx FD;
+  struct OpenStatus* openArg;
   uint64_t incomingOffset;
-  uint32_t readSize;
+  uint32_t readSize
+  bool needsSeek;
 
-ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), NextUser(VCNull) { }
+ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), needsSeek(true) { }
 
-ReadFile() : openArg(0), incomingOffset(0), readSize(0) { }
+ReadFile() : openArg(0), incomingOffset(0), readSize(0), needsSeek(true) { }
 
 };
 
@@ -658,21 +660,20 @@ struct SeekFile {
 
   struct OpenStatus* openArg;
   uint64_t newOffset;
-  ValCtx NextUser;
+  bool MayDelete;
 
-SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), NextUser(VCNull) { }
-  
-SeekFile() : openArg(0), newOffset(0) { }
+SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), MayDelete(false) { }
+SeekFile() : openArg(0), newOffset(0), MayDelete(false) { }
 
 };
 
 struct CloseFile {
 
   struct OpenStatus* openArg;
-  bool canRemove;
+  bool MayDelete;
 
-CloseFile(struct OpenStatus* O) : openArg(O), canRemove(false) {}
-CloseFile() : openArg(0), canRemove(false) {}
+CloseFile(struct OpenStatus* O) : openArg(O), MayDelete(false) {}
+CloseFile() : openArg(0), MayDelete(false) {}
 
 };
 
@@ -1080,6 +1081,10 @@ protected:
   bool isUnusedReadCall(CallInst*);
   bool isCloseCall(CallInst*);
   OpenStatus& getOpenStatus(CallInst*);
+  void tryKillAllVFSOps();
+  void markCloseCall(CallInst*);
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) = 0;
+  void recordDependentContexts(CallInst* CI, SmallVector<ValCtx, 4>& Deps);
 
   // Tricky load forwarding (stolen from GVN)
 
@@ -1244,6 +1249,10 @@ protected:
   uint64_t revertLoadsFromFoldedContexts(bool simulateOnly);
   void retryLoadsFromFoldedContexts();
   uint64_t walkLoadsFromFoldedContexts(bool revert, bool simulateOnly);
+  void revertDeadVFSOp(CallInst* CI);
+  void retryDeadVFSOp(CallInst* CI);
+  void revertDeadVFSOps();
+  void retryDeadVFSOps();
 
   // Estimating inlining / unrolling benefit:
 
@@ -1318,7 +1327,6 @@ protected:
   virtual void localPrepareCommit();
   void removeBlockFromLoops(BasicBlock*);
   void foldVFSCalls();
-  void markOrDeleteCloseCall(CallInst*, IntegrationAttempt*);
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) = 0;
   
   void commitLocalPointers();
@@ -1437,6 +1445,8 @@ public:
   virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
   virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
 
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1469,6 +1479,8 @@ class PeelAttempt {
    DenseMap<Instruction*, const Loop*>& invariantInsts;
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
    DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
+
+   SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
    int64_t residualInstructions;
 
@@ -1553,6 +1565,11 @@ class PeelAttempt {
 
    void disableVarargsContexts();
 
+   void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
+
+   void revertDeadVFSOps();
+   void retryDeadVFSOps();
+
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
      return parent->itcache(V);
@@ -1570,6 +1587,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   CallInst* CI;
   BasicBlock* UniqueReturnBlock;
+  SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
  public:
 
@@ -1654,6 +1672,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
   virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker);
   virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
+
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
 
   void disableVarargsContexts();
 

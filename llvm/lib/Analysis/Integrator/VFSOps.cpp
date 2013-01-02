@@ -126,9 +126,9 @@ public:
   FindVFSPredecessorWalker(CallInst* CI, IntegrationAttempt* IA, ValCtx _FD) 
     : BackwardIAWalker(SourceOp, SourceCtx, true), SourceOp(CI), SourceCtx(IA), FD(_FD),
       uniqueIncomingOffset(-1) { }
-  WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
-  bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
 
 };
 
@@ -172,9 +172,9 @@ WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, 
 
 }
 
-bool FindVFSPredecessorWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+static bool callMayUseFD(CallInst* CI, IntegrationAttempt* IA, ValCtx FD) {
 
-  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
+ // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
   
   OpenStatus& OS = FD.second->getOpenStatus(FD.first);
   Function* calledF = IA->getCalledFunction(CI);
@@ -195,6 +195,12 @@ bool FindVFSPredecessorWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt*
       return true;
     
   }
+
+}
+
+bool FindVFSPredecessorWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  return callMayUseFD(CI, IA, FD);
 	    
 }
 
@@ -480,6 +486,277 @@ bool IntegrationAttempt::isUnusedReadCall(CallInst* CI) {
 OpenStatus& getOpenStatus(CallInst* CI) {
 
   return forwardableOpenCalls[CI];
+
+}
+
+//// Implement a forward walker that determines whether an open instruction may have any remaining uses.
+
+class OpenInstructionUnusedWalker : public ForwardIAWalker {
+
+  ValCtx OpenInst;
+
+public:
+
+  SmallVector<ValCtx, 4> CloseInstructions;
+  SmallVector<ValCtx, 4> UserInstructions;
+  bool residualUserFound;
+
+  OpenInstructionUnusedWalker(Instruction* I, IntegrationAttempt* IA) : ForwardIAWalker(I, IA, true), OpenInst(make_vc(I, IA)), residualUserFound(false) { }
+
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+
+};
+
+bool OpenInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  return callMayUseFD(CI, IA, OpenInst);
+
+}
+
+bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  residualUserFound = true;
+  return true;
+
+}
+
+WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA) {
+
+  CallInst* CI = dyn_cast<CallInst>(I);
+  if(!CI)
+    return WIRContinue;
+
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, OpenInst);
+
+  if(WIR == WIRContinue)
+    return WIR;
+  else if(WIR == WIRStopThisPath) {
+
+    // This call definitely uses this FD.
+    if(!IA->isResolvedVFSCall(CI)) {
+
+      // But apparently we couldn't understand it. Perhaps some of its arguments are vague.
+      residualUserFound = true;
+      return WIRStopWholeWalk;
+
+    }
+    else {
+
+      // We'll be able to remove this instruction: reads will be replaced by memcpy from constant buffer,
+      // seeks will disappear entirely leaving just a numerical return value, closes will be deleted.
+      Function* F = IA->getCalledFunction(CI);
+      UserInstructions.push_back(make_vc(CI, IA));
+
+      if(F->getName() == "close") {
+	CloseInstructions.push_back(make_vc(CI, IA));
+	return WIRStopThisPath;
+      }
+      else
+	return WIRContinue;
+
+    }
+
+  }
+  else {
+
+    // This call may use this FD.
+    residualUserFound = true;
+    return WIRStopWholeWalk;
+
+  }
+
+}
+
+//// Implement a closely related walker that determines whether a seek call can be elim'd or a read call's
+//// implied SEEK_CUR can be omitted when residualising.
+
+class SeekInstructionUnusedWalker : public ForwardIAWalker {
+
+  ValCtx FD;
+
+public:
+
+  SmallVector<ValCtx, 4> SuccessorInstructions;
+  bool seekNeeded;
+
+  SeekInstructionUnusedWalker(ValCtx _FD, CallInst* Start, IntegrationAttempt* StartCtx) : ForwardIAWalker(Start, StartCtx, true), FD(_FD), seekNeeded(false) { }
+
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+
+};
+
+bool SeekInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  return callMayUseFD(CI, IA, FD);
+
+}
+
+bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  seekNeeded = true;
+  return true;
+
+}
+
+WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA) {
+
+  CallInst* CI = dyn_cast<CallInst>(I);
+  if(!CI)
+    return WIRContinue;
+
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD);
+
+  if(WIR == WIRContinue)
+    return WIR;
+  else if(WIR == WIRStopThisPath) {
+
+    // This call definitely uses this FD.
+    if(!IA->isResolvedVFSCall(CI)) {
+
+      // But apparently we couldn't understand it. Perhaps some of its arguments are vague.
+      seekNeeded = true;
+      return WIRStopWholeWalk;
+
+    }
+    else {
+
+      SuccessorInstructions.push_back(make_vc(CI, IA));
+      return WIRStopThisPath;
+
+    }
+
+  }
+  else {
+
+    // This call may use this FD.
+    seekNeeded = true;
+    return WIRStopWholeWalk;
+
+  }
+
+}
+
+void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+
+  parentPA->recordAllParentContexts(VC, seenIAs, seenPAs);
+
+}
+
+void PeelAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+
+  if(seenPAs.insert(this)) {
+
+    deadVFSOpsTraversingHere.push_back(VC);
+    parent->recordAllParentContexts(VC, seenIAs, seenPAs);
+    
+  }
+
+}
+
+void InlineAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+
+  if(seenIAs.insert(this)) {
+
+    deadVFSOpsTraversingHere.push_back(VC);
+    if(parent)
+      parent->recordAllParentContexts(VC, seenIAs, seenPAs);
+    
+  }
+
+}
+
+void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+
+  parentPA->recordAllParentContexts(VC, seenIAs, seenPAs);
+
+}
+
+void IntegrationAttempt::recordDependentContexts(CallInst* CI, SmallVector<ValCtx, 4>& Deps) {
+
+  SmallSet<InlineAttempt*, 8> seenIAs;
+  SmallSet<InlineAttempt*, 8> seenPAs;
+
+  recordAllParentContexts(make_vc(CI, this), seenIAs, seenPAs);
+
+  for(SmallVector<ValCtx, 4>::iterator it = Deps.begin(), itend = Deps.end(); it != itend; ++it) {
+
+    recordAllParentContexts(make_vc(CI, this), seenIAs, seenPAs);
+
+  }
+
+}
+
+void IntegrationAttempt::tryKillAllVFSOps() {
+
+  for(DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.begin(), it2 = resolvedReadCalls.end(); it != it2; ++it) {
+
+    ValCtx FD = getReplacement(it->first->getArgOperand(0));
+    SeekInstructionUnusedWalker Walk(FD, it->first, this);
+    Walk.walk();
+    if(!Walk.seekNeeded) {
+      recordDependentContexts(it->first, Walk.SuccessorInstructions);
+      it->second->needsSeek = false;
+    }
+
+  }
+
+  for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
+
+    ValCtx FD = getReplacement(it->first->getArgOperand(0));
+    SeekInstructionUsedWalker Walk(FD, it->first, this);
+    Walk.walk();
+    if(!Walk.seekNeeded) {
+      recordDependentContexts(it->first, Walk.SuccessorInstructions);
+      it->second->MayDelete = true;
+    }
+
+  }
+
+  for(DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
+
+    // Skip failed opens, we can always delete those
+    if(!it->second->success)
+      continue;
+
+    OpenInstructionUnusedWalker Walk(it->first, this);
+    Walk.walk();
+    if(!Walk.residualUserFound) {
+
+      recordDependentContexts(it->first, Walk.UserInstructions);
+
+      it->second->MayDelete = true;
+      for(unsigned i = 0; i < Walk.CloseInstructions.size(); ++i) {
+
+	Walk.CloseInstructions[i].second->markCloseCall(cast<CallInst>(Walk.CloseInstructions[i].first));
+
+      }
+
+    }
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+    if(ignoreIAs.count(it->first))
+      continue;
+    it->second->tryKillAllVFSOps();
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+    if(ignorePAs.count(it->first))
+      continue;
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->tryKillAllVFSOps();
+  }
+
+}
+
+void IntegrationAttempt::markCloseCall(CallInst* CI) {
+
+  resolvedCloseCalls[CI].MayDelete = true;
 
 }
 

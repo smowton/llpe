@@ -657,23 +657,6 @@ void PeelIteration::deleteDeadBlocks(bool innerScopesOnly) {
 
 }
 
-void IntegrationAttempt::markOrDeleteCloseCall(CallInst* CI, IntegrationAttempt* OpenCtx) {
-
-  if(commitStarted && OpenCtx != this) {
-
-    // We've already committed our local constants: zap it.
-    CI->eraseFromParent();
-
-  }
-  else {
-
-    // Mark it to be collected later:
-    resolvedCloseCalls[CI].canRemove = true;
-
-  }
-
-}
-
 void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.begin(), it2 = resolvedReadCalls.end(); it != it2; ++it) {
@@ -722,11 +705,12 @@ void IntegrationAttempt::foldVFSCalls() {
 
     }
 
-    // Insert a seek call if the next user isn't resolved:
+    // Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
+    // used without an intervening SEEK_SET)
     // No need for isAvailableFromCtx here and several more times in the VFS resolution
     // code because we just want to know if the next user will be folded, we don't need to
     // actually forward values there.
-    if(it->second.NextUser == VCNull || !it->second.NextUser.second->isAvailable()) {
+    if(it->second.needsSeek) {
 
       const Type* Int64Ty = IntegerType::get(Context, 64);
       Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
@@ -748,8 +732,7 @@ void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
 
-    // Delete the seek call if the next user is known.
-    if(it->second.NextUser != VCNull && it->second.NextUser.second->isAvailable()) {
+    if(it->second.MayDelete) {
       cast<Instruction>(CommittedValues[it->first])->eraseFromParent();
     }
 
@@ -763,32 +746,13 @@ void IntegrationAttempt::foldVFSCalls() {
     }
     else {
 
+      // OK to comment this because definitely no VFS users -> all users must get deleted?
       // Can't delete open if it has direct users still!
-      if(!deadValues.count(it->first))
-	continue;
+      //if(!deadValues.count(it->first))
+      //continue;
 
-      ValCtx closeCall = VCNull;
-
-      // Delete an open call if its chain is entirely available and the open is dead (not directly used).
-      for(ValCtx NextUser = it->second->FirstUser; NextUser != VCNull;) {
-
-	if(!NextUser.second->isAvailable())
-	  break;
-	if(NextUser.second->isCloseCall(cast<CallInst>(NextUser.first))) {
-	  closeCall = NextUser;
-	  break;
-	}
-
-	NextUser = NextUser.second->getNextVFSUser(cast<CallInst>(NextUser.first));
-
-      }
-
-      if(closeCall != VCNull) {
-
+      if(it->second->MayDelete)
 	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
-	closeCall.second->markOrDeleteCloseCall(cast<CallInst>(closeCall.first), this);
-
-      }
 
     }
 
@@ -796,10 +760,10 @@ void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
 
-    if(it->second.canRemove) {
+    if(it->second.MayDelete && it->second.OpenInst->MayDelete) {
       deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
     }
-
+    
   }
 
 }
