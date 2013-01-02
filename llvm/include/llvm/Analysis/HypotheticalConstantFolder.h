@@ -636,21 +636,17 @@ struct OpenStatus {
   std::string Name;
   bool success;
   bool FDEscapes;
-  ValCtx LatestResolvedUser;
-  ValCtx FirstUser;
 
-OpenStatus(ValCtx O, std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc), LatestResolvedUser(O), FirstUser(VCNull) { }
-
-OpenStatus() : Name(""), success(false), FDEscapes(false), LatestResolvedUser(VCNull) {}
+OpenStatus(std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc) { }
+OpenStatus() : Name(""), success(false), FDEscapes(false) {}
 
 };
 
 struct ReadFile {
 
-  struct OpenStatus* openArg;
+  ValCtx FD;
   uint64_t incomingOffset;
   uint32_t readSize;
-  ValCtx NextUser;
 
 ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), NextUser(VCNull) { }
 
@@ -1070,31 +1066,20 @@ protected:
   bool openCallSucceeds(Value*);
   virtual int64_t tryGetIncomingOffset(Value*);
   virtual ReadFile* tryGetReadFile(CallInst* CI);
-  void tryPromoteOpenCall(CallInst* CI);
+  bool tryPromoteOpenCall(CallInst* CI);
   void tryPromoteAllCalls();
   void queueInitialWork();
-  void tryPushOpen(CallInst*, ValCtx);
-  virtual bool tryPushOpenFrom(ValCtx&, ValCtx, ValCtx, OpenStatus&, bool, SmallVector<ValCtx, 2>& Defs, SmallVector<ValCtx, 2>& Clobbers);
-  bool setVFSSuccessor(CallInst* VFSCall, ValCtx OpenInst, ValCtx LastReadInst, OpenStatus& OS);
-  ValCtx getSuccessorVC(BasicBlock* BB);
-  void queueSuccessorVCFalling(Instruction* I, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble, const Loop* SuccLoop);
-  void queueSuccessorVCs(ValCtx, ValCtx, BasicBlock* BB, SmallSet<ValCtx, 8>& Visited, SmallVector<ValCtx, 8>& PList, bool& CFGTrouble);
-  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
-  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) = 0;
-  bool vfsCallBlocksOpen(CallInst*, ValCtx, ValCtx, OpenStatus&, bool&, bool&);
+  bool tryResolveVFSCall(CallInst*);
+  WalkInstructionResult isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   bool tryFoldOpenCmp(CmpInst* CmpI, ValCtx&);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
-  void setNextUser(CallInst* CI, ValCtx U);
-  void setNextUser(OpenStatus& OS, ValCtx U);
-  virtual void addBlockedOpen(ValCtx, ValCtx);
-  void queueCFGBlockedOpens();
   bool isResolvedVFSCall(const Instruction*);
   bool isSuccessfulVFSCall(const Instruction*);
   bool isUnusedReadCall(CallInst*);
-  ValCtx getNextVFSUser(CallInst*);
   bool isCloseCall(CallInst*);
+  OpenStatus& getOpenStatus(CallInst*);
 
   // Tricky load forwarding (stolen from GVN)
 
