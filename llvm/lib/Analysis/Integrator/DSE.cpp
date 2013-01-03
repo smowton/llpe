@@ -71,54 +71,212 @@ void IntegrationAttempt::addTraversingInst(ValCtx VC) {
   
 }
 
+//// Implement a forward walker to determine if a store is redundant on all paths.
+
+class WriterUsedWalker : public ForwardIAWalker {
+
+  ValCtx StorePtr;
+  ValCtx StoreBase;
+  uint64_t StoreOffset;
+  uint64_t StoreSize;
+
+public:
+
+  bool writeUsed;
+  DenseSet<IntegrationAttempt*> WalkIAs;
+
+  WriterUsedWalker(Instruction* StartInst, IntegrationAttempt* StartIA, void* StartCtx, ValCtx SP, ValCtx SB, uint64_t SO, uint64_t SS) : ForwardIAWalker(StartInst, StartIA, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
+
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context);
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual void freeContext(void*);
+  virtual void* copyContext(void*);
+
+};
+
+// Context objects for these writers are bool vectors sized to match the writer's byte count.
+// Each field indicates whether that byte has been written on this path.
+
+void StoreUsedWalker::freeContext(void* V) {
+
+  if(V) {
+    std::vector<bool>* Ctx = (std::vector<bool>*)V;
+    delete Ctx;
+  }
+
+}
+
+void* StoreUsedWalker::copyContext(void* V) {
+
+  if(V) {
+    std::vector<bool>* Ctx = (std::vector<bool>*)V;
+    std::vector<bool>* NewCtx = new std::vector<bool>(*Ctx);
+    return NewCtx;
+  }
+  else {
+    return 0;
+  }
+
+}
+
+WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes) {
+
+  if(isLifetimeEnd(StoreBase, I)) {
+
+    return WIRStopThisPath;
+
+  }
+  else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(I)) {
+
+    ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(IA->getConstReplacement(MI->getLength()));
+    uint64_t MISize;
+    if(SizeC)
+      MISize = SizeC->getZExtValue();
+    else
+      MISize = AliasAnalysis::UnknownSize;
+
+    if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(MI)) {
+
+      if(!unusedWriters.count(MTI)) {
+
+	Value* Pointer = MTI->getSource();
+	AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), MISize, StorePtr, Size);
+
+	if(R != AliasAnalysis::NoAlias) {
+
+	  // If it's not dead it must be regarded as a big unresolved load.
+
+	  LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved MTI " << itcache(*MI) << "\n");
+	  return WIRStopWholeWalk;
+
+	}
+
+      }
+	  
+    }
+    // If the size is unknown we must assume zero.
+    if(MISize != AliasAnalysis::UnknownSize) {
+
+      if(DSEHandleWrite(make_vc(MI->getDest(), this), MISize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+	return WIRStopThisPath;
+      else
+	return WIRContinue;
+
+    }
+
+  }
+  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+    DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
+    if(RI != resolvedReadCalls.end()) {
+
+      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+	return WIRStopThisPath;
+      else
+	return WIRContinue;
+
+    }
+
+  }
+  else if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
+
+    Value* Pointer = LI->getPointerOperand();
+    uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
+
+    ValCtx Res = getReplacement(LI);
+
+    if(Res == getDefaultVC(LI) || (Res.second && ((!Res.second->isAvailableFromCtx(StorePtr.second)) || (Res.isVaArg())))) {
+	  
+      AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
+      if(R != AliasAnalysis::NoAlias) {
+
+	LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(*Pointer) << "\n");
+	return WIRStopWholeWalk;
+
+      }
+
+    }
+
+  }
+  else if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
+
+    Value* Pointer = SI->getPointerOperand();
+    uint64_t StoreSize = AA->getTypeStoreSize(SI->getValueOperand()->getType());
+
+    if(DSEHandleWrite(make_vc(Pointer, this), StoreSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+      return WIRStopThisPath;
+    else
+      return WIRContinue;
+
+  }
+
+  return WIRContinue;
+
+}
+
+WalkInstructionResult StoreUsedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void* Ctx) {
+
+  WalkIAs.insert(IA);
+
+  std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
+  WalkInstructionResult Res = IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
+
+}
+
+bool IntegrationAttempt::callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Size) {
+
+  AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr.first, Size, this, StorePtr.second);
+  return !!(MR & AliasAnalysis::Ref);
+
+}
+
+bool StoreUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  return IA->callUsesPtr(CI, StorePtr, StoreSize);
+
+}
+
 bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
 
   bool* deadBytes;
 
   LPDEBUG("Trying to kill instruction " << itcache(*Writer) << "\n");
 
+  void* initialCtx = 0;
+
   if(Size != AliasAnalysis::UnknownSize) {
-    deadBytes = (bool*)alloca(Size * sizeof(bool));
-    for(uint64_t i = 0; i < Size; ++i)
-      deadBytes[i] = false;
+    std::vector<bool>* Ctx = new std::vector<bool>();
+    Ctx->reserve(Size);
+    Ctx->insert(initialCtx->begin(), Size, false);
+    initialCtx = Ctx;
   }
-  else {
-    deadBytes = 0;
-  }
+
+  // Otherwise we pass a null pointer to indicate that the store size is unknown.
 
   ValCtx StorePtr = make_vc(WritePtr, this);
 
   int64_t StoreOffset;
   ValCtx StoreBase = GetBaseWithConstantOffset(WritePtr, this, StoreOffset);
 
-  ValCtx NextStart = make_vc(Writer, this);
+  WriterUsedWalker Walk(Writer, this, initialCtx, StorePtr, StoreBase, StoreOffset, Size);
+  // This will deallocate initialCtx.
+  Walk.walk();
 
-  bool skipFirst = true;
-  bool Killed = false;
-
-  SmallVector<IntegrationAttempt*, 4> WalkCtxs;
-  WalkCtxs.push_back(this);
-
-  while(NextStart.second->tryKillStoreFrom(NextStart, StorePtr, StoreBase, StoreOffset, deadBytes, Size, skipFirst, Killed)) {
-    LPDEBUG("Continuing from " << itcache(NextStart) << "\n");
-    WalkCtxs.push_back(NextStart.second);
-    skipFirst = false;
-  }
-
-  if(Killed) {
+  if(!Walk.writeUsed) {
     unusedWriters.insert(Writer);
-    for(SmallVector<IntegrationAttempt*, 4>::iterator it = WalkCtxs.begin(), it2 = WalkCtxs.end(); it != it2; ++it) {
+    for(SmallVector<IntegrationAttempt*, 4>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
 
       (*it)->addTraversingInst(make_vc(Writer, this));
 
     }
   }
 
-  return Killed;
+  return !Walk.writeUsed;
 
 }
 
-bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes) {
+bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes) {
 
   if(!deadBytes)
     return false;
@@ -218,281 +376,6 @@ bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
 
   return false;
 
-}
-
-bool InlineAttempt::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
-
-  return false;
-
-}
-
-bool PeelIteration::checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start) {
-
-  if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
-
-    PeelIteration* nextIter = getNextIteration();
-    if(!nextIter) {
-
-      LPDEBUG("Can't continue to pursue open call because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
-      Start = VCNull;
-      return true;
-
-    }
-    else {
-
-      Start = make_vc(L->getHeader()->begin(), nextIter);
-      return true;
-
-    }
-
-  }
-
-  return false;
-
-}
-
-ValCtx IntegrationAttempt::getSuccessorVC(BasicBlock* BB) {
-
-  BasicBlock* UniqueSuccessor = 0;
-  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-    if(edgeIsDead(BB, *SI))
-      continue;
-    else if(UniqueSuccessor) {
-      UniqueSuccessor = 0;
-      break;
-    }
-    else {
-      UniqueSuccessor = *SI;
-    }
-
-  }
-
-  if(UniqueSuccessor) {
-
-    ValCtx Start;
-    if(checkLoopIteration(BB, UniqueSuccessor, Start))
-      return Start;
-
-    const Loop* SuccLoop = getBlockScopeVariant(UniqueSuccessor);
-    if(SuccLoop != getLoopContext()) {
-
-      if((!getLoopContext()) || getLoopContext()->contains(SuccLoop)) {
-
-	if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
-
-	  assert(SuccLoop->getHeader() == UniqueSuccessor);
-	  return make_vc(UniqueSuccessor->begin(), LPA->Iterations[0]);
-
-	}
-	else {
-	      
-	  LPDEBUG("Progress blocked by unexpanded loop " << SuccLoop->getHeader()->getName() << "\n");
-	  return VCNull;
-
-	}
-
-      }
-      else {
-
-	return make_vc(UniqueSuccessor->begin(), parent);
-
-      }
-
-    }
-    else {
-	  
-      if(!certainBlocks.count(UniqueSuccessor)) {
-
-	LPDEBUG("Progress blocked because block " << UniqueSuccessor->getName() << " not yet marked certain\n");
-	return VCNull;
-
-      }
-      else {
-
-	return make_vc(UniqueSuccessor->begin(), this);
-
-      }
-
-    }
-
-  }
-  else {
-
-    if(isa<ReturnInst>(BB->getTerminator())) {
-
-      if(!parent) {
-
-	LPDEBUG("Instruction chain reaches end of main!\n");
-	return VCNull;
-
-      }
-      BasicBlock::iterator CallIt(getEntryInstruction());
-      ++CallIt;
-      return make_vc(CallIt, parent);
-
-    }
-
-    LPDEBUG("Progress blocked because block " << BB->getName() << " has no unique successor\n");
-    return VCNull;
-
-  }
-
-}
-
-bool IntegrationAttempt::tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed) {
-
-  Instruction* StartI = cast<Instruction>(Start.first);
-  BasicBlock* BB = StartI->getParent();
-  BasicBlock::iterator BI(StartI);
-
-  while(1) {
-
-    if(!skipFirst) {
-
-      if(isLifetimeEnd(StoreBase, BI)) {
-
-	LPDEBUG("Killed write to " << itcache(*(StorePtr.first)) << " due to reaching end of lifetime for " << itcache(StoreBase) << "\n");
-	Killed = true;
-	return false;
-
-      }
-      else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(BI)) {
-
-	ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
-	uint64_t MISize;
-	if(SizeC)
-	  MISize = SizeC->getZExtValue();
-	else
-	  MISize = AliasAnalysis::UnknownSize;
-
-	if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(MI)) {
-
-	  if(!unusedWriters.count(MTI)) {
-
-	    Value* Pointer = MTI->getSource();
-	    AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), MISize, StorePtr, Size);
-
-	    if(R != AliasAnalysis::NoAlias) {
-
-	      // If it's not dead it must be regarded as a big unresolved load.
-
-	      LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved MTI " << itcache(*MI) << "\n");
-	      return false;
-
-	    }
-
-	  }
-	  
-	}
-     
-	// If the size is unknown we must assume zero.
-	if(MISize != AliasAnalysis::UnknownSize) {
-
-	  if(DSEHandleWrite(make_vc(MI->getDest(), this), MISize, StorePtr, Size, StoreBase, StoreOffset, deadBytes)) {
-	    Killed = true;
-	    return false;
-	  }
-
-	}
-
-      }
-      else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-
-	AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr.first, Size, this, StorePtr.second);
-
-	if(MR != AliasAnalysis::NoModRef) {
-
-	  if(InlineAttempt* IA = getInlineAttempt(CI)) {
-
-	    Start = make_vc(IA->getEntryBlock()->begin(), IA);
-	    return true;
-
-	  }
-	  else {
-
-	    DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
-	    if(RI != resolvedReadCalls.end()) {
-
-	      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes)) {
-		Killed = true;
-		return false;
-	      }
-	      
-	    }
-
-	    if(MR & AliasAnalysis::Ref) {
-
-	      LPDEBUG("Unexpanded call " << itcache(*CI) << " blocks DSE\n");
-	      return false;
-
-	    }
-	    // Otherwise it doesn't read from the pointer, keep looking for a defn.
-
-	  }
-
-	}
-
-      }
-      else if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
-
-	Value* Pointer = LI->getPointerOperand();
-	uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
-
-	ValCtx Res = getReplacement(LI);
-
-	if(Res == getDefaultVC(LI) || (Res.second && ((!Res.second->isAvailableFromCtx(StorePtr.second)) || (Res.isVaArg())))) {
-	  
-	  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
-	  if(R != AliasAnalysis::NoAlias) {
-
-	    LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(*Pointer) << "\n");
-	    return false;
-
-	  }
-
-	}
-
-      }
-      else if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
-
-	Value* Pointer = SI->getPointerOperand();
-	uint64_t StoreSize = AA->getTypeStoreSize(SI->getValueOperand()->getType());
-
-	if(DSEHandleWrite(make_vc(Pointer, this), StoreSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes)) {
-
-	  Killed = true;
-	  return false;
-
-	}
-
-      }
-
-    }
-
-    skipFirst = false;
-
-    ++BI;
-    if(BI == BB->end()) {
-
-      Start = getSuccessorVC(BB);
-
-      if(Start == VCNull)
-	return false;
-      else if(Start.second != this)
-	return true;
-      else {
-
-	StartI = cast<Instruction>(Start.first);
-	BB = StartI->getParent();
-	BI = BasicBlock::iterator(StartI);
-
-      }
-
-    }
-
-  }
-  
 }
 
 bool IntegrationAttempt::CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs) {
@@ -682,3 +565,5 @@ void IntegrationAttempt::tryKillAllAllocs() {
   while(Start.second->tryKillAllAllocsFrom(Start)) { }
 
 }
+
+
