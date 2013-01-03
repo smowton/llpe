@@ -1855,41 +1855,57 @@ enum WalkInstructionResult {
 class IAWalker {
 
   SmallSet<BIC, 8> Visited;
-  SmallVector<BIC, 8> Worklist1;
-  SmallVector<BIC, 8> Worklist2;
+  SmallVector<std::pair<BIC, void*>, 8> Worklist1;
+  SmallVector<std::pair<BIC, void*>, 8> Worklist2;
 
-  SmallVector<BIC, 8>* PList;
-  SmallVector<BIC, 8>* CList;
+  SmallVector<std::pair<BIC, void*>, 8>* PList;
+  SmallVector<std::pair<BIC, void*>, 8>* CList;
+
+  SmallVector<void*, 4> Contexts;
   
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*) = 0;
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual void freeContext(void*) { }
+  virtual void* copyContext(void*) {
+    return 0;
+  }
+  virtual void walkInternal() = 0;
+
+  void* initialContext;
 
  public:
 
-  queueWalkFrom(BIC);
+ IAWalker(void* IC = 0) : initialContext(IC) {
+    
+    Contexts.push_back(initialContext);
+
+ }
+
+  void walk();
+  queueWalkFrom(BIC, void* context, bool copyContext);
 
 };
 
 class BackwardIAWalker : public IAWalker {
   
   void walkFromInst(BIC);
+  virtual void walkInternal();
   
  public:
 
-  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst);
-  void walk();
+  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
   
 };
 
 class ForwardIAWalker : public IAWalker {
   
   void walkFromInst(BIC);
+  virtual void walkInternal();
   
  public:
 
-  ForwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst);
-  void walk();
+  ForwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
   
 };
 

@@ -126,13 +126,13 @@ public:
   FindVFSPredecessorWalker(CallInst* CI, IntegrationAttempt* IA, ValCtx _FD) 
     : BackwardIAWalker(SourceOp, SourceCtx, true), SourceOp(CI), SourceCtx(IA), FD(_FD),
       uniqueIncomingOffset(-1) { }
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
 
 };
 
-WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA) {
+WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
 
   // Determine whether this instruction is a VFS call using our FD.
   // No need to worry about call instructions, just return WIRContinue and we'll enter it if need be.
@@ -503,7 +503,7 @@ public:
 
   OpenInstructionUnusedWalker(Instruction* I, IntegrationAttempt* IA) : ForwardIAWalker(I, IA, true), OpenInst(make_vc(I, IA)), residualUserFound(false) { }
 
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
 
@@ -522,7 +522,7 @@ bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, Integrat
 
 }
 
-WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA) {
+WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
 
   CallInst* CI = dyn_cast<CallInst>(I);
   if(!CI)
@@ -583,7 +583,7 @@ public:
 
   SeekInstructionUnusedWalker(ValCtx _FD, CallInst* Start, IntegrationAttempt* StartCtx) : ForwardIAWalker(Start, StartCtx, true), FD(_FD), seekNeeded(false) { }
 
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*);
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
 
@@ -602,7 +602,7 @@ bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, Integrat
 
 }
 
-WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA) {
+WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
 
   CallInst* CI = dyn_cast<CallInst>(I);
   if(!CI)

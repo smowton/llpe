@@ -6,25 +6,27 @@ _BIC::_BIC(Instruction* I, IntegrationAttempt* _ctx) : it(BasicBlock::iterator(I
 
 //// Implement the backward walker:
 
-BackwardIAWalker::BackwardIAWalker(Instruction* I, IntegrationAttempt* Ctx, bool skipFirst) {
+BackwardIAWalker::BackwardIAWalker(Instruction* I, IntegrationAttempt* Ctx, bool skipFirst, void* initialCtx) : IAWalker(initialCtx) {
 
   PList = &Worklist1;
   CList = &Worklist2;
   BasicBlock::iterator startit(I);
   if(!skipFirst)
     --startit;
-  PList->push_back(BIC(startit, I->getParent(), Ctx));
+  PList->push_back(std::make_pair(BIC(startit, I->getParent(), Ctx), initialCtx));
   Visited.insert(BIC(startit, I->getParent(), Ctx));
 
 }
 
-void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker) {
+void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred) {
 
   const Loop* MyL = getLoopContext();
   if(MyL == ExitingBBL) {
 
-    if(!edgeIsDead(ExitingBB, ExitedBB))
-      Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this));
+    if(!edgeIsDead(ExitingBB, ExitedBB)) {
+      Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this), Ctx, !firstPred);
+      firstPred = false;
+    }
 
   }
   else {
@@ -33,12 +35,13 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlo
     if(PeelAttempt* LPA = ThisStart.ctx->getPeelAttempt(ChildL)) {
 
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i)
-	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, ExitingBBL, Walker);
+	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, ExitingBBL, Walker, Ctx, firstPred);
 
     }
     else {
 
-      Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this));
+      Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this), Ctx, !firstPred);
+      firstPred = false;
 
     }
 
@@ -46,48 +49,50 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlo
 
 }
 
-void InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker) {
+void InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB == F.getEntryBlock() && parent) {
 
-    Walker->queueWalkFrom(BIC(BasicBlock::iterator(CI), CI->getParent(), parent));
+    Walker->queueWalkFrom(BIC(BasicBlock::iterator(CI), CI->getParent(), parent), Ctx, false);
 
   }
   else {
 
-    queueNormalPredecessorsBW(FromBB, Walker);
+    queueNormalPredecessorsBW(FromBB, Walker, Ctx);
 
   }
 
 }
 
-void PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker) {
+void PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB == L->getHeader()) {
 
     if(iterationCount == 0) {
 
-      Walker->queueWalkFrom(BIC(L->getLoopPreheader()->end(), L->getLoopPreheader(), parent));
+      Walker->queueWalkFrom(BIC(L->getLoopPreheader()->end(), L->getLoopPreheader(), parent), Ctx, false);
 
     }
     else {
 
-      Walker->queueWalkFrom(BIC(L->getLoopLatch()->end(), L->getLoopLatch(), parentPA->Iterations[iterationCount - 1]));
+      Walker->queueWalkFrom(BIC(L->getLoopLatch()->end(), L->getLoopLatch(), parentPA->Iterations[iterationCount - 1]), Ctx, false);
 
     }
 
   }
   else {
 
-    queueNormalPredecessorsBW(FromBB, Walker);
+    queueNormalPredecessorsBW(FromBB, Walker, Ctx);
 
   }
 
 }
 
-void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker) {
+void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   // This isn't the function entry block and isn't our loop header. Queue all predecessors.
+
+  bool firstPred = true;
 
   const Loop* CtxLoop = getLoopContext();
   const Loop* FromBBLoop = getBlockScopeVariant(FromBB);
@@ -116,7 +121,7 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
       else {
 
 	// Must be a child loop; could be several loops deep however.
-	ThisStart.ctx->queueLoopExitingBlocksBW(ThisStart.BB, BB, BBLoop, this);
+	ThisStart.ctx->queueLoopExitingBlocksBW(ThisStart.BB, BB, BBLoop, this, Ctx, firstPred);
 	      
       }
 
@@ -126,7 +131,8 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
 
       if(edgeIsDead(BB, FromBB))
 	continue;
-      Walker->queueWalkFrom(BIC(BB->end(), BB, this));
+      Walker->queueWalkFrom(BIC(BB->end(), BB, this), Ctx, !firstPred);
+      firstPred = false;
 
     }
 
@@ -134,34 +140,28 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
 
 }
 
-void IAWalker::queueWalkFrom(BIC bic) {
+void IAWalker::queueWalkFrom(BIC bic, void* Ctx, bool copyContext) {
 
-  if(Visited.insert(bic))
-    PList->push_back(bic);
-
-}
-
-BackwardIAWalker::BackwardIAWalker(Instruction* I, IntegrationAttempt* IA, bool skipFirst) {
-
-  BasicBlock::iterator it(I);
-  if(!skipFirst)
-    ++it;
-
-  BIC bic(it, I->getParent(), IA);
-  Visited.insert(bic);
-  PList->push_back(bic);
+  if(Visited.insert(bic)) {
+    if(copyContext) {
+      Ctx = copyContext(Ctx);
+      Contexts.push_back(Ctx);
+    }
+    PList->push_back(std::make_pair(bic, Ctx));
+  }
 
 }
 
-void BackwardIAWalker::walk() {
+void BackwardIAWalker::walkInternal() {
 
   while(PList->size() || CList->size()) {
 
     for(unsigned i = 0; i < CList->size(); ++i) {
 
-      BIC ThisStart = (*CList)[i];
+      BIC ThisStart = (*CList)[i].first;
+      void* Ctx = (*CList)[i].second;
       CallInst* StoppedCI = 0;
-      WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, StoppedCI);
+      WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, Ctx, StoppedCI);
 
       if(thisBlockResult == WIRStopThisPath)
 	continue;
@@ -181,7 +181,7 @@ void BackwardIAWalker::walk() {
 	    BasicBlock* BB = FI;
 	    if(isa<ReturnInst>(BB->getTerminator()) && !IA->blockIsDead(BB)) {
 
-	      queueWalkFrom(BIC(BB->end(), BB, IA));
+	      queueWalkFrom(BIC(BB->end(), BB, IA), Ctx);
 
 	    }
 
@@ -200,7 +200,7 @@ void BackwardIAWalker::walk() {
       else {
 
 	// Else we've hit the top of a block. Figure out what to do with each predecessor:
-	ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this);
+	ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx);
 
       }
 
@@ -213,7 +213,16 @@ void BackwardIAWalker::walk() {
 
 }
 
-WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, CallInst*& StoppedCI) {
+void IAWalker::walk() {
+
+  walkInternal();
+  for(SmallVector<void*, 4>::iterator it = Contexts.begin(), it2 = Contexts.end(); it != it2; ++it) {
+    freeContext(*it);
+  }
+
+}
+
+WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, void* Ctx, CallInst*& StoppedCI) {
 
   BasicBlock::iterator it = bic.it, itend = bic.BB->begin();
   
@@ -224,7 +233,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, CallInst*& Stopped
       break;
 
     Instruction* I = it;
-    WalkInstructionResult WIR = walkInstruction(I, bic.ctx);
+    WalkInstructionResult WIR = walkInstruction(I, bic.ctx, Ctx);
     if(WIR != WIRContinue)
       return WIR;
 
@@ -248,7 +257,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, CallInst*& Stopped
 
 //// Implement the forward walker:
 
-ForwardIAWalker::ForwardIAWalker(Instruction* I, IntegrationAttempt* IA, bool skipFirst) {
+ForwardIAWalker::ForwardIAWalker(Instruction* I, IntegrationAttempt* IA, bool skipFirst, void* initialCtx) : IAWalker(initialCtx) {
 
   BasicBlock::iterator it(I);
   if(skipFirst)
@@ -256,19 +265,20 @@ ForwardIAWalker::ForwardIAWalker(Instruction* I, IntegrationAttempt* IA, bool sk
 
   BIC bic(it, I->getParent(), IA);
   Visited.insert(bic);
-  PList->push_back(bic);
+  PList->push_back(std::make_pair(bic, initialCtx));
   
 }
 
-void ForwardIAWalker::walk() {
+void ForwardIAWalker::walkInternal() {
 
   while(PList->size() || CList->size()) {
 
     for(unsigned i = 0; i < CList->size(); ++i) {
 
-      BIC ThisStart = (*CList)[i];
+      BIC ThisStart = ((*CList)[i]).first;
+      void* Ctx = ((*CList)[i]).second;
       CallInst* StoppedCI = 0;
-      WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, StoppedCI);
+      WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, StoppedCI, Ctx);
 
       if(thisBlockResult == WIRStopThisPath)
 	continue;
@@ -284,7 +294,7 @@ void ForwardIAWalker::walk() {
 	if(InlineAttempt* IA = ThisStart.ctx->getInlineAttempt(StoppedCI)) {
 
 	  BasicBlock* BB = IA->F.getEntryBlock();
-	  queueWalkFrom(BIC(BB->begin(), BB, IA));
+	  queueWalkFrom(BIC(BB->begin(), BB, IA), Ctx, false);
 
 	}
 	else {
@@ -299,7 +309,7 @@ void ForwardIAWalker::walk() {
       else {
 
 	// Else we've hit the bottom of a block. Figure out what to do with each successor:
-	ThisStart.ctx->queueSuccessorsFW(ThisStart.BB, this);
+	ThisStart.ctx->queueSuccessorsFW(ThisStart.BB, this, Ctx);
 
       }
 
@@ -312,12 +322,12 @@ void ForwardIAWalker::walk() {
 
 }
 
-WalkInstructionResult ForwardIAWalker::walkFromInst(BIC bic, CallInst*& StoppedCI) {
+WalkInstructionResult ForwardIAWalker::walkFromInst(BIC bic, CallInst*& StoppedCI, void* Ctx) {
 
   for(BasicBlock::iterator it = bic.it, itend = bic.BB->end(); it != itend; ++it) {
     
     Instruction* I = it;
-    WalkInstructionResult WIR = walkInstruction(I, bic.ctx);
+    WalkInstructionResult WIR = walkInstruction(I, bic.ctx, Ctx);
     if(WIR != WIRContinue)
       return WIR;
 
@@ -337,22 +347,23 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(BIC bic, CallInst*& StoppedC
 
 }
 
-void IntegrationAttempt::queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker) {
+void IntegrationAttempt::queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
   if(SuccLoop == getLoopContext()) {
 
-    Walker->queueWalkFrom(BB->begin(), BB, this);
+    Walker->queueWalkFrom(BIC(BB->begin(), BB, this), Ctx, !firstSucc);
+    firstSucc = false;
 
   }
   else {
 
-    parent->queueSuccessorFWFalling(BB, SuccLoop, Walker);
+    parent->queueSuccessorFWFalling(BB, SuccLoop, Walker, Ctx, firstSucc);
 
   }
 
 }
 
-void InlineAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker) {
+void InlineAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* Ctx) {
 
   if(isa<ReturnInst>(BB->getTerminator())) {
 
@@ -360,7 +371,7 @@ void InlineAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker) {
 
       BasicBlock::iterator CallIt(CI);
       ++CallIt;
-      Walker->queueWalkFrom(CallIt, CI->getParent(), parent);
+      Walker->queueWalkFrom(BIC(CallIt, CI->getParent(), parent), Ctx, false);
 
     }
 
@@ -368,7 +379,7 @@ void InlineAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker) {
 
   }
 
-  IntegrationAttempt::queueSuccessorsFW(BB, Walker);
+  IntegrationAttempt::queueSuccessorsFW(BB, Walker, Ctx);
 
 }
 
@@ -378,7 +389,7 @@ void InlineAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker) {
 // This gives maximum precision: if we analysed the first 3 iterations and we can show some property
 // along all live paths without reaching the 4th, we can use that knowledge. Only if we find a live
 // edge leading into the 4th do we consider it and all future iterations.
-bool PeelIteration::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker) {
+bool PeelIteration::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstScucc) {
 
   if(PresentBlock == L->getLoopLatch() && NextBlock == L->getHeader()) {
 
@@ -386,15 +397,16 @@ bool PeelIteration::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBloc
     if(!nextIter) {
 
       LPDEBUG("FIAW: Analysing loop in parent context because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
-      Walker->queueWalkFrom(NextBlock->begin(), NextBlock, parent);
+      Walker->queueWalkFrom(BIC(NextBlock->begin(), NextBlock, parent), Ctx, !firstSucc);
 
     }
     else {
 
-      Walker->queueWalkFrom(NextBlock->begin(), NextBlock, nextIter);
+      Walker->queueWalkFrom(BIC(NextBlock->begin(), NextBlock, nextIter), Ctx, !firstSucc);
 
     }
 
+    firstSucc = false;
     return true;
 
   }
@@ -403,13 +415,15 @@ bool PeelIteration::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBloc
 
 }
 
-bool InlineAttempt::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker) {
+bool InlineAttempt::queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
   return false;
   
 }
 
-void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker) {
+void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* Ctx) {
+
+  bool firstSucc = true;
 
   const Loop* MyLoop = getLoopContext();
   const Loop* BBLoop = getBlockScopeVariant(BB);
@@ -421,7 +435,7 @@ void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walk
     if(edgeIsDead(BB, SB))
       continue;
 
-    if(queueNextLoopIterationFW(BB, SB, Walker))
+    if(queueNextLoopIterationFW(BB, SB, Walker, Ctx, firstSucc))
       continue;
 
     bool queueHere = false;
@@ -442,7 +456,8 @@ void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walk
 	  if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
 
 	    assert(SuccLoop->getHeader() == SB);
-	    Walker->queueWalkFrom(SB->begin(), SB, LPA->Iterations[0]);
+	    Walker->queueWalkFrom(BIC(SB->begin(), SB, LPA->Iterations[0]), Ctx, !firstSucc);
+	    firstSucc = false;
 
 	  }
 
@@ -450,7 +465,7 @@ void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walk
 	else {
 
 	  // Loop exit edge. Find the context for the outside block:
-	  queueSuccessorsFWFalling(SB->begin(), SuccLoop);
+	  queueSuccessorsFWFalling(SB->begin(), SuccLoop, Ctx, firstSucc);
 
 	}
 
@@ -463,8 +478,10 @@ void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walk
 
     }
 
-    if(queueHere)
-      Walker->queueWalkFrom(SB->begin(), SB, this);
+    if(queueHere) {
+      Walker->queueWalkFrom(BIC(SB->begin(), SB, this), Ctx, !firstSucc);
+      firstSucc = false;
+    }
 
   }
 
