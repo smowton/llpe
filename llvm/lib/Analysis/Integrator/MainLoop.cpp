@@ -103,8 +103,10 @@ void IntegrationAttempt::analyseBlockInstructionsAtScope(BasicBlock* BB) {
 	continue;
       if(tryResolveVFSCall(CI))
 	continue;
-      if(InlineAttempt* IA = getOrCreateInlineAttempt(CI))
+      if(InlineAttempt* IA = getOrCreateInlineAttempt(CI)) {
 	IA->analyse();
+	tryEvaluate(CI);
+      }
       continue;
 
     }

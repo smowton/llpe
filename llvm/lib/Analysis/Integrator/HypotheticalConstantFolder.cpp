@@ -591,52 +591,6 @@ ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
   
 }
 
-void IntegrationAttempt::queueWorkBlockedOn(Instruction* SI) {
-
-  if(SI->mayWriteToMemory() || isa<LoadInst>(SI) || isa<CallInst>(SI)) {
-
-    // Store might now be possible to forward, or easier to alias analyse. Reconsider loads blocked against it.
-    DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = InstBlockedLoads.find(const_cast<Instruction*>(SI));
-    
-    if(it != InstBlockedLoads.end()) {
-      
-      std::sort(it->second.begin(), it->second.end());
-      std::unique(it->second.begin(), it->second.end());
-      
-      for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = it->second.begin(), LE = it->second.end(); LI != LE; ++LI) {
-	
-	if(LI->first->shouldTryEvaluate(LI->second)) {
-	  pass->queueCheckLoad(LI->first, LI->second);
-	}
-	
-      }
-
-      InstBlockedLoads.erase(it);
-      
-    }
-
-  }
-
-  if(isa<CallInst>(SI)) {
-
-    DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> >::iterator it = InstBlockedOpens.find(SI);
-
-    if(it != InstBlockedOpens.end()) {
-
-      for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = it->second.begin(), OE = it->second.end(); OI != OE; ++OI) {
-
-	pass->queueOpenPush(OI->first, OI->second);
-
-      }
-
-      InstBlockedOpens.erase(it);
-
-    }
-
-  }
-
-}
-
 ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
 
   if(CmpInt->getBitWidth() > 64) {
@@ -1104,27 +1058,6 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
   return false;
 
 }
-/*
-bool IntegrationAttempt::tryFoldVarargAdd(BinaryOperator* BOp, ValCtx& Improved) {
-
-  if(BOp->getOpcode() != Instruction::Add)
-    return false;
-
-  ValCtx LHS = getReplacement(BOp->getOperand(0));
-  ValCtx RHS = getReplacement(BOp->getOperand(1));
-
-  if(LHS.isVaArg() && isa<Constant>(RHS.first)) {
-
-    LPDEBUG("Adding " << itcache(RHS) << " to " << itcache(LHS) << " to bump vaarg offset\n");
-    Improved = make_vc(LHS.first, LHS.second, ValCtx::noOffset, LHS.va_arg + 1);
-    return true;
-
-  }
-
-  return false;
-
-}
-*/
 
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
@@ -1155,52 +1088,6 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   }
 
   return true;
-
-}
-
-bool IntegrationAttempt::shouldInvestigateUser(Value* ArgV, bool verbose, Value* UsedV) {
-
-  CallInst* CI = dyn_cast<CallInst>(ArgV);
-  InlineAttempt* IA = getInlineAttempt(CI);
-  if(CI && IA) {
-
-    unsigned i = 0;
-    Function* F = getCalledFunction(CI);
-    for(Function::arg_iterator it = F->arg_begin(), it2 = F->arg_end(); it != it2; ++it, ++i) {
-
-      if(CI->getArgOperand(i) == UsedV && (IA->shouldTryEvaluate(it) || UsedV->getType()->isPointerTy()))
-	return true;
-
-    }
-    // Varargs:
-    for(unsigned i = F->arg_size(); i < CI->getNumArgOperands(); ++i) {
-
-      if(CI->getArgOperand(i) == UsedV)
-	return true;
-
-    }
-
-    if(UsedV == CI->getCalledValue())
-      return true;
-
-    return false;
-
-  }
-  else {
-
-    if(shouldTryEvaluate(ArgV, verbose))
-      return true;
-
-    if(ArgV->getType()->isPointerTy() && (isa<PHINode>(ArgV) || isa<SelectInst>(ArgV))) {
-
-      if(getReplacement(ArgV) == getReplacement(UsedV))
-	return true;
-
-    }
-
-    return false;
-
-  }
 
 }
 
@@ -1253,28 +1140,17 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	  const unsigned NumSucc = TI->getNumSuccessors();
 
-	  bool anyNewDeadEdges = false;
-
 	  for (unsigned I = 0; I != NumSucc; ++I) {
 
 	    BasicBlock* thisTarget = TI->getSuccessor(I);
 
 	    if(thisTarget != takenTarget) {
 	      if(!edgeIsDead(TI->getParent(), thisTarget)) {
-		anyNewDeadEdges = true;
 		setEdgeDead(TI->getParent(), thisTarget);
-		checkBlockPHIs(thisTarget);
+		checkLoopSpecialEdge(TI->getParent(), thisTarget);
 	      }
 	    }
 
-	    if(shouldCheckEdge(TI->getParent(), thisTarget))
-	      checkEdge(TI->getParent(), thisTarget);
-
-	  }
-
-	  if(anyNewDeadEdges) {
-	    queueCFGBlockedLoads();
-	    queueCFGBlockedOpens();
 	  }
 
 	}
@@ -1296,11 +1172,6 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	if(IA) {
 	 
 	  Improved = IA->tryGetReturnValue();
-
-	}
-	else {
-
-	  tryPromoteOpenCall(CI);
 
 	}
 
@@ -1531,159 +1402,6 @@ ValCtx InlineAttempt::tryEvaluateResult(Value* V) {
 
 }
 
-void InlineAttempt::queueTryEvaluateOwnCall() {
-
-  if(parent)
-    pass->queueTryEvaluate(parent, getEntryInstruction());
-
-}
-
-void PeelIteration::queueTryEvaluateOwnCall() {
-
-  return parent->queueTryEvaluateOwnCall();
-
-}
-
-bool llvm::shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx) {
-
-  if(CallInst* CI = dyn_cast<CallInst>(I)) {
-
-    // Being blocked on a call instruction usually means you're waiting for it to be expanded.
-    // getInlineAttempt deals with that case itself.
-    // The exception is functions for which we have specific argument modref info, which are blacklisted
-
-    if(isa<MemIntrinsic>(CI))
-      return true;
-    Function* F = ICtx->getCalledFunction(CI);
-    // If the callee is unknown there's no point asking people to try to forward through it.
-    if(!F)
-      return false;
-    if(functionIsBlacklisted(F))
-      return true;
-
-    return false;
-
-  }
-  else {
-    return true;
-  }
-
-}
-
-void IntegrationAttempt::queueTryEvaluateGeneric(Instruction* UserI, Value* Used) {
-
-  // UserI might have been improved. Queue work appropriate to find out and if so use that information.
-  // If it's a pointer type, find loads and stores that eventually use it and queue them/loads dependent on them for reconsideration.
-  // Otherwise just consider the value.
-
-  if((!shouldInvestigateUser(UserI, false, Used)))
-    return;
-  
-  if(shouldQueueOnInst(UserI, this))
-    queueWorkBlockedOn(UserI);
-
-  if(CallInst* CI = dyn_cast<CallInst>(UserI)) {
-
-    InlineAttempt* IA = getOrCreateInlineAttempt(CI);
-    if(IA) {
-
-      int argNumber = -1;
-      for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
-
-	if(Used == CI->getArgOperand(i)) {
-	  argNumber = i;
-	  break;
-	}
-
-      }
-
-      if(argNumber == -1) {
-
-	LPDEBUG("BUG: Value " << itcache(*Used) << " not really used by call " << itcache(*CI) << "???\n");
-
-      }
-      else {
-
-	Function* CalledF = getCalledFunction(CI);
-	Function::arg_iterator it = CalledF->arg_begin();
-	for(int i = 0; i < argNumber && it != CalledF->arg_end(); ++i, ++it) { }
-
-	if(it != CalledF->arg_end()) {
-
-	  if(IA->shouldTryEvaluate(&*it))
-	    pass->queueTryEvaluate(IA, &*it /* iterator -> pointer */);
-	  else if(Used->getType()->isPointerTy())
-	    IA->investigateUsers(&*it);
-
-	}
-	else {
-
-	  IA->queueBlockedVAs();
-
-	}
-
-      }
-
-    }
-    else {
-      tryPromoteOpenCall(CI);
-    }
-
-  }
-  else if(isa<ReturnInst>(UserI)) {
-
-    // Our caller should try to pull the return value, if this made it uniquely defined.
-    queueTryEvaluateOwnCall();
-
-  }
-  else if(LoadInst* LI = dyn_cast<LoadInst>(UserI)) {
-
-    pass->queueCheckLoad(this, LI);
-
-  }
-  else if(StoreInst* SI = dyn_cast<StoreInst>(UserI)) {
-    
-    // Queue optimistic rechecking of any load dependent on this store.
-
-    DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
-      memWriterEffects.find(SI);
-    if(it != memWriterEffects.end()) {
-      
-      for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator UpI = it->second.begin(), UpE = it->second.end(); UpI != UpE; ++UpI) {
-
-	pass->queuePendingPBUpdate(make_vc(UpI->first, UpI->second));
-
-      }
-      
-    }
-
-  }
-  else if(UserI->getType()->isPointerTy()) {
-
-    // Explore the use graph further looking for loads and stores.
-    // Additionally queue the instruction itself! GEPs and casts, if ultimately defined from a global, are expressible as ConstantExprs.
-    bool known = !shouldTryEvaluate(UserI, false);
-    if(!known)
-      pass->queueTryEvaluate(this, UserI);
-    
-    if((isa<PHINode>(UserI)) || (isa<SelectInst>(UserI))) {
-      if(known)
-	investigateUsers(UserI);
-    }
-    else {
-      if(!known)
-	investigateUsers(UserI);
-    }
-
-  }
-  else {
-
-    pass->queueTryEvaluate(this, UserI);
-
-  }
-
-}
-
 // Implement a visitor that gets called for every dynamic use of an instruction.
 
 bool IntegrationAttempt::visitNextIterationPHI(Instruction* I, VisitorContext& Visitor) {
@@ -1843,23 +1561,6 @@ void IntegrationAttempt::visitUsers(Value* V, VisitorContext& Visitor) {
   for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE && Visitor.shouldContinue(); ++UI) {
 
     visitUser(*UI, Visitor);
-
-  }
-
-}
-
-void IntegrationAttempt::investigateUsers(Value* V, bool queueOptimistic) {
-
-  if(Instruction* I = dyn_cast<Instruction>(V)) {
-    if(shouldQueueOnInst(I, this))
-      queueWorkBlockedOn(I);
-  }
-  InvestigateVisitor IV(V);
-  visitUsers(V, IV);
-
-  if(queueOptimistic) {
-
-    queueUsersUpdatePB(V, /* queueInLoopNow = */ false, /* pendInLoop = */ true, /* pendOutOfLoop = */ true);
 
   }
 
@@ -2390,97 +2091,6 @@ void PeelAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
 }
 
-void IntegrationAttempt::queueCheckAllInstructionsInScope(const Loop* MyL) {
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    const Loop* BBL = getBlockScopeVariant(BB);
-
-    if((!MyL) || MyL->contains(BBL)) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-	if(BranchInst* BI = dyn_cast<BranchInst>(II)) {
-	  if(BI->isUnconditional())
-	    continue;
-	}
-	else if(CallInst* CI = dyn_cast<CallInst>(II)) {
-	  getOrCreateInlineAttempt(CI);
-	}
-	if(getValueScope(II) == MyL) {
-	  
-	  pass->queueTryEvaluate(this, II);
-
-	}
-
-      }
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::queueCheckAllLoadsInScope(const Loop* L) {
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    if(getBlockScopeVariant(BB) == L) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-	if(LoadInst* LI = dyn_cast<LoadInst>(II))
-	  pass->queueCheckLoad(this, LI);
-
-      }
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::tryPromoteAllCalls() {
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    if(getBlockScopeVariant(BB) == getLoopContext()) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-	if(CallInst* CI = dyn_cast<CallInst>(II))
-	  tryPromoteOpenCall(CI);
-
-      }
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-    if(L && !L->contains(BB))
-      continue;
-
-    for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-      if(!isa<CallInst>(II))
-	pass->queuePendingPBUpdate(make_vc(II, this));
-
-    }
-
-  }
-
-}
-
 void IntegrationAttempt::tryEvaluate(Value* V) {
 
   ValCtx Improved = tryEvaluateResult(V);
@@ -2488,8 +2098,6 @@ void IntegrationAttempt::tryEvaluate(Value* V) {
   if(Improved.first && shouldForwardValue(Improved)) {
 
     setReplacement(V, Improved);
-
-    investigateUsers(V);
 
   }
 
@@ -2503,7 +2111,6 @@ void IntegrationAttempt::checkLoad(LoadInst* LI) {
   ValCtx Result = tryForwardLoad(LI);
   if(Result.first) {
     setReplacement(LI, Result);
-    investigateUsers(LI);
   }
 
 }
