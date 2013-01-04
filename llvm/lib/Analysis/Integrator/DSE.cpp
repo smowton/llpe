@@ -383,7 +383,7 @@ void IntegrationAttempt::tryKillAllMTIs() {
   SmallSet<BasicBlock*, 8> Visited;
 
   // Must kill MTIs in reverse topological order, i.e. postorder DFS.
-  tryKillAllMTIsFromBB(F.getEntryBlock(), Visited);
+  tryKillAllMTIsFromBB(getEntryBlock(), Visited);
 
 }
 
@@ -410,9 +410,9 @@ void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBloc
       if(PeelAttempt* LPA = getInlineAttempt(SuccBBL)) {
 
 	// Do loop successors first:
-	SmallVector<BasicBlock*, 4> ExitingBlocks;
-	SuccBBL->getExitingBlocks(ExitingBlocks);
-	for(SmallVector<BasicBlock*, 4>::iterator it = ExitingBlocks.begin(), it2 = ExitingBlocks.end(); it != it2; ++it) {
+	SmallVector<BasicBlock*, 4> ExitBlocks;
+	SuccBBL->getExitBlocks(ExitBlocks);
+	for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
 
 	  tryKillAllMTIsFromBB(*it, Visited);
 
