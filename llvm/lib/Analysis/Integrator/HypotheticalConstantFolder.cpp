@@ -139,9 +139,7 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
   if(isSpecialEdge) {
     // I *think* this is necessarily an immediate child of this loop.
 
-    queueCFGBlockedOpens();
-
-    if(!getOrCreatePeelAttempt(L)) {
+    if(!getPeelAttempt(L)) {
 
       if(edgeIsDead(FromBB, ToBB)) {
 
@@ -170,11 +168,6 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 	  else {
 	    LPDEBUG("Ignored edge to " << it->second->getName() << " (invariant)\n");
 	  }
-
-	  // Have the owner of the successor block re-check:
-	  checkLocalEdge(it->first, it->second);
-	  checkBlockPHIs(it->second);
-	  localCFGChanged();
 
 	}
 
@@ -213,157 +206,11 @@ bool PeelIteration::isOnlyExitingIteration() {
 
 }
 
-bool PeelIteration::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  // Check if this is the latch or an exit edge.
-
-  bool isExitEdge = !L->contains(ToBB);
-  bool isOptimisticEdge = std::make_pair(FromBB, ToBB) == parentPA->OptimisticEdge;
-  bool isSpecialBranchTarget = ((FromBB == L->getLoopLatch() && ToBB == L->getHeader()) || isExitEdge || isOptimisticEdge);
-
-  if(isOptimisticEdge && !isExitEdge)
-    pass->queueCheckBlock(this, ToBB);
-
-  if(isSpecialBranchTarget) {
-    if(iterStatus == IterationStatusUnknown) {
-      getOrCreateNextIteration();
-      if(iterStatus == IterationStatusUnknown)
-	checkFinalIteration();
-    }
-    if(isExitEdge && parentPA->Iterations.back()->iterStatus == IterationStatusFinal) {
-      checkExitEdge(FromBB, ToBB);
-    }
-
-    queueCFGBlockedOpens();
-    return true;
-  }
-  else
-    return IntegrationAttempt::checkLoopSpecialEdge(FromBB, ToBB);
-
-}
-
-void IntegrationAttempt::checkLocalEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  if(!checkLoopSpecialEdge(FromBB, ToBB))
-    pass->queueCheckBlock(this, ToBB);
-  
-}
-
-void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB, const Loop* EdgeScope) {
-
-  if((!EdgeScope) || EdgeScope->contains(getLoopContext())) {
-    // Check regardless of scope, because certainty is always variant
-    checkLocalEdge(FromBB, ToBB);
-  }
-  else {
-    checkVariantEdge(FromBB, ToBB, EdgeScope);
-  }
-
-}
-
-void IntegrationAttempt::checkEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  // Check the edge once at its natural scope, to try to kill it:
-  const Loop* EdgeScope = getEdgeScope(FromBB, ToBB);
-  checkEdge(FromBB, ToBB, EdgeScope);
-  // And again at its containing scope, as block certainty is always variant.
-  const Loop* ContScope = getBlockScopeVariant(FromBB);
-  if(ContScope != EdgeScope)
-    checkEdge(FromBB, ToBB, ContScope);
-
-}
-
-void IntegrationAttempt::checkBlockPHIs(BasicBlock* BB) {
-
-  InvestigateVisitor IV(BB);
-
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(*BI); ++BI) {
-    
-    visitUser(BI, IV);
-    queueUpdatePB(this, BI, false, true, true);
-
-  }
-
-}
-
-void IntegrationAttempt::checkVariantEdge(BasicBlock* FromBB, BasicBlock* ToBB, const Loop* ScopeL) {
-
-  const Loop* MyScope = getLoopContext();
-
-  if(MyScope == ScopeL) {
-    checkLocalEdge(FromBB, ToBB);
-  }
-  else {
-    const Loop* ChildL = immediateChildLoop(MyScope, ScopeL);
-    if(PeelAttempt* LPA = getPeelAttempt(ChildL)) {
-      for(unsigned int i = 0; i < LPA->Iterations.size(); ++i)
-	LPA->Iterations[i]->checkVariantEdge(FromBB, ToBB, ScopeL);
-    }
-  }
-
-}
-
-void IntegrationAttempt::queueCFGBlockedLoads() {
-
-  // Queue all loads and for reconsideration which are blocked due to CFG issues at this scope.
-
-  std::sort(CFGBlockedLoads.begin(), CFGBlockedLoads.end());
-  std::unique(CFGBlockedLoads.begin(), CFGBlockedLoads.end());
-
-  for(SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4>::iterator LI = CFGBlockedLoads.begin(), LE = CFGBlockedLoads.end(); LI != LE; ++LI) {
-    
-    if(LI->first->shouldTryEvaluate(LI->second))
-      pass->queueCheckLoad(LI->first, LI->second);
-
-  }
-
-  CFGBlockedLoads.clear();
-
-}
-
-void IntegrationAttempt::queueCFGBlockedOpens() {
-
-  for(SmallVector<std::pair<ValCtx, ValCtx>, 4>::iterator OI = CFGBlockedOpens.begin(), OE = CFGBlockedOpens.end(); OI != OE; ++OI) {
-
-    pass->queueOpenPush(OI->first, OI->second);
-
-  }
-
-  CFGBlockedOpens.clear();
-    
-}
-
-void IntegrationAttempt::checkSuccessors(BasicBlock* BB) {
-
-  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-    if(shouldCheckEdge(BB, *SI))
-      checkEdge(BB, *SI);
-    checkBlockPHIs(*SI);
-
-  }
-
-}
-
 void IntegrationAttempt::markBlockCertain(BasicBlock* BB) {
 
   LPDEBUG("Block " << BB->getName() << " is certain to execute. Queueing successors and calls.\n");
-
   certainBlocks.insert(BB);
     
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
-      
-    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	
-      if(!getOrCreateInlineAttempt(CI))
-	tryPromoteOpenCall(CI);
-	
-    }
-
-  }
-
-  checkSuccessors(BB);
-
 }
 
 PostDominatorTree* IntegrationHeuristicsPass::getPostDomTree(Function* F) {
@@ -569,28 +416,16 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     isCertain = false;
 
   if(isDead) {
-    LPDEBUG("Block is dead. Killing outgoing edges and queueing successors.\n"); 
+
+    LPDEBUG("Block is dead. Killing outgoing edges\n"); 
     deadBlocks.insert(BB);
     
-    // Remove any resolutions for these instructions, since they're both a waste
-    // of memory and a trap waiting to catch us when we commit the results.
-    eraseBlockValues(BB);
-
-    // If this kills a return instruction, check if our retval just became defined:
-    if(isa<ReturnInst>(BB->getTerminator()))
-      queueTryEvaluateOwnCall();
-
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
       
       deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
+      checkLoopSpecialEdge(BB, *SI);
 
     }
-
-    checkSuccessors(BB);
-
-    queueCFGBlockedLoads();
-    queueCFGBlockedOpens();
-    localCFGChanged();
 
   }
   else if(isCertain) {
@@ -629,8 +464,6 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
       }
 
     }
-
-    queueCFGBlockedOpens();
 
   }
 
@@ -2644,38 +2477,6 @@ void IntegrationAttempt::queuePBCheckAllInstructionsInScope(const Loop* L) {
 
     }
 
-  }
-
-}
-
-void IntegrationAttempt::queueInitialWork() {
-
-  queueCheckAllInstructionsInScope(getLoopContext());
-  queueCheckAllLoadsInScope(getLoopContext());
-  queuePBCheckAllInstructionsInScope(getLoopContext());
-
-  if(const Loop* L = getLoopContext()) {
-
-    // Check blocks whose predecessors are already invariant-dead:
-
-    for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
-
-      BasicBlock* BB = *BI;
-
-      if(blockIsDead(BB)) {
-
-	for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-      
-	  deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
-
-	}
-
-	checkSuccessors(BB);
-
-      }
-
-    }
- 
   }
 
 }
