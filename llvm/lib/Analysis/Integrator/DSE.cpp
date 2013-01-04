@@ -378,124 +378,81 @@ bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
 
 }
 
-bool IntegrationAttempt::CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs) {
-
-  Instruction* StartI = cast<Instruction>(Start.first);
-  BasicBlock* BB = StartI->getParent();
-  BasicBlock::iterator BI(StartI);
-
-  while(1) {
-
-    if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(BI)) {
-
-      MTIs.push_back(make_vc(MTI, this));
-
-    }
-    else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-
-      if(InlineAttempt* IA = getInlineAttempt(CI)) {
-	
-	Start = make_vc(IA->getEntryBlock()->begin(), IA);
-	return true;
-	    
-      }
-
-    }
-
-
-    ++BI;
-    if(BI == BB->end()) {
-      
-      Start = getSuccessorVC(BB);
-      
-      if(Start == VCNull)
-	return false;
-      else if(Start.second != this)
-	return true;
-      else {
-	
-	StartI = cast<Instruction>(Start.first);
-	BB = StartI->getParent();
-	BI = BasicBlock::iterator(StartI);
-
-      }
-
-    }
-
-  }
-
-}
-
 void IntegrationAttempt::tryKillAllMTIs() {
 
-  // Must kill MTIs backwards, from program end to start.
-  
-  std::vector<ValCtx> MTIs;
-  ValCtx Start = make_vc(F.getEntryBlock().begin(), this);
+  SmallSet<BasicBlock*, 8> Visited;
 
-  while(Start.second->CollectMTIsFrom(Start, MTIs)) {  }
-
-  for(std::vector<ValCtx>::reverse_iterator it = MTIs.rbegin(), it2 = MTIs.rend(); it != it2; ++it) {
-    it->second->tryKillMTI(cast<MemTransferInst>(it->first));
-  }
+  // Must kill MTIs in reverse topological order, i.e. postorder DFS.
+  tryKillAllMTIsFromBB(F.getEntryBlock(), Visited);
 
 }
 
-bool IntegrationAttempt::tryKillAllStoresFrom(ValCtx& Start) {
+void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBlock*, 8>& Visited) {
 
-  Instruction* StartI = cast<Instruction>(Start.first);
-  BasicBlock* BB = StartI->getParent();
-  BasicBlock::iterator BI(StartI);
+  const Loop* MyL = getLoopContext();
 
-  while(1) {
+  if(!Visited.insert(BB))
+    return;
 
-    if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
+  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-      tryKillStore(SI);
+    BasicBlock* SuccBB = *SI;
 
-    }
-    else if(MemSetInst* MI = dyn_cast<MemSetInst>(BI)) {
+    if(edgeIsDead(BB, SuccBB))
+      continue;
+    
+    if(MyL && BB == MyL->getLoopLatch() && SuccBB == MyL->getHeader())
+      continue;
 
-      tryKillMemset(MI);
+    const Loop* SuccBBL = LI[&F]->getLoopFor(SuccBB);
+    if(SuccBBL != MyL && ((!MyL) || MyL->contains(SuccBBL))) {
+      // Loop within this one:
+      if(PeelAttempt* LPA = getInlineAttempt(SuccBBL)) {
 
-    }
-    else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	// Do loop successors first:
+	SmallVector<BasicBlock*, 4> ExitingBlocks;
+	SuccBBL->getExitingBlocks(ExitingBlocks);
+	for(SmallVector<BasicBlock*, 4>::iterator it = ExitingBlocks.begin(), it2 = ExitingBlocks.end(); it != it2; ++it) {
 
-      if(InlineAttempt* IA = getInlineAttempt(CI)) {
-
-	Start = make_vc(IA->getEntryBlock()->begin(), IA);
-	return true;
-	    
-      }
-      else {
-	
-	DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-	if(it != resolvedReadCalls.end()) {
-
-	  tryKillRead(CI, it->second);
+	  tryKillAllMTIsFromBB(*it, Visited);
 
 	}
-	
-      }
 
+	// Now process the loop body:
+	for(int i = LPA->Iterations.size() - 1; i >= 0; --i) {
+
+	  LPA->Iterations[i]->tryKillAllMTIs();
+
+	}
+
+	continue;
+	  
+      }
+      // Else enter the BB as usual. The topo sort algorithm will process loop blocks in any old order.
+    }
+    else {
+      // Loop outside this one
+      continue;
     }
 
-    ++BI;
-    if(BI == BB->end()) {
-      
-      Start = getSuccessorVC(BB);
-      
-      if(Start == VCNull)
-	return false;
-      else if(Start.second != this)
-	return true;
-      else {
+    tryKillAllMTIsFromBB(SuccBB, Visited);
 
-	StartI = cast<Instruction>(Start.first);
-	BB = StartI->getParent();
-	BI = BasicBlock::iterator(StartI);
+  }
 
-      }
+  // Now process this block, knowing for sure all blocks that may follow from it have been processed:
+  for(BasicBlock::iterator it = BB->end(); itend = BB->begin(); it != itend; --it) {
+
+    BasicBlock::iterator I = it;
+    --I;
+    if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(I)) {
+
+      tryKillMTI(MTI);
+
+    }
+    else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+
+      if(InlineAttempt* IA = getInlineAttempt(CI))
+	IA->tryKillAllMTIs();
 
     }
 
@@ -505,50 +462,33 @@ bool IntegrationAttempt::tryKillAllStoresFrom(ValCtx& Start) {
 
 void IntegrationAttempt::tryKillAllStores() {
 
-  ValCtx Start = make_vc(F.getEntryBlock().begin(), this);
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
 
-  while(Start.second->tryKillAllStoresFrom(Start)) { }
+    if(blockIsDead(FI))
+      continue;
+    if(getBlockScopeVariant(FI) != getLoopContext())
+      continue;
 
-}
+    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
 
-bool IntegrationAttempt::tryKillAllAllocsFrom(ValCtx& Start) {
-
-  Instruction* StartI = cast<Instruction>(Start.first);
-  BasicBlock* BB = StartI->getParent();
-  BasicBlock::iterator BI(StartI);
-
-  while(1) {
-
-    if(isa<AllocaInst>(BI) || isMalloc(BI)) {
-      
-      tryKillAlloc(cast<Instruction>(BI));
-
-    }
-    else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-
-      if(InlineAttempt* IA = getInlineAttempt(CI)) {
-
-	Start = make_vc(IA->getEntryBlock()->begin(), IA);
-	return true;
-	    
-      }
-
-    }
-
-    ++BI;
-    if(BI == BB->end()) {
-      
-      Start = getSuccessorVC(BB);
-      
-      if(Start == VCNull)
-	return false;
-      else if(Start.second != this)
-	return true;
-      else {
+      if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
 	
-	StartI = cast<Instruction>(Start.first);
-	BB = StartI->getParent();
-	BI = BasicBlock::iterator(StartI);
+	tryKillStore(SI);
+	
+      }
+      else if(MemSetInst* MI = dyn_cast<MemSetInst>(BI)) {
+	
+	tryKillMemset(MI);
+	
+      }
+      else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+	
+	DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+	if(it != resolvedReadCalls.end()) {
+	  
+	  tryKillRead(CI, it->second);
+	  
+	}
 
       }
 
@@ -556,14 +496,56 @@ bool IntegrationAttempt::tryKillAllAllocsFrom(ValCtx& Start) {
 
   }
 
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->tryKillAllStores();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->tryKillAllStores();
+
+  }
+
 }
 
 void IntegrationAttempt::tryKillAllAllocs() {
 
-  ValCtx Start = make_vc(F.getEntryBlock().begin(), this);
+  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
 
-  while(Start.second->tryKillAllAllocsFrom(Start)) { }
+    if(blockIsDead(FI))
+      continue;
+    if(getBlockScopeVariant(FI) != getLoopContext())
+      continue;
+
+    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
+
+      if(isa<AllocaInst>(BI) || isMalloc(BI)) {
+      
+	tryKillAlloc(cast<Instruction>(BI));
+
+      }
+
+    }
+
+  }
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    it->second->tryKillAllAllocs();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+      it->second->Iterations[i]->tryKillAllAllocs();
+
+  }
 
 }
+
 
 

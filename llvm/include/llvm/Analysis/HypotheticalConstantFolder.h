@@ -1148,9 +1148,8 @@ protected:
   virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
   bool CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs);
   void tryKillAllMTIs();
-  bool tryKillAllStoresFrom(ValCtx& Start);
+  void tryKillAllMTIsFromBB(BasicBlock*, SmallSet<BasicBlock*, 8>&);
   void tryKillAllStores();
-  bool tryKillAllAllocsFrom(ValCtx& Start);
   void tryKillAllAllocs();
 
   // User visitors:
