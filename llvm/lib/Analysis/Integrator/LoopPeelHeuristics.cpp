@@ -687,45 +687,26 @@ bool InlineAttempt::stackIncludesCallTo(Function* FCalled) {
 
 }
 
-bool IntegrationAttempt::shouldInlineFunctionNow(CallInst* CI) {
+bool IntegrationAttempt::shouldInlineFunction(CallInst* CI) {
 
   Function* FCalled = getCalledFunction(CI);
+  assert(FCalled && "shouldInlineFunction called on uncertain function pointer");
+
+  if(certainBlocks.count(CI->getParent()))
+    return true;
 
   if(pass->shouldAlwaysInline(FCalled))
     return true;
 
-  // Inline if (a) at least one load is blocked on this function and (b) this wouldn't be a recursive call
-  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator it = 
-    InstBlockedLoads.find(CI);
+  // Inline if this wouldn't be a recursive call.
+  if(!stackIncludesCallTo(FCalled))
+    return true;
   
-  if(it != InstBlockedLoads.end() && it->second.size() != 0) {
-
-    if(!stackIncludesCallTo(FCalled)) {
-
-      return true;
-
-    }
-    
-  }
-
-  DenseMap<CallInst*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it2 = 
-    callBlockedPBLoads.find(CI);
-  
-  if(it2 != callBlockedPBLoads.end() && it2->second.size() != 0) {
-
-    if(!stackIncludesCallTo(FCalled)) {
-
-      return true;
-
-    }
-
-  }
-
   return false;
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
 
   if(ignoreIAs.count(CI))
     return 0;
@@ -744,8 +725,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool r
     return 0;
   }
 
-  if(requireCertainty && !certainBlocks.count(CI->getParent())) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined at this time (not certain, or similar)\n");
+  if(!shouldInlineFunction(CI))
+    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return 0;
   }
 
@@ -766,57 +747,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI, bool r
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
 
-  pass->queueCheckBlock(IA, &(FCalled->getEntryBlock()));
-  // Check every argument, for natural constants or for variables that have already been established.
-      
-  for(Function::arg_iterator AI = FCalled->arg_begin(), AE = FCalled->arg_end(); AI != AE; AI++) {
-	  
-    pass->queueTryEvaluate(IA, &*AI /* Iterator to pointer */);
-
-  }
-
-  IA->queueInitialWork();
-
-  // Recheck any loads that were clobbered by this call
-  queueWorkBlockedOn(CI);
-  dismissCallBlockedPBLoads(CI);
-
-  // Try reading the return value right away, in case it's constant.
-  pass->queueTryEvaluate(this, CI);
-
   return IA;
-
-}
-
-class CheckBlockCallback : public Callable {
-  BasicBlock* BB;
-  IntegrationHeuristicsPass* IHP;
-public:
-  CheckBlockCallback(BasicBlock* _BB, IntegrationHeuristicsPass* _IHP) : BB(_BB), IHP(_IHP) { }
-  virtual void callback(IntegrationAttempt* Ctx) {
-    IHP->queueCheckBlock(Ctx, BB);
-    Ctx->checkBlockPHIs(BB);
-  }
-};
-
-void PeelIteration::queueCheckExitBlock(BasicBlock* BB) {
-
-  // Only called if the exit edge is a local variant
-  // No need for getBlockScopeVariant as we already know the block is outside.
-  CheckBlockCallback CBC(BB, pass);
-  callWithScope(CBC, LI[&F]->getLoopFor(BB));
-
-}
-
-void PeelIteration::checkExitEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  const Loop* EScope = getEdgeScope(FromBB, ToBB);
-  if(EScope && L->contains(EScope)) {
-    queueCheckExitBlock(ToBB);
-  }
-  else {
-    LPDEBUG("Ignoring exit edge " << FromBB->getName() << " -> " << ToBB->getName() << " at this scope (invariant)\n");
-  }
 
 }
 
@@ -828,16 +759,6 @@ void PeelIteration::checkFinalIteration() {
   if(edgeIsDead(L->getLoopLatch(), L->getHeader()) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
 
     iterStatus = IterationStatusFinal;
-
-    for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
-      
-      checkExitEdge(EI->first, EI->second);
-	
-    }
-    
-    // Loads might now be able to be raised through this loop. They will be blocked at parent scope.
-    parent->queueCFGBlockedLoads();
-    parent->localCFGChanged();
 
   }
 
@@ -864,19 +785,6 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, TD, AA, L, invariantInsts, invariantEdges, invariantBlocks, iter, nesting_depth);
   Iterations.push_back(NewIter);
     
-  BasicBlock* Header = L->getHeader();
-   
-  pass->queueCheckBlock(NewIter, L->getHeader());
-  NewIter->checkBlockPHIs(L->getHeader());
-
-  for(BasicBlock::iterator BI = Header->begin(), BE = Header->end(); BI != BE && isa<PHINode>(BI); ++BI) {
-	
-    pass->queueTryEvaluate(NewIter, BI);
-
-  }
-  
-  NewIter->queueInitialWork();
-
   return NewIter;
 
 }
@@ -963,7 +871,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   // Preheaders only have one successor (the header), so this is enough.
   if(!certainBlocks.count(NewL->getLoopPreheader())) {
    
-    LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " at this time because the preheader is not certain to execute\n");
+    LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain to execute\n");
     return 0;
 
   }
@@ -973,8 +881,6 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
     LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
     PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, TD, AA, invariantInsts, invariantEdges, invariantBlocks, NewL, nesting_depth + 1);
     peelChildren[NewL] = LPA;
-
-    queueCFGBlockedLoads();
 
     return LPA;
 
@@ -1109,31 +1015,6 @@ void IntegrationAttempt::getDefn(const MemDepResult& Res, ValCtx& improved) {
     LPDEBUG("Definition not improved\n");
     return;
   }
-
-}
-
-static bool shouldBlockOnInst(Instruction* I, IntegrationAttempt* ICtx) {
-
-  if(!I)
-    return false;
-
-  if(CallInst* CI = dyn_cast<CallInst>(I)) {
-
-    // An apparent dependence on the call site means either (a) we couldn't build a symbolic expression,
-    // only fixable by improving the loaded pointer, or (b) the call is not expanded (in which case this
-    // test fails), or (c) multiple results within the call (in which case the appropriate queueing is
-    // done elsewhere)
-
-    return !ICtx->getInlineAttempt(CI);
-
-  }
-  else if(I->mayWriteToMemory()) {
-
-    return true;
-
-  }
-
-  return false;
 
 }
 
@@ -1450,24 +1331,6 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
 	IntegrationAttempt* OrigCtx = LFA.getOriginalCtx();
 	OrigCtx->setLoadOverdef(OriginalInst, SaveInstResults);
 
-	for(unsigned int i = 0; i < InstResults.size(); i++) {
-		
-	  // If there are two clobbers, or a clobber and a def, improvement of a clobber might
-	  // yield 1-def or 1-clobber. Defs will always Def unless edges get killed.
-	  const MemDepResult& Res = InstResults[i].getResult();
-	  if(Res.isDef() || (Res.isClobber() && !Res.isEntryNonLocal())) {
-
-	    IntegrationAttempt* BlockCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
-
-	    if(shouldBlockOnInst(Res.getInst(), BlockCtx)) {
-	      BlockCtx->addBlockedLoad(Res.getInst(), OrigCtx, OriginalInst);
-	      //errs() << "Block load " << itcache(*LFA.getOriginalInst()) << " on " << itcache(*(Res.getInst())) << "\n";
-	    }
-
-	  }
-	  
-	}
-
 	OnlyDependsOnParent = false;
 	Seen = MemDepResult();
 	break;
@@ -1636,12 +1499,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
     if(Result == VCNull)
       return true;
 
-    if(!shouldForwardValue(Result)) {
-
+    if(!shouldForwardValue(Result))
       Result = VCNull;
-      LPtr.second->blockVA(make_vc(LoadI, this));
 
-    }
     return true;
 
   }
@@ -1853,18 +1713,6 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     }
     else {
       LPDEBUG("Load resolved successfully, but " << itcache(Result) << " is not a forwardable value\n");
-    }
-
-    IntegrationAttempt* BlockCtx = Res.getCookie() ? ((IntegrationAttempt*)Res.getCookie()) : this;
-    if(shouldBlockOnInst(Res.getInst(), BlockCtx)) {
-      ResAttempt->addBlockedLoad(Res.getInst(), this, LoadI);
-    // Otherwise we're stuck due to a PHI translation failure. That'll only improve when the load pointer is improved.
-    }
-
-    if(Res.getInst() && Res.getCookie()) {
-      
-      Res.getCookie()->queueLoopExpansionBlockedLoad(Res.getInst(), this, LoadI);
-
     }
 
     LastLoadFailures[LoadI] = Res;
@@ -2102,11 +1950,6 @@ bool IntegrationAttempt::forwardLoadIsNonLocal(LFAQueryable& LFAQ, MemDepResult&
 
   if(OnlyDependsOnParent)
     return true;
-
-  if(Result == MemDepResult()) {
-    // The definition or clobber was not unique. Edges need to be killed before this can be resolved.
-    addCFGBlockedLoad(LFAQ.getOriginalCtx(), LFAQ.getOriginalInst());
-  }
 
   if(Result != MemDepResult() && (!Result.getCookie())) {
     // This result is generated by MD, not one of our callbacks for handling child contexts
@@ -3490,45 +3333,6 @@ LFARMapping::~LFARMapping() {
 
 }
 
-void IntegratorWQItem::execute() { 
-  switch(type) {
-  case TryEval:
-    ctx->tryEvaluate(u.V);
-    break;
-  case CheckBlock:
-    ctx->checkBlock(u.BB);
-    break;
-  case CheckLoad:
-    ctx->checkLoad(u.LI);
-    break;
-  case OpenPush:
-    ctx->tryPushOpen(u.OpenArgs.OpenI, u.OpenArgs.OpenProgress);
-    break;
-  }
-}
-
-void IntegratorWQItem::describe(raw_ostream& s) {
-
-  switch(type) {
-  case TryEval:
-    s << "Try-eval ";
-    ctx->printWithCache(u.V, s);
-    break;
-  case CheckBlock:
-    s << "Check-BB-status " << u.BB->getName();
-    break;
-  case CheckLoad:
-    s << "Check-load ";
-    ctx->printWithCache(make_vc(u.LI, ctx), s);
-    break;
-  case OpenPush:
-    s << "Push-VFS-chain ";
-    ctx->printWithCache(make_vc(u.OpenArgs.OpenI, ctx), s);
-    break;
-  }
-
-}
-
 BasicBlock* IntegrationHeuristicsPass::getUniqueReturnBlock(Function* F) {
 
   DenseMap<Function*, BasicBlock*>::iterator it = uniqueReturnBlocks.find(F);
@@ -3779,36 +3583,6 @@ DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Fu
 
 }
 
-void IntegrationHeuristicsPass::queueTryEvaluate(IntegrationAttempt* ctx, Value* val) {
-
-  assert(ctx && val && "Queued a null value");
-  assert(ctx->getLoopContext() == ctx->getValueScope(val));
-  produceQueue->push_back(IntegratorWQItem(ctx, val));
-     
-}
-
-void IntegrationHeuristicsPass::queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB) {
-
-  assert(ctx && BB && "Queued a null block");
-  produceQueue->push_back(IntegratorWQItem(ctx, BB));
-
-}
-
-void IntegrationHeuristicsPass::queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI) {
-
-  assert(ctx && LI && "Queued a null load");
-  assert(ctx->getLoopContext() == ctx->getValueScope(LI));
-  produceQueue->push_back(IntegratorWQItem(ctx, LI));
-
-}
-
-void IntegrationHeuristicsPass::queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress) {
-
-  assert(OpenInst.first && OpenInst.second && OpenProgress.first && OpenProgress.second && "Queued an invalid open push");
-  produceQueue->push_back(IntegratorWQItem((IntegrationAttempt*)OpenInst.second, cast<CallInst>(OpenInst.first), OpenProgress));
-
-}
-
 void IntegrationHeuristicsPass::queueDIE(IntegrationAttempt* ctx, Value* val) {
   assert(val && "Queued a null value");
   produceDIEQueue->push_back(make_vc(val, ctx));
@@ -3887,60 +3661,6 @@ inline bool operator>=(IntegratorWQItem W1, IntegratorWQItem W2) {
   return !(W1 < W2);
 }
 
-}
-
-bool IntegrationHeuristicsPass::runQueue() {
-
-  bool ret = false;
-  
-  SmallVector<IntegratorWQItem, 64>* consumeQueue = (produceQueue == &workQueue1) ? &workQueue2 : &workQueue1;
-
-  while(workQueue1.size() || workQueue2.size()) {
-
-    ret = true;
-    
-    std::sort(consumeQueue->begin(), consumeQueue->end());
-
-    SmallVector<IntegratorWQItem, 64>::iterator it, itend;
-    itend = std::unique(consumeQueue->begin(), consumeQueue->end());
-
-    for(it = consumeQueue->begin(); it != itend; ++it) {
-
-      if(it->ctx && it->ctx->contextIsDead)
-	continue;
-      
-      DEBUG(dbgs() << "Dequeue: ");
-      DEBUG(it->describe(dbgs()));
-      DEBUG(dbgs() << "\n");
-      it->execute();
-
-    }
-
-    consumeQueue->clear();
-    std::swap(consumeQueue, produceQueue);
-
-  }
-
-  return ret;
-
-}
-
-bool IntegrationAttempt::tryInlineUsedCall(CallInst* CI) {
-
-  if(blockIsDead(CI->getParent()))
-    return false;
-  
-  Function* FCalled = getCalledFunction(CI);
-  if(stackIncludesCallTo(FCalled))
-    return false;
-
-  if(inlineChildren.count(CI))
-    return false;
-
-  return !!getOrCreateInlineAttempt(CI, false);
-
-}
-
 static Value* getWrittenPointer(Instruction* I) {
 
   if(StoreInst* SI = dyn_cast<StoreInst>(I))
@@ -3948,151 +3668,6 @@ static Value* getWrittenPointer(Instruction* I) {
   else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(I))
     return MI->getDest();
   return 0;
-
-}
-
-bool IntegrationAttempt::checkInlineAllCalls() {
-
-  bool inlinedAnyHere = false;
-
-  // Reasons to inline a call at this point:
-  // 1. Loads are clobbered by stores through the return value
-  // 2. Loads are clobbered by the call site
-  // 3. Call is tagged always-inline
-
-  // Check child contexts first to avoid immediately re-exploring our children (as opposed to
-  // checking for dead blocks first, to save exploring needlessly).
-
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
-    inlinedAnyHere |= it->second->checkInlineAllCalls();
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    unsigned iterCount = it->second->Iterations.size();
-    for(unsigned i = 0; i < iterCount; ++i) {
-
-      inlinedAnyHere |= it->second->Iterations[i]->checkInlineAllCalls();
-
-    }
-
-  }
-
-  const Loop* MyL = getLoopContext();
-
-  // 1. Look for blockages against a value derived from a callsite:
-  // Careful here: getOrCreateInlineAttempt dismisses loads and so modifies this map. Therefore, record intended actions first.
-
-  SmallVector<ValCtx, 8> callsitesToCheck;
-
-  for(DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> >::iterator blockit = InstBlockedLoads.begin(), 
-	blockend = InstBlockedLoads.end(); blockit != blockend; ++blockit) {
-
-    if(blockIsDead(blockit->first->getParent()))
-      continue;
-
-    Value* StoredThrough = getWrittenPointer(blockit->first);
-    
-    if(StoredThrough) {
-
-      ValCtx StoredUO = getUltimateUnderlyingObject(StoredThrough);
-
-      if(isa<CallInst>(StoredUO.first))
-	callsitesToCheck.push_back(StoredUO);
-
-    }
-
-  }
-
-  // Also check for stores that are blocking PB loads:
-
-  for(DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator blockit = memWriterEffects.begin(),
-	blockend = memWriterEffects.end(); blockit != blockend; ++blockit) {
-
-    if(blockIsDead(blockit->first->getParent()))
-      continue;
-
-    Value* StoredThrough = getWrittenPointer(blockit->first);
-    if(StoredThrough) {
-
-      ValCtx StoredUO = getUltimateUnderlyingObject(StoredThrough);
-      if(isa<CallInst>(StoredUO.first))
-	callsitesToCheck.push_back(StoredUO);
-
-    }
-
-  }
-
-  for(SmallVector<ValCtx, 8>::iterator it = callsitesToCheck.begin(), it2 = callsitesToCheck.end(); it != it2; ++it) {
-    
-    CallInst* CI = cast<CallInst>(it->first);
-    inlinedAnyHere |= it->second->tryInlineUsedCall(CI);
-
-  }
-
-  // 2. Check all calls not yet dealt with for always-inline or loads blocked on them.
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-
-    if(blockIsDead(BB))
-      continue;
-
-    const Loop* BBL = getBlockScopeVariant(BB);
-
-    if((!MyL) || MyL->contains(BBL)) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-
-	if(CallInst* CI = dyn_cast<CallInst>(II)) {
-
-	  if(inlineChildren.count(CI))
-	    continue;
-
-	  if(shouldInlineFunctionNow(CI) && getOrCreateInlineAttempt(CI, false))
-	    inlinedAnyHere = true;
-
-	}
-
-      }
-
-    }
-    
-  }
-
-  return inlinedAnyHere;
-
-}
-
-void IntegrationHeuristicsPass::runQueues() { 
-
-  while(1) {
-
-    while(1) {
-    
-      if(!runQueue())
-	break;
-      if(!runPointerBaseSolver())
-	break;
-
-    }
-
-    // See if we should inline any functions that aren't certain:
-
-    errs() << "Checking for uncertain inlines:\n";
-
-    if(!RootIA->checkInlineAllCalls()) {
-
-      return;
-
-    }
-
-    errs() << "Uncertain inlines complete\n";
-
-  }
 
 }
 
