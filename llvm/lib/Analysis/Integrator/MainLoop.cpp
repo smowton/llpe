@@ -76,7 +76,7 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
 
     // Analyse for invariants if we didn't establish that the loop terminates.
     if(LPA->Iterations.back()->iterStatus != IterationStatusFinal)
-      findPseudoInvariants(BBL);
+      analyseLoopPBs(BBL);
 
   }
   else {
@@ -88,7 +88,7 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
 
 }
 
-void IntegrationAttempt::analyseBlockInstructionsAtScope(BasicBlock* BB) {
+void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
 
   const Loop* MyL = getLoopContext();
 

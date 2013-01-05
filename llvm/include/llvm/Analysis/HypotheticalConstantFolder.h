@@ -305,15 +305,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<ValCtx, 64>* produceDIEQueue;
 
-   SmallVector<ValCtx, 64> PBQueue1;
-   SmallVector<ValCtx, 64> PBQueue2;
-
-   SmallVector<ValCtx, 64>* PBProduceQ;
-
-   std::vector<ValCtx> pendingPBChecks1;
-   std::vector<ValCtx> pendingPBChecks2;
-   std::vector<ValCtx>* producePendingPBChecks;
-
    uint64_t PBGeneration;
 
    IntegrationAttempt* RootIA;
@@ -762,6 +753,40 @@ enum LoadForwardMode {
 
 };
 
+class LoopPBAnalyser {
+
+  SmallVector<ValCtx, 64> PBQueue1;
+  SmallVector<ValCtx, 64> PBQueue2;
+  
+  SmallVector<ValCtx, 64>* PBProduceQ;
+
+  DenseSet<ValCtx> inLoopVCs;
+
+public:
+  
+  LoopPBAnalyser() {
+    PBProduceQ = &PBQueue1;
+  }
+
+  void queueUpdatePB(ValCtx VC) {
+    PBProduceQ->push_back(VC);
+  }
+
+  void queueIfConsidered(ValCtx VC) {
+    if(inLoopVCs.count(VC))
+      queueUpdatePB(VC);
+  }
+
+  void addVC(ValCtx VC) {
+    inLoopVCs.insert(VC);
+    queueUpdatePB(VC);
+  }
+
+  void runPointerBaseSolver(bool finalise, std::vector<ValCtx>* modifiedVCs);
+  void run();
+
+};
+
 class IntegrationAttempt {
 
 protected:
@@ -1189,7 +1214,7 @@ protected:
   void erasePointerBase(Value*);
   bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
-  bool updateBasePointer(Value* V, bool finalise);
+  bool updateBasePointer(Value* V, bool finalise, );
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
   void queueUpdatePB(IntegrationAttempt*, Value*, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
