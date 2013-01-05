@@ -55,6 +55,9 @@ class LoopWrapper;
 template<class> class DominatorTreeBase;
 class BBWrapper;
 template<class> class DomTreeNodeBase;
+class IAWalker;
+class BackwardIAWalker;
+class ForwardIAWalker;
 
 enum va_arg_type {
   
@@ -323,7 +326,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
      produceDIEQueue = &dieQueue2;
      produceQueue = &workQueue2;
-     PBGeneration = 0;
      mallocAlignment = 0;
      SeqNumber = 0;
 
@@ -399,10 +401,6 @@ class IntegrationHeuristicsPass : public ModulePass {
      if(it == maxLoopIters.end())
        return false;
      return it->second == C;
-   }
-
-   void queuePendingPBUpdate(ValCtx VC) {
-     producePendingPBChecks->push_back(VC);
    }
 
    void addPessimisticSolverWork();
@@ -624,7 +622,7 @@ struct ReadFile {
 
   struct OpenStatus* openArg;
   uint64_t incomingOffset;
-  uint32_t readSize
+  uint32_t readSize;
   bool needsSeek;
 
 ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), needsSeek(true) { }
@@ -773,6 +771,71 @@ public:
 
 };
 
+enum WalkInstructionResult {
+
+  WIRContinue,
+  WIRStopThisPath,
+  WIRStopWholeWalk
+
+};
+
+class IAWalker {
+
+  SmallSet<BIC, 8> Visited;
+  SmallVector<std::pair<BIC, void*>, 8> Worklist1;
+  SmallVector<std::pair<BIC, void*>, 8> Worklist2;
+
+  SmallVector<std::pair<BIC, void*>, 8>* PList;
+  SmallVector<std::pair<BIC, void*>, 8>* CList;
+
+  SmallVector<void*, 4> Contexts;
+  
+  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
+  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual void freeContext(void*) { }
+  virtual void* copyContext(void*) {
+    return 0;
+  }
+  virtual void walkInternal() = 0;
+
+  void* initialContext;
+
+ public:
+
+ IAWalker(void* IC = 0) : initialContext(IC) {
+    
+    Contexts.push_back(initialContext);
+
+ }
+
+  void walk();
+  void queueWalkFrom(BIC, void* context, bool copyContext);
+
+};
+
+class BackwardIAWalker : public IAWalker {
+  
+  void walkFromInst(BIC);
+  virtual void walkInternal();
+  
+ public:
+
+  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
+  
+};
+
+class ForwardIAWalker : public IAWalker {
+  
+  void walkFromInst(BIC);
+  virtual void walkInternal();
+  
+ public:
+
+  ForwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
+  
+};
+
 class IntegrationAttempt {
 
 protected:
@@ -867,7 +930,6 @@ protected:
     LI(_LI),
     TD(_TD), 
     AA(_AA), 
-    F(_F),
     invariantInsts(_invariantInsts),
     invariantEdges(_invariantEdges),
     invariantBlocks(_invariantBlocks),
@@ -888,6 +950,7 @@ protected:
     commitStarted(false),
     contextTaintedByVarargs(false),
     nesting_depth(depth),
+    F(_F),
     contextIsDead(false),
     totalIntegrationGoodness(0),
     nDependentLoads(0),
@@ -1169,7 +1232,7 @@ protected:
   void erasePointerBase(Value*);
   bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
-  bool updateBasePointer(Value* V, bool finalise, );
+  bool updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA = 0);
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
   void queueUpdatePB(IntegrationAttempt*, Value*, LoopPBAnalyser*);
@@ -1800,71 +1863,6 @@ class LFARMapping {
   LFARMapping(LFARealization& LFAR, IntegrationAttempt* Ctx);
   virtual ~LFARMapping();
 
-};
-
-enum WalkInstructionResult {
-
-  WIRContinue,
-  WIRStopThisPath,
-  WIRStopWholeWalk
-
-};
-
-class IAWalker {
-
-  SmallSet<BIC, 8> Visited;
-  SmallVector<std::pair<BIC, void*>, 8> Worklist1;
-  SmallVector<std::pair<BIC, void*>, 8> Worklist2;
-
-  SmallVector<std::pair<BIC, void*>, 8>* PList;
-  SmallVector<std::pair<BIC, void*>, 8>* CList;
-
-  SmallVector<void*, 4> Contexts;
-  
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
-  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
-  virtual void freeContext(void*) { }
-  virtual void* copyContext(void*) {
-    return 0;
-  }
-  virtual void walkInternal() = 0;
-
-  void* initialContext;
-
- public:
-
- IAWalker(void* IC = 0) : initialContext(IC) {
-    
-    Contexts.push_back(initialContext);
-
- }
-
-  void walk();
-  queueWalkFrom(BIC, void* context, bool copyContext);
-
-};
-
-class BackwardIAWalker : public IAWalker {
-  
-  void walkFromInst(BIC);
-  virtual void walkInternal();
-  
- public:
-
-  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
-  
-};
-
-class ForwardIAWalker : public IAWalker {
-  
-  void walkFromInst(BIC);
-  virtual void walkInternal();
-  
- public:
-
-  ForwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
-  
 };
 
  ValCtx extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
