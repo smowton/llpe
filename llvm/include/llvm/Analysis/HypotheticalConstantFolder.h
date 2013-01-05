@@ -305,8 +305,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<ValCtx, 64>* produceDIEQueue;
 
-   uint64_t PBGeneration;
-
    IntegrationAttempt* RootIA;
 
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
@@ -321,15 +319,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    uint64_t SeqNumber;
 
-   uint64_t PBLFAs;
-   uint64_t PBLFAsCached;
-
-   DenseMap<ValCtx, PointerBase> PBsConsideredThisRun;
-
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
-     PBProduceQ = &PBQueue2;
-     producePendingPBChecks = &pendingPBChecks2;
      produceDIEQueue = &dieQueue2;
      produceQueue = &workQueue2;
      PBGeneration = 0;
@@ -376,11 +367,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void loadArgv(Function*, std::string&, unsigned argvidx, unsigned& argc);
    void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
    void parseArgs(InlineAttempt* RootIA, Function& F);
-
-   void runPointerBaseSolver(bool finalise, std::vector<ValCtx>*);
-   bool runPointerBaseSolver();
-   void queueUpdatePB(IntegrationAttempt* IA, Value* V);
-   void queueNewPBWork(uint64_t& newVCs, uint64_t& changedVCs);
 
    void estimateIntegrationBenefit();
 
@@ -826,15 +812,8 @@ protected:
   SmallVector<CallInst*, 4> unexploredCalls;
   SmallVector<const Loop*, 4> unexploredLoops;
 
-  SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> CFGBlockedLoads;
-  DenseMap<Instruction*, SmallVector<std::pair<IntegrationAttempt*, LoadInst*>, 4> > InstBlockedLoads;
   DenseMap<LoadInst*, MemDepResult> LastLoadFailures;
   DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> > LastLoadOverdefs;
-
-  SmallVector<std::pair<ValCtx, ValCtx>, 4> CFGBlockedOpens;
-  DenseMap<Instruction*, SmallVector<std::pair<ValCtx, ValCtx>, 4> > InstBlockedOpens;
-
-  SmallVector<ValCtx, 1> BlockedVALoads;
 
   DenseMap<CallInst*, OpenStatus*> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
@@ -843,11 +822,7 @@ protected:
 
   // Pointers resolved down to their base object, but not necessarily the offset:
   DenseMap<Value*, PointerBase> pointerBases;
-  DenseMap<LoadInst*, std::vector<ValCtx> > defOrClobberCache;
-  DenseMap<LoadInst*, std::string> failedLFACache;
   DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > > memWriterEffects;
-  DenseMap<CallInst*, std::vector<std::pair<LoadInst*, IntegrationAttempt*> > > callBlockedPBLoads;
-  DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > CFGDependentPBLoads;
   DenseMap<Instruction*, std::string> optimisticForwardStatus;
   DenseMap<Instruction*, std::string> pessimisticForwardStatus;
 
@@ -903,8 +878,6 @@ protected:
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
-    InstBlockedLoads(4),
-    InstBlockedOpens(2),
     forwardableOpenCalls(2),
     resolvedReadCalls(2),
     resolvedSeekCalls(2),
@@ -1000,9 +973,6 @@ protected:
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   void tryEvaluate(Value*);
   virtual ValCtx tryEvaluateResult(Value*);
-  virtual void investigateUsers(Value* V, bool queueOptimistic = true);
-
-  void queueTryEvaluateGeneric(Instruction* UserI, Value* Used);
 
   bool tryFoldPointerCmp(CmpInst* CmpI, ValCtx&);
   ValCtx tryFoldPtrToInt(Instruction*);
@@ -1033,10 +1003,8 @@ protected:
 
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
-  bool shouldInlineFunctionNow(CallInst* CI);
+  bool shouldInlineFunction(CallInst* CI);
   InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty = true);
-  bool tryInlineUsedCall(CallInst*);
-  bool checkInlineAllCalls();
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -1054,7 +1022,7 @@ protected:
   bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
   void getDefn(const MemDepResult& Res, ValCtx& VCout);
   void getDependencies(LFAQueryable& LFA, SmallVector<BasicBlock*, 4>* StartBlocks, SmallVector<NonLocalDepResult, 4>& Results);
-  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results, bool populateCache);
+  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
   MemDepResult getUniqueDependency(LFAQueryable&, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent, bool& OnlyDependsOnParent);
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
@@ -1065,16 +1033,6 @@ protected:
 
   virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&, bool& mayDependOnParent);
   virtual bool tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
-
-  void addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
-  void addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI);
-  virtual void queueLoopExpansionBlockedLoad(Instruction*, IntegrationAttempt*, LoadInst*);
-
-  void queueWorkBlockedOn(Instruction* SI);
-  void queueCFGBlockedLoads();
-  void queueCheckAllLoadsInScope(const Loop*);
-  void queueCheckAllInstructionsInScope(const Loop*);
-  void queuePBCheckAllInstructionsInScope(const Loop*);
 
   void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
 
@@ -1094,7 +1052,6 @@ protected:
   virtual ReadFile* tryGetReadFile(CallInst* CI);
   bool tryPromoteOpenCall(CallInst* CI);
   void tryPromoteAllCalls();
-  void queueInitialWork();
   bool tryResolveVFSCall(CallInst*);
   WalkInstructionResult isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
@@ -1151,9 +1108,8 @@ protected:
 		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
   PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal);
   PartialVal tryForwardFromCopy(LoadForwardAttempt& LFA, ValCtx Clobber, const Type* subTargetType, Value* copySource, Instruction* copyInst, uint64_t OffsetCI, uint64_t FirstDef, uint64_t FirstNotDef);
+
   // Load forwarding extensions for varargs:
-  void queueBlockedVAs();
-  void blockVA(ValCtx);
   virtual void getVarArg(int64_t, ValCtx&) = 0;
   int64_t getSpilledVarargAfter(CallInst* CI, int64_t OldArg);
   void disableChildVarargsContexts();
@@ -1171,7 +1127,6 @@ protected:
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
   void addTraversingInst(ValCtx);
   virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
-  bool CollectMTIsFrom(ValCtx& Start, std::vector<ValCtx>& MTIs);
   void tryKillAllMTIs();
   void tryKillAllMTIsFromBB(BasicBlock*, SmallSet<BasicBlock*, 8>&);
   void tryKillAllStores();
@@ -1217,40 +1172,25 @@ protected:
   bool updateBasePointer(Value* V, bool finalise, );
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
-  void queueUpdatePB(IntegrationAttempt*, Value*, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
-  void queueUsersUpdatePB(Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
-  void queueUserUpdatePB(Value*, Instruction* User, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
-  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
-  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUpdatePB(IntegrationAttempt*, Value*, LoopPBAnalyser*);
+  void queueUsersUpdatePB(Value* V, LoopPBAnalyser*);
+  void queueUserUpdatePB(Value*, Instruction* User, LoopPBAnalyser*);
+  void queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, LoopPBAnalyser*);
+  void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser*);
   void resolvePointerBase(Value* V, PointerBase&);
-  void queuePendingWorkFromUpdatedPB(Value* V, PointerBase&);
-  void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L);
-  void queuePBUpdateIfUnresolved(Value *V);
-  void queueUpdatePBWholeLoop(const Loop*);
+  void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
+  void queuePBUpdateIfUnresolved(Value *V, LoopPBAnalyser*);
+  void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
   virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) = 0;
   void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
   bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
-  void removeMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx);
   void addStartOfScopePB(LoadForwardAttempt&);
   void addStoreToLoadSolverWork(Value* V);
-  std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(const Loop* childLoop);
-  std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop(CallInst*);
-  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop() = 0;
-  std::pair<IntegrationAttempt*, const Loop*> getOutermostLoop(Value* V);
   bool shouldCheckPB(Value*);
-
-  // PBA caching:
-  void zapDefOrClobberCache(LoadInst* LI);
-  void addCallBlockedPBLoad(CallInst* CI, LoadInst* LI, IntegrationAttempt* IA);
-  void addCFGDependentPBLoad(LoadInst* LI, IntegrationAttempt* IA);
-  void dismissCallBlockedPBLoads(CallInst* CI);
-  void localCFGChanged();
-
   std::string describeLFA(LoadForwardAttempt& LFA);
-  void printConsiderCount(DenseMap<ValCtx, int>& in, int n);
 
   // Enabling / disabling exploration:
 
@@ -1413,14 +1353,10 @@ public:
 
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
 
-  void queueCheckExitBlock(BasicBlock* BB);
   void checkExitEdge(BasicBlock*, BasicBlock*);
   void checkFinalIteration();
 
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
-
-  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
-  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
   virtual InlineAttempt* getFunctionRoot();
 
@@ -1459,8 +1395,6 @@ public:
   virtual bool ctxContains(IntegrationAttempt*);
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
-
-  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
 
   virtual bool stackIncludesCallTo(Function*);
 
@@ -1674,7 +1608,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool ctxContains(IntegrationAttempt*);
 
   bool getArgBasePointer(Argument*, PointerBase&);
-  void queueUpdateCall(bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+  void queueUpdateCall(LoopPBAnalyser*);
 
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 

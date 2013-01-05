@@ -1059,7 +1059,7 @@ void IntegrationAttempt::getDependencies(LFAQueryable& LFA, SmallVector<BasicBlo
 
 }
 
-void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& NLResults, bool populateCache) {
+void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& NLResults) {
 
   // Integrate the defs and clobbers found with the pointer base result.
 
@@ -1107,9 +1107,6 @@ void IntegrationAttempt::addPBResults(LoadForwardAttempt& RealLFA, SmallVector<N
     else if(Res.isNonLocal()) {
       continue;
     }
-
-    if(populateCache && Res.getInst())
-      RealLFA.DefOrClobberInstructions.push_back(make_vc(Res.getInst(), ResCtx));
 
     // If we're in the optimistic phase, ignore anything but the following:
     // * Defining stores with an associated PB
@@ -1372,7 +1369,7 @@ MemDepResult IntegrationAttempt::getUniqueDependency(LFAQueryable& LFA, SmallVec
 
     }
 
-    addPBResults(RealLFA, PBResults, true);
+    addPBResults(RealLFA, PBResults);
 
   }
   else {
@@ -3879,9 +3876,8 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
 
   if(Arg != F.arg_end()) {
     IA->setReplacement(Arg, const_vc(Val));
-    IA->investigateUsers(Arg);
   }
-  // Else it's varargs, and loads get investigated anyway.
+  // Else it's varargs, which are discovered through LF rather than direct propagation
 
 }
 
@@ -4105,9 +4101,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   parseArgs(IA, F);
 
-  IA->queueInitialWork();
-
-  runQueues();
+  IA->analyse();
 
   DEBUG(dbgs() << "Finding dead MTIs\n");
   IA->tryKillAllMTIs();

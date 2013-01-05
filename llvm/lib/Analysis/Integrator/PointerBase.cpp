@@ -576,12 +576,6 @@ void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, Integr
 
 }
 
-void IntegrationAttempt::removeMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
-
-  memWriterEffects[I].erase(std::make_pair(LI, Ctx));
-
-}
-
 void IntegrationAttempt::addCallBlockedPBLoad(CallInst* CI, LoadInst* LI, IntegrationAttempt* IA) {
 
   callBlockedPBLoads[CI].push_back(std::make_pair(LI, IA));
@@ -1011,19 +1005,6 @@ void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* Ta
 
   if(investigateHere)
     queueUsersUpdatePBFalling(I, MyL, V, LPBA);
-
-}
-
-void IntegrationAttempt::printConsiderCount(DenseMap<ValCtx, int>& in, int n) {
-
-  std::vector<std::pair<int, ValCtx> > results;
-  for(DenseMap<ValCtx, int>::iterator it = in.begin(), it2 = in.end(); it != it2; ++it)
-    results.push_back(std::make_pair(it->second, it->first));
-
-  std::sort(results.begin(), results.end());
-  
-  for(int i = results.size() - 1; i >= 0 && i >= (int)(results.size() - (n + 1)); --i)
-    errs() << itcache(results[i].second) << ": " << results[i].first << "\n";
 
 }
 

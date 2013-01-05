@@ -62,25 +62,6 @@ namespace llvm {
 
 }
 
-class InvestigateVisitor : public VisitorContext {
-
-  Value* V;
-
-public:
-
-  InvestigateVisitor(Value* _V) : V(_V) { }
-
-  virtual void visit(IntegrationAttempt* Ctx, Instruction* UserI) {
-
-    Ctx->queueTryEvaluateGeneric(UserI, V);
-
-  }
-
-  virtual void notifyUsersMissed() { }
-  virtual bool shouldContinue() { return true; }
-
-};
-
 bool IntegrationAttempt::openCallSucceeds(Value* V) {
 
   return forwardableOpenCalls[cast<CallInst>(V)]->success;
