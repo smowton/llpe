@@ -29,6 +29,9 @@
 #include <list>
 #include <vector>
 
+#include <sys/types.h>
+#include <unistd.h>
+
 using namespace llvm;
 
 namespace {

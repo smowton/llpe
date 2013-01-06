@@ -72,7 +72,9 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
   if(blockIsDead(BB))
     return;
 
-  const Loop* BBL = getBlockScopeVariant(BB);
+  // Use getLoopFor instead of getBlockScopeVariant because even if the loop is explicitly
+  // ignored we want to notice that it exists so we can call analyseLoopPBs.
+  const Loop* BBL = LI[&F]->getLoopFor(BB);
     
   if(BBL != MyL) {
 
@@ -139,8 +141,10 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
 
     tryEvaluate(BI);
 
-    if(LoadInst* LI = dyn_cast<LoadInst>(BI))
-      checkLoad(LI);
+    if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
+      if(isUnresolved(LI))
+	checkLoad(LI);
+    }
 
     // This works for either LF or ordinary const prop:
     if(isUnresolved(BI))

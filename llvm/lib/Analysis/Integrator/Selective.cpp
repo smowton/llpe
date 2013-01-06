@@ -86,8 +86,6 @@ uint64_t IntegrationAttempt::disablePeel(const Loop* L, bool simulateOnly) {
 
   if(simulateOnly)
     ignorePAs.erase(L);
-  else
-    pass->getRoot()->collectStats();
 
   return totalResurrected;
 
@@ -124,8 +122,6 @@ uint64_t IntegrationAttempt::disableInline(CallInst* CI, bool simulateOnly) {
 
   if(simulateOnly)
     ignoreIAs.erase(CI);
-  else
-    pass->getRoot()->collectStats();
 
   return totalResurrected;
 
@@ -384,8 +380,6 @@ void IntegrationAttempt::enablePeel(const Loop* L) {
   // All of the above will have populated the DIE queue. Empty it.
   pass->runDIEQueue();
 
-  pass->getRoot()->collectStats();
-
 }
 
 void IntegrationAttempt::enableInline(CallInst* CI) {
@@ -408,8 +402,6 @@ void IntegrationAttempt::enableInline(CallInst* CI) {
   IA->retryDeadVFSOps();
 
   pass->runDIEQueue();
-
-  pass->getRoot()->collectStats();
 
 }
 
@@ -456,6 +448,8 @@ void InlineAttempt::setEnabled(bool en) {
   else
     parent->disableInline(CI, false);
 
+  pass->getRoot()->collectStats();
+
 }
 
 void PeelIteration::setEnabled(bool en) {
@@ -470,6 +464,8 @@ void PeelAttempt::setEnabled(bool en) {
     parent->enablePeel(L);
   else
     parent->disablePeel(L, false);
+
+  pass->getRoot()->collectStats();
 
 }
 

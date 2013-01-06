@@ -922,7 +922,7 @@ void IntegrationAttempt::commitLocalPointers() {
     if(VI == CommittedValues.end())
       continue;
 
-    errs() << "Replace instruction " << *(VI->second) << " with " << *(it->second.first);
+    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first));
 
     Instruction* replaceWith = it->second.second->getCommittedValue(it->second.first);
     if(!replaceWith)
