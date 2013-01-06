@@ -285,6 +285,8 @@ void ForwardIAWalker::walkInternal() {
       BIC ThisStart = ((*CList)[i]).first;
       void* Ctx = ((*CList)[i]).second;
       CallInst* StoppedCI = 0;
+
+      errs() << "Walk from " << ThisStart.ctx->itcache(*(ThisStart.it)) << "\n";
       WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, Ctx, StoppedCI);
 
       if(thisBlockResult == WIRStopThisPath)
@@ -465,6 +467,12 @@ void IntegrationAttempt::queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walk
 	    assert(SuccLoop->getHeader() == SB);
 	    Walker->queueWalkFrom(BIC(SB->begin(), SB, LPA->Iterations[0]), Ctx, !firstSucc);
 	    firstSucc = false;
+
+	  }
+	  else {
+
+	    // Otherwise we're entering an unexpanded loop, just walk it here.
+	    queueHere = true;
 
 	  }
 
