@@ -746,10 +746,12 @@ void IntegrationAttempt::foldVFSCalls() {
     }
     else {
 
-      // OK to comment this because definitely no VFS users -> all users must get deleted?
       // Can't delete open if it has direct users still!
-      //if(!deadValues.count(it->first))
-      //continue;
+      // This could be done much better if we could retain the original open for later reference.
+      // Do this soon by cloning everything before manipulating it, meaning pointers to values will
+      // remain live throughout the commit process.
+      if(!deadValues.count(it->first))
+	continue;
 
       if(it->second->MayDelete)
 	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
@@ -761,7 +763,8 @@ void IntegrationAttempt::foldVFSCalls() {
   for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
 
     if(it->second.MayDelete && it->second.openArg->MayDelete) {
-      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
+      if(it->second.openVC.second->inDeadValues(it->second.openVC.first))
+	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
     }
     
   }
@@ -919,7 +922,7 @@ void IntegrationAttempt::commitLocalPointers() {
     if(VI == CommittedValues.end())
       continue;
 
-    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first));
+    errs() << "Replace instruction " << *(VI->second) << " with " << *(it->second.first);
 
     Instruction* replaceWith = it->second.second->getCommittedValue(it->second.first);
     if(!replaceWith)

@@ -284,7 +284,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   }
   else if(F->getName() == "close") {
 
-    resolvedCloseCalls[CI] = CloseFile(&OS);    
+    resolvedCloseCalls[CI] = CloseFile(&OS, OpenCall);    
     setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
     return true;
 

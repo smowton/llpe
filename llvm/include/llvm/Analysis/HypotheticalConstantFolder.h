@@ -672,9 +672,10 @@ struct CloseFile {
 
   struct OpenStatus* openArg;
   bool MayDelete;
+  ValCtx openVC;
 
-CloseFile(struct OpenStatus* O) : openArg(O), MayDelete(false) {}
-CloseFile() : openArg(0), MayDelete(false) {}
+CloseFile(struct OpenStatus* O, ValCtx VC) : openArg(O), MayDelete(false), openVC(VC) {}
+CloseFile() : openArg(0), MayDelete(false), openVC(VCNull) {}
 
 };
 
