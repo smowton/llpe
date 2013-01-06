@@ -1674,7 +1674,7 @@ ValCtx IntegrationAttempt::getForwardedValue(LoadForwardAttempt& LFA, MemDepResu
     else {
 
       LPDEBUG("This does not complete the load: requerying starting at " << itcache(*(Res.getInst())) << "\n");
-      return ResAttempt->tryForwardLoad(LFA, Res.getInst());
+      return ResAttempt->tryForwardLoad(LFA, Res.getInst(), pvIsTainted);
 
     }
   }
