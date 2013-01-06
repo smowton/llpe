@@ -725,11 +725,11 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if(!shouldInlineFunction(CI))
+  if(!shouldInlineFunction(CI)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return 0;
   }
-
+  
   if(getLoopContext() != getValueScope(CI)) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
@@ -1410,24 +1410,6 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
   }
 
   return Ultimate;
-
-}
-
-void IntegrationAttempt::blockVA(ValCtx LoadVC) {
-
-  BlockedVALoads.push_back(LoadVC);
-
-}
-
-void IntegrationAttempt::queueBlockedVAs() {
-  
-  for(SmallVector<ValCtx, 1>::iterator it = BlockedVALoads.begin(), it2 = BlockedVALoads.end(); it != it2; ++it) {
-
-    pass->queueCheckLoad(it->second, cast<LoadInst>(it->first));
-
-  }
-
-  BlockedVALoads.clear();
 
 }
 
@@ -2143,35 +2125,6 @@ bool IntegrationAttempt::tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAt
 
 }
 
-void IntegrationAttempt::addBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
-
-  InstBlockedLoads[BlockedOn].push_back(std::make_pair(RetryCtx, RetryLI));
-
-}
-
-void IntegrationAttempt::addCFGBlockedLoad(IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
-  
-  // This is probably a LFAPB attempt. Don't record it here because we'd inappropriately
-  // retry in the wrong scope.
-  if(RetryCtx->getValueScope(RetryLI) != RetryCtx->getLoopContext())
-    return;
-  CFGBlockedLoads.push_back(std::make_pair(RetryCtx, RetryLI));
-
-}
-
-// Consider whether the forwarding of a given load might have failed due to the need to expand a loop.
-// If so, queue it.
-void IntegrationAttempt::queueLoopExpansionBlockedLoad(Instruction* BlockedOn, IntegrationAttempt* RetryCtx, LoadInst* RetryLI) {
-
-  if(getLoopContext() != getValueScope(BlockedOn)) {
-
-    LPDEBUG("Looks like this failure might be due to not having expanded a loop yet. Queueing.\n");
-    addCFGBlockedLoad(RetryCtx, RetryLI);
-
-  }
-
-}
-
 void PeelIteration::describe(raw_ostream& Stream) const {
 
   Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << "/" << SeqNumber << ")";
@@ -2478,9 +2431,8 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
   errs() << ": ";
   errs() << "imp " << improvedValues.size() << " db " << deadBlocks.size() << " de " << deadEdges.size()
 	 << " cb " << certainBlocks.size() << " dv " << deadValues.size() << " uw " << unusedWriters.size()
-	 << " uwttc " << unusedWritersTraversingThisContext.size() << " cbl " << CFGBlockedLoads.size()
-	 << " ibl " << InstBlockedLoads.size() << " cbo " << CFGBlockedOpens.size() 
-	 << " ibo " << InstBlockedOpens.size() << " foc " << forwardableOpenCalls.size()
+	 << " uwttc " << unusedWritersTraversingThisContext.size()
+	 << " foc " << forwardableOpenCalls.size()
 	 << " rrc " << resolvedReadCalls.size() << " rsc " << resolvedSeekCalls.size()
 	 << " rcc " << resolvedCloseCalls.size() << "\n";
 
@@ -3658,6 +3610,9 @@ inline bool operator>=(IntegratorWQItem W1, IntegratorWQItem W2) {
   return !(W1 < W2);
 }
 
+}
+
+/*
 static Value* getWrittenPointer(Instruction* I) {
 
   if(StoreInst* SI = dyn_cast<StoreInst>(I))
@@ -3667,6 +3622,7 @@ static Value* getWrittenPointer(Instruction* I) {
   return 0;
 
 }
+*/
 
 void IntegrationHeuristicsPass::runDIEQueue() {
 
@@ -4138,7 +4094,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
 }
 
-void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
+  void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
 
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();

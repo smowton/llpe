@@ -98,7 +98,7 @@ public:
 // Context objects for these writers are bool vectors sized to match the writer's byte count.
 // Each field indicates whether that byte has been written on this path.
 
-void StoreUsedWalker::freeContext(void* V) {
+void WriterUsedWalker::freeContext(void* V) {
 
   if(V) {
     std::vector<bool>* Ctx = (std::vector<bool>*)V;
@@ -107,7 +107,7 @@ void StoreUsedWalker::freeContext(void* V) {
 
 }
 
-void* StoreUsedWalker::copyContext(void* V) {
+void* WriterUsedWalker::copyContext(void* V) {
 
   if(V) {
     std::vector<bool>* Ctx = (std::vector<bool>*)V;
@@ -129,7 +129,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
   }
   else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(I)) {
 
-    ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(IA->getConstReplacement(MI->getLength()));
+    ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
     uint64_t MISize;
     if(SizeC)
       MISize = SizeC->getZExtValue();
@@ -158,7 +158,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
     // If the size is unknown we must assume zero.
     if(MISize != AliasAnalysis::UnknownSize) {
 
-      if(DSEHandleWrite(make_vc(MI->getDest(), this), MISize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+      if(DSEHandleWrite(make_vc(MI->getDest(), this), MISize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
 	return WIRStopThisPath;
       else
 	return WIRContinue;
@@ -171,7 +171,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
     DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
     if(RI != resolvedReadCalls.end()) {
 
-      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
 	return WIRStopThisPath;
       else
 	return WIRContinue;
@@ -179,7 +179,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
     }
 
   }
-  else if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
+  else if(LoadInst* LI = dyn_cast<LoadInst>(I)) {
 
     Value* Pointer = LI->getPointerOperand();
     uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
@@ -199,12 +199,12 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
     }
 
   }
-  else if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
+  else if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
 
     Value* Pointer = SI->getPointerOperand();
     uint64_t StoreSize = AA->getTypeStoreSize(SI->getValueOperand()->getType());
 
-    if(DSEHandleWrite(make_vc(Pointer, this), StoreSize, StorePtr, Size, StoreBase, StoreOffset, deadBytes))
+    if(DSEHandleWrite(make_vc(Pointer, this), StoreSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
       return WIRStopThisPath;
     else
       return WIRContinue;
@@ -215,12 +215,17 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, Val
 
 }
 
-WalkInstructionResult StoreUsedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void* Ctx) {
+WalkInstructionResult WriterUsedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void* Ctx) {
 
   WalkIAs.insert(IA);
 
   std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
   WalkInstructionResult Res = IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
+
+  if(Res == WIRStopWholeWalk)
+    writeUsed = true;
+
+  return Res;
 
 }
 
@@ -231,15 +236,13 @@ bool IntegrationAttempt::callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Siz
 
 }
 
-bool StoreUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+bool WriterUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
   return IA->callUsesPtr(CI, StorePtr, StoreSize);
 
 }
 
 bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
-
-  bool* deadBytes;
 
   LPDEBUG("Trying to kill instruction " << itcache(*Writer) << "\n");
 
@@ -248,7 +251,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
   if(Size != AliasAnalysis::UnknownSize) {
     std::vector<bool>* Ctx = new std::vector<bool>();
     Ctx->reserve(Size);
-    Ctx->insert(initialCtx->begin(), Size, false);
+    Ctx->insert(Ctx->begin(), Size, false);
     initialCtx = Ctx;
   }
 
@@ -265,7 +268,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
 
   if(!Walk.writeUsed) {
     unusedWriters.insert(Writer);
-    for(SmallVector<IntegrationAttempt*, 4>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
+    for(DenseSet<IntegrationAttempt*>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
 
       (*it)->addTraversingInst(make_vc(Writer, this));
 
@@ -320,8 +323,8 @@ bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCt
     for(uint64_t i = 0; i < Size && Finished; ++i) {
 
       if(i >= FirstDef && i < FirstNotDef)
-	deadBytes[i] = true;
-      else if(!deadBytes[i])
+	(*deadBytes)[i] = true;
+      else if(!((*deadBytes)[i]))
 	Finished = false;
 
     }
@@ -407,7 +410,7 @@ void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBloc
     const Loop* SuccBBL = LI[&F]->getLoopFor(SuccBB);
     if(SuccBBL != MyL && ((!MyL) || MyL->contains(SuccBBL))) {
       // Loop within this one:
-      if(PeelAttempt* LPA = getInlineAttempt(SuccBBL)) {
+      if(PeelAttempt* LPA = getPeelAttempt(SuccBBL)) {
 
 	// Do loop successors first:
 	SmallVector<BasicBlock*, 4> ExitBlocks;
@@ -440,7 +443,7 @@ void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBloc
   }
 
   // Now process this block, knowing for sure all blocks that may follow from it have been processed:
-  for(BasicBlock::iterator it = BB->end(); itend = BB->begin(); it != itend; --it) {
+  for(BasicBlock::iterator it = BB->end(), itend = BB->begin(); it != itend; --it) {
 
     BasicBlock::iterator I = it;
     --I;

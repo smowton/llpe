@@ -760,7 +760,7 @@ void IntegrationAttempt::foldVFSCalls() {
 
   for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
 
-    if(it->second.MayDelete && it->second.OpenInst->MayDelete) {
+    if(it->second.MayDelete && it->second.openArg->MayDelete) {
       deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
     }
     

@@ -18,6 +18,16 @@
 // For the topo walk, use reverse postorder DFS, where loop headers are entered in the ordering
 // implying that we should at that point enter the loop rather than listing all blocks in some order.
 
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+
+#include "llvm/BasicBlock.h"
+#include "llvm/Function.h"
+#include "llvm/Instructions.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Support/Debug.h"
+
+using namespace llvm;
+
 void IntegrationAttempt::analyse() {
 
   std::vector<BasicBlock*> topOrderedBlocks;
@@ -27,14 +37,14 @@ void IntegrationAttempt::analyse() {
 
   for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
 
-    analyseBlock(*it, MyL, true);
+    analyseBlock(*it);
 
   }
 
 }
 
 void PeelAttempt::analyse() {
-
+  
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
     PI->analyse();
@@ -111,16 +121,12 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
 
     }
 
-    if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
+    tryEvaluate(BI);
 
+    if(LoadInst* LI = dyn_cast<LoadInst>(BI))
       checkLoad(LI);
-      if(isUnresolved(LI))
-	checkLoadPB(LI);
 
-    }
-
-    if(isUnresolved(BI))
-      tryEvaluate(BI);
+    // This works for either LF or ordinary const prop:
     if(isUnresolved(BI))
       updateBasePointer(BI, true);
 
@@ -134,39 +140,20 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
     return;
 
   const Loop* BBL = getBlockScopeVariant(BB);
+  
+  // Drifted out of scope?
+  if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
+    return;
 
-  if(MyL != BBL) {
+  if(enterLoops && (MyL != BBL)) {
 
-    if((!MyL) || MyL->contains(BBL)) {
-
-      if(enterLoops) {
-
-	// Child loop. Use the loop successors rather than the block successors.
-	SmallVector<BasicBlock*, 4> ExitBlocks;
-	BBL->getExitBlocks(ExitBlocks);
-	for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
-	
-	  createTopOrderingFrom(*it, Result, Visited);
-
-	}
-
-      }
-      else {
-	
-	for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-	  createTopOrderingFrom(*SI, Result, Visited, MyL);
-
-	}
-
-      }
-
-    }
-    else {
-
-      // Block not in scope!
-      return;
-
+    // Child loop. Use the loop successors rather than the block successors.
+    SmallVector<BasicBlock*, 4> ExitBlocks;
+    BBL->getExitBlocks(ExitBlocks);
+    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
+      
+      createTopOrderingFrom(*it, Result, Visited, MyL, enterLoops);
+      
     }
 
   }

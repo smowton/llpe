@@ -268,14 +268,44 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
-typedef struct _BIC {
+struct BIC {
   BasicBlock::iterator it;
   BasicBlock* BB;
   IntegrationAttempt* ctx;
 
-_BIC(BasicBlock::iterator _it, BasicBlock* BB, IntegrationAttempt* _ctx) : it(_it), ctx(_ctx) { }
-_BIC(Instruction* I, IntegrationAttempt* _ctx);  
-} BIC;
+BIC(BasicBlock::iterator _it, BasicBlock* BB, IntegrationAttempt* _ctx) : it(_it), ctx(_ctx) { }
+BIC(Instruction* I, IntegrationAttempt* _ctx);
+};
+
+inline bool operator==(const BIC& B1, const BIC& B2) {
+  return B1.it == B2.it && B1.BB == B2.BB && B1.ctx == B2.ctx;
+}
+
+inline bool operator!=(const BIC& B1, const BIC& B2) {
+  return !(B1 == B2);
+}
+
+inline bool operator<(const BIC& B1, const BIC& B2) {
+
+  if(B1.BB != B2.BB) 
+    return B1.BB < B2.BB;
+  if(B1.it != B2.it)
+    return ((Instruction*)B1.it) < ((Instruction*)B2.it);
+  return B1.ctx < B2.ctx;
+    
+}
+
+inline bool operator>(const BIC& B1, const BIC& B2) {
+  return B2 < B1;
+}
+
+inline bool operator<=(const BIC& B1, const BIC& B2) {
+  return B1 < B2 || B1 == B2;
+}
+
+inline bool operator>=(const BIC& B1, const BIC& B2) {
+  return B1 > B2 || B1 == B2;
+}
 
 class IntegrationHeuristicsPass : public ModulePass {
 
@@ -781,6 +811,8 @@ enum WalkInstructionResult {
 
 class IAWalker {
 
+ protected:
+
   SmallSet<BIC, 8> Visited;
   SmallVector<std::pair<BIC, void*>, 8> Worklist1;
   SmallVector<std::pair<BIC, void*>, 8> Worklist2;
@@ -816,7 +848,7 @@ class IAWalker {
 
 class BackwardIAWalker : public IAWalker {
   
-  void walkFromInst(BIC);
+  WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
   
  public:
@@ -827,7 +859,7 @@ class BackwardIAWalker : public IAWalker {
 
 class ForwardIAWalker : public IAWalker {
   
-  void walkFromInst(BIC);
+  WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
   
  public:
@@ -1027,6 +1059,12 @@ protected:
   
   virtual InlineAttempt* getFunctionRoot() = 0;
 
+  // The toplevel loop:
+  void analyse();
+  void analyseBlock(BasicBlock* BB);
+  void analyseBlockInstructions(BasicBlock* BB);
+  void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops);
+
   // Constant propagation:
 
   bool shouldTryEvaluate(Value* ArgV, bool verbose = true);
@@ -1067,7 +1105,7 @@ protected:
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(CallInst* CI);
-  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI, bool requireCertainty = true);
+  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -1100,18 +1138,18 @@ protected:
   void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
 
   // Support functions for the generic IA graph walkers:
-  void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker);
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker) = 0;
-  void queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
-  void queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker);
-  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker);
-  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker) = 0;
+  void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx) = 0;
+  void queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
+  void queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* ctx);
+  virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
 
   // VFS call forwarding:
 
   virtual bool isForwardableOpenCall(Value*);
   bool openCallSucceeds(Value*);
-  virtual int64_t tryGetIncomingOffset(Value*);
+  virtual int64_t tryGetIncomingOffset(CallInst*);
   virtual ReadFile* tryGetReadFile(CallInst* CI);
   bool tryPromoteOpenCall(CallInst* CI);
   void tryPromoteAllCalls();
@@ -1128,7 +1166,7 @@ protected:
   OpenStatus& getOpenStatus(CallInst*);
   void tryKillAllVFSOps();
   void markCloseCall(CallInst*);
-  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) = 0;
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) = 0;
   void recordDependentContexts(CallInst* CI, SmallVector<ValCtx, 4>& Deps);
 
   // Tricky load forwarding (stolen from GVN)
@@ -1186,10 +1224,12 @@ protected:
   bool tryKillAlloc(Instruction* Alloc);
   bool tryKillRead(CallInst*, ReadFile&);
   bool tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
-  bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes);
+  bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes);
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
   void addTraversingInst(ValCtx);
   virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
+  WalkInstructionResult noteBytesWrittenBy(Instruction* I, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes);
+  bool callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Size);
   void tryKillAllMTIs();
   void tryKillAllMTIsFromBB(BasicBlock*, SmallSet<BasicBlock*, 8>&);
   void tryKillAllStores();
@@ -1254,6 +1294,7 @@ protected:
   void addStoreToLoadSolverWork(Value* V);
   bool shouldCheckPB(Value*);
   std::string describeLFA(LoadForwardAttempt& LFA);
+  void analyseLoopPBs(const Loop* L);
 
   // Enabling / disabling exploration:
 
@@ -1278,8 +1319,6 @@ protected:
   uint64_t walkLoadsFromFoldedContexts(bool revert, bool simulateOnly);
   void revertDeadVFSOp(CallInst* CI);
   void retryDeadVFSOp(CallInst* CI);
-  void revertDeadVFSOps();
-  void retryDeadVFSOps();
 
   // Estimating inlining / unrolling benefit:
 
@@ -1395,9 +1434,6 @@ class PeelIteration : public IntegrationAttempt {
   BasicBlock* LHeader;
   BasicBlock* LLatch;
 
-  PeelIteration* getNextIteration();
-  PeelIteration* getOrCreateNextIteration();
-
 public:
 
   PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
@@ -1405,6 +1441,9 @@ public:
 		DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth);
 
   IterationStatus iterStatus;
+
+  PeelIteration* getNextIteration();
+  PeelIteration* getOrCreateNextIteration();
 
   virtual Instruction* getEntryInstruction();
   virtual BasicBlock* getEntryBlock();
@@ -1463,10 +1502,10 @@ public:
 
   virtual void reduceDependentLoads(int64_t);
 
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
-  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
-  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
 
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
@@ -1524,6 +1563,8 @@ class PeelAttempt {
 	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth);
    ~PeelAttempt();
 
+   void analyse();
+
    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
 
    PeelIteration* getIteration(unsigned iter);
@@ -1573,7 +1614,7 @@ class PeelAttempt {
 
    void removeBlockFromLoops(BasicBlock*);
    
-   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, bool queueInLoopNow, bool pendInLoop, bool pendOutOfLoop);
+   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser*);
 
    void reduceDependentLoads(int64_t);
 
@@ -1586,7 +1627,7 @@ class PeelAttempt {
 
    void disableVarargsContexts();
 
-   void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
+   void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
 
    void revertDeadVFSOps();
    void retryDeadVFSOps();
@@ -1690,11 +1731,14 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
 
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker);
-  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker);
-  virtual void queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker);
+  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* ctx);
+  virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
-  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs);
+  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
+
+  void revertDeadVFSOps();
+  void retryDeadVFSOps();
 
   void disableVarargsContexts();
 

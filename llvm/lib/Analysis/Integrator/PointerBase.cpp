@@ -576,18 +576,6 @@ void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, Integr
 
 }
 
-void IntegrationAttempt::addCallBlockedPBLoad(CallInst* CI, LoadInst* LI, IntegrationAttempt* IA) {
-
-  callBlockedPBLoads[CI].push_back(std::make_pair(LI, IA));
-
-}
-
-void IntegrationAttempt::addCFGDependentPBLoad(LoadInst* LI, IntegrationAttempt* IA) {
-
-  CFGDependentPBLoads.insert(std::make_pair(LI, IA));
-
-}
-
 // Do load forwarding, possibly in optimistic mode: this means that
 // stores that def but which have no associated PB are optimistically assumed
 // to be compatible with anything, the same as the mergepoint logic above
@@ -1100,7 +1088,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, Loo
 
     for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
 
-      queuePBUpdateIfUnresolved(AI);
+      queuePBUpdateIfUnresolved(AI, LPBA);
 
     }
 
@@ -1117,7 +1105,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, Loo
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 	
-	queuePBUpdateIfUnresolved(II);
+	queuePBUpdateIfUnresolved(II, LPBA);
 
       }
 
@@ -1133,7 +1121,7 @@ void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L, LoopPBAnalyser* L
 
   //bool verbose = false;
 
-  queuePBUpdateAllUnresolvedVCsInScope(L);
+  queuePBUpdateAllUnresolvedVCsInScope(L, LPBA);
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
@@ -1208,7 +1196,7 @@ void LoopPBAnalyser::run() {
   endit = std::unique(updatedVCs.begin(), updatedVCs.end());
   for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 	
-    queueUpdatePB(startit->second, startit->first);
+    queueUpdatePB(make_vc(startit->first, startit->second));
 
   }
 
@@ -1226,7 +1214,7 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
 
   // Step 1: queue VCs falling within this loop.
 
-  it->first->queueUpdatePBWholeLoop(it->second, LPBA);
+  queueUpdatePBWholeLoop(L, &LPBA);
 
   // Step 2: consider every result in optimistic mode until stable.
   // In this mode, undefineds are ok and clobbers are ignored on the supposition that
@@ -1236,12 +1224,6 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
   // and undefined == overdefined.
 
   LPBA.run();
-
-}
-
-void IntegrationHeuristicsPass::queueUpdatePB(IntegrationAttempt* IA, Value* V) {
-
-  PBProduceQ->push_back(make_vc(V, IA));
 
 }
 

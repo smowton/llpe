@@ -116,7 +116,7 @@ uint64_t IntegrationAttempt::disableInline(CallInst* CI, bool simulateOnly) {
   }
 
   if(!simulateOnly)
-    PA->revertDeadVFSOps();
+    IA->revertDeadVFSOps();
 
   // Callers that set simulateOnly approximate this for themselves, and this method is expensive.
   if(!simulateOnly)
@@ -589,69 +589,6 @@ void IntegrationAttempt::retryLoadsFromFoldedContexts() {
   walkLoadsFromFoldedContexts(false, false);
 }
 
-void IntegrationAttempt::revertDeadVFSOp(CallInst* CI) {
-
-  DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
-  if(it != forwardableOpenCalls.end()) {
-    it->second->MayDelete = false;
-    return;
-  }
-
-  DenseMap<CallInst*, ReadFile>::iterator it2 = resolvedReadCalls.find(CI);
-  if(it2 != resolvedReadCalls.end()) {
-    it2->second.needsSeek = true;
-    return;
-  }
-
-  DenseMap<CallInst*, SeekFile>::iterator it3 = resolvedSeekCalls.find(CI);
-  if(it3 != resolvedSeekCalls.end()) {
-    it3->second.MayDelete = false;
-    return;
-  }
-
-}
-
-void IntegrationAttempt::retryDeadVFSOp(CallInst* CI) {
-
-  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-  if(it != resolvedReadCalls.end()) {
-
-    ValCtx FD = getReplacement(it->first->getArgOperand(0));
-    SeekInstructionUnusedWalker Walk(FD, it->first, this);
-    Walk.walk();
-    if(!Walk.seekNeeded)
-      it->second->needsSeek = false;
-    return;
-
-  }
-
-  DenseMap<CallInst*, SeekFile>::iterator it2 = resolvedSeekCalls.find(CI);
-  if(it2 != resolvedSeekCalls.end()) {
-
-    ValCtx FD = getReplacement(it2->first->getArgOperand(0));
-    SeekInstructionUsedWalker Walk(FD, it2->first, this);
-    Walk.walk();
-    if(!Walk.seekNeeded)
-      it->second->MayDelete = true;
-    return;
-
-  }
-  
-  DenseMap<CallInst*, OpenStatus*>::iterator it3 = forwardableOpenCalls.find(CI);
-  if(it3 != forwardableOpenCalls.end()) {
-
-    OpenInstructionUnusedWalker Walk(it->first, this);
-    Walk.walk();
-    if(!Walk.residualUserFound) {
-
-      it->second->MayDelete = true;
-
-    }
-
-  }
-
-}
-
 void PeelAttempt::revertDeadVFSOps() {
 
   for(SmallVector<ValCtx, 4>::iterator it = deadVFSOpsTraversingHere.begin(), it2 = deadVFSOpsTraversingHere.end(); it != it2; ++it) {
@@ -672,7 +609,7 @@ void PeelAttempt::retryDeadVFSOps() {
 
 }
 
-void IntegrationAttempt::revertDeadVFSOps() {
+void InlineAttempt::revertDeadVFSOps() {
 
   for(SmallVector<ValCtx, 4>::iterator it = deadVFSOpsTraversingHere.begin(), it2 = deadVFSOpsTraversingHere.end(); it != it2; ++it) {
 
@@ -682,7 +619,7 @@ void IntegrationAttempt::revertDeadVFSOps() {
 
 }
 
-void IntegrationAttempt::retryDeadVFSOps() {
+void InlineAttempt::retryDeadVFSOps() {
 
   for(SmallVector<ValCtx, 4>::iterator it = deadVFSOpsTraversingHere.begin(), it2 = deadVFSOpsTraversingHere.end(); it != it2; ++it) {
 

@@ -121,7 +121,7 @@ class FindVFSPredecessorWalker : public BackwardIAWalker {
 
 public:
 
-  int64_t unqiueIncomingOffset;
+  int64_t uniqueIncomingOffset;
 
   FindVFSPredecessorWalker(CallInst* CI, IntegrationAttempt* IA, ValCtx _FD) 
     : BackwardIAWalker(SourceOp, SourceCtx, true), SourceOp(CI), SourceCtx(IA), FD(_FD),
@@ -137,7 +137,7 @@ WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, 
   // Determine whether this instruction is a VFS call using our FD.
   // No need to worry about call instructions, just return WIRContinue and we'll enter it if need be.
 
-  if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+  if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
     WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD);
     if(WIR == WIRStopThisPath) {
@@ -176,25 +176,26 @@ static bool callMayUseFD(CallInst* CI, IntegrationAttempt* IA, ValCtx FD) {
 
  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
   
-  OpenStatus& OS = FD.second->getOpenStatus(FD.first);
+  OpenStatus& OS = FD.second->getOpenStatus(cast<CallInst>(FD.first));
   Function* calledF = IA->getCalledFunction(CI);
 
   // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
-  bool ignore = false;
-  if(isa<MemIntrinsic>(CI) || isa<DbgInfoIntrinsic>(CI) || (calledF && IA->functionIsBlacklisted(calledF)))
+  if(isa<MemIntrinsic>(CI) || isa<DbgInfoIntrinsic>(CI) || (calledF && functionIsBlacklisted(calledF)))
     return false;
   else if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
     return true;
 
-  for(unsigned i = 0; i < CI->getNumArgOperands() && !callMayUseFD; ++i) {
+  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
 
     ValCtx ArgVC = IA->getReplacement(CI->getArgOperand(i));
-    if(ArgVC == OpenInst)
+    if(ArgVC == FD)
       return true;
     if(IA->isUnresolved(CI->getArgOperand(i)))
       return true;
     
   }
+
+  return false;
 
 }
 
@@ -229,9 +230,8 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     return true;
 
   ValCtx OpenCall = getReplacement(FD);
-  OpenStatus& OS = OpenCall.second->getOpenStatus(OpenCall.first);
+  OpenStatus& OS = OpenCall.second->getOpenStatus(cast<CallInst>(OpenCall.first));
 
-  bool needsWalk = false;
   if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
 
     // Check for needed values now:
@@ -275,7 +275,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
 
       // Doesn't matter what came before, resolve this call here.
       setReplacement(CI, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
-      resolveSeekCall(VFSCall, SeekFile(&OS, intOffset));
+      resolveSeekCall(CI, SeekFile(&OS, intOffset));
       return true;
 
     }
@@ -284,8 +284,8 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   }
   else if(F->getName() == "close") {
 
-    resolvedCloseCalls[VFSCall] = CloseFile(&OS);    
-    setReplacement(VFSCall, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    resolvedCloseCalls[CI] = CloseFile(&OS);    
+    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
 
   }
   // Else it's a read call, and we need the incoming file offset.
@@ -321,7 +321,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     resolveReadCall(CI, ReadFile(&OS, Walk.uniqueIncomingOffset, cBytes));
     
     // The number of bytes read is also the return value of read.
-    setReplacement(VFSCall, const_vc(ConstantInt::get(Type::getInt64Ty(VFSCall->getContext()), cBytes)));
+    setReplacement(CI, const_vc(ConstantInt::get(Type::getInt64Ty(CI->getContext()), cBytes)));
 
   }
   else {
@@ -344,14 +344,18 @@ int64_t IntegrationAttempt::tryGetIncomingOffset(CallInst* CI) {
   if(forwardableOpenCalls.count(CI))
     return 0;
 
-  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-  if(it != resolvedReadCalls.end())
-    return it->second.incomingOffset + it->second.readSize;
+  {
+    DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+    if(it != resolvedReadCalls.end())
+      return it->second.incomingOffset + it->second.readSize;
+  }
 
-  DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
-  if(it != resolvedSeekCalls.end())
-    return it->second.newOffset;
- 
+  {
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end())
+      return it->second.newOffset;
+  } 
+
   return -1;
 
 }
@@ -410,7 +414,7 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, Va
     if(isUnresolved(seekFD)) {
       return WIRStopWholeWalk;
     }
-    else if(getReplacement(seekFD) != OpenInst) {
+    else if(getReplacement(seekFD) != FD) {
       return WIRContinue;
     }
     
@@ -483,9 +487,9 @@ bool IntegrationAttempt::isUnusedReadCall(CallInst* CI) {
 
 }
 
-OpenStatus& getOpenStatus(CallInst* CI) {
+OpenStatus& IntegrationAttempt::getOpenStatus(CallInst* CI) {
 
-  return forwardableOpenCalls[CI];
+  return *(forwardableOpenCalls[CI]);
 
 }
 
@@ -640,13 +644,13 @@ WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* 
 
 }
 
-void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
 
   parentPA->recordAllParentContexts(VC, seenIAs, seenPAs);
 
 }
 
-void PeelAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+void PeelAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
 
   if(seenPAs.insert(this)) {
 
@@ -657,7 +661,7 @@ void PeelAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>
 
 }
 
-void InlineAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
+void InlineAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
 
   if(seenIAs.insert(this)) {
 
@@ -669,16 +673,10 @@ void InlineAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 
 
 }
 
-void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<InlineAttempt*, 8>& seenPAs) {
-
-  parentPA->recordAllParentContexts(VC, seenIAs, seenPAs);
-
-}
-
 void IntegrationAttempt::recordDependentContexts(CallInst* CI, SmallVector<ValCtx, 4>& Deps) {
 
   SmallSet<InlineAttempt*, 8> seenIAs;
-  SmallSet<InlineAttempt*, 8> seenPAs;
+  SmallSet<PeelAttempt*, 8> seenPAs;
 
   recordAllParentContexts(make_vc(CI, this), seenIAs, seenPAs);
 
@@ -699,7 +697,7 @@ void IntegrationAttempt::tryKillAllVFSOps() {
     Walk.walk();
     if(!Walk.seekNeeded) {
       recordDependentContexts(it->first, Walk.SuccessorInstructions);
-      it->second->needsSeek = false;
+      it->second.needsSeek = false;
     }
 
   }
@@ -707,11 +705,11 @@ void IntegrationAttempt::tryKillAllVFSOps() {
   for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
 
     ValCtx FD = getReplacement(it->first->getArgOperand(0));
-    SeekInstructionUsedWalker Walk(FD, it->first, this);
+    SeekInstructionUnusedWalker Walk(FD, it->first, this);
     Walk.walk();
     if(!Walk.seekNeeded) {
       recordDependentContexts(it->first, Walk.SuccessorInstructions);
-      it->second->MayDelete = true;
+      it->second.MayDelete = true;
     }
 
   }
@@ -757,6 +755,75 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 void IntegrationAttempt::markCloseCall(CallInst* CI) {
 
   resolvedCloseCalls[CI].MayDelete = true;
+
+}
+
+void IntegrationAttempt::revertDeadVFSOp(CallInst* CI) {
+
+  DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+  if(it != forwardableOpenCalls.end()) {
+    it->second->MayDelete = false;
+    return;
+  }
+
+  DenseMap<CallInst*, ReadFile>::iterator it2 = resolvedReadCalls.find(CI);
+  if(it2 != resolvedReadCalls.end()) {
+    it2->second.needsSeek = true;
+    return;
+  }
+
+  DenseMap<CallInst*, SeekFile>::iterator it3 = resolvedSeekCalls.find(CI);
+  if(it3 != resolvedSeekCalls.end()) {
+    it3->second.MayDelete = false;
+    return;
+  }
+
+}
+
+void IntegrationAttempt::retryDeadVFSOp(CallInst* CI) {
+
+  {
+    DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+    if(it != resolvedReadCalls.end()) {
+
+      ValCtx FD = getReplacement(it->first->getArgOperand(0));
+      SeekInstructionUnusedWalker Walk(FD, it->first, this);
+      Walk.walk();
+      if(!Walk.seekNeeded)
+	it->second.needsSeek = false;
+      return;
+
+    }
+  }
+
+  {
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end()) {
+
+      ValCtx FD = getReplacement(it->first->getArgOperand(0));
+      SeekInstructionUnusedWalker Walk(FD, it->first, this);
+      Walk.walk();
+      if(!Walk.seekNeeded)
+	it->second.MayDelete = true;
+      return;
+
+    }
+  }
+  
+  {
+    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+    if(it != forwardableOpenCalls.end()) {
+
+      OpenInstructionUnusedWalker Walk(it->first, this);
+      Walk.walk();
+      if(!Walk.residualUserFound) {
+
+	it->second->MayDelete = true;
+
+      }
+
+    }
+  }
 
 }
 
