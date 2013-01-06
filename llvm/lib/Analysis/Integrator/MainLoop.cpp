@@ -52,6 +52,8 @@ void PeelAttempt::analyse() {
 
   }
 
+  Iterations.back()->checkFinalIteration();
+
 }
 
 void IntegrationAttempt::analyseBlock(BasicBlock* BB) {

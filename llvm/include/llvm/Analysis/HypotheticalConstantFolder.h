@@ -273,7 +273,7 @@ struct BIC {
   BasicBlock* BB;
   IntegrationAttempt* ctx;
 
-BIC(BasicBlock::iterator _it, BasicBlock* BB, IntegrationAttempt* _ctx) : it(_it), ctx(_ctx) { }
+BIC(BasicBlock::iterator _it, BasicBlock* _BB, IntegrationAttempt* _ctx) : it(_it), BB(_BB), ctx(_ctx) { }
 BIC(Instruction* I, IntegrationAttempt* _ctx);
 };
 
@@ -831,7 +831,7 @@ class IAWalker {
 
  public:
 
- IAWalker(void* IC = 0) : initialContext(IC) {
+ IAWalker(void* IC = 0) : PList(&Worklist1), CList(&Worklist2), initialContext(IC) {
     
     Contexts.push_back(initialContext);
 
