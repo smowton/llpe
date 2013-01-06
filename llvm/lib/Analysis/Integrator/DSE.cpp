@@ -242,6 +242,13 @@ bool WriterUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
 }
 
+bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+
+  writeUsed = true;
+  return true;
+
+}
+
 bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
 
   LPDEBUG("Trying to kill instruction " << itcache(*Writer) << "\n");

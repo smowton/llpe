@@ -363,10 +363,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool runOnModule(Module& M);
 
-   void queueTryEvaluate(IntegrationAttempt* ctx, Value* val);
-   void queueCheckBlock(IntegrationAttempt* ctx, BasicBlock* BB);
-   void queueCheckLoad(IntegrationAttempt* ctx, LoadInst* LI);
-   void queueOpenPush(ValCtx OpenInst, ValCtx OpenProgress);
    void queueDIE(IntegrationAttempt* ctx, Value* val);
 
    void print(raw_ostream &OS, const Module* M) const;
@@ -1042,7 +1038,6 @@ protected:
   virtual Instruction* getEntryInstruction() = 0;
   virtual void collectAllLoopStats() = 0;
   void printHeader(raw_ostream& OS) const;
-  virtual void queueTryEvaluateOwnCall() = 0;
   virtual bool isOptimisticPeel() = 0;
 
   // Simple state-tracking helpers:
@@ -1093,7 +1088,7 @@ protected:
   void checkEdge(BasicBlock*, BasicBlock*, const Loop*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
   void checkLocalEdge(BasicBlock*, BasicBlock*);
-  virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
+  bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   PostDominatorTree* getPostDomTree();
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
@@ -1227,7 +1222,6 @@ protected:
   bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes);
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
   void addTraversingInst(ValCtx);
-  virtual bool tryKillStoreFrom(ValCtx& Start, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, bool* deadBytes, uint64_t Size, bool skipFirst, bool& Killed);
   WalkInstructionResult noteBytesWrittenBy(Instruction* I, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes);
   bool callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Size);
   void tryKillAllMTIs();
@@ -1449,9 +1443,7 @@ public:
   virtual BasicBlock* getEntryBlock();
   virtual const Loop* getLoopContext();
 
-  virtual bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
-  virtual void queueTryEvaluateOwnCall();
 
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
 
@@ -1667,14 +1659,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
   bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&, bool&);
 
-  virtual void queueTryEvaluateOwnCall();
-  
   ValCtx tryGetReturnValue();
   
   ValCtx getImprovedCallArgument(Argument* A);
-
-  virtual bool checkLoopIteration(BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
-  virtual bool checkOrQueueLoopIteration(ValCtx, ValCtx, BasicBlock* PresentBlock, BasicBlock* NextBlock, ValCtx& Start);
 
   virtual InlineAttempt* getFunctionRoot();
 
@@ -1717,8 +1704,6 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
 
   int64_t getSpilledVarargAfter(int64_t arg);
-
-  virtual std::pair<IntegrationAttempt*, const Loop*> getOutermostUnboundLoop();
 
   virtual void reduceDependentLoads(int64_t);
 

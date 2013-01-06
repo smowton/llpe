@@ -4053,8 +4053,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   RootIA = IA;
 
-  queueCheckBlock(IA, &(F.getEntryBlock()));
-
   parseArgs(IA, F);
 
   IA->analyse();
