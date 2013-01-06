@@ -1149,7 +1149,7 @@ protected:
   bool tryPromoteOpenCall(CallInst* CI);
   void tryPromoteAllCalls();
   bool tryResolveVFSCall(CallInst*);
-  WalkInstructionResult isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD);
+  WalkInstructionResult isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD, bool);
   ValCtx tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip);
   bool tryFoldOpenCmp(CmpInst* CmpI, ValCtx&);
   virtual void resolveReadCall(CallInst*, struct ReadFile);

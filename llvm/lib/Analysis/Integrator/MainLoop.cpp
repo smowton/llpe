@@ -96,7 +96,7 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
       LPA->analyse();
 
     // Analyse for invariants if we didn't establish that the loop terminates.
-    if(LPA->Iterations.back()->iterStatus != IterationStatusFinal)
+    if((!LPA) || (LPA->Iterations.back()->iterStatus != IterationStatusFinal))
       analyseLoopPBs(BBL);
 
   }

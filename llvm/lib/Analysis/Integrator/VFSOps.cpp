@@ -124,7 +124,7 @@ public:
   int64_t uniqueIncomingOffset;
 
   FindVFSPredecessorWalker(CallInst* CI, IntegrationAttempt* IA, ValCtx _FD) 
-    : BackwardIAWalker(SourceOp, SourceCtx, true), SourceOp(CI), SourceCtx(IA), FD(_FD),
+    : BackwardIAWalker(CI, IA, true), SourceOp(CI), SourceCtx(IA), FD(_FD),
       uniqueIncomingOffset(-1) { }
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
@@ -139,7 +139,7 @@ WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, 
 
   if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
-    WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD);
+    WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD, true);
     if(WIR == WIRStopThisPath) {
 
       // Call definitely uses this FD. Find the incoming offset if possible.
@@ -221,7 +221,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
 
   const FunctionType *FT = F->getFunctionType();
   
-  if(!(F->getName() == "close" || F->getName() == "llseek" || F->getName() == "lseek" || 
+  if(!(F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
        F->getName() == "lseek64" || F->getName() == "close"))
     return false;
 
@@ -286,6 +286,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
 
     resolvedCloseCalls[CI] = CloseFile(&OS);    
     setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    return true;
 
   }
   // Else it's a read call, and we need the incoming file offset.
@@ -370,7 +371,7 @@ ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
 
 }
 
-WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD) {
+WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD, bool ignoreClose) {
   
   // Is VFSCall a call to open, read, seek or close that concerns FD?
   
@@ -403,9 +404,11 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, Va
   }
   else if(CalleeName == "close") {
 
+    // If we're walking backwards:
     // Finding this indicates we could double-close if this path were followed for real!
     // Walk through it to find its predecessors.
-    return WIRContinue;
+    // If we're walking forwards this is a chain ender.
+    return ignoreClose ? WIRContinue : WIRStopThisPath;
     
   }
   else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "lseek64") {
@@ -532,7 +535,7 @@ WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(Instruction* 
   if(!CI)
     return WIRContinue;
 
-  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, OpenInst);
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, OpenInst, false);
 
   if(WIR == WIRContinue)
     return WIR;
@@ -612,7 +615,7 @@ WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* 
   if(!CI)
     return WIRContinue;
 
-  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD);
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD, false);
 
   if(WIR == WIRContinue)
     return WIR;

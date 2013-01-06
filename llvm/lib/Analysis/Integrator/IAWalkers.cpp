@@ -235,15 +235,11 @@ void IAWalker::walk() {
 
 WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, void* Ctx, CallInst*& StoppedCI) {
 
-  BasicBlock::iterator it = bic.it, itend = bic.BB->begin();
-  
-  while(1) {
-    
-    --it;
-    if(it == itend)
-      break;
+  for(BasicBlock::iterator it = bic.it, itend = bic.BB->begin(); it != itend;) {
 
+    --it;
     Instruction* I = it;
+
     WalkInstructionResult WIR = walkInstruction(I, bic.ctx, Ctx);
     if(WIR != WIRContinue)
       return WIR;
