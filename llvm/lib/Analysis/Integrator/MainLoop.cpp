@@ -29,6 +29,14 @@
 
 using namespace llvm;
 
+void InlineAttempt::analyseWithArgs() {
+
+  for(Function::arg_iterator it = F.arg_begin(), it2 = F.arg_end(); it != it2; ++it)
+    tryEvaluate(it);
+  analyse();
+
+}
+
 void IntegrationAttempt::analyse() {
 
   std::vector<BasicBlock*> topOrderedBlocks;
@@ -122,7 +130,7 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
       if(tryResolveVFSCall(CI))
 	continue;
       if(InlineAttempt* IA = getOrCreateInlineAttempt(CI)) {
-	IA->analyse();
+	IA->analyseWithArgs();
 	tryEvaluate(CI);
       }
       continue;

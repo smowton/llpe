@@ -1726,6 +1726,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   void disableVarargsContexts();
 
+  void analyseWithArgs();
+
 };
 
 class LoadForwardAttempt;
