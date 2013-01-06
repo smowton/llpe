@@ -25,6 +25,7 @@
 #include "llvm/Instructions.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
@@ -103,6 +104,11 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
   const Loop* MyL = getLoopContext();
 
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+
+    if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
+      if(!BrI->isConditional())
+	break;
+    }
 
     if(getValueScope(BI) != MyL)
       continue;

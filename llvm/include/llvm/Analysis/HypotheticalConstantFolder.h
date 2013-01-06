@@ -1263,7 +1263,6 @@ protected:
   bool getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL);
   virtual bool getPointerBaseFalling(Value* V, PointerBase& OutPB);
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
-  void erasePointerBase(Value*);
   bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
   bool updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA = 0);
