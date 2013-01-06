@@ -286,7 +286,6 @@ void ForwardIAWalker::walkInternal() {
       void* Ctx = ((*CList)[i]).second;
       CallInst* StoppedCI = 0;
 
-      errs() << "Walk from " << ThisStart.ctx->itcache(*(ThisStart.it)) << "\n";
       WalkInstructionResult thisBlockResult = walkFromInst(ThisStart, Ctx, StoppedCI);
 
       if(thisBlockResult == WIRStopThisPath)
