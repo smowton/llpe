@@ -1072,6 +1072,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V, LoopPBAnalyser* LPB
   if(shouldCheckPB(V)) {
     
     LPBA->addVC(make_vc(V, this));
+    pointerBases.erase(V);
 
   }
   else {
@@ -1201,6 +1202,37 @@ void LoopPBAnalyser::run() {
   }
 
   runPointerBaseSolver(true, 0);
+
+  for(startit = updatedVCs.begin(); startit != endit; ++startit) {
+
+    startit->second->tryPromoteSingleValuedPB(startit->first);
+    
+  }
+
+}
+
+void IntegrationAttempt::tryPromoteSingleValuedPB(Value* V) {
+
+  PointerBase NewPB;
+  if(!getPointerBaseLocal(V, NewPB))
+    return;
+
+  if(NewPB.Overdef)
+    return;
+  
+  if(NewPB.Type == ValSetTypeScalar) {
+
+    if(NewPB.Values.size() == 1) {
+      
+      if(getValueScope(V) == getLoopContext()) {
+	// Feed the result to the ordinary constant folder, until the two get merged.
+	setReplacement(V, NewPB.Values[0]);
+	pointerBases.erase(V);
+      }
+
+    }
+
+  }
 
 }
 

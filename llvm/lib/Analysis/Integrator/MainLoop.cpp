@@ -146,9 +146,14 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
 	checkLoad(LI);
     }
 
-    // This works for either LF or ordinary const prop:
-    if(isUnresolved(BI))
+    // Don't use isUnresolved here because the PB solver requires that we *do*
+    // evaluate GEPs and casts with a known base. This will go away when its single-value
+    // mode is merged with the ordinary constant folder.
+    if(!improvedValues.count(BI)) {
+      // This works for either LF or ordinary const prop:
       updateBasePointer(BI, true);
+      tryPromoteSingleValuedPB(BI);
+    }
 
   }
 

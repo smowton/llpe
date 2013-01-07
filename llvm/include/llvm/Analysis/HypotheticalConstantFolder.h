@@ -1289,6 +1289,7 @@ protected:
   bool shouldCheckPB(Value*);
   std::string describeLFA(LoadForwardAttempt& LFA);
   void analyseLoopPBs(const Loop* L);
+  void tryPromoteSingleValuedPB(Value* V);
 
   // Enabling / disabling exploration:
 
