@@ -31,8 +31,13 @@ using namespace llvm;
 
 void InlineAttempt::analyseWithArgs() {
 
-  for(Function::arg_iterator it = F.arg_begin(), it2 = F.arg_end(); it != it2; ++it)
+  for(Function::arg_iterator it = F.arg_begin(), it2 = F.arg_end(); it != it2; ++it) {
     tryEvaluate(it);
+    if(!improvedValues.count(it)) {
+      updateBasePointer(it, true);
+      tryPromoteSingleValuedPB(it);
+    }
+  }
   analyse();
 
 }
@@ -131,11 +136,10 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
 	continue;
       if(tryResolveVFSCall(CI))
 	continue;
-      if(InlineAttempt* IA = getOrCreateInlineAttempt(CI)) {
+      if(InlineAttempt* IA = getOrCreateInlineAttempt(CI))
 	IA->analyseWithArgs();
-	tryEvaluate(CI);
-      }
-      continue;
+
+      // Fall through to try to get the call's return value
 
     }
 
