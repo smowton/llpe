@@ -737,7 +737,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
   bool OldPBValid = getPointerBaseFalling(V, OldPB);
 
   // Getting no worse:
-  if(finalise && ((!OldPBValid) || OldPB.Overdef))
+  if(finalise && LPBA && ((!OldPBValid) || OldPB.Overdef))
     return false;
 
   if(LoadInst* LI = dyn_cast<LoadInst>(V)) {

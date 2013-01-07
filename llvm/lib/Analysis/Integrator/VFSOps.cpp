@@ -230,6 +230,9 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     return true;
 
   ValCtx OpenCall = getReplacement(FD);
+  if(!OpenCall.second)
+    return true;
+
   OpenStatus& OS = OpenCall.second->getOpenStatus(cast<CallInst>(OpenCall.first));
 
   if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {

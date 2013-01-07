@@ -83,7 +83,7 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
     // First, examine each block in the loop to discover invariants, including invariant dead blocks.
     std::vector<BasicBlock*> topOrderedBlocks;
     SmallSet<BasicBlock*, 8> visited;
-    
+
     createTopOrderingFrom(BBL->getHeader(), topOrderedBlocks, visited, BBL, false);
 
     for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
@@ -159,7 +159,7 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
   if(!Visited.insert(BB))
     return;
 
-  const Loop* BBL = getBlockScopeVariant(BB);
+  const Loop* BBL = LI[&F]->getLoopFor(BB);
   
   // Drifted out of scope?
   if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
