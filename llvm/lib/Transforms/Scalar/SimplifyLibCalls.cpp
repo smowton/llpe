@@ -31,6 +31,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Config/config.h"
 
 #include <sys/types.h>
@@ -41,6 +42,8 @@ using namespace llvm;
 
 STATISTIC(NumSimplified, "Number of library calls simplified");
 STATISTIC(NumAnnotated, "Number of attributes added to library functions");
+
+static cl::opt<bool> AllowInternalCalls("libcalls-allow-internal");
 
 //===----------------------------------------------------------------------===//
 // Optimizer Base Class
@@ -1213,6 +1216,43 @@ struct FPrintFOpt : public LibCallOptimization {
   }
 };
 
+struct ReallocOpt : public LibCallOptimization {
+
+  virtual Value* CallOptimizer(Function *Callee, CallInst *CI, IRBuilder<> &B) {
+
+    errs() << "Realloc opt called\n";
+
+    const FunctionType *FT = Callee->getFunctionType();
+    if (FT->getNumParams() != 2 ||
+	!FT->getParamType(0)->isPointerTy() ||
+	!FT->getReturnType()->isPointerTy())
+      return 0;
+
+    Value* PtrOperand = CI->getArgOperand(0);
+    if(Constant* C = dyn_cast<Constant>(PtrOperand)) {
+
+      if(C->isNullValue()) {
+
+	// Realloc of null == malloc.
+	
+	Module* M = Callee->getParent();
+	Value* Malloc = M->getFunction("malloc");
+	if(!Malloc)
+	  return 0;
+
+	CallInst *MallocCI = B.CreateCall(Malloc, CI->getArgOperand(1));
+	return MallocCI;
+
+      }
+
+    }
+
+    return 0;
+
+  }
+
+};
+
 } // end anonymous namespace.
 
 //===----------------------------------------------------------------------===//
@@ -1238,6 +1278,9 @@ namespace {
     // Formatting and IO Optimizations
     SPrintFOpt SPrintF; PrintFOpt PrintF;
     FWriteOpt FWrite; FPutsOpt FPuts; FPrintFOpt FPrintF;
+    // Realloc Optimization
+    ReallocOpt Realloc;
+    
 
     bool Modified;  // This is only used by doInitialization.
   public:
@@ -1347,6 +1390,9 @@ void SimplifyLibCalls::InitOptimizations() {
   Optimizations["fputs"] = &FPuts;
   Optimizations["fprintf"] = &FPrintF;
 
+  // Realloc optimization
+  Optimizations["realloc"] = &Realloc;
+
 }
 
 
@@ -1369,9 +1415,14 @@ bool SimplifyLibCalls::runOnFunction(Function &F) {
 
       // Ignore indirect calls and calls to non-external functions.
       Function *Callee = CI->getCalledFunction();
-      if (Callee == 0 || !Callee->isDeclaration() ||
-          !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage()))
-        continue;
+      if (Callee == 0)
+	continue;
+
+      if(!AllowInternalCalls) {
+	if(!Callee->isDeclaration() ||
+	   !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage()))
+	  continue;
+      }
 
       // Ignore unknown calls.
       LibCallOptimization *LCO = Optimizations.lookup(Callee->getName());
