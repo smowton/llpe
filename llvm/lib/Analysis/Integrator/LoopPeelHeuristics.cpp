@@ -569,17 +569,26 @@ bool IntegrationAttempt::blockIsDeadWithScope(BasicBlock* BB, const Loop* ScopeL
 bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
 
   DenseMap<BasicBlock*, const Loop*>::iterator it = invariantBlocks.find(BB);
-  if(it == invariantBlocks.end())
-    return deadBlocks.count(BB);
+  bool ret;
+  if(it == invariantBlocks.end()) {
+    ret = deadBlocks.count(BB);
+    //errs() << "blockIsDead " << BB->getName() << " (1): " << ret << "\n";
+  }
   else {
     const Loop* MyL = getLoopContext();
     // If this block's context contains ours it is an invariant to us.
     // Otherwise it is a variant and we cannot answer at this scope.
-    if((!it->second) || (MyL && it->second->contains(MyL)))
-      return blockIsDeadWithScope(BB, it->second);
-    else
-      return false;
+    if((!it->second) || (MyL && it->second->contains(MyL))) {
+      ret = blockIsDeadWithScope(BB, it->second);
+      //errs() << "blockIsDead " << BB->getName() << " (2): " << ret << "\n";
+    }
+    else {
+      ret = false;
+      //errs() << "blockIsDead " << BB->getName() << " (3): " << ret << "\n";
+    }
   }
+
+  return ret;
 
 }
 
@@ -3428,8 +3437,8 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 	}
 	else {
 	  const Loop* edgeL = EdgeIt->second;
-	  if(edgeL == CheckBBL) {
-	    // Edge is a local variant; so is the block
+	  if((!CheckBBL) || CheckBBL->contains(edgeL)) {
+	    // Edge is a local variant (or more variant than the block, e.g. an exit edge leading to an exit block), so the block is a plain old variant.
 	    shouldSkip = true;
 	    break;
 	  }
