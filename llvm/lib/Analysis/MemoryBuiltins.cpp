@@ -30,12 +30,12 @@ bool llvm::isMalloc(const Value *I) {
   return extractMallocCall(I) || extractMallocCallFromBitCast(I);
 }
 
-static bool isMallocCall(const CallInst *CI) {
+static bool isMallocCall(const CallInst *CI, bool allowInternal = false) {
   if (!CI)
     return false;
 
   Function *Callee = CI->getCalledFunction();
-  if (Callee == 0 || !Callee->isDeclaration() || Callee->getName() != "malloc")
+  if (Callee == 0 || (!(allowInternal || Callee->isDeclaration())) || Callee->getName() != "malloc")
     return false;
 
   // Check malloc prototype.
@@ -56,14 +56,14 @@ static bool isMallocCall(const CallInst *CI) {
 /// extractMallocCall - Returns the corresponding CallInst if the instruction
 /// is a malloc call.  Since CallInst::CreateMalloc() only creates calls, we
 /// ignore InvokeInst here.
-const CallInst *llvm::extractMallocCall(const Value *I) {
+const CallInst *llvm::extractMallocCall(const Value *I, bool allowInternal) {
   const CallInst *CI = dyn_cast<CallInst>(I);
-  return (isMallocCall(CI)) ? CI : NULL;
+  return (isMallocCall(CI, allowInternal)) ? CI : NULL;
 }
 
-CallInst *llvm::extractMallocCall(Value *I) {
+CallInst *llvm::extractMallocCall(Value *I, bool allowInternal) {
   CallInst *CI = dyn_cast<CallInst>(I);
-  return (isMallocCall(CI)) ? CI : NULL;
+  return (isMallocCall(CI, allowInternal)) ? CI : NULL;
 }
 
 static bool isBitCastOfMallocCall(const BitCastInst *BCI) {

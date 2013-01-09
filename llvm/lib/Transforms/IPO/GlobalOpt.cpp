@@ -15,6 +15,7 @@
 
 #define DEBUG_TYPE "globalopt"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/GlobalOpt.h"
 #include "llvm/CallingConv.h"
 #include "llvm/Constants.h"
 #include "llvm/DerivedTypes.h"
@@ -81,59 +82,6 @@ ModulePass *llvm::createGlobalOptimizerPass() { return new GlobalOpt(); }
 
 namespace {
 
-/// GlobalStatus - As we analyze each global, keep track of some information
-/// about it.  If we find out that the address of the global is taken, none of
-/// this info will be accurate.
-struct GlobalStatus {
-  /// isLoaded - True if the global is ever loaded.  If the global isn't ever
-  /// loaded it can be deleted.
-  bool isLoaded;
-
-  /// StoredType - Keep track of what stores to the global look like.
-  ///
-  enum StoredType {
-    /// NotStored - There is no store to this global.  It can thus be marked
-    /// constant.
-    NotStored,
-
-    /// isInitializerStored - This global is stored to, but the only thing
-    /// stored is the constant it was initialized with.  This is only tracked
-    /// for scalar globals.
-    isInitializerStored,
-
-    /// isStoredOnce - This global is stored to, but only its initializer and
-    /// one other value is ever stored to it.  If this global isStoredOnce, we
-    /// track the value stored to it in StoredOnceValue below.  This is only
-    /// tracked for scalar globals.
-    isStoredOnce,
-
-    /// isStored - This global is stored to by multiple values or something else
-    /// that we cannot track.
-    isStored
-  } StoredType;
-
-  /// StoredOnceValue - If only one value (besides the initializer constant) is
-  /// ever stored to this global, keep track of what value it is.
-  Value *StoredOnceValue;
-
-  /// AccessingFunction/HasMultipleAccessingFunctions - These start out
-  /// null/false.  When the first accessing function is noticed, it is recorded.
-  /// When a second different accessing function is noticed,
-  /// HasMultipleAccessingFunctions is set to true.
-  const Function *AccessingFunction;
-  bool HasMultipleAccessingFunctions;
-
-  /// HasNonInstructionUser - Set to true if this global has a user that is not
-  /// an instruction (e.g. a constant expr or GV initializer).
-  bool HasNonInstructionUser;
-
-  /// HasPHIUser - Set to true if this global has a user that is a PHI node.
-  bool HasPHIUser;
-  
-  GlobalStatus() : isLoaded(false), StoredType(NotStored), StoredOnceValue(0),
-                   AccessingFunction(0), HasMultipleAccessingFunctions(false),
-                   HasNonInstructionUser(false), HasPHIUser(false) {}
-};
 
 }
 
@@ -158,8 +106,8 @@ static bool SafeToDestroyConstant(const Constant *C) {
 /// structure.  If the global has its address taken, return true to indicate we
 /// can't do anything with it.
 ///
-static bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
-                          SmallPtrSet<const PHINode*, 16> &PHIUsers) {
+bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
+		   SmallPtrSet<const PHINode*, 16> &PHIUsers) {
   for (Value::const_use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;
        ++UI) {
     const User *U = *UI;
@@ -212,6 +160,8 @@ static bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
         }
       } else if (isa<GetElementPtrInst>(I)) {
         if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
+      } else if (isa<BitCastInst>(I)) {
+	if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
       } else if (isa<SelectInst>(I)) {
         if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
       } else if (const PHINode *PN = dyn_cast<PHINode>(I)) {
@@ -281,12 +231,11 @@ static Constant *getAggregateConstantElement(Constant *Agg, Constant *Idx) {
   return 0;
 }
 
-
 /// CleanupConstantGlobalUsers - We just marked GV constant.  Loop over all
 /// users of the global, cleaning up the obvious ones.  This is largely just a
 /// quick scan over the use list to clean up the easy and obvious cruft.  This
 /// returns true if it made a change.
-static bool CleanupConstantGlobalUsers(Value *V, Constant *Init) {
+bool llvm::CleanupConstantGlobalUsers(Value *V, Constant *Init) {
   bool Changed = false;
   for (Value::use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;) {
     User *U = *UI++;
@@ -334,6 +283,12 @@ static bool CleanupConstantGlobalUsers(Value *V, Constant *Init) {
       if (GEP->use_empty()) {
         GEP->eraseFromParent();
         Changed = true;
+      }
+    } else if (BitCastInst* BCI = dyn_cast<BitCastInst>(U)) {
+      Changed |= CleanupConstantGlobalUsers(BCI, Init);
+      if(BCI->use_empty()) {
+	BCI->eraseFromParent();
+	Changed = true;
       }
     } else if (MemIntrinsic *MI = dyn_cast<MemIntrinsic>(U)) { // memset/cpy/mv
       if (MI->getRawDest() == V) {

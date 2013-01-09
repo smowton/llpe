@@ -345,6 +345,8 @@ Pass *createSimpleVFSLoopsPass();
 
 Pass *createIntegratorPass();
 
+FunctionPass *createMallocElimPass();
+
 } // End llvm namespace
 
 #endif

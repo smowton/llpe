@@ -1220,8 +1220,6 @@ struct ReallocOpt : public LibCallOptimization {
 
   virtual Value* CallOptimizer(Function *Callee, CallInst *CI, IRBuilder<> &B) {
 
-    errs() << "Realloc opt called\n";
-
     const FunctionType *FT = Callee->getFunctionType();
     if (FT->getNumParams() != 2 ||
 	!FT->getParamType(0)->isPointerTy() ||

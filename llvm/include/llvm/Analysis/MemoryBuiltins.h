@@ -33,8 +33,8 @@ bool isMalloc(const Value *I);
 /// extractMallocCall - Returns the corresponding CallInst if the instruction
 /// is a malloc call.  Since CallInst::CreateMalloc() only creates calls, we
 /// ignore InvokeInst here.
-const CallInst *extractMallocCall(const Value *I);
-CallInst *extractMallocCall(Value *I);
+const CallInst *extractMallocCall(const Value *I, bool allowInternal = false);
+CallInst *extractMallocCall(Value *I, bool allowInternal = false);
 
 /// extractMallocCallFromBitCast - Returns the corresponding CallInst if the
 /// instruction is a bitcast of the result of a malloc call.
