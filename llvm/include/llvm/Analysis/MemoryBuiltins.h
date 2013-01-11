@@ -38,8 +38,8 @@ CallInst *extractMallocCall(Value *I, bool allowInternal = false);
 
 /// extractMallocCallFromBitCast - Returns the corresponding CallInst if the
 /// instruction is a bitcast of the result of a malloc call.
-const CallInst *extractMallocCallFromBitCast(const Value *I);
-CallInst *extractMallocCallFromBitCast(Value *I);
+const CallInst *extractMallocCallFromBitCast(const Value *I, bool allowInternal = false);
+CallInst *extractMallocCallFromBitCast(Value *I, bool allowInternal = false);
 
 /// isArrayMalloc - Returns the corresponding CallInst if the instruction 
 /// is a call to malloc whose array size can be determined and the array size
@@ -73,7 +73,7 @@ Value *getMallocArraySize(CallInst *CI, const TargetData *TD,
 //
 
 /// isFreeCall - Returns non-null if the value is a call to the builtin free()
-const CallInst *isFreeCall(const Value *I);
+  const CallInst *isFreeCall(const Value *I, bool allowInternal = false);
 
 } // End llvm namespace
 

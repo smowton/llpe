@@ -66,24 +66,24 @@ CallInst *llvm::extractMallocCall(Value *I, bool allowInternal) {
   return (isMallocCall(CI, allowInternal)) ? CI : NULL;
 }
 
-static bool isBitCastOfMallocCall(const BitCastInst *BCI) {
+static bool isBitCastOfMallocCall(const BitCastInst *BCI, bool allowInternal) {
   if (!BCI)
     return false;
     
-  return isMallocCall(dyn_cast<CallInst>(BCI->getOperand(0)));
+  return isMallocCall(dyn_cast<CallInst>(BCI->getOperand(0)), allowInternal);
 }
 
 /// extractMallocCallFromBitCast - Returns the corresponding CallInst if the
 /// instruction is a bitcast of the result of a malloc call.
-CallInst *llvm::extractMallocCallFromBitCast(Value *I) {
+CallInst *llvm::extractMallocCallFromBitCast(Value *I, bool allowInternal) {
   BitCastInst *BCI = dyn_cast<BitCastInst>(I);
-  return (isBitCastOfMallocCall(BCI)) ? cast<CallInst>(BCI->getOperand(0))
+  return (isBitCastOfMallocCall(BCI, allowInternal)) ? cast<CallInst>(BCI->getOperand(0))
                                       : NULL;
 }
 
-const CallInst *llvm::extractMallocCallFromBitCast(const Value *I) {
+const CallInst *llvm::extractMallocCallFromBitCast(const Value *I, bool allowInternal) {
   const BitCastInst *BCI = dyn_cast<BitCastInst>(I);
-  return (isBitCastOfMallocCall(BCI)) ? cast<CallInst>(BCI->getOperand(0))
+  return (isBitCastOfMallocCall(BCI, allowInternal)) ? cast<CallInst>(BCI->getOperand(0))
                                       : NULL;
 }
 
@@ -184,12 +184,12 @@ Value *llvm::getMallocArraySize(CallInst *CI, const TargetData *TD,
 //
 
 /// isFreeCall - Returns non-null if the value is a call to the builtin free()
-const CallInst *llvm::isFreeCall(const Value *I) {
+const CallInst *llvm::isFreeCall(const Value *I, bool allowInternal) {
   const CallInst *CI = dyn_cast<CallInst>(I);
   if (!CI)
     return 0;
   Function *Callee = CI->getCalledFunction();
-  if (Callee == 0 || !Callee->isDeclaration() || Callee->getName() != "free")
+  if (Callee == 0 || !(allowInternal || Callee->isDeclaration()) || Callee->getName() != "free")
     return 0;
 
   // Check free prototype.
