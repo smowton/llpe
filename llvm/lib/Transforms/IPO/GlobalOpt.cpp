@@ -136,7 +136,7 @@ static void DeleteUsers(Value* V) {
   while(!V->use_empty()) {
 
     Value* UI = (Value*)(V->use_back());
-    errs() << "Delete from " << (*UI) << "\n";
+    //errs() << "Delete from " << (*UI) << "\n";
     
     if(CallInst* CI = dyn_cast<CallInst>(UI)) {
       CI->eraseFromParent();
@@ -1514,7 +1514,7 @@ static void EraseMallocAndFrees(CallInst* CI, GlobalVariable* GV) {
     CI->eraseFromParent();
   }
 
-  errs() << "Delete free users\n";
+  //errs() << "Delete free users\n";
 
   DeleteFreeUsers(GV);
 

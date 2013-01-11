@@ -292,7 +292,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     return true;
 
   }
-  // Else it's a read call, and we need the incoming file offset.
+  // Else it's a read call or relative seek, and we need the incoming file offset.
 
   FindVFSPredecessorWalker Walk(CI, this, OpenCall);
   Walk.walk();
@@ -336,6 +336,9 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     intOffset += Walk.uniqueIncomingOffset;
 
     resolveSeekCall(CI, SeekFile(&OS, intOffset));
+
+    // Return value: new file offset.
+    setReplacement(CI, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
 
   }
 
