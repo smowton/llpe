@@ -52,13 +52,13 @@ bool MallocElimPass::runOnFunction(Function& F) {
 
 	GlobalStatus GS;
 	SmallPtrSet<const PHINode*, 16> PHIUsers;
-	if(!AnalyzeGlobal(CI, GS, PHIUsers)) {
+	if(!AnalyzeGlobal(CI, GS, PHIUsers, true)) {
 
 	  if(!GS.isLoaded) {
 
 	    DEBUG(dbgs() << "Try-elim malloc " << (*CI) << "\n");
 	
-	    Changed |= CleanupConstantGlobalUsers(CI, 0);
+	    Changed |= CleanupConstantGlobalUsers(CI, 0, true);
 	    if (CI->use_empty()) {
 	      DEBUG(dbgs() << "Delete malloc " << (*CI) << "\n");
 	      Changed = true;

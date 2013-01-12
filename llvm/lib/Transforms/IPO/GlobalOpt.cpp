@@ -168,7 +168,7 @@ static void DeleteFreeUsers(Value* V) {
 /// can't do anything with it.
 ///
 bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
-		   SmallPtrSet<const PHINode*, 16> &PHIUsers) {
+			 SmallPtrSet<const PHINode*, 16> &PHIUsers, bool allowFreeCalls) {
   for (Value::const_use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;
        ++UI) {
     const User *U = *UI;
@@ -183,7 +183,10 @@ bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
         else if (GS.AccessingFunction != F)
           GS.HasMultipleAccessingFunctions = true;
       }
-      if (const LoadInst *LI = dyn_cast<LoadInst>(I)) {
+      const CallInst* CI = dyn_cast<CallInst>(I);
+      if(CI && isFreeCall(CI, AllowInternalCalls)) {
+	continue;
+      } else if (const LoadInst *LI = dyn_cast<LoadInst>(I)) {
         GS.isLoaded = true;
 	if (HasNonFreeUsers(LI)) {
 	  GS.isLoadedExceptToFree = true;
