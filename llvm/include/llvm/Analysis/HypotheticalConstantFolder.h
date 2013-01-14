@@ -1418,6 +1418,8 @@ protected:
 
   void dumpMemoryUsage(int indent = 0);
 
+  void testLoadWalk(LoadInst* LI);
+
 };
 
 class PeelIteration : public IntegrationAttempt {
