@@ -93,7 +93,9 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
 
     for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
 
-      analyseBlockInstructions(*it);
+      checkBlock(*it);
+      if(!blockIsDead(*it))
+	analyseBlockInstructions(*it);
 
     }
 
@@ -103,8 +105,9 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
       LPA->analyse();
 
     // Analyse for invariants if we didn't establish that the loop terminates.
-    if((!LPA) || (LPA->Iterations.back()->iterStatus != IterationStatusFinal))
+    if((!LPA) || (LPA->Iterations.back()->iterStatus != IterationStatusFinal)) {
       analyseLoopPBs(BBL);
+    }
 
   }
   else {
