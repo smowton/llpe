@@ -173,8 +173,9 @@ void BackwardIAWalker::walkInternal() {
 
       if(thisBlockResult == WIRStopThisPath)
 	continue;
-      else if(thisBlockResult == WIRStopWholeWalk)
+      else if(thisBlockResult == WIRStopWholeWalk) {
 	return;
+      }
 
       // Else we walked up to either a call instruction or the top of the block
       // and should consider the predecessors.
@@ -182,29 +183,20 @@ void BackwardIAWalker::walkInternal() {
       if(StoppedCI) {
 
 	// Enter this call instruction from its return blocks:
-	if(InlineAttempt* IA = ThisStart.ctx->getInlineAttempt(StoppedCI)) {
+	InlineAttempt* IA = ThisStart.ctx->getInlineAttempt(StoppedCI);
 
-	  bool firstPred = true;
+	bool firstPred = true;
 
-	  for(Function::iterator FI = IA->F.begin(), FE = IA->F.end(); FI != FE; ++FI) {
+	for(Function::iterator FI = IA->F.begin(), FE = IA->F.end(); FI != FE; ++FI) {
+	  
+	  BasicBlock* BB = FI;
+	  if(isa<ReturnInst>(BB->getTerminator()) && !IA->blockIsDead(BB)) {
 	    
-	    BasicBlock* BB = FI;
-	    if(isa<ReturnInst>(BB->getTerminator()) && !IA->blockIsDead(BB)) {
-
-	      queueWalkFrom(BIC(BB->end(), BB, IA), Ctx, !firstPred);
-	      firstPred = false;
-
-	    }
-
+	    queueWalkFrom(BIC(BB->end(), BB, IA), Ctx, !firstPred);
+	    firstPred = false;
+	    
 	  }
-
-	}
-	else {
-
-	  // Return value = should we abort?
-	  if(blockedByUnexpandedCall(StoppedCI, ThisStart.ctx))
-	    return;
-
+	  
 	}
 
       }
@@ -241,16 +233,32 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, void* Ctx, CallIns
     Instruction* I = it;
 
     WalkInstructionResult WIR = walkInstruction(I, bic.ctx, Ctx);
-    if(WIR != WIRContinue)
+    if(WIR != WIRContinue) {
       return WIR;
+    }
 
     if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
       if(!shouldEnterCall(CI, bic.ctx))
 	continue;
 
-      StoppedCI = CI;
-      break;
+      if(!bic.ctx->getInlineAttempt(CI)) {
+
+	// Return value = should we abort?
+	if(blockedByUnexpandedCall(CI, bic.ctx)) {
+	  return WIRStopWholeWalk;
+	}
+	else {
+	  continue;
+	}
+
+      }
+      else {
+
+	StoppedCI = CI;
+	break;
+
+      }
 
     }
 
