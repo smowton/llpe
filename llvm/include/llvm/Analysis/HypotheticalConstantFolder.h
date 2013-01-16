@@ -827,6 +827,7 @@ class IAWalker {
     return 0;
   }
   virtual void walkInternal() = 0;
+  virtual void reachedTop() { };
 
   void* initialContext;
 
@@ -1734,168 +1735,19 @@ class InlineAttempt : public IntegrationAttempt {
 
 };
 
-class LoadForwardAttempt;
+struct PartialValueBuffer {
 
-class LFAQueryable {
-
- public:
-
-  virtual LoadInst* getOriginalInst() = 0;
-  virtual IntegrationAttempt* getOriginalCtx() = 0;
-  virtual LoadInst* getQueryInst() = 0;
-  virtual LoadForwardAttempt& getLFA() = 0;
-
-};
-
-class LoadForwardAttempt : public LFAQueryable {
-
-  LoadInst* LI;
-  IntegrationAttempt* originalCtx;
-  SmallVector<SymExpr*, 4> Expr;
-  bool ExprValid;
-  int64_t ExprOffset;
-
-  ValCtx Result;
   uint64_t* partialBuf;
   bool* partialValidBuf;
   uint64_t partialBufBytes;
-  bool mayBuildFromBytes;
-
-  const Type* targetType;
+  bool loadFinished;
 
   TargetData* TD;
 
-  bool buildSymExpr(Value* Ptr, IntegrationAttempt* Ctx);
+  uint64_t markPaddingBytes(const Type*);
 
- public:
-
-  SmallVector<std::string, 1> OverdefReasons;
-  SmallVector<ValCtx, 8> DefOrClobberInstructions;
-  SmallVector<ValCtx, 8> IgnoredClobbers;
-  SmallVector<IntegrationAttempt*, 8> TraversedCtxs;
-
-  SmallSet<PeelAttempt*, 8> exploredLoops;
-
-  PointerBase PB;
-  bool ReachedTop;
-  std::string ReachedTopStr;
-  bool CompletelyExplored;
-  bool PBOptimistic;
-  LoadForwardMode Mode;
-
-  virtual LoadInst* getOriginalInst();
-  virtual IntegrationAttempt* getOriginalCtx();
-  virtual LoadInst* getQueryInst();
-  virtual LoadForwardAttempt& getLFA();  
-
-  void describeSymExpr(raw_ostream& Str);
-  bool tryBuildSymExpr(Value* Ptr = 0, IntegrationAttempt* Ctx = 0);
-  bool canBuildSymExpr(Value* Ptr = 0, IntegrationAttempt* Ctx = 0);
-  int64_t getSymExprOffset();
-  void setSymExprOffset(int64_t);
-
-  SmallVector<SymExpr*, 4>* getSymExpr();
-
-  ValCtx getBaseVC();
-  IntegrationAttempt* getBaseContext();
-
-  unsigned char* getPartialBuf(uint64_t nbytes);
-  bool* getBufValid();
-  bool* tryGetBufValid();
-
-  // This might not equal the type of the original load!
-  // This happens when we're making proxy or sub-queries.
-  const Type* getTargetTy();
-
-  bool addPartialVal(PartialVal&);
-  bool isComplete();
-  ValCtx getResult();
-
-  uint64_t markPaddingBytes(bool*, const Type*);
-
-  void setPBOverdef(std::string reason) {
-    OverdefReasons.push_back(reason);
-    PB = PointerBase::getOverdef();
-  }
-
-  void addPBDefn(PointerBase& NewPB) {
-    bool WasOverdef = PB.Overdef;
-    PB.merge(NewPB);
-    if(PB.Overdef && (!WasOverdef) && (!NewPB.Overdef))
-      OverdefReasons.push_back("Fan-in");
-  }
-
-  bool PBIsViable() {
-    return PBOptimistic || ((!PB.Overdef) && PB.Values.size() > 0);
-  }
-
-  bool PBIsOverdef() {
-    return PB.Overdef;
-  }
-
-  void reachedTop(std::string s) {
-    
-    setPBOverdef(s);
-    ReachedTop = true;
-    ReachedTopStr = s;
-
-  }
-
-  LoadForwardAttempt(LoadInst* _LI, IntegrationAttempt* C, LoadForwardMode M, TargetData*, const Type* T = 0);
-  virtual ~LoadForwardAttempt();
-
-   // Caching instruction text for debug and DOT export:
-   PrintCacheWrapper<const Value*> itcache(const Value& V) const {
-     return originalCtx->itcache(V);
-   }
-   PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
-     return originalCtx->itcache(VC);
-   }
-   PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
-     return originalCtx->itcache(MDR);
-   }
-
-  void printDebugHeader(raw_ostream& Str) { 
-    originalCtx->printDebugHeader(Str);
-  }
-
-};
-
-class LFARealization : public LFAQueryable {
-
-  LoadForwardAttempt& LFA;
-  LoadInst* QueryInst;
-  Instruction* FakeBase;
-  Instruction* InsertPoint;
-  SmallVector<Instruction*, 4> tempInstructions;
-  
- public:
-
-  virtual LoadInst* getOriginalInst();
-  virtual IntegrationAttempt* getOriginalCtx();
-  virtual LoadInst* getQueryInst();
-  virtual LoadForwardAttempt& getLFA();
-
-  LFARealization(LoadForwardAttempt& LFA, IntegrationAttempt* Ctx, Instruction* Insert);
-  virtual ~LFARealization();
-
-  Instruction* getFakeBase();
-
-  void printDebugHeader(raw_ostream& Str) { 
-    LFA.getOriginalCtx()->printDebugHeader(Str);
-  }
-
-};
-
-class LFARMapping {
-
-  LFARealization& LFAR;
-  IntegrationAttempt* Ctx;
-
- public:
-
-  LFARMapping(LFARealization& LFAR, IntegrationAttempt* Ctx);
-  virtual ~LFARMapping();
+  PartialValueBuffer(uint64_t size, const Type* Ty, TargetData*);
+  PartialValueBuffer(PartialValueBuffer& Other);
 
 };
 

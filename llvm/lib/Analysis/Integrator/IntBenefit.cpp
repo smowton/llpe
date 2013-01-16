@@ -183,7 +183,7 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
 
   totalIntegrationGoodness = itersGoodness + daeBonus - nonTermPenalty;
 
-  LPDEBUG(getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n");
+  errs() << getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n";
 
   if(totalIntegrationGoodness < 0) {
 
@@ -293,7 +293,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
   }
 
-  LPDEBUG(getShortHeader() << ": int-goodness " << totalIntegrationGoodness << " (child: " << childIntegrationGoodness << ", codesize: " << newInstPenalty << ", timebonus: " << timeBonus << ")\n");
+  errs() << getShortHeader() << ": int-goodness " << totalIntegrationGoodness << " (child: " << childIntegrationGoodness << ", codesize: " << newInstPenalty << ", timebonus: " << timeBonus << ")\n";
 
 }
 
@@ -338,7 +338,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   }
 
-  LPDEBUG(getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n");
+  errs() << getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n";
 
   if(parent && (totalIntegrationGoodness < 0)) {
 

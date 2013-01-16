@@ -18,6 +18,21 @@
 
 using namespace llvm;
 
+static double time_diff(struct timespec& start, struct timespec& end) {
+
+  timespec temp;
+  if ((end.tv_nsec-start.tv_nsec)<0) {
+    temp.tv_sec = end.tv_sec-start.tv_sec-1;
+    temp.tv_nsec = 1000000000+end.tv_nsec-start.tv_nsec;
+  } else {
+    temp.tv_sec = end.tv_sec-start.tv_sec;
+    temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+  }
+
+  return (temp.tv_sec) + (((double)temp.tv_nsec) / 1000000000.0);
+
+}
+
 PointerBase PointerBase::get(ValCtx VC) {
 
   ValCtx CEGlobal;
@@ -543,151 +558,9 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
 
 }
 
-std::string IntegrationAttempt::describeLFA(LoadForwardAttempt& LFA) {
-  
-  std::string out;
-  raw_string_ostream RSO(out);
-  
-  if(LFA.PB.Overdef) {
-    for(unsigned i = 0; i < LFA.OverdefReasons.size(); ++i) {
-      if(i != 0)
-	RSO << ", ";
-      RSO << LFA.OverdefReasons[i];
-    }
-  }  
-  else if(LFA.PB.Values.size() == 0) {
-    
-    RSO << "No defn";
-    
-  }
-  else {
-    
-    printPB(RSO, LFA.PB, true);
-    
-  }
-    
-  return out;
-    
-}
-  
 void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
 
   memWriterEffects[I].insert(std::make_pair(LI, Ctx));
-
-}
-
-// Do load forwarding, possibly in optimistic mode: this means that
-// stores that def but which have no associated PB are optimistically assumed
-// to be compatible with anything, the same as the mergepoint logic above
-// when finalise is false. When finalise = true this is just like normal load
-// forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
-
-  LoadForwardAttempt Attempt(LI, this, LFMPB, TD);
-  // In pessimistic mode, PB exploration stops early when it becomes hopeless.
-  Attempt.PBOptimistic = !finalise;
-  Attempt.CompletelyExplored = !finalise;
-  Attempt.ReachedTop = false;
-
-  bool verbose = false;
-
-  if(verbose) {
-
-    errs() << "=== START LFA for " << itcache(*LI) << "\n";
-
-    IntegrationAttempt* PrintCtx = this;
-    while(PrintCtx) {
-      errs() << PrintCtx->getShortHeader() << ", ";
-      PrintCtx = PrintCtx->parent;
-    }
-    errs() << "\n";
-
-  }
-
-  tryResolveLoad(Attempt);
-  
-  if(Attempt.CompletelyExplored) {
-
-    if(!Attempt.ReachedTop) {
-
-      std::vector<ValCtx> CEntry;
-      CEntry.insert(CEntry.end(), Attempt.DefOrClobberInstructions.begin(), Attempt.DefOrClobberInstructions.end());
-      CEntry.insert(CEntry.end(), Attempt.IgnoredClobbers.begin(), Attempt.IgnoredClobbers.end());
-
-      for(std::vector<ValCtx>::iterator it = CEntry.begin(), it2 = CEntry.end(); it != it2; ++it) {
-
-	// Register our dependency on various instructions:
-	if(!it->second)
-	  continue;
-
-	if(StoreInst* SI = dyn_cast<StoreInst>(it->first)) {
-	  
-	  it->second->addMemWriterEffect(SI, LI, this);
-
-	}
-
-      }
-
-    }
-
-  }
-
-  if(verbose)
-    errs() << "=== END LFA\n";
-
-  if(!finalise)
-    optimisticForwardStatus[LI] = describeLFA(Attempt);
-  else
-    pessimisticForwardStatus[LI] = describeLFA(Attempt);
-    
-  if(Attempt.PB.Values.size() == 0 && !Attempt.PB.Overdef)
-    return false;
-
-  NewPB = Attempt.PB;
-  return true;
-
-}
-
-void IntegrationAttempt::addStartOfScopePB(LoadForwardAttempt& LFA) {
-
-  // Hacked out of tryResolveClobber to provide simple initializer-aggregate support
-  // until I get around to marrying the optimistic solver with full PartialLFA.
-
-  if(LFA.canBuildSymExpr()) {
-
-    ValCtx PointerVC = LFA.getBaseVC();
-    if(GlobalVariable* GV = dyn_cast<GlobalVariable>(PointerVC.first)) {
-	    
-      if(GV->hasDefinitiveInitializer()) {
-	
-	Constant* GVC = GV->getInitializer();
-	const Type* targetType = LFA.getOriginalInst()->getType();
-	uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
-	uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
-	uint64_t LoadSize = (TD->getTypeSizeInBits(targetType) + 7) / 8;
-	uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
-	if(FirstNotDef == LoadSize) {
-
-	  ValCtx FieldVC = extractAggregateMemberAt(GVC, ReadOffset, targetType, LoadSize, TD);
-	  if(FieldVC != VCNull) {
-
-	    assert(isa<Constant>(FieldVC.first));
-	    LFA.DefOrClobberInstructions.push_back(FieldVC);
-	    PointerBase NewPB = PointerBase::get(FieldVC);
-	    LFA.addPBDefn(NewPB);
-	    return;
-
-	  }
-
-	}
-
-      }
-
-    }
-
-  }
-
-  LFA.reachedTop("Reached main");
 
 }
 
@@ -742,7 +615,8 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
 
   if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
 
-    if(!tryForwardLoadPB(LI, finalise, NewPB))
+    bool ret = tryForwardLoadPB(LI, finalise, NewPB);
+    if(!ret)
       return false;
 
   }
@@ -1072,6 +946,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V, LoopPBAnalyser* LPB
   if(shouldCheckPB(V)) {
     
     LPBA->addVC(make_vc(V, this));
+    //errs() << "Queue " << itcache(make_vc(V, this)) << "\n";
     pointerBases.erase(V);
 
   }
@@ -1101,7 +976,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, Loo
       continue;
 
     BasicBlock* BB = BI;
-    const Loop* BBL = getBlockScopeVariant(BB);
+    const Loop* BBL = LI[&F]->getLoopFor(BB);
     if((!L) || (BBL && L->contains(BBL))) {
 
       for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
@@ -1171,12 +1046,26 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
     for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
 
       assert(inLoopVCs.count(*it));
-  
+
+      struct timespec start;
+      clock_gettime(CLOCK_REALTIME, &start);
+
       if(it->second->updateBasePointer(it->first, finalise, this)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
 	}
       }
+
+      struct timespec end;
+      clock_gettime(CLOCK_REALTIME, &end);
+
+      if(time_diff(start, end) > 0.1) {
+
+	errs() << "Consider " << (*ConsumeQ)[0].second->itcache(*it) << " took " << time_diff(start, end) << "\n";
+
+      }
+
+      //++(considerCount[*it]);
 
     }
 
@@ -1185,29 +1074,68 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
 
   }
 
+  /*
+  std::vector<std::pair<int, ValCtx> > sortCounts;
+
+  for(DenseMap<ValCtx, int>::iterator it = considerCount.begin(), it2 = considerCount.end(); it != it2; ++it) {
+
+    sortCounts.push_back(std::make_pair(it->second, it->first));
+
+  }
+
+  std::sort(sortCounts.begin(), sortCounts.end());
+
+  for(std::vector<std::pair<int, ValCtx> >::iterator it = sortCounts.begin(), it2 = sortCounts.end(); it != it2; ++it) {
+
+    errs() << it->first << ": " << sortCounts[0].second.second->itcache(it->second) << "\n";
+
+  }
+  */
+
 }
 
 void LoopPBAnalyser::run() {
 
+  struct timespec start;
+  clock_gettime(CLOCK_REALTIME, &start);
+
   std::vector<ValCtx> updatedVCs;
   runPointerBaseSolver(false, &updatedVCs);
+
+  struct timespec optend;
+  clock_gettime(CLOCK_REALTIME, &optend);
 
   std::sort(updatedVCs.begin(), updatedVCs.end());
   std::vector<ValCtx>::iterator startit, endit;
   endit = std::unique(updatedVCs.begin(), updatedVCs.end());
+
+  struct timespec sortend;
+  clock_gettime(CLOCK_REALTIME, &sortend);
+
   for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 	
     queueUpdatePB(make_vc(startit->first, startit->second));
 
   }
 
+  struct timespec requeueend;
+  clock_gettime(CLOCK_REALTIME, &requeueend);
+
   runPointerBaseSolver(true, 0);
+
+  struct timespec pesend;
+  clock_gettime(CLOCK_REALTIME, &pesend);
 
   for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 
     startit->second->tryPromoteSingleValuedPB(startit->first);
     
   }
+
+  struct timespec end;
+  clock_gettime(CLOCK_REALTIME, &end);
+
+  errs() << "Analysis phases: opt " << time_diff(start, optend) << ", sort " << time_diff(optend, sortend) << ", requeue " << time_diff(sortend, requeueend) << ", pes " << time_diff(requeueend, pesend) << ", promote " << time_diff(pesend, end) << "\n";
 
 }
 
@@ -1240,13 +1168,19 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
 
   // L is an immediate child of this context.
 
-  LPDEBUG("Consider entire loop " << L->getHeader()->getName() << "\n");
-
   LoopPBAnalyser LPBA;
 
   // Step 1: queue VCs falling within this loop.
 
+  struct timespec queuestart;
+  clock_gettime(CLOCK_REALTIME, &queuestart);
+  
   queueUpdatePBWholeLoop(L, &LPBA);
+
+  struct timespec queueend;
+  clock_gettime(CLOCK_REALTIME, &queueend);
+
+  errs() << "Consider entire loop " << L->getHeader()->getName() << " in " << F.getName() << " (queue time: " << time_diff(queuestart, queueend) << ")\n";
 
   // Step 2: consider every result in optimistic mode until stable.
   // In this mode, undefineds are ok and clobbers are ignored on the supposition that
@@ -1256,6 +1190,8 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
   // and undefined == overdefined.
 
   LPBA.run();
+
+  errs() << "Loop consideration complete\n";
 
 }
 

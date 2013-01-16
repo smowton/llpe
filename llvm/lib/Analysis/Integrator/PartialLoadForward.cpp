@@ -250,79 +250,54 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 
 }
 
-PartialVal IntegrationAttempt::tryForwardFromCopy(LoadForwardAttempt& LFA, ValCtx Clobber, const Type* subTargetType, Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef) {
+bool IntegrationAttempt::tryForwardFromCopy(Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool mayBuildFromBytes, PartialVal& NewPV, std::string& error) {
 
-  LoadInst* LI = LFA.getOriginalInst();
-  const Type* LoadTy = LFA.getTargetTy();
-  uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
-  ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(LI->getContext()), ReadOffset);
-  const Type* byteArrayType = Type::getInt8PtrTy(LI->getContext());
+  ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
+  const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
 
-  // Found the LFA on the original load, so any failures get attributed to it.
-  // Attempt to load a smaller type if necessary!
-  LoadForwardAttempt SubLFA(LI, this, LFMNormal, TD, subTargetType);
+  // Add 2 extra instructions calculating an offset from copyInst, which is the allocation
+  // being read from: cast to i8* and offset by the right number of bytes.
 
-  // Generate our own symbolic expression rather than the one that naturally results from the load.
-  // This will be used for realisations outside this scope, so it had better be rooted on an identified
-  // object as per usual.
-  if(!SubLFA.tryBuildSymExpr(copySource, Clobber.second)) {
+  LPDEBUG("Attempting to forward a load based on memcpy/va_copy source parameter\n");
 
-    LPDEBUG("Can't try harder to forward over a memcpy because the source address " << itcache(*(copySource)) << " is not fully resolved\n");
-    return PVNull;
-
-  }
-
-  LPDEBUG("Attempting to forward a load based on memcpy source parameter\n");
-
-  // Augment the symbolic expression to take the offset within the source into account
-  SmallVector<SymExpr*, 4>* SymExpr = SubLFA.getSymExpr();
-
-  if(copySource->getType() != byteArrayType) {
-    SymExpr->insert(SymExpr->begin(), new SymCast(byteArrayType));
-  }
-
-  // Pointer arithmetic: add ReadOffset bytes
-  SmallVector<Value*, 4> GEPOffsets;
-  GEPOffsets.push_back(OffsetCI);
-  SymExpr->insert(SymExpr->begin(), new SymGEP(GEPOffsets));
-
-  // Cast back to Load type
-  const Type* castTarget = PointerType::get(subTargetType, 0);
-  if(castTarget != byteArrayType) {
-    SymExpr->insert(SymExpr->begin(), new SymCast(castTarget));
-  }
-
-  // Adjust the offset-from-symbolic-expression-base
-  // if we're only interested in an offset from the memop source:
-  SubLFA.setSymExprOffset(SubLFA.getSymExprOffset() + ReadOffset);
-  
-  bool subloadTainted = false;
-  // Realise the symbolic expression before the memcpy and query it.
-  ValCtx copyInstResult = ((IntegrationAttempt*)Clobber.second)->tryForwardLoad(SubLFA, copyInst, &subloadTainted);
-
-  if(copyInstResult == VCNull) {
-    LPDEBUG("Memcpy sub-forwarding attempt failed\n");
-    return PartialVal();
-  }
-  else if(FirstNotDef - FirstDef == LoadSize) {
-    LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " (using as whole result)\n");
-    PartialVal retPV = PartialVal::getTotal(copyInstResult);
-    retPV.isVarargTainted = subloadTainted;
-    return retPV;
-  }
-  else if(Constant* C = dyn_cast<Constant>(copyInstResult.first)) {
-    LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " (using as partial)\n");
-    PartialVal retPV = PartialVal::getPartial(FirstDef, FirstNotDef, C, 0);
-    retPV.isVarargTainted = subloadTainted;
-    return retPV;
+  Instruction* castInst;
+  if(copySource->getType() == byteArrayType()) {
+    castInst = copySource;
   }
   else {
-    LPDEBUG("Memcpy sub-forwarding yielded " << itcache(copyInstResult) << " but that kind of value cannot partially define a result\n");
-    return PartialVal();
+    castInst = new BitCastInst(copySource, byteArrayType, "", copyInst);
+  }
+
+  Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
+
+  // Requery starting at copyInst (the memcpy or va_copy).
+  PartialVal SubPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, mayBuildFromBytes);
+
+  gepInst->eraseFromParent();
+  if(castInst != copySource)
+    castInst->eraseFromParent();
+
+  if(SubPV == PVNull) {
+    LPDEBUG("Memcpy sub-forwarding attempt failed\n");
+    error = "MCSQ";
+    return false;
+  }
+  else if(FirstNotDef - FirstDef == ReadSize && SubPV.isTotal()) {
+    newPV = SubPV;
+    return true;
+  }
+  else if(Constant* C = dyn_cast<Constant>(copyInstResult.first)) {
+    newPV = PartialVal::getPartial(FirstDef, FirstNotDef, SubPV.C, SubPV.ReadOffset);
+    newPV.isVarargTainted = SubPV.isVarargTainted;
+    return true;
+  }
+  else {
+    error = "MCNC";
+    return false;
   }
 
   // Unreachable!
-  return PartialVal();
+  return false;
 
 }
 
@@ -520,12 +495,10 @@ void PeelAttempt::disableVarargsContexts() {
 
 }
 
-// Try to improve a load which got clobbered. Cope with cases where:
-// * It's defined by a store that subsumes but is not identical to the load
-// * It's defined by a memcpy in similar fashion
-// * It's defined by a VFS read operation, similar to a memcpy
-// Return the result of forwarding, or VCNull if none.
-PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal) {
+// Try to retrieve a value from a memcpy, memset, vararg or sys_read instruction/call.
+// Return true for success and define NewPV, or false for failure and store a short code in error.
+
+bool IntegrationAttempt::getMIOrReadValue(Instruction* I, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadOffset, uint64_t ReadSize, bool mayBuildFromBytes, PartialVal& NewPV, std::string& error) {
 
   // The GVN code I swiped this from contained the comment:
   // "The address being loaded in this non-local block may not be the same as
@@ -540,83 +513,11 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
   // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
   // passing through a memcpy.
 
-  LoadInst* LI = LFA.getOriginalInst();
-  const Type* LoadTy = LFA.getTargetTy();
-  uint64_t LoadSize = (TD->getTypeSizeInBits(LoadTy) + 7) / 8;
-
-  if(Clobber.second->isRootMainCall()) {
-
-    if(isEntryNonLocal) {
-
-      if(LFA.canBuildSymExpr()) {
-	  
-	ValCtx PointerVC = LFA.getBaseVC();
-
-	if(GlobalVariable* GV = dyn_cast<GlobalVariable>(PointerVC.first)) {
-	    
-	  if(GV->hasDefinitiveInitializer()) {
-
-	    LPDEBUG("Load is clobbered by the first instruction in main(), using global initialiser " << itcache(*(GV->getInitializer())) << "\n");
-
-	    Constant* GVC = GV->getInitializer();
-	    uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
-	    uint64_t ReadOffset = (uint64_t)LFA.getSymExprOffset();
-	    uint64_t FirstNotDef = std::min(GVCSize - ReadOffset, LoadSize);
-	    LPDEBUG("Read offset is " << ReadOffset << "\n");
-	    return PartialVal::getPartial(0, FirstNotDef, GVC, ReadOffset);
-
-	  }
-
-	}
-	else {
-
-	  LPDEBUG("Load is clobbered by the first instruction in main(), but the pointer was not a global variable\n");
-
-	}
-	  
-      }
-
-    }
-  
-  }
-
-  // If the dependence is to a store that writes to a superset of the bits
-  // read by the load, we can extract the bits we need for the load from the
-  // stored value.
-  if (StoreInst *DepSI = dyn_cast<StoreInst>(Clobber.first)) {
-
-    uint64_t FirstDef, FirstNotDef, ReadOffset;
-
-    // Only deal with integer types handled this way for now.
-    Constant* StoreC = Clobber.second->getConstReplacement(DepSI->getValueOperand());
-    if(!StoreC) {
-	
-      LPDEBUG("Can't resolve clobber of " << itcache(*LI) << " by " << itcache(Clobber) << " because the store's value is not constant and the load is not exactly aligned\n");
-      return PartialVal();
-
-    }
-
-    if(!AnalyzeLoadFromClobberingStore(LFA, DepSI, Clobber.second, FirstDef, FirstNotDef, ReadOffset))
-      return PartialVal();
-
-    return PartialVal::getPartial(FirstDef, FirstNotDef, StoreC, ReadOffset);
-
-  }
-
-  // If the clobbering value is a memset/memcpy/memmove, see if we can
-  // forward a value on from it.
-  
-  if (MemIntrinsic *DepMI = dyn_cast<MemIntrinsic>(Clobber.first)) {
-
-    uint64_t FirstDef, FirstNotDef, ReadOffset;
-
-    if(!AnalyzeLoadFromClobberingMemInst(LFA, DepMI, Clobber.second, FirstDef, FirstNotDef, ReadOffset))
-      return PartialVal();
+  if (MemIntrinsic *DepMI = dyn_cast<MemIntrinsic>(I)) {
 
     LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
 
-    // For now this means we have a memset or memcpy from constant data. Just read it.
-    if (MemSetInst *MSI = dyn_cast<MemSetInst>(Clobber.first)) {
+    if (MemSetInst *MSI = dyn_cast<MemSetInst>(I)) {
 
       // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
       // independently of what the offset is.
@@ -624,7 +525,8 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       if(!Val) {
 
 	LPDEBUG("Won't forward load " << itcache(*LI) << " from uncertain memset " << itcache(*DepMI) << "\n");
-	return PartialVal();
+	error = "UCMemSet";
+	return false;
 
       }
 
@@ -640,7 +542,8 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
       }
 
       Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, MSI->getContext());
-      return PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
+      NewPV = PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
+      return true;
 
     }
  
@@ -648,137 +551,85 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     // If it's a memcpy from a constant source, resolve here and now.
     // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
 
-    MemTransferInst *MTI = cast<MemTransferInst>(Clobber.first);
+    MemTransferInst *MTI = cast<MemTransferInst>(I);
 
-    const Type* byteArrayType = Type::getInt8PtrTy(LI->getContext());
-    const Type* subTargetType;
+    // First of all check for an easy case: the memcpy is from a constant global.
+    // Then we can just appropriately bracket the source constant and the outside
+    // extract-element-from-aggregate code will pick it up.
 
-    uint64_t DefSize = FirstNotDef - FirstDef;
+    Value* CpySrc = MTI->getSource();
+    int64_t Offset;
+    ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
+    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.first)) {
 
-    if(DefSize != LoadSize) {
-      // This memcpy/move is partially defining the load
-      subTargetType = Type::getIntNTy(MTI->getContext(), DefSize * 8);
-    }
-    else {
-      subTargetType = LoadTy;
-    }
+      if(GV->isConstant()) {
 
-    ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(LI->getContext()), ReadOffset);
+	Constant* C = GV->getConstantInitializer();
+	return PartialVal::getPartial(FirstDef, FirstNotDef, C, ReadOffset + Offset);
 
-    // First of all check for an easy case: the memcpy is from a constant.
-    // Then we can just treat the memcpy as a GEP, augment the constant expression
-    // and try to resolve it.
-
-    if(Constant* MTISourceC = Clobber.second->getConstReplacement(MTI->getSource())) {
-
-      if(ReadOffset > 0) {
-
-	if(MTISourceC->getType() != byteArrayType) {
-
-	  MTISourceC = ConstantExpr::getBitCast(MTISourceC, byteArrayType);
-	  
-	}
-
-	Constant* OffsetCIC = OffsetCI;
-	MTISourceC = ConstantExpr::getGetElementPtr(MTISourceC, &OffsetCIC, 1);
-
-      }
-
-      if(MTISourceC->getType() != subTargetType) {
-
-	MTISourceC = ConstantExpr::getBitCast(MTISourceC, PointerType::get(subTargetType, 0));
-
-      }
-
-      LPDEBUG("Forwarding through memcpy yields a load from constant pointer! Will resolve " << *MTISourceC << "\n");
-
-      Constant* Result = ConstantFoldLoadFromConstPtr(MTISourceC, TD);
-
-      if(Result) {
-	LPDEBUG("Resolved to " << *Result << "\n");
-	return PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
-      }
-      else {
-	LPDEBUG("Resolution failed\n");
-	return PartialVal();
       }
 
     }
 
-    return tryForwardFromCopy(LFA, Clobber, subTargetType, MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef);
+    return tryForwardFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, ReadSize, mayBuildFromBytes, NewPV, error);
 
   }
 
   if(CallInst* CI = dyn_cast<CallInst>(Clobber.first)) {
 
     Function* CalledF = getCalledFunction(CI);
-    if(!CalledF)
-      return PVNull;
+    if(!CalledF) {
+      error = "FP";
+      return false;
+    }
 
     if(CalledF->getName() == "llvm.va_start") {
 
-      uint64_t FirstDef, FirstNotDef, loadOffset;
-      if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(0), Clobber.second, 24*8, FirstDef, FirstNotDef, loadOffset))
-	return PVNull;
+      int32_t initialOffset = getInitialBytesOnStack(IA->getFunction());
+      int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(IA->getFunction());
 
-      int32_t initialOffset = getInitialBytesOnStack(Clobber.second->getFunction());
-      int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(Clobber.second->getFunction());
-
-      PartialVal retPV;
-
-      if(loadOffset == 0) {
+      if(ReadOffset == 0) {
 	
 	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
 	// Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-	retPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
+	newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
       }
-      else if(loadOffset == 4) {
+      else if(ReadOffset == 4) {
 
 	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
 	// Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-	retPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+	newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
 
       }
-      else if(loadOffset == 8) {
+      else if(ReadOffset == 8) {
 
 	LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
 	// Pointer to first vararg, or first vararg after 48 bytes of real args.
-	int64_t initialVararg = getFirstSpilledVararg(Clobber.second);
+	int64_t initialVararg = getFirstSpilledVararg(IA);
 	if(initialVararg == ValCtx::not_va_arg)
 	  return PVNull;
-	retPV = PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, initialVararg));
+	newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, initialVararg));
 
       }
-      else if(loadOffset == 16) {
+      else if(ReadOffset == 16) {
 	LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-	retPV = PartialVal::getTotal(make_vc(CI, Clobber.second, ValCtx::noOffset, ValCtx::va_baseptr));
+	newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, ValCtx::va_baseptr));
 
       }
 
-      retPV.isVarargTainted = true;
-      return retPV;
+      newPV.isVarargTainted = true;
+      return true;
 
     }
     else if(CalledF->getName() == "llvm.va_copy") {
 
-      uint64_t FirstDef, FirstNotDef, loadOffset;
-      if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(0), Clobber.second, 24*8, FirstDef, FirstNotDef, loadOffset))
-	return PVNull;
-
-      return tryForwardFromCopy(LFA, Clobber, LoadTy, CI->getArgOperand(1), CI, loadOffset, FirstDef, FirstNotDef);
+      return tryForwardFromCopy(CI->getArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, ReadSize, mayBuildFromBytes, NewPV, error);
 
     }
 
     // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
-    ReadFile* RF = Clobber.second->tryGetReadFile(CI);
-    if(!RF) {
-      LPDEBUG("Can't improve load " << itcache(*LI) << " clobbered by " << itcache(*CI) << ": call does not appear to be a read()\n");
-      return PVNull;
-    }
-
-    uint64_t FirstDef, FirstNotDef, loadOffset;
-    if(!AnalyzeLoadFromClobberingWrite(LFA, CI->getArgOperand(1), Clobber.second, RF->readSize * 8, FirstDef, FirstNotDef, loadOffset))
-      return PVNull;
+    ReadFile* RF = IA->tryGetReadFile(CI);
+    assert(RF);
 
     uint64_t nbytes = FirstNotDef - FirstDef;
     uint64_t nqwords = (nbytes + 7) / 8;
@@ -789,7 +640,8 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
     int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
     if(fd == -1) {
       LPDEBUG("Failed to open " << RF->openArg->Name << "\n");
-      return PVNull;
+      error = "OpenErr";
+      return false;
     }
 
     unsigned bytes_read = 0;
@@ -806,15 +658,15 @@ PartialVal IntegrationAttempt::tryResolveClobber(LoadForwardAttempt& LFA, ValCtx
 
     if(bytes_read != LoadSize) {
       LPDEBUG("Short read on " << RF->openArg->Name << ": could only read " << bytes_read << " bytes out of " << RF->readSize << " needed at offset " << RF->incomingOffset << "\n");
-      return PartialVal();
+      error = "ShortRead";
+      return false;
     }
 
     Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, CI->getContext());
-    return PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
+    newPV = PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
+    return true;
 
   }
-
-  return PartialVal();
 
 }
 

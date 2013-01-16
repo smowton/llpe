@@ -203,7 +203,17 @@ void BackwardIAWalker::walkInternal() {
       else {
 
 	// Else we've hit the top of a block. Figure out what to do with each predecessor:
-	ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx);
+	if(ThisStart.ctx->isRootMainCall()) {
+
+	  if(!reachedTop())
+	    return;
+
+	}
+	else {
+
+	  ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx);
+
+	}
 
       }
 
