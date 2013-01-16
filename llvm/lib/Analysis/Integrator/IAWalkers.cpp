@@ -59,7 +59,7 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlo
 
 void InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
-  if(FromBB == &(F.getEntryBlock()) && parent) {
+  if(FromBB == &(F.getEntryBlock()) && parent && Walker->mayAscendFromContext(this)) {
 
     Walker->queueWalkFrom(BIC(BasicBlock::iterator(CI), CI->getParent(), parent), Ctx, false);
 
@@ -75,6 +75,9 @@ void InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Wa
 void PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB == L->getHeader()) {
+
+    if(!Walker->mayAscendFromContext(this))
+      return;
 
     if(iterationCount == 0) {
 

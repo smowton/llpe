@@ -587,10 +587,6 @@ public:
 
 };
 
-class LoadForwardAttempt;
-class LFARealization;
-class LFAQueryable;
-
 struct OpenStatus {
 
   std::string Name;
@@ -786,7 +782,6 @@ class IAWalker {
     return 0;
   }
   virtual void walkInternal() = 0;
-  virtual void reachedTop() { };
 
   void* initialContext;
 
@@ -807,6 +802,8 @@ class BackwardIAWalker : public IAWalker {
   
   WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
+  virtual void reachedTop() { };
+  virtual bool mayAscendFromContext(IntegrationAttempt*) { return true; }
   
  public:
 
@@ -1069,29 +1066,12 @@ protected:
   // Load forwarding:
 
   void checkLoad(LoadInst* LI);
-  ValCtx tryForwardLoad(LoadInst*);
-  ValCtx tryForwardLoad(LoadForwardAttempt&, Instruction* StartBefore, bool* pvIsTainted = 0);
-  MemDepResult tryResolveLoad(LoadForwardAttempt&);
-  MemDepResult tryResolveLoad(LoadForwardAttempt&, Instruction* StartBefore, ValCtx& ConstResult);
-  ValCtx getForwardedValue(LoadForwardAttempt&, MemDepResult Res, bool* pvTainted = 0);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
-  
-  bool forwardLoadIsNonLocal(LFAQueryable&, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
-  void getDefn(const MemDepResult& Res, ValCtx& VCout);
-  void getDependencies(LFAQueryable& LFA, SmallVector<BasicBlock*, 4>* StartBlocks, SmallVector<NonLocalDepResult, 4>& Results);
-  void addPBResults(LoadForwardAttempt& RealLFA, SmallVector<NonLocalDepResult, 4>& Results);
-  MemDepResult getUniqueDependency(LFAQueryable&, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent, bool& OnlyDependsOnParent);
-
-  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&) = 0;
-  MemDepResult tryResolveLoadAtChildSite(IntegrationAttempt* IA, LoadForwardAttempt&);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
-  bool tryResolveExprFrom(LoadForwardAttempt& LFA, Instruction* Where, MemDepResult& Result, ValCtx& ConstResult, bool& MayDependOnParent);
-  bool tryResolveExprUsing(LFARealization& LFAR, MemDepResult& Result, SmallVector<BasicBlock*, 4>* StartBlocks, bool& MayDependOnParent);
-
-  virtual bool tryForwardLoadThroughCall(LoadForwardAttempt&, CallInst*, MemDepResult&, bool& mayDependOnParent);
-  virtual bool tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAttempt&, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
-
-  void setLoadOverdef(LoadInst* LI, SmallVector<NonLocalDepResult, 4>& Res);
+  PartialVal tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool mayBuildFromBytes);
+  ValCtx tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize);
+  PartialValueBuf* tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, Integrationattempt* LoadCtx, uint64_t LoadSize, PartialValueBuf& ResolvedSoFar);
+  ValCtx tryForwardLoad(LoadInst* LI);
+  ValCtx getWalkerResult(LoadForwardWalker& Walker, const Type* TargetType);
 
   // Support functions for the generic IA graph walkers:
   void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
@@ -1691,22 +1671,6 @@ class InlineAttempt : public IntegrationAttempt {
   void disableVarargsContexts();
 
   void analyseWithArgs();
-
-};
-
-struct PartialValueBuffer {
-
-  uint64_t* partialBuf;
-  bool* partialValidBuf;
-  uint64_t partialBufBytes;
-  bool loadFinished;
-
-  TargetData* TD;
-
-  uint64_t markPaddingBytes(const Type*);
-
-  PartialValueBuffer(uint64_t size, const Type* Ty, TargetData*);
-  PartialValueBuffer(PartialValueBuffer& Other);
 
 };
 

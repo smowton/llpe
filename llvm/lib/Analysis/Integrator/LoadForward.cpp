@@ -10,6 +10,8 @@
 
 using namespace llvm;
 
+//// Type definitions: the LF walker, its 2 derivatives, and PartialValueBuffer, a helper used by normal LF.
+
 class LoadForwardWalker : public BackwardIAWalker {
 
   Value* LoadedPtr;
@@ -54,6 +56,27 @@ public:
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R);
   virtual void reachedTop();
+  virtual bool mayAscendFromContext(IntegrationAttempt* IA);
+
+};
+
+struct PartialValueBuffer {
+
+  uint64_t* partialBuf;
+  bool* partialValidBuf;
+  uint64_t partialBufBytes;
+  bool loadFinished;
+
+  TargetData* TD;
+
+  uint64_t markPaddingBytes(const Type*);
+
+  PartialValueBuffer(uint64_t size, const Type* Ty, TargetData*);
+  PartialValueBuffer(PartialValueBuffer& Other);
+  ~PartialValueBuffer();
+
+  bool addPartialVal(PartialVal& PV, std::string& error);
+  bool isComplete();
 
 };
 
@@ -74,8 +97,11 @@ public:
   void addPBDefn(PointerBase& NewPB);
   void setPBOverdef(std::string reason);
   virtual void reachedTop();
+  virtual bool mayAscendFromContext(IntegrationAttempt* IA);
 
 };
+
+//// Implement generic LF
 
 bool LoadForwardWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
@@ -168,6 +194,39 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
 
 }
 
+//// Implement PartialValueBuffer
+
+PartialValueBuffer::PartialValueBuffer(uint64_t nbytes, const Type* Ty, TargetData* _TD) : TD(_TD) {
+
+  uint64_t nqwords = (nbytes + 7) / 8;
+  partialBuf = new uint64_t[nqwords];
+  partialValidBuf = new bool[nbytes];
+  for(uint64_t i = 0; i < nbytes; ++i)
+    partialValidBuf[i] = false;
+  markPaddingBytes(partialValidBuf, Ty);
+  partialBufBytes = nbytes;
+  loadFinished = false;
+
+}
+
+PartialValueBuffer::PartialValueBuffer(PartialValueBuffer& Other) : TD(Other.TD) {
+
+  partialBufBytes = Other.partialBufBytes;
+  loadFinished = Other.loadFinished;
+  uint64_t nqwords = (partialBufBytes + 7) / 8;
+  partialBuf = new uint64_t[nqwords];
+  partialValidBuf = new bool[nbytes];
+  memcpy(partialBuf, Other.partialBuf, partialBufBytes);
+  memcpy(partialValidBuf, Other.partialValidBuf, partialBufBytes * sizeof(bool));
+
+}
+
+PartialValueBuffer::~PartialValueBuffer() {
+
+  delete[] partialBuf;
+  delete[] partialValidBuf;
+
+}
 
 uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
 
@@ -213,38 +272,6 @@ uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
   }
 
   return marked;
-
-}
-
-PartialValueBuffer::PartialValueBuffer(uint64_t nbytes, const Type* Ty, TargetData* _TD) : TD(_TD) {
-
-  uint64_t nqwords = (nbytes + 7) / 8;
-  partialBuf = new uint64_t[nqwords];
-  partialValidBuf = new bool[nbytes];
-  for(uint64_t i = 0; i < nbytes; ++i)
-    partialValidBuf[i] = false;
-  markPaddingBytes(partialValidBuf, Ty);
-  partialBufBytes = nbytes;
-  loadFinished = false;
-
-}
-
-PartialValueBuffer::PartialValueBuffer(PartialValueBuffer& Other) : TD(Other.TD) {
-
-  partialBufBytes = Other.partialBufBytes;
-  loadFinished = Other.loadFinished;
-  uint64_t nqwords = (partialBufBytes + 7) / 8;
-  partialBuf = new uint64_t[nqwords];
-  partialValidBuf = new bool[nbytes];
-  memcpy(partialBuf, Other.partialBuf, partialBufBytes);
-  memcpy(partialValidBuf, Other.partialValidBuf, partialBufBytes * sizeof(bool));
-
-}
-
-PartialValueBuffer::~PartialValueBuffer() {
-
-  delete[] partialBuf;
-  delete[] partialValidBuf;
 
 }
 
@@ -314,6 +341,8 @@ bool PartialValueBuffer::isComplete() {
   return loadFinished;
 
 }
+
+//// Implement Normal LF:
 
 bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, bool maySubquery) {
 
@@ -574,6 +603,22 @@ bool NormalLoadForwardWalker::reachedTop() {
 
 }
 
+bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
+
+  if(IA == LoadPtrBase.second) {
+    
+    FailureVC = make_vc(IA->getEntryInstruction(), IA);
+    FailureCode = "Scope";
+    return false;
+
+  }
+    
+  return true;
+
+}
+
+//// Implement PBLF:
+
 void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB) {
   bool WasOverdef = Result.Overdef;
   Result.merge(NewPB);
@@ -745,6 +790,19 @@ bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttem
   RSO << "UEC " << IA->itcache(make_vc(CI, IA), true);
   RSO.flush();  
   setPBOverdef(RStr);
+  return true;
+
+}
+
+bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
+
+  if(IA == LoadPtrBase.second) {
+    
+    setPBOverdef("Scope");
+    return false;
+
+  }
+    
   return true;
 
 }
@@ -1053,8 +1111,3 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
   return true;
 
 }
-
-
-
-
-
