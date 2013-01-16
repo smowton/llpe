@@ -41,42 +41,18 @@ public:
 
 class NormalLoadForwardWalker : public LoadForwardWalker {
 
-  bool mayBuildFromBytes;
-
 public:
 
-  PartialVal _ResultPV;
-  PartialVal* ResultPV;
-  PartialValueBuffer* ResultPartialBuf;
-  PartialValueBuffer* InputPartialBuf;
+  PartialVal& inputPV;
+  PartialVal resultPV;
   ValCtx FailureVC;
   std::string FailureCode;
 
-  NormalLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, const Type* TargetType, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD, PartialValueBuf* inputPVB, bool mBFB) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), ResultPV(0), ResultPartialBuf(0), InputPartialBuf(inputPVB), mayBuildFromBytes(mBFB) {   }
+  NormalLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), inputPV(iPV) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R);
   virtual void reachedTop();
   virtual bool mayAscendFromContext(IntegrationAttempt* IA);
-
-};
-
-struct PartialValueBuffer {
-
-  uint64_t* partialBuf;
-  bool* partialValidBuf;
-  uint64_t partialBufBytes;
-  bool loadFinished;
-
-  TargetData* TD;
-
-  uint64_t markPaddingBytes(const Type*);
-
-  PartialValueBuffer(uint64_t size, const Type* Ty, TargetData*);
-  PartialValueBuffer(PartialValueBuffer& Other);
-  ~PartialValueBuffer();
-
-  bool addPartialVal(PartialVal& PV, std::string& error);
-  bool isComplete();
 
 };
 
@@ -194,41 +170,86 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
 
 }
 
-//// Implement PartialValueBuffer
+//// Implement guts of PartialVal:
 
-PartialValueBuffer::PartialValueBuffer(uint64_t nbytes, const Type* Ty, TargetData* _TD) : TD(_TD) {
+PartialVal::initByteArray(uint64_t nbytes) {
+
+  type = PVByteArray;
 
   uint64_t nqwords = (nbytes + 7) / 8;
   partialBuf = new uint64_t[nqwords];
-  partialValidBuf = new bool[nbytes];
-  for(uint64_t i = 0; i < nbytes; ++i)
-    partialValidBuf[i] = false;
-  markPaddingBytes(partialValidBuf, Ty);
+
+  if(!partialValidBuf) {
+
+    partialValidBuf = new bool[nbytes];
+    for(uint64_t i = 0; i < nbytes; ++i)
+      partialValidBuf[i] = false;
+
+  }
+
   partialBufBytes = nbytes;
   loadFinished = false;
 
 }
 
-PartialValueBuffer::PartialValueBuffer(PartialValueBuffer& Other) : TD(Other.TD) {
+PartialVal::PartialVal(uint64_t nbytes) {
+
+  initByteArray(nbytes);
+
+}
+
+PartialVal::operator=(const PartialVal& Other) {
+
+  type = Other.type;
+  isVarargTainted = Other.isVarargTainted;
+  TotalVC = Other.TotalVC;
+  C = Other.C;
+  ReadOffset = Other.ReadOffset;
+  
+  if(Other.partialBuf) {
+
+    partialBuf = new uint64_t[(Other.partialBufBytes + 7) / 8];
+    memcpy(partialBuf, Other.partialBuf, Other.partialBufBytes);
+
+  }
+
+  if(Other.partialValidBuf) {
+
+    partialValidBuf = new bool[Other.partialBufBytes];
+    memcpy(partialValidBuf, Other.partialValidBuf, Other.partialBufBytes);
+    
+  }
 
   partialBufBytes = Other.partialBufBytes;
   loadFinished = Other.loadFinished;
-  uint64_t nqwords = (partialBufBytes + 7) / 8;
-  partialBuf = new uint64_t[nqwords];
-  partialValidBuf = new bool[nbytes];
-  memcpy(partialBuf, Other.partialBuf, partialBufBytes);
-  memcpy(partialValidBuf, Other.partialValidBuf, partialBufBytes * sizeof(bool));
 
 }
 
-PartialValueBuffer::~PartialValueBuffer() {
+PartialBuf::PartialBuf(const PartialBuf& Other) {
 
-  delete[] partialBuf;
-  delete[] partialValidBuf;
+  (*this) = Other;
 
 }
 
-uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
+PartialVal::~PartialVal() {
+
+  if(partialBuf)
+    delete[] partialBuf;
+  if(partialValidBuf)
+    delete[] partialValidBuf;
+
+}
+
+bool* PartialVal::getValidArray(uint64_t nbytes) {
+
+  if(!partialValidBuf)
+    partialValidBuf = new bool[nbytes];
+
+  return partialValidBuf;
+
+}
+
+static uint64_t markPaddingBytes(bool* pvb, const Type* Ty, TargetData* TD) {
 
   uint64_t marked = 0;
 
@@ -243,13 +264,13 @@ uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
     uint64_t EIdx = 0;
     for(StructType::element_iterator EI = STy->element_begin(), EE = STy->element_end(); EI != EE; ++EI, ++EIdx) {
 
-      marked += markPaddingBytes(&(partialValidBuf[SL->getElementOffset(EIdx)]), *EI);
+      marked += markPaddingBytes(&(pvb[SL->getElementOffset(EIdx)]), *EI);
       uint64_t ThisEStart = SL->getElementOffset(EIdx);
       uint64_t ESize = (TD->getTypeSizeInBits(*EI) + 7) / 8;
       uint64_t NextEStart = (EIdx + 1 == STy->getNumElements()) ? SL->getSizeInBytes() : SL->getElementOffset(EIdx + 1);
       for(uint64_t i = ThisEStart + ESize; i < NextEStart; ++i, ++marked) {
 	
-	partialValidBuf[i] = true;
+	pvb[i] = true;
 
       }
 
@@ -265,7 +286,7 @@ uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
     uint64_t Offset = 0;
     for(uint64_t i = 0; i < ECount; ++i, Offset += ESize) {
 
-      marked += markPaddingBytes(&(partialValidBuf[Offset]), EType);
+      marked += markPaddingBytes(&(pvb[Offset]), EType);
 
     }
 
@@ -275,186 +296,178 @@ uint64_t PartialValueBuffer::markPaddingBytes(const Type* Ty) {
 
 }
 
-bool PartialValueBuffer::addPartialVal(PartialVal& PV, std::string& error) {
+bool PartialVal::isComplete() {
 
-  if(PV.isTotal()) {
-    Constant* TotalC = dyn_cast<Constant>(PV.TotalVC.first);
-    if(!TotalC) {
-      LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
-      error = "PP2";
-      return false;
-    }
-    PV.C = TotalC;
-    uint64_t StoreSize = (TD->getTypeSizeInBits(PV.C->getType()) + 7) / 8;
-    PV.FirstDef = 0;
-    PV.FirstNotDef = std::min(LoadSize, StoreSize);
-    PV.ReadOffset = 0;
-  }
-
-  DEBUG(dbgs() << "This store can satisfy bytes (" << PV.FirstDef << "-" << PV.FirstNotDef << "] of the source load\n");
-
-  // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
-
-  unsigned char* tempBuf = (unsigned char*)alloca(PV.FirstNotDef - PV.FirstDef);
-  // ReadDataFromGlobal assumes a zero-initialised buffer!
-  memset(tempBuf, 0, PV.FirstNotDef - PV.FirstDef);
-
-  if(!ReadDataFromGlobal(PV.C, PV.ReadOffset, tempBuf, PV.FirstNotDef - PV.FirstDef, *TD)) {
-    LPDEBUG("ReadDataFromGlobal failed; perhaps the source " << *(PV.C) << " can't be bitcast?\n");
-    error = "RDFG";
-    return false;
-  }
-  else {
-    // Avoid rewriting bytes which have already been defined
-    for(uint64_t i = 0; i < (PV.FirstNotDef - PV.FirstDef); ++i) {
-      if(partialBufValid[PV.FirstDef + i]) {
-	continue;
-      }
-      else {
-	partialBuf[PV.FirstDef + i] = tempBuf[i];
-      }
-    }
-  }
-
-  loadFinished = true;
-  // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
-  // and there's no hope we've finished.
-  for(uint64_t i = 0; i < LoadSize && (loadFinished || i < PV.FirstNotDef); ++i) {
-
-    if(i >= PV.FirstDef && i < PV.FirstNotDef) {
-      partialBufValid[i] = true;
-    }
-    else {
-      if(!partialBufValid[i]) {
-	loadFinished = false;
-      }
-    }
-
-  }
-
-  return true;
+  return isTotal() || isPartial() || loadFinished;
 
 }
 
-bool PartialValueBuffer::isComplete() {
+void PartialVal::convertToBytes(uint64_t size) {
 
-  return loadFinished;
+  PartialVal conv(size);
+  conv.combineWith(*this);
+
+  (*this) = conv;
+
+}
+
+bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error) {
+
+ if(isEmpty()) {
+
+   if(FirstDef == 0 && (FirstNotDef - FirstDef == LoadSize)) {
+
+     *this = Other;
+     return true;
+
+   }
+   else {
+
+     // Transition to bytewise load forwarding: this value can't satisfy
+     // the entire requirement. Turn into a PVByteArray and fall through.
+     initByteArray(LoadSize);
+
+   }
+
+ }
+
+ assert(isByteArray());
+
+ if(Other.isTotal()) {
+
+   Constant* TotalC = dyn_cast<Constant>(PV.TotalVC.first);
+   if(!TotalC) {
+     //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
+     error = "PP2";
+     return false;
+   }
+   Other.C = TotalC;
+   Other.ReadOffset = 0;
+   Other.Type = PVPartial;
+
+ }
+
+ DEBUG(dbgs() << "This store can satisfy bytes (" << Other.FirstDef << "-" << Other.FirstNotDef << "] of the source load\n");
+
+ // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
+
+ unsigned char* tempBuf;
+
+ if(Other.isPartial()) {
+
+   tempBuf = (unsigned char*)alloca(Other.FirstNotDef - Other.FirstDef);
+   // ReadDataFromGlobal assumes a zero-initialised buffer!
+   memset(tempBuf, 0, FirstNotDef - FirstDef);
+
+   if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, Other.FirstNotDef - Other.FirstDef, *TD)) {
+     LPDEBUG("ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
+     error = "RDFG";
+     return false;
+   }
+
+ }
+ else {
+
+   tempBuf = (unsigned char*)Other.partialBuf;
+
+ }
+
+ else {
+
+   // Avoid rewriting bytes which have already been defined
+   for(uint64_t i = 0; i < (FirstNotDef - FirstDef); ++i) {
+     if(partialBufValid[FirstDef + i]) {
+       continue;
+     }
+     else {
+       partialBuf[FirstDef + i] = tempBuf[i];
+     }
+   }
+
+ }
+
+ loadFinished = true;
+ // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
+ // and there's no hope we've finished.
+ for(uint64_t i = 0; i < LoadSize && (loadFinished || i < Other.FirstNotDef); ++i) {
+
+   if(i >= Other.FirstDef && i < Other.FirstNotDef) {
+     partialBufValid[i] = true;
+   }
+   else {
+     if(!partialBufValid[i]) {
+       loadFinished = false;
+     }
+   }
+
+ }
+
+ return true;
 
 }
 
 //// Implement Normal LF:
 
-bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, bool maySubquery) {
+bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef) {
 
-  if(!InputPartialBuf) {
+  PartialVal valSoFar(inputPV);
+  if(!valSoFar.combineWith(PV, FirstDef, FirstNotDef, LoadSize, error))
+    return false;
 
-    uint64_t PVSize = PV.isTotal() ? 
-      (AA->getTypeStoreSize(PV.TotalVC.first->getType())) : 
-      (PV.FirstNotDef - PV.FirstDef);
+  if(!valSoFar.isComplete()) {
 
-    bool satisfiesWholeRead = PVSize >= LoadSize;
-    if((!PV.isTotal()) && PV.FirstDef != 0)
-      satisfiesWholeRead = false;
+    valSoFar = IA->tryForwardLoadSubquery(I, LoadedPtr, SourceCtx, LoadSize, valSoFar);
+    if(valSoFar.isEmpty()) {
 
-    if(satisfiesWholeRead) {
-
-      if(ResultPartialBuf || (ResultPV && _ResultPV != PV)) {
-
-	// Clash -- partial buf vs. total or 2 different total results.
-	error = "Clash";
-	return false;
-
-      }
-      else {
-
-	_ResultPV = PV;
-	ResultPV = &_ResultPV;
-	return true;
-
-      }
-    }
-    else {
-
-      // Transition to bytewise load forwarding: this value can't satisfy
-      // the entire requirement.
-
-      if(!mayBuildFromBytes) {
-
-	error = "PP";
-	return false;
-
-      }
-      else {
-
-	if(!maySubquery)
-	  return false;
-
-	PartialValueBuf SubqueryPVB(LoadSize);
-	if(!SubqueryPVB.addPartialVal(PV, error))
-	  return false;
-	PartialValueBuf* RetPVB = IA->tryForwardLoadSubquery(I, LoadedPtr, SourceCtx, LoadSize, SubqueryPVB);
-
-	if(!RetPVB) {
-	  error = "Subquery";
-	  return false;
-	}
-
-	if(ResultPV || (ResultPartialBuf && (*ResultPartialBuf) != (*RetPVB))) {
-
-	  error = "Clash2";
-	  delete RetPVB;
-	  return false;
-
-	}
-	else {
-
-	  ResultPartialBuf = RetPVB;
-	  return true;
-
-	}
-
-      }
+      error = "PartSQ";
+      return false;
 
     }
 
   }
+
+  if((!resultPV.isEmpty()) && (resultPV != valSoFar)) {
+      
+    error = "Clash";
+    return false;
+
+  }
   else {
 
-    // We had an input partial buffer.
-    PartialValueBuf SubqueryPVB(*InputPartialBuf);
-    if(!SubqueryPVB.addPartialVal(PV, error))
-      return false;
+    resultPV = valSoFar;
 
-    PartialValueBuf* RetPVB;
-    if(!SubqueryPVB.isComplete()) {
+  }
 
-      if(!maySubquery)
-	return false;
+}
 
-      RetPVB = IA->tryForwardLoadSubquery(I, LoadedPtr, SourceCtx, LoadSize, SubqueryPVB);
-      if(!RetPVB) {
-	error = "Subquery2";
-	return false;
-      }      
+bool NormalLoadForwardWalker::getMIOrReadValue(Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
-    }
-    else {
+  if (MemIntrinsic *DepMI = dyn_cast<MemIntrinsic>(I)) {
 
-      RetPVB = new PartialValueBuf(SubqueryPVB);
+    if(MemSetInst* MSI = dyn_cast<MemSetInst>(I))
+      return IA->getMemsetPV(MSI, FirstNotDef - FirstDef, NewPV, error);
+    else
+      return IA->getMemcpyPV(cast<MemTransferInst>(I), FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
 
-    }
+  }
+  else {
 
-    if(ResultPartialBuf && (*ResultPartialBuf) != (*RetPVB)) {
-
-      error = "Clash3";
-      delete RetPVB;
-      return false;
+    CallInst* CI = cast<CallInst>(I);
+    Function* F = IA->getCalledFunction(CI);
+    if(F->getName() == "read") {
       
+      return IA->getReadPV(CI, FirstNotDef - FirstDef, ReadOffset, NewPV, error);
+
+    }
+    else if(F->getName() == "llvm.va_start") {
+
+      return IA->getVaStartPV(CI, ReadOffset, NewPV, error);
+
     }
     else {
 
-      ResultPartialBuf = RetPVB;
-      return true;
+      assert(F->getName() == "llvm.va_copy");
+      return IA->getVaCopyPV(CI, FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
 
     }
 
@@ -467,8 +480,11 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, 
 WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R) { 
 
   PartialVal NewPV;
+  uint64_t FirstDef, FirstNotDef, ReadOffset;
   
   if(R == AliasAnalysis::MustAlias) {
+
+    FirstDef = 0; FirstNotDef = LoadSize; ReadOffset = 0;
 
     if(StoreInst* SI = dyn_cast<StoreInst>(SI)) {
 
@@ -508,7 +524,6 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
 
     int64_t WriteOffset;
     ValCtx WriteBase = GetBaseWithConstantOffset(Ptr, IA, WriteOffset);
-    uint64_t FirstDef, FirstNotDef, ReadOffset;
     if(IA->GetDefinedRange(LoadPtrBase, LoadPtrOffset, LoadSize,
 			   WriteBase, WriteOffset, PtrSize,
 			   FirstDef, FirstNotDef, ReadOffset)) {
@@ -524,7 +539,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
 	}
 	else {
 
-	  NewPV = PartialVal::getPartial(FirstDef, FirstNotDef, StoreC, ReadOffset);
+	  NewPV = PartialVal::getPartial(StoreC, ReadOffset);
 
 	}
 
@@ -532,7 +547,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
       else {
 
 	std::string error;
-	if(!IA->getMIOrReadValue(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, NewPV, error)) {
+	if(!getMIOrReadValue(I, IA, FirstDef, FirstNotDef, ReadOffset, LoadSize, NewPV, error)) {
 	
 	  // Memset, memcpy or read failed
 	  NLFWFail(error);
@@ -554,7 +569,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
   }
 
   std::string error;
-  if(!addPartialVal(NewPV, error)) {
+  if(!addPartialVal(NewPV, error, I, IA, FirstDef, FirstNotDef)) {
     // Couldn't perform some implicit cast, or encountered a conflict
     NLFWFail(error);
   }
@@ -811,24 +826,26 @@ bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
 
 ValCtx IntegrationAttempt::getWalkerResult(LoadForwardWalker& Walker, const Type* TargetType) {
 
-  if(Walker.ResultPV) {
+  PartialVal& PV = Walker.resultPV;
 
-    PartialVal& PV = *(Walker.ResultPV);
+  // Try to use an entire value:
+  if(PV.isTotal()) {
 
-    if(PV.isTotal()) {
-
-      ValCtx Res = PV.TotalVC;
-      const Type* sourceType = Res.first->getType();
-      if(Res.isVaArg() || allowTotalDefnImplicitCast(sourceType, TargetType)) {
-	return Res;
-      }
-      else if(allowTotalDefnImplicitPtrToInt(sourceType, TargetType, TD)) {
-	LPDEBUG("Accepting " << itcache(Res) << " implicit ptrtoint to " << *(sourceType) << "\n");
-	Res = getAsPtrAsInt(Res, TargetType);
-	return Res;
-      }
-
+    ValCtx Res = PV.TotalVC;
+    const Type* sourceType = Res.first->getType();
+    if(Res.isVaArg() || allowTotalDefnImplicitCast(sourceType, TargetType)) {
+      return Res;
     }
+    else if(allowTotalDefnImplicitPtrToInt(sourceType, TargetType, TD)) {
+      LPDEBUG("Accepting " << itcache(Res) << " implicit ptrtoint to " << *(sourceType) << "\n");
+      Res = getAsPtrAsInt(Res, TargetType);
+      return Res;
+    }
+
+  }
+
+  // Otherwise try to use a sub-value:
+  if(PV.isTotal() || PV.isPartial()) {
 
     // Try to salvage a total definition from a partial if this is a load clobbered by a store
     // of a larger aggregate type. This is to permit pointers and other non-constant forwardable values
@@ -847,17 +864,16 @@ ValCtx IntegrationAttempt::getWalkerResult(LoadForwardWalker& Walker, const Type
 
     }
 
+  }
+
+  if(containsPointerTypes(TargetType))
     return VCNull;
 
-  }
-  else {
+  // Finally build it from bytes.
+  PV.convertToBytes(LoadSize);
+  assert(PV.isByteArray());
 
-    assert(Walker.ResultPartialBuf);
-    ValCtx Ret = const_vc(constFromBytes(Walker.ResultPartialBuf, TargetType, TD));
-    delete Walker.ResultPartialBuf;
-    return Ret;
-
-  }
+  return const_vc(constFromBytes(PV.partialBuf, TargetType, TD));
 
 }
 
@@ -958,7 +974,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
 
 }
 
-PartialValueBuf* IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, Integrationattempt* LoadCtx, uint64_t LoadSize, PartialValueBuf& ResolvedSoFar) {
+PartialVal IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, Integrationattempt* LoadCtx, uint64_t LoadSize, PartialValueBuf& ResolvedSoFar) {
 
   NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, LoadCtx, AA, TD, &ResolvedSoFar, true);
   Walker.walk();
@@ -968,13 +984,13 @@ PartialValueBuf* IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartIn
 
 ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize) {
 
-  ValCtx ConstResult;
-  if(tryResolveLoadFromConstant(LoadI, ConstResult))
-    return ConstResult;
-
   bool mayBuildFromBytes = !containsPointerTypes(TargetType);
 
   NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD, 0, mayBuildFromBytes);
+
+  bool* validBytes = Walker.getValidBuf();
+  markPaddingBytes(TargetType, validBytes, TD);
+
   Walker.walk();
 
   if(Walker.FailureVC != VCNull)
@@ -989,21 +1005,26 @@ ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, Value* LoadPtr
 
 }
 
-PartialVal IntegrationAttempt::tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool mayBuildFromBytes) {
+PartialVal IntegrationAttempt::tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes) {
 
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD, 0, mayBuildFromBytes);
+  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD);
+  bool* validBytes = Walker.getValidBuf();
+  memcpy(validBytes, alreadyValidBytes, sizeof(bool) * LoadSize);
+
   Walker.walk();
 
   if(Walker.FailureVC != VCNull)
     return PVNull;
 
-  if(Walker.ResultPV)
-    return *(Walker.ResultPV);
-  else
-    return PartialVal::getTotal(const_vc(constFromBytes(Walker.ResultPartialBuf, Type::getIntNTy(LoadPtr->getContext(), LoadSize * 8), TD)));
+  return Walker.ResultPV;
+
 }
 
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
+
+  ValCtx ConstResult;
+  if(tryResolveLoadFromConstant(LoadI, ConstResult))
+    return ConstResult;
 
   return tryForwardLoad(LI, LI->getPointerOperand(), AA->getTypeStoreSize(LI->getOperand(0)->getType()), LI->getType());
 

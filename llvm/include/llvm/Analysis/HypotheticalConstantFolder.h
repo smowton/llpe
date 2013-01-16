@@ -471,38 +471,63 @@ template<> struct DenseMapInfo<ValCtx> {
 
 enum PartialValType {
 
-  PVInvalid,
+  PVEmpty,
   PVTotal,
-  PVPartial
+  PVPartial,
+  PVByteArray
 
 };
 
 struct PartialVal {
 
+  // Might be empty, a VC, a constant with bounding parameters, or an array of bytes.
   PartialValType type;
+  // Value is tainted by varargs at any point?
+  bool isVarargTainted
+
+  // Used if it's a VC:
   ValCtx TotalVC;
-  uint64_t FirstDef;
-  uint64_t FirstNotDef;
+
+  // Used if it's a bounded constant:
   Constant* C;
   uint64_t ReadOffset;
-  bool isVarargTainted;
 
+  // Used if it's an array of bytes
+  uint64_t* partialBuf;
+  bool* partialValidBuf;
+  uint64_t partialBufBytes;
+  bool loadFinished;
+
+  uint64_t markPaddingBytes(const Type*);
+
+  bool addPartialVal(PartialVal& PV, TargetData* TD, std::string& error);
+  bool isComplete();
+  
  PartialVal(ValCtx Total) : 
-  type(PVTotal), TotalVC(Total), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0), isVarargTainted(false) { }
- PartialVal(uint64_t FD, uint64_t FND, Constant* _C, uint64_t Off) : 
-  type(PVPartial), TotalVC(VCNull), FirstDef(FD), FirstNotDef(FND), C(_C), ReadOffset(Off), isVarargTainted(false) { }
+  type(PVTotal), isVarargTainted(false), TotalVC(Total), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+ PartialVal(Constant* _C, uint64_t Off) : 
+  type(PVPartial), isVarargTainted(false), TotalVC(VCNull), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
  PartialVal() :
-  type(PVInvalid), TotalVC(VCNull), FirstDef(0), FirstNotDef(0), C(0), ReadOffset(0), isVarargTainted(false) { }
+  type(PVEmpty), isVarargTainted(false), TotalVC(VCNull), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  PartialVal(uint64_t nBytes); // Byte array constructor
+  PartialVal(const PartialVal& Other);
+  operator=(const PartialBuf& Other);
 
   bool isPartial() { return type == PVPartial; }
   bool isTotal() { return type == PVTotal; }
+  bool isEmpty() { return type == PVEmpty; }
+  bool isByteArray() { return type == PVByteArray; }
   
-  static PartialVal getPartial(uint64_t FD, uint64_t FND, Constant* _C, uint64_t Off) {
-    return PartialVal(FD, FND, _C, Off);
+  static PartialVal getPartial(Constant* _C, uint64_t Off) {
+    return PartialVal(_C, Off);
   }
 
   static PartialVal getTotal(ValCtx VC) {
     return PartialVal(VC);
+  }
+  
+  static PartialVal getByteArray(uint64_t size) {
+    return PartialVal(size);
   }
 
 };
@@ -510,15 +535,24 @@ struct PartialVal {
 #define PVNull PartialVal()
 
 inline bool operator==(PartialVal V1, PartialVal V2) {
-  if(V1.type == PVInvalid && V2.type == PVInvalid)
+  if(V1.type == PVEmpty && V2.type == PVEmpty)
     return true;
   else if(V1.type == PVTotal && V2.type == PVTotal)
     return V1.TotalVC == V2.TotalVC;
   else if(V1.type == PVPartial && V2.type == PVPartial)
-    return ((V1.FirstDef == V2.FirstDef) &&
-	    (V1.FirstNotDef == V2.FirstNotDef) &&
-	    (V1.C == V2.C) &&
+    return ((V1.C == V2.C) &&
 	    (V1.ReadOffset == V2.ReadOffset));
+  else if(V1.type == PVByteArray && V2.type == PVByteArray) {
+    if(V1.partialBufBytes != V2.partialBufBytes)
+      return false;
+    for(unsigned i = 0; i < partialBufBytes; ++i) {
+      if(V1.partialValidBuf[i] != V2.partialValidBuf[i])
+	return false;
+      if(V1.partialValidBuf[i] && (((char*)V1.partialBuf)[i]) != (((char*)V2.partialBuf)[i]))
+	return false;
+      return true;
+    }
+  }
 
   return false;
 }
@@ -1111,30 +1145,6 @@ protected:
   ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, ValCtx);
   ValCtx handleTotalDefn(LoadForwardAttempt&, ValCtx);
   ValCtx handleTotalDefn(LoadForwardAttempt&, Constant*);
-
-  bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
-				     Value *WritePtr, IntegrationAttempt* WriteCtx,
-				     uint64_t WriteSizeInBits,
-				     uint64_t& FirstDef, 
-				     uint64_t& FirstNotDef, 
-				     uint64_t& ReadOffset);
-
-  bool AnalyzeLoadFromClobberingWrite(LoadForwardAttempt&,
-				     ValCtx StoreBase, int64_t StoreOffset,
-				     uint64_t WriteSizeInBits,
-				     uint64_t& FirstDef, 
-				     uint64_t& FirstNotDef, 
-				     uint64_t& ReadOffset);
-				     
-  bool AnalyzeLoadFromClobberingStore(LoadForwardAttempt&, StoreInst *DepSI, IntegrationAttempt* DepSICtx,
-				     uint64_t& FirstDef, 
-				     uint64_t& FirstNotDef, 
-				     uint64_t& ReadOffset);
-
-  bool AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt&, MemIntrinsic *MI, IntegrationAttempt* MICtx,
-				       uint64_t& FirstDef, 
-				       uint64_t& FirstNotDef, 
-				       uint64_t& ReadOffset);
 
   Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);

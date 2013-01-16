@@ -25,58 +25,6 @@
 
 using namespace llvm;
 
-/// AnalyzeLoadFromClobberingWrite - This function is called when we have a
-/// memdep query of a load that ends up being a clobbering memory write (store,
-/// memset, memcpy, memmove).  This means that the write *may* provide bits used
-/// by the load but we can't be sure because the pointers don't mustalias.
-///
-/// Check this case to see if there is anything more we can do before we give
-/// up.  This returns -1 if we have to give up, or a byte number in the stored
-/// value of the piece that feeds the load.
-bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
-							Value *WritePtr, IntegrationAttempt* WriteCtx,
-							uint64_t WriteSizeInBits,
-							/* Out params: */
-							uint64_t& FirstDef, 
-							uint64_t& FirstNotDef, 
-							uint64_t& ReadOffset) {
-  int64_t StoreOffset = 0;
-  ValCtx StoreBase = GetBaseWithConstantOffset(WritePtr, WriteCtx, StoreOffset);
-
-  return AnalyzeLoadFromClobberingWrite(LFA, StoreBase, StoreOffset, WriteSizeInBits, FirstDef, FirstNotDef, ReadOffset);
-
-}
-
-// Given a write to ((char*)StoreBase) + StoreOffset of size WriteSizeInBits
-// Find out which bits in the load LFA are defined, and by what offset within the write.
-// Return true if this store contributes anything at all to the load.
-bool IntegrationAttempt::AnalyzeLoadFromClobberingWrite(LoadForwardAttempt& LFA,
-							ValCtx StoreBase,
-							int64_t StoreOffset,
-							uint64_t WriteSizeInBits,
-							/* Out params: */
-							uint64_t& FirstDef, 
-							uint64_t& FirstNotDef, 
-							uint64_t& ReadOffset) {
-
-  const Type* LoadTy = LFA.getTargetTy();
-
-  if(!LFA.canBuildSymExpr()) {
-    LPDEBUG("Can't build a symbolic expression regarding " << itcache(*(LFA.getOriginalInst())) << " so it isn't a known base plus constant offset\n");
-    return false;
-  }
-
-  ValCtx LoadBase = LFA.getBaseVC();
-  uint64_t LoadOffset = LFA.getSymExprOffset(); // Succeeds if canBuildSymExpr does
-  
-  uint64_t LoadSize = TD->getTypeSizeInBits(LoadTy);
-
-  return GetDefinedRange(LoadBase, LoadOffset, LoadSize, 
-			 StoreBase, StoreOffset, WriteSizeInBits,
-			 FirstDef, FirstNotDef, ReadOffset);
-
-}
-
 // Given a defining instruction "definer" and a defined instruction "defined", each of which access an offset
 // from a base at a given size, find the offset FROM THE DEFINER which should be accessed to satisfy
 // the defined instruction, and the byte offsets of the defined which is satisfies.
@@ -151,27 +99,6 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
 
 }  
 
-/// AnalyzeLoadFromClobberingStore - This function is called when we have a
-/// memdep query of a load that ends up being a clobbering store.
-bool IntegrationAttempt::AnalyzeLoadFromClobberingStore(LoadForwardAttempt& LFA, StoreInst *DepSI, IntegrationAttempt* DepSICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
-
-  Value *StorePtr = DepSI->getPointerOperand();
-  uint64_t StoreSize = TD->getTypeSizeInBits(DepSI->getOperand(0)->getType());
-  return AnalyzeLoadFromClobberingWrite(LFA, StorePtr, DepSICtx, StoreSize, FirstDef, FirstNotDef, LoadOffset);
-
-}
-
-bool IntegrationAttempt::AnalyzeLoadFromClobberingMemInst(LoadForwardAttempt& LFA, MemIntrinsic *MI, IntegrationAttempt* MICtx, uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& LoadOffset) {
-
-  // If the mem operation is a non-constant size, we can't handle it.
-  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(MICtx->getConstReplacement(MI->getLength()));
-  if (SizeCst == 0) return false;
-  uint64_t MemSizeInBits = SizeCst->getZExtValue()*8;
-
-  return AnalyzeLoadFromClobberingWrite(LFA, MI->getDest(), MICtx, MemSizeInBits, FirstDef, FirstNotDef, LoadOffset);
-  
-}
-                                            
 /// GetBaseWithConstantOffset - Analyze the specified pointer to see if it can
 /// be expressed as a base pointer plus a constant offset.  Return the base and
 /// offset to the caller.
@@ -247,57 +174,6 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 
   APInt AP(data_bits, data_length, data);
   return ConstantInt::get(Context, AP);
-
-}
-
-bool IntegrationAttempt::tryForwardFromCopy(Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool mayBuildFromBytes, PartialVal& NewPV, std::string& error) {
-
-  ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
-  const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
-
-  // Add 2 extra instructions calculating an offset from copyInst, which is the allocation
-  // being read from: cast to i8* and offset by the right number of bytes.
-
-  LPDEBUG("Attempting to forward a load based on memcpy/va_copy source parameter\n");
-
-  Instruction* castInst;
-  if(copySource->getType() == byteArrayType()) {
-    castInst = copySource;
-  }
-  else {
-    castInst = new BitCastInst(copySource, byteArrayType, "", copyInst);
-  }
-
-  Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
-
-  // Requery starting at copyInst (the memcpy or va_copy).
-  PartialVal SubPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, mayBuildFromBytes);
-
-  gepInst->eraseFromParent();
-  if(castInst != copySource)
-    castInst->eraseFromParent();
-
-  if(SubPV == PVNull) {
-    LPDEBUG("Memcpy sub-forwarding attempt failed\n");
-    error = "MCSQ";
-    return false;
-  }
-  else if(FirstNotDef - FirstDef == ReadSize && SubPV.isTotal()) {
-    newPV = SubPV;
-    return true;
-  }
-  else if(Constant* C = dyn_cast<Constant>(copyInstResult.first)) {
-    newPV = PartialVal::getPartial(FirstDef, FirstNotDef, SubPV.C, SubPV.ReadOffset);
-    newPV.isVarargTainted = SubPV.isVarargTainted;
-    return true;
-  }
-  else {
-    error = "MCNC";
-    return false;
-  }
-
-  // Unreachable!
-  return false;
 
 }
 
@@ -495,11 +371,6 @@ void PeelAttempt::disableVarargsContexts() {
 
 }
 
-// Try to retrieve a value from a memcpy, memset, vararg or sys_read instruction/call.
-// Return true for success and define NewPV, or false for failure and store a short code in error.
-
-bool IntegrationAttempt::getMIOrReadValue(Instruction* I, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadOffset, uint64_t ReadSize, bool mayBuildFromBytes, PartialVal& NewPV, std::string& error) {
-
   // The GVN code I swiped this from contained the comment:
   // "The address being loaded in this non-local block may not be the same as
   // "the pointer operand of the load if PHI translation occurs.  Make sure
@@ -513,160 +384,181 @@ bool IntegrationAttempt::getMIOrReadValue(Instruction* I, uint64_t FirstDef, uin
   // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
   // passing through a memcpy.
 
-  if (MemIntrinsic *DepMI = dyn_cast<MemIntrinsic>(I)) {
+bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
-    LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
+  ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
+  const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
 
-    if (MemSetInst *MSI = dyn_cast<MemSetInst>(I)) {
+  // Add 2 extra instructions calculating an offset from copyInst, which is the allocation
+  // being read from: cast to i8* and offset by the right number of bytes.
 
-      // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
-      // independently of what the offset is.
-      ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getValue()));
-      if(!Val) {
+  LPDEBUG("Attempting to forward a load based on memcpy/va_copy source parameter\n");
 
-	LPDEBUG("Won't forward load " << itcache(*LI) << " from uncertain memset " << itcache(*DepMI) << "\n");
-	error = "UCMemSet";
-	return false;
+  Instruction* castInst;
+  if(copySource->getType() == byteArrayType()) {
+    castInst = copySource;
+  }
+  else {
+    castInst = new BitCastInst(copySource, byteArrayType, "", copyInst);
+  }
 
-      }
+  Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
 
-      uint8_t ValI = (uint8_t)Val->getLimitedValue();
-      uint64_t nbytes = FirstNotDef - FirstDef;
-      uint64_t nqwords = (nbytes + 7) / 8;
-      uint64_t bufsize = nqwords * 8;
-            
-      uint8_t* buffer = (uint8_t*)alloca(bufsize);
+  // Requery starting at copyInst (the memcpy or va_copy).
+  newPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, &(validBytes[ReadOffset]));
 
-      for(uint64_t i = 0; i < nbytes; ++i) {
-	buffer[i] = ValI;
-      }
+  gepInst->eraseFromParent();
+  if(castInst != copySource)
+    castInst->eraseFromParent();
 
-      Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, MSI->getContext());
-      NewPV = PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
-      return true;
+  return (!newPV.isEmpty());
 
-    }
- 
-    // Otherwise this is a memcpy or memmove.
-    // If it's a memcpy from a constant source, resolve here and now.
-    // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
+}
 
-    MemTransferInst *MTI = cast<MemTransferInst>(I);
+bool IntegrationAttempt::getMemsetPV(Instruction* I, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
 
-    // First of all check for an easy case: the memcpy is from a constant global.
-    // Then we can just appropriately bracket the source constant and the outside
-    // extract-element-from-aggregate code will pick it up.
+  LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
 
-    Value* CpySrc = MTI->getSource();
-    int64_t Offset;
-    ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
-    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.first)) {
+  // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
+  // independently of what the offset is.
+  ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getValue()));
+  if(!Val) {
 
-      if(GV->isConstant()) {
-
-	Constant* C = GV->getConstantInitializer();
-	return PartialVal::getPartial(FirstDef, FirstNotDef, C, ReadOffset + Offset);
-
-      }
-
-    }
-
-    return tryForwardFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, ReadSize, mayBuildFromBytes, NewPV, error);
+    LPDEBUG("Won't forward load " << itcache(*LI) << " from uncertain memset " << itcache(*DepMI) << "\n");
+    error = "UCMemSet";
+    return false;
 
   }
 
-  if(CallInst* CI = dyn_cast<CallInst>(Clobber.first)) {
+  uint8_t ValI = (uint8_t)Val->getLimitedValue();
+  NewPV = PartialVal::getByteArray(nbytes);
 
-    Function* CalledF = getCalledFunction(CI);
-    if(!CalledF) {
-      error = "FP";
-      return false;
+  uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
+  bool* validBuf = (bool*)NewPB.partialValidBuf;
+
+  for(uint64_t i = 0; i < nbytes; ++i) {
+    buffer[i] = ValI;
+    validBuf[i] = true;
+  }
+
+  return true;
+
+}
+
+bool IntegrationAttempt::getMemcpyPV(Instruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+
+  // If it's a memcpy from a constant source, resolve here and now.
+  // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
+
+  MemTransferInst *MTI = cast<MemTransferInst>(I);
+
+  // First of all check for an easy case: the memcpy is from a constant global.
+  // Then we can just appropriately bracket the source constant and the outside
+  // extract-element-from-aggregate code will pick it up.
+
+  Value* CpySrc = MTI->getSource();
+  int64_t Offset;
+  ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
+  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.first)) {
+
+    if(GV->isConstant()) {
+      
+      Constant* C = GV->getConstantInitializer();
+      NewPV = PartialVal::getPartial(C, ReadOffset + Offset);
+
     }
 
-    if(CalledF->getName() == "llvm.va_start") {
+  }
 
-      int32_t initialOffset = getInitialBytesOnStack(IA->getFunction());
-      int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(IA->getFunction());
+  return getPVFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, LoadSize, mayBuildFromBytes, validBytes, NewPV, error);
 
-      if(ReadOffset == 0) {
+}
+
+bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
+
+  int32_t initialOffset = getInitialBytesOnStack(F);
+  int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(F);
+
+  if(ReadOffset == 0) {
 	
-	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
-	// Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-	newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
-      }
-      else if(ReadOffset == 4) {
-
-	LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
-	// Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-	newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
-
-      }
-      else if(ReadOffset == 8) {
-
-	LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
-	// Pointer to first vararg, or first vararg after 48 bytes of real args.
-	int64_t initialVararg = getFirstSpilledVararg(IA);
-	if(initialVararg == ValCtx::not_va_arg)
-	  return PVNull;
-	newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, initialVararg));
-
-      }
-      else if(ReadOffset == 16) {
-	LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-	newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, ValCtx::va_baseptr));
-
-      }
-
-      newPV.isVarargTainted = true;
-      return true;
-
-    }
-    else if(CalledF->getName() == "llvm.va_copy") {
-
-      return tryForwardFromCopy(CI->getArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, ReadSize, mayBuildFromBytes, NewPV, error);
-
-    }
-
-    // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
-    ReadFile* RF = IA->tryGetReadFile(CI);
-    assert(RF);
-
-    uint64_t nbytes = FirstNotDef - FirstDef;
-    uint64_t nqwords = (nbytes + 7) / 8;
-    uint64_t bufsize = nqwords * 8;
-    
-    uint8_t* buffer = (uint8_t*)alloca(bufsize);
-
-    int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
-    if(fd == -1) {
-      LPDEBUG("Failed to open " << RF->openArg->Name << "\n");
-      error = "OpenErr";
-      return false;
-    }
-
-    unsigned bytes_read = 0;
-    while(bytes_read < nbytes) {
-      int this_read = pread(fd, ((char*)buffer) + bytes_read, nbytes - bytes_read, RF->incomingOffset + loadOffset + bytes_read);
-      if(this_read == 0)
-	break;
-      else if(this_read == -1 && errno != EINTR)
-	break;
-      bytes_read += this_read;
-    }
-
-    close(fd);
-
-    if(bytes_read != LoadSize) {
-      LPDEBUG("Short read on " << RF->openArg->Name << ": could only read " << bytes_read << " bytes out of " << RF->readSize << " needed at offset " << RF->incomingOffset << "\n");
-      error = "ShortRead";
-      return false;
-    }
-
-    Constant* Result = intFromBytes((uint64_t*)buffer, nqwords, nbytes * 8, CI->getContext());
-    newPV = PartialVal::getPartial(FirstDef, FirstNotDef, Result, 0);
-    return true;
+    LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
+    // Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
+    newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
 
   }
+  else if(ReadOffset == 4) {
+
+    LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
+    // Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
+    newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+
+  }
+  else if(ReadOffset == 8) {
+
+    LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
+    // Pointer to first vararg, or first vararg after 48 bytes of real args.
+    int64_t initialVararg = getFirstSpilledVararg(IA);
+    if(initialVararg == ValCtx::not_va_arg) {
+      error = "VaArgFail";
+      return false;
+    }
+
+    newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, initialVararg));
+
+  }
+  else if(ReadOffset == 16) {
+
+    LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
+    newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, ValCtx::va_baseptr));
+
+  }
+
+  newPV.isVarargTainted = true;
+  return true;
+
+}
+
+bool IntegrationAttempt::getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+
+  return getPVFromCopy(CI->getArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+
+}
+
+bool IntegrationAttempt::getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
+
+  // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
+  ReadFile* RF = IA->tryGetReadFile(CI);
+  assert(RF);
+
+  int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
+  if(fd == -1) {
+    LPDEBUG("Failed to open " << RF->openArg->Name << "\n");
+    error = "OpenErr";
+    return false;
+  }
+
+  NewPV = PartialVal::getByteArray(FirstNotDef - FirstDef);
+  uint8_t* buffer = (uint8_t*)NewPB.partialBuf;
+
+  unsigned bytes_read = 0;
+  while(bytes_read < nbytes) {
+    int this_read = pread(fd, ((char*)buffer) + bytes_read, nbytes - bytes_read, RF->incomingOffset + ReadOffset + bytes_read);
+    if(this_read == 0)
+      break;
+    else if(this_read == -1 && errno != EINTR)
+      break;
+    bytes_read += this_read;
+  }
+
+  close(fd);
+
+  if(bytes_read != nbytes) {
+    LPDEBUG("Short read on " << RF->openArg->Name << ": could only read " << bytes_read << " bytes out of " << RF->readSize << " needed at offset " << RF->incomingOffset << "\n");
+    error = "ShortRead";
+    return false;
+  }
+
+  return true;
 
 }
 
