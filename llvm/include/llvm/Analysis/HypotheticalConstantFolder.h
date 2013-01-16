@@ -156,42 +156,6 @@ inline bool operator>=(ValCtx V1, ValCtx V2) {
   return !(V1 < V2);
 }
 
-enum IntegratorWQItemType {
-
-   TryEval,
-   CheckBlock,
-   CheckLoad,
-   OpenPush
-
-};
-
-// A cheesy hack to make a value type that acts like a dynamic dispatch hierarchy
-struct IntegratorWQItem {
-
-  IntegrationAttempt* ctx;
-  IntegratorWQItemType type;
-  union {
-    LoadInst* LI;
-    Value* V;
-    BasicBlock* BB;
-    struct {
-      CallInst* OpenI;
-      ValCtx OpenProgress;
-    } OpenArgs;
-    IntegrationHeuristicsPass* IHP;
-  } u;
-
- IntegratorWQItem(IntegrationAttempt* c, LoadInst* L) : ctx(c), type(CheckLoad) { u.LI = L; }
- IntegratorWQItem(IntegrationAttempt* c, Value* V) : ctx(c), type(TryEval) { u.V = V; }
- IntegratorWQItem(IntegrationAttempt* c, BasicBlock* BB) : ctx(c), type(CheckBlock) { u.BB = BB; }
- IntegratorWQItem(IntegrationAttempt* c, CallInst* OpenI, ValCtx OpenProgress) : ctx(c), type(OpenPush) { u.OpenArgs.OpenI = OpenI; u.OpenArgs.OpenProgress = OpenProgress; }
-IntegratorWQItem() { }
-
-  void execute();
-  void describe(raw_ostream& s);
-
-};
-
 // PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
 // May be: 
 // overdefined (overflowed, or defined by an unknown)
@@ -327,11 +291,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    TargetData* TD;
    AliasAnalysis* AA;
-
-   SmallVector<IntegratorWQItem, 64> workQueue1;
-   SmallVector<IntegratorWQItem, 64> workQueue2;
-
-   SmallVector<IntegratorWQItem, 64>* produceQueue;
 
    SmallVector<ValCtx, 64> dieQueue1;
    SmallVector<ValCtx, 64> dieQueue2;
