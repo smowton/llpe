@@ -58,6 +58,11 @@ template<class> class DomTreeNodeBase;
 class IAWalker;
 class BackwardIAWalker;
 class ForwardIAWalker;
+class raw_string_ostream;
+class NormalLoadForwardWalker;
+class PBLoadForwardWalker;
+class MemSetInst;
+class MemTransferInst;
 
 enum va_arg_type {
   
@@ -314,7 +319,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      produceDIEQueue = &dieQueue2;
-     produceQueue = &workQueue2;
      mallocAlignment = 0;
      SeqNumber = 0;
 
@@ -483,7 +487,7 @@ struct PartialVal {
   // Might be empty, a VC, a constant with bounding parameters, or an array of bytes.
   PartialValType type;
   // Value is tainted by varargs at any point?
-  bool isVarargTainted
+  bool isVarargTainted;
 
   // Used if it's a VC:
   ValCtx TotalVC;
@@ -502,6 +506,11 @@ struct PartialVal {
 
   bool addPartialVal(PartialVal& PV, TargetData* TD, std::string& error);
   bool isComplete();
+  bool* getValidArray(uint64_t);
+  bool convertToBytes(uint64_t, TargetData*, std::string& error);
+  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error);
+
+  void initByteArray(uint64_t);
   
  PartialVal(ValCtx Total) : 
   type(PVTotal), isVarargTainted(false), TotalVC(Total), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
@@ -511,7 +520,8 @@ struct PartialVal {
   type(PVEmpty), isVarargTainted(false), TotalVC(VCNull), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
   PartialVal(uint64_t nBytes); // Byte array constructor
   PartialVal(const PartialVal& Other);
-  operator=(const PartialBuf& Other);
+  PartialVal& operator=(const PartialVal& Other);
+  ~PartialVal();
 
   bool isPartial() { return type == PVPartial; }
   bool isTotal() { return type == PVTotal; }
@@ -545,7 +555,7 @@ inline bool operator==(PartialVal V1, PartialVal V2) {
   else if(V1.type == PVByteArray && V2.type == PVByteArray) {
     if(V1.partialBufBytes != V2.partialBufBytes)
       return false;
-    for(unsigned i = 0; i < partialBufBytes; ++i) {
+    for(unsigned i = 0; i < V1.partialBufBytes; ++i) {
       if(V1.partialValidBuf[i] != V2.partialValidBuf[i])
 	return false;
       if(V1.partialValidBuf[i] && (((char*)V1.partialBuf)[i]) != (((char*)V2.partialBuf)[i]))
@@ -836,10 +846,11 @@ class BackwardIAWalker : public IAWalker {
   
   WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
-  virtual void reachedTop() { };
-  virtual bool mayAscendFromContext(IntegrationAttempt*) { return true; }
+  virtual bool reachedTop() { return true; }
   
  public:
+
+  virtual bool mayAscendFromContext(IntegrationAttempt*) { return true; }
 
   BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
   
@@ -895,8 +906,7 @@ protected:
   SmallVector<CallInst*, 4> unexploredCalls;
   SmallVector<const Loop*, 4> unexploredLoops;
 
-  DenseMap<LoadInst*, MemDepResult> LastLoadFailures;
-  DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> > LastLoadOverdefs;
+  DenseMap<LoadInst*, std::string> normalLFFailures;
 
   DenseMap<CallInst*, OpenStatus*> forwardableOpenCalls;
   DenseMap<CallInst*, ReadFile> resolvedReadCalls;
@@ -1101,11 +1111,11 @@ protected:
 
   void checkLoad(LoadInst* LI);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
-  PartialVal tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool mayBuildFromBytes);
-  ValCtx tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize);
-  PartialValueBuf* tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, Integrationattempt* LoadCtx, uint64_t LoadSize, PartialValueBuf& ResolvedSoFar);
+  PartialVal tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error);
+  ValCtx tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream&);
+  PartialVal tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, IntegrationAttempt* LoadCtx, uint64_t LoadSize, PartialVal& resolvedSoFar, std::string& error);
   ValCtx tryForwardLoad(LoadInst* LI);
-  ValCtx getWalkerResult(LoadForwardWalker& Walker, const Type* TargetType);
+  ValCtx getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream&);
 
   // Support functions for the generic IA graph walkers:
   void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
@@ -1141,20 +1151,17 @@ protected:
 
   // Tricky load forwarding (stolen from GVN)
 
-  ValCtx handlePartialDefnByConst(LoadForwardAttempt&, uint64_t, uint64_t, Constant*, ValCtx);
-  ValCtx handlePartialDefn(LoadForwardAttempt&, uint64_t, uint64_t, ValCtx);
-  ValCtx handleTotalDefn(LoadForwardAttempt&, ValCtx);
-  ValCtx handleTotalDefn(LoadForwardAttempt&, Constant*);
-
-  Constant* offsetConstantInt(Constant* SourceC, int64_t Offset, const Type* targetTy);
   ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
-  bool CanCoerceMustAliasedValueToLoad(Value *StoredVal, const Type *LoadTy);
-  Constant* CoerceConstExprToLoadType(Constant *StoredVal, const Type *LoadedTy);
   bool GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
 		       ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
 		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
-  PartialVal tryResolveClobber(LoadForwardAttempt& LFA, ValCtx Clobber, bool isEntryNonLocal);
-  PartialVal tryForwardFromCopy(LoadForwardAttempt& LFA, ValCtx Clobber, const Type* subTargetType, Value* copySource, Instruction* copyInst, uint64_t OffsetCI, uint64_t FirstDef, uint64_t FirstNotDef);
+
+  bool getPVFromCopy(Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
+  bool getMemsetPV(MemSetInst* I, uint64_t nbytes, PartialVal& NewPV, std::string& error);
+  bool getMemcpyPV(MemTransferInst* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
+  bool getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
+  bool getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
+  bool getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
   // Load forwarding extensions for varargs:
   virtual void getVarArg(int64_t, ValCtx&) = 0;
@@ -1233,11 +1240,10 @@ protected:
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
   bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
+  std::string describePBWalker(PBLoadForwardWalker& Walker);
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
-  void addStartOfScopePB(LoadForwardAttempt&);
   void addStoreToLoadSolverWork(Value* V);
   bool shouldCheckPB(Value*);
-  std::string describeLFA(LoadForwardAttempt& LFA);
   void analyseLoopPBs(const Loop* L);
   void tryPromoteSingleValuedPB(Value* V);
 
@@ -1403,8 +1409,6 @@ public:
   void checkExitEdge(BasicBlock*, BasicBlock*);
   void checkFinalIteration();
 
-  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
-
   virtual InlineAttempt* getFunctionRoot();
 
   virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
@@ -1517,12 +1521,7 @@ class PeelAttempt {
 
    ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
 
-   MemDepResult tryForwardExprFromParent(LoadForwardAttempt&, int originIter);
-   bool tryForwardExprFromIter(LoadForwardAttempt&, int originIter, MemDepResult& Result, bool& MayDependOnParent, bool includeExitingBlocks);
-
    void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
-
-   bool tryForwardLoadThroughLoop(BasicBlock* BB, LoadForwardAttempt& LFA, BasicBlock*& PreheaderOut, SmallVectorImpl<NonLocalDepResult> &Result);
 
    void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
    void queueAllLiveValuesMatching(UnaryPred& P);
@@ -1609,9 +1608,6 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
   
-  virtual MemDepResult tryForwardExprFromParent(LoadForwardAttempt&);
-  bool tryForwardLoadFromExit(LoadForwardAttempt&, MemDepResult&, bool&);
-
   ValCtx tryGetReturnValue();
   
   ValCtx getImprovedCallArgument(Argument* A);
@@ -1704,6 +1700,7 @@ class InlineAttempt : public IntegrationAttempt {
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
+ ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target);
 
 } // Namespace LLVM
 

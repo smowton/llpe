@@ -1474,7 +1474,7 @@ bool llvm::allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, Targ
 
 }
 
-static ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target) {
+ValCtx llvm::getAsPtrAsInt(ValCtx VC, const Type* Target) {
 
   assert(VC.first->getType()->isPointerTy());
 

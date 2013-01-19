@@ -394,8 +394,8 @@ bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst,
 
   LPDEBUG("Attempting to forward a load based on memcpy/va_copy source parameter\n");
 
-  Instruction* castInst;
-  if(copySource->getType() == byteArrayType()) {
+  Value* castInst;
+  if(copySource->getType() == byteArrayType) {
     castInst = copySource;
   }
   else {
@@ -405,17 +405,17 @@ bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst,
   Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
 
   // Requery starting at copyInst (the memcpy or va_copy).
-  newPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, &(validBytes[ReadOffset]));
+  NewPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, validBytes ? &(validBytes[ReadOffset]): 0, error);
 
   gepInst->eraseFromParent();
   if(castInst != copySource)
-    castInst->eraseFromParent();
+    cast<Instruction>(castInst)->eraseFromParent();
 
-  return (!newPV.isEmpty());
+  return (!NewPV.isEmpty());
 
 }
 
-bool IntegrationAttempt::getMemsetPV(Instruction* I, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
+bool IntegrationAttempt::getMemsetPV(MemSetInst* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
 
   LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
 
@@ -434,7 +434,7 @@ bool IntegrationAttempt::getMemsetPV(Instruction* I, uint64_t nbytes, PartialVal
   NewPV = PartialVal::getByteArray(nbytes);
 
   uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
-  bool* validBuf = (bool*)NewPB.partialValidBuf;
+  bool* validBuf = (bool*)NewPV.partialValidBuf;
 
   for(uint64_t i = 0; i < nbytes; ++i) {
     buffer[i] = ValI;
@@ -445,7 +445,7 @@ bool IntegrationAttempt::getMemsetPV(Instruction* I, uint64_t nbytes, PartialVal
 
 }
 
-bool IntegrationAttempt::getMemcpyPV(Instruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool IntegrationAttempt::getMemcpyPV(MemTransferInst* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
@@ -458,19 +458,19 @@ bool IntegrationAttempt::getMemcpyPV(Instruction* I, uint64_t FirstDef, uint64_t
 
   Value* CpySrc = MTI->getSource();
   int64_t Offset;
-  ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
+  ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, this, Offset);
   if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.first)) {
 
     if(GV->isConstant()) {
       
-      Constant* C = GV->getConstantInitializer();
+      Constant* C = GV->getInitializer();
       NewPV = PartialVal::getPartial(C, ReadOffset + Offset);
 
     }
 
   }
 
-  return getPVFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, LoadSize, mayBuildFromBytes, validBytes, NewPV, error);
+  return getPVFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
 
 }
 
@@ -483,37 +483,37 @@ bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialV
 	
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-    newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
+    NewPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
 
   }
   else if(ReadOffset == 4) {
 
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-    newPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+    NewPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
 
   }
   else if(ReadOffset == 8) {
 
     LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
     // Pointer to first vararg, or first vararg after 48 bytes of real args.
-    int64_t initialVararg = getFirstSpilledVararg(IA);
+    int64_t initialVararg = getFirstSpilledVararg(this);
     if(initialVararg == ValCtx::not_va_arg) {
       error = "VaArgFail";
       return false;
     }
 
-    newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, initialVararg));
+    NewPV = PartialVal::getTotal(make_vc(CI, this, ValCtx::noOffset, initialVararg));
 
   }
   else if(ReadOffset == 16) {
 
     LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-    newPV = PartialVal::getTotal(make_vc(CI, IA, ValCtx::noOffset, ValCtx::va_baseptr));
+    NewPV = PartialVal::getTotal(make_vc(CI, this, ValCtx::noOffset, ValCtx::va_baseptr));
 
   }
 
-  newPV.isVarargTainted = true;
+  NewPV.isVarargTainted = true;
   return true;
 
 }
@@ -527,7 +527,7 @@ bool IntegrationAttempt::getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t F
 bool IntegrationAttempt::getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
 
   // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
-  ReadFile* RF = IA->tryGetReadFile(CI);
+  ReadFile* RF = tryGetReadFile(CI);
   assert(RF);
 
   int fd = open(RF->openArg->Name.c_str(), O_RDONLY);
@@ -537,8 +537,8 @@ bool IntegrationAttempt::getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOf
     return false;
   }
 
-  NewPV = PartialVal::getByteArray(FirstNotDef - FirstDef);
-  uint8_t* buffer = (uint8_t*)NewPB.partialBuf;
+  NewPV = PartialVal::getByteArray(nbytes);
+  uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
 
   unsigned bytes_read = 0;
   while(bytes_read < nbytes) {

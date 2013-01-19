@@ -235,26 +235,10 @@ void IntegrationAttempt::printRHS(Value* V, raw_ostream& Out) {
   }
   if(LoadInst* LI = dyn_cast_or_null<LoadInst>(I)) {
 
-    DenseMap<LoadInst*, MemDepResult>::iterator it = LastLoadFailures.find(LI);
+    DenseMap<LoadInst*, std::string>::iterator it = normalLFFailures.find(LI);
 
-    if(it != LastLoadFailures.end()) {
-      Out << "NORM (";
-      bool printed = false;
-      if(it->second == MemDepResult()) {
-	DenseMap<LoadInst*, SmallVector<NonLocalDepResult, 4> >::iterator it2 = LastLoadOverdefs.find(LI);
-	if(it2 != LastLoadOverdefs.end()) {
-	  Out << "{{ ";
-	  int i = 0;
-	  for(SmallVector<NonLocalDepResult, 4>::iterator NLI = it2->second.begin(), NLE = it2->second.end(); NLI != NLE && i < 3; ++i, ++NLI) {
-	    Out << itcache(NLI->getResult(), true) << ", ";
-	  }
-	  Out << " }}";
-	  printed = true;
-	}
-      }
-      if(!printed)
-	Out << itcache(it->second, true);
-      Out << ")";
+    if(it != normalLFFailures.end()) {
+      Out << "NORM (" <<  it->second << ")";
     }
   }
   else if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
