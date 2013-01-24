@@ -351,7 +351,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Instruction*, std::string>& getFunctionCache(const Function* F, bool brief);
    void printValue(raw_ostream& ROS, const Value* V, bool brief);
    void printValue(raw_ostream& ROS, ValCtx VC, bool brief);
-   void printValue(raw_ostream& ROS, const MemDepResult& Res, bool brief);
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
@@ -1300,9 +1299,6 @@ protected:
   PrintCacheWrapper<ValCtx> itcache(ValCtx VC, bool brief = false) const {
     return PrintCacheWrapper<ValCtx>(*pass, VC, brief);
   }
-  PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR, bool brief = false) const {
-    return PrintCacheWrapper<const MemDepResult&>(*pass, MDR, brief);
-  }
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
@@ -1310,10 +1306,6 @@ protected:
 
   void printWithCache(ValCtx VC, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, VC, brief);
-  }
-
-  void printWithCache(const MemDepResult& Res, raw_ostream& ROS, bool brief = false) {
-    pass->printValue(ROS, Res, brief);
   }
 
   // Data export for the Integrator pass:
@@ -1582,9 +1574,6 @@ class PeelAttempt {
    }
    PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
      return parent->itcache(VC);
-   }
-   PrintCacheWrapper<const MemDepResult&> itcache(const MemDepResult& MDR) const {
-     return parent->itcache(MDR);
    }
 
  };

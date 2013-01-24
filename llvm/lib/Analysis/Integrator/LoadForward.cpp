@@ -371,7 +371,7 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
  }
 
- DEBUG(dbgs() << "This store can satisfy bytes (" << Other.FirstDef << "-" << Other.FirstNotDef << "] of the source load\n");
+ DEBUG(dbgs() << "This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
 
  // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
 
@@ -384,7 +384,7 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
    memset(tempBuf, 0, FirstNotDef - FirstDef);
 
    if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
-     LPDEBUG("ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
+     DEBUG(dbgs() << "ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
      error = "RDFG";
      return false;
    }
@@ -464,6 +464,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, 
   else {
 
     resultPV = valSoFar;
+    return true;
 
   }
 
@@ -629,12 +630,12 @@ bool NormalLoadForwardWalker::reachedTop() {
 	    
     if(GV->hasDefinitiveInitializer()) {
 
-      LPDEBUG("Load using global initialiser " << itcache(*(GV->getInitializer())) << "\n");
+      DEBUG(dbgs() << "Load using global initialiser " << (*(GV->getInitializer())) << "\n");
 
       Constant* GVC = GV->getInitializer();
       uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
       uint64_t FirstNotDef = std::min(GVCSize - LoadPtrOffset, LoadSize);
-      LPDEBUG("Read offset is " << LoadPtrOffset << "\n");
+      DEBUG(dbgs() << "Read offset is " << LoadPtrOffset << "\n");
 
       PartialVal GPV = PartialVal::getPartial(GVC, LoadPtrOffset);
       PartialVal valSoFar = inputPV;

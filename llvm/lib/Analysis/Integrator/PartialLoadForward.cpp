@@ -417,14 +417,12 @@ bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst,
 
 bool IntegrationAttempt::getMemsetPV(MemSetInst* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
 
-  LPDEBUG("Salvaged a clobbering memory intrinsic (load (" << FirstDef << "-" << FirstNotDef << "] defined by " << itcache(*DepMI) << " source + " << ReadOffset << "\n");
-
   // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
   // independently of what the offset is.
   ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getValue()));
   if(!Val) {
 
-    LPDEBUG("Won't forward load " << itcache(*LI) << " from uncertain memset " << itcache(*DepMI) << "\n");
+    LPDEBUG("Won't forward load from uncertain memset " << itcache(*MSI) << "\n");
     error = "UCMemSet";
     return false;
 
