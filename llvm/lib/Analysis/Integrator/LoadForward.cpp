@@ -896,7 +896,14 @@ bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
 
 ValCtx IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream& RSO) {
 
-  assert(!Walker.resultPV.isEmpty());
+  if(Walker.resultPV.isEmpty()) {
+    // Can happen for e.g. loads from unreachable code, that hit a call without reachable returns.
+    // We shouldn't ever be able to analyse from dead blocks on an intraprocedural level
+    // and possibly ought to spot this and stop analysing early rather than proceed out the 
+    // notional return edge when there is none.
+    RSO << "No result";
+    return VCNull;
+  }
 
   uint64_t LoadSize = (TD->getTypeSizeInBits(TargetType) + 7) / 8;
   PartialVal& PV = Walker.resultPV;
@@ -1137,6 +1144,12 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
   ValCtx ConstResult;
   if(tryResolveLoadFromConstant(LI, ConstResult))
     return ConstResult;
+
+  if(LI->getPointerOperand()->getName() == "__exit_cleanup") {
+
+    errs() << "Hit!";
+
+  }
 
   std::string failure;
   raw_string_ostream RSO(failure);
