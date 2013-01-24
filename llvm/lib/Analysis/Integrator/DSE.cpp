@@ -300,8 +300,8 @@ bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCt
 
   if(R == AliasAnalysis::MayAlias) {
 
-    if(!GetDefinedRange(StoreBase, StoreOffset, Size * 8,
-			WriteBase, WriteOffset, WriteSize * 8,
+    if(!GetDefinedRange(StoreBase, StoreOffset, Size,
+			WriteBase, WriteOffset, WriteSize,
 			Offset, FirstDef, FirstNotDef)) {
 	    
       FirstDef = 0; 

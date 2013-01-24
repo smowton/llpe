@@ -21,9 +21,8 @@ class LoadForwardWalker : public BackwardIAWalker {
 
 protected:
 
-  Value* LoadedPtr;
+  ValCtx LoadedPtr;
   uint64_t LoadSize;
-  IntegrationAttempt* SourceCtx;
   AliasAnalysis* AA;
   TargetData* TD;
 
@@ -33,11 +32,11 @@ protected:
 public:
 
 
-  LoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD) 
-    : BackwardIAWalker(Start, IA, true), LoadedPtr(Ptr), LoadSize(Size), SourceCtx(IA), AA(_AA), TD(_TD) {
+  LoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD) 
+    : BackwardIAWalker(Start, StartIA, true), LoadedPtr(Ptr), LoadSize(Size), AA(_AA), TD(_TD) {
 
     LoadPtrOffset = 0;
-    LoadPtrBase = IA->GetBaseWithConstantOffset(LoadedPtr, IA, LoadPtrOffset);
+    LoadPtrBase = GetBaseWithConstantOffset(Ptr.first, Ptr.second, LoadPtrOffset);
 
   }
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
@@ -55,7 +54,7 @@ public:
   ValCtx FailureVC;
   std::string FailureCode;
 
-  NormalLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
+  NormalLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize);
   virtual bool reachedTop();
@@ -78,7 +77,7 @@ public:
   std::vector<std::string> OverdefReasons;
   std::vector<ValCtx> PredStores;
 
-  PBLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), OptimisticMode(OM), originalType(OT) { }
+  PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD), OptimisticMode(OM), originalType(OT) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize);
   void addPBDefn(PointerBase& NewPB);
@@ -95,7 +94,7 @@ public:
 
 bool LoadForwardWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
-  switch(AA->getModRefInfo(CI, LoadedPtr, LoadSize, IA, SourceCtx, true)) {
+  switch(AA->getModRefInfo(CI, LoadedPtr.first, LoadSize, IA, LoadedPtr.second, true)) {
 
   case AliasAnalysis::NoModRef:
   case AliasAnalysis::Ref:
@@ -174,7 +173,7 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
 
   }
 
-  AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(LoadedPtr, SourceCtx), LoadSize, make_vc(Ptr, IA), PtrSize, true);
+  AliasAnalysis::AliasResult R = AA->aliasHypothetical(LoadedPtr, LoadSize, make_vc(Ptr, IA), PtrSize, true);
   if(R == AliasAnalysis::NoAlias)
     return WIRContinue;
 
@@ -212,10 +211,14 @@ PartialVal::PartialVal(uint64_t nbytes) : isVarargTainted(false), TotalVC(VCNull
 
 PartialVal& PartialVal::operator=(const PartialVal& Other) {
 
-  if(partialBuf)
+  if(partialBuf) {
     delete[] partialBuf;
-  if(partialValidBuf)
+    partialBuf = 0;
+  }
+  if(partialValidBuf) {
     delete[] partialValidBuf;
+    partialValidBuf = 0;
+  }
 
   type = Other.type;
   isVarargTainted = Other.isVarargTainted;
@@ -254,17 +257,20 @@ PartialVal::PartialVal(const PartialVal& Other) {
 
 PartialVal::~PartialVal() {
 
-  if(partialBuf)
+  if(partialBuf) {
     delete[] partialBuf;
-  if(partialValidBuf)
+  }
+  if(partialValidBuf) {
     delete[] partialValidBuf;
+  }
 
 }
 
 bool* PartialVal::getValidArray(uint64_t nbytes) {
 
-  if(!partialValidBuf)
+  if(!partialValidBuf) {
     partialValidBuf = new bool[nbytes];
+  }
 
   return partialValidBuf;
 
@@ -399,13 +405,16 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
  }
 
+ assert(FirstDef < partialBufBytes);
+ assert(FirstNotDef <= partialBufBytes);
+
  // Avoid rewriting bytes which have already been defined
  for(uint64_t i = 0; i < (FirstNotDef - FirstDef); ++i) {
    if(partialValidBuf[FirstDef + i]) {
      continue;
    }
    else {
-     partialBuf[FirstDef + i] = tempBuf[i];
+     ((unsigned char*)partialBuf)[FirstDef + i] = tempBuf[i]; 
    }
  }
 
@@ -457,7 +466,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, 
 
     if(maySubquery) {
 
-      valSoFar = IA->tryForwardLoadSubquery(I, LoadedPtr, SourceCtx, LoadSize, valSoFar, error);
+      valSoFar = IA->tryForwardLoadSubquery(I, LoadedPtr, LoadSize, valSoFar, error);
       if(valSoFar.isEmpty()) {
 
 	return false;
@@ -536,9 +545,9 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
   
   if(R == AliasAnalysis::MustAlias) {
 
-    FirstDef = 0; FirstNotDef = LoadSize; ReadOffset = 0;
+    FirstDef = 0; FirstNotDef = std::min(LoadSize, PtrSize); ReadOffset = 0;
 
-    if(StoreInst* SI = dyn_cast<StoreInst>(SI)) {
+    if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
 
       ValCtx NewVC = IA->getReplacement(SI->getOperand(0));
       if(NewVC != make_vc(SI, IA))
@@ -580,12 +589,12 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
     // MayAlias
 
     int64_t WriteOffset;
-    ValCtx WriteBase = IA->GetBaseWithConstantOffset(Ptr, IA, WriteOffset);
+    ValCtx WriteBase = GetBaseWithConstantOffset(Ptr, IA, WriteOffset);
     if(IA->GetDefinedRange(LoadPtrBase, LoadPtrOffset, LoadSize,
 			   WriteBase, WriteOffset, PtrSize,
 			   FirstDef, FirstNotDef, ReadOffset)) {
 
-      if(StoreInst* SI = dyn_cast<StoreInst>(SI)) {
+      if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
 
 	Constant* StoreC = IA->getConstReplacement(SI->getValueOperand());
 	if(!StoreC) {
@@ -660,12 +669,19 @@ bool NormalLoadForwardWalker::reachedTop() {
       PartialVal valSoFar = inputPV;
       std::string error;
 
-      return addPartialVal(GPV, error, 0, 0, 0, FirstNotDef, false);
+      bool ret = addPartialVal(GPV, error, 0, 0, 0, FirstNotDef, false);
+      if(!ret) {
+	FailureCode = error;
+	FailureVC = const_vc(GV);
+      }
+      return ret;
 
     }
 
   }
 
+  FailureCode = "UG";
+  FailureVC = LoadPtrBase;
   return false;
 
 }
@@ -1049,9 +1065,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(LoadInst* LoadI, ValCtx& Res
 
 }
 
-PartialVal IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, IntegrationAttempt* LoadCtx, uint64_t LoadSize, PartialVal& ResolvedSoFar, std::string& error) {
+PartialVal IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, PartialVal& ResolvedSoFar, std::string& error) {
 
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, LoadCtx, AA, TD, ResolvedSoFar);
+  NormalLoadForwardWalker Walker(StartInst, this, LoadPtr, LoadSize, AA, TD, ResolvedSoFar);
   Walker.walk();
 
   if(Walker.FailureVC != VCNull) {
@@ -1067,10 +1083,10 @@ PartialVal IntegrationAttempt::tryForwardLoadSubquery(Instruction* StartInst, Va
 
 }
 
-ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream& RSO) {
+ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, ValCtx LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream& RSO) {
 
   PartialVal emptyPV;
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD, emptyPV);
+  NormalLoadForwardWalker Walker(StartInst, this, LoadPtr, LoadSize, AA, TD, emptyPV);
 
   errs() << "Try forward load " << itcache(*StartInst) << "\n";
   
@@ -1097,13 +1113,15 @@ ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, Value* LoadPtr
 
 }
 
-PartialVal IntegrationAttempt::tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error) {
+PartialVal IntegrationAttempt::tryForwardLoadTypeless(Instruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error) {
 
   PartialVal emptyPV;
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD, emptyPV);
+  NormalLoadForwardWalker Walker(StartInst, this, LoadPtr, LoadSize, AA, TD, emptyPV);
 
-  bool* validBytes = Walker.getValidBuf();
-  memcpy(validBytes, alreadyValidBytes, sizeof(bool) * LoadSize);
+  if(alreadyValidBytes) {
+    bool* validBytes = Walker.getValidBuf();
+    memcpy(validBytes, alreadyValidBytes, sizeof(bool) * LoadSize);
+  }
 
   Walker.walk();
 
@@ -1129,7 +1147,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
   std::string failure;
   raw_string_ostream RSO(failure);
 
-  ValCtx ret = tryForwardLoad(LI, LI->getPointerOperand(), LI->getType(), AA->getTypeStoreSize(LI->getOperand(0)->getType()), RSO);
+  ValCtx ret = tryForwardLoad(LI, make_vc(LI->getPointerOperand(), this), LI->getType(), AA->getTypeStoreSize(LI->getOperand(0)->getType()), RSO);
 
   if(ret == VCNull) {
     RSO.flush();
@@ -1191,8 +1209,9 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
 
-  PBLoadForwardWalker Walker(LI, LI->getOperand(0), AA->getTypeStoreSize(LI->getOperand(0)->getType()),
-			     this, !finalise, LI->getType(), AA, TD);
+  PBLoadForwardWalker Walker(LI, this, make_vc(LI->getOperand(0), this), 
+			     AA->getTypeStoreSize(LI->getOperand(0)->getType()),
+			     !finalise, LI->getType(), AA, TD);
 
   bool verbose = false;
 

@@ -36,8 +36,8 @@ using namespace llvm;
 
 // Returns false if there is no overlap at all.
 
-bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
-					 ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
+bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
+					 ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
 
   if (DefinerBase != DefinedBase) {
@@ -50,11 +50,6 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
   // must have gotten confused.
   // FIXME: Investigate cases where this bails out, e.g. rdar://7238614. Then
   // remove this check, as it is duplicated with what we have below.
-  
-  if ((DefinerSizeBits & 7) | (DefinedSizeBits & 7))
-    return -1;
-  uint64_t DefinerSize = DefinerSizeBits >> 3;  // Convert to bytes.
-  uint64_t DefinedSize = DefinedSizeBits >> 3;
   
   bool isAAFailure = false;
   if (DefinerOffset < DefinedOffset)
@@ -102,7 +97,7 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
 /// GetBaseWithConstantOffset - Analyze the specified pointer to see if it can
 /// be expressed as a base pointer plus a constant offset.  Return the base and
 /// offset to the caller.
-ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset) {
+ValCtx llvm::GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset) {
 
   Operator *PtrOp = dyn_cast<Operator>(Ptr);
   
@@ -153,16 +148,16 @@ ValCtx IntegrationAttempt::GetBaseWithConstantOffset(Value *Ptr, IntegrationAtte
     
     // Handle a struct and array indices which add their offset to the pointer.
     if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
-      Offset += TD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+      Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
     } else {
-      uint64_t Size = TD->getTypeAllocSize(GTI.getIndexedType());
+      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
       Offset += OpC->getSExtValue()*Size;
     }
   }
   
   // Re-sign extend from the pointer size if needed to get overflow edge cases
   // right.
-  unsigned PtrSize = TD->getPointerSizeInBits();
+  unsigned PtrSize = GlobalTD->getPointerSizeInBits();
   if (PtrSize < 64)
     Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
   
@@ -405,7 +400,7 @@ bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst,
   Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
 
   // Requery starting at copyInst (the memcpy or va_copy).
-  NewPV = tryForwardLoadTypeless(gepInst, copyInst, FirstNotDef - FirstDef, validBytes ? &(validBytes[ReadOffset]): 0, error);
+  NewPV = tryForwardLoadTypeless(copyInst, make_vc(gepInst, this), FirstNotDef - FirstDef, validBytes ? &(validBytes[ReadOffset]): 0, error);
 
   gepInst->eraseFromParent();
   if(castInst != copySource)

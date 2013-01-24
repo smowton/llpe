@@ -2331,9 +2331,12 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
 }
 
+TargetData* llvm::GlobalTD;
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
+  GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {

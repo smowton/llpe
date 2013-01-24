@@ -276,6 +276,8 @@ inline bool operator>=(const BIC& B1, const BIC& B2) {
   return B1 > B2 || B1 == B2;
 }
 
+extern TargetData* GlobalTD;
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -1110,9 +1112,9 @@ protected:
 
   void checkLoad(LoadInst* LI);
   bool tryResolveLoadFromConstant(LoadInst*, ValCtx& Result);
-  PartialVal tryForwardLoadTypeless(Instruction* StartInst, Value* LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error);
-  ValCtx tryForwardLoad(Instruction* StartInst, Value* LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream&);
-  PartialVal tryForwardLoadSubquery(Instruction* StartInst, Value* LoadPtr, IntegrationAttempt* LoadCtx, uint64_t LoadSize, PartialVal& resolvedSoFar, std::string& error);
+  PartialVal tryForwardLoadTypeless(Instruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error);
+  ValCtx tryForwardLoad(Instruction* StartInst, ValCtx LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream&);
+  PartialVal tryForwardLoadSubquery(Instruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, PartialVal& resolvedSoFar, std::string& error);
   ValCtx tryForwardLoad(LoadInst* LI);
   ValCtx getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream&);
 
@@ -1150,7 +1152,6 @@ protected:
 
   // Tricky load forwarding (stolen from GVN)
 
-  ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
   bool GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSizeBits,
 		       ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSizeBits,
 		       uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
@@ -1690,6 +1691,7 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
  ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target);
+ ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
 
 } // Namespace LLVM
 

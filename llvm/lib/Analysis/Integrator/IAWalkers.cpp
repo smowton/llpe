@@ -149,7 +149,8 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
 
     if(queueHere) {
 
-      if(edgeIsDead(BB, FromBB))
+      // Edges are never marked dead as a pseudo-invariant... yet.
+      if(CtxLoop == FromBBLoop && edgeIsDead(BB, FromBB))
 	continue;
       Walker->queueWalkFrom(BIC(BB->end(), BB, this), Ctx, !firstPred);
       firstPred = false;
