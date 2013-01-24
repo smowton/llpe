@@ -40,7 +40,8 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlo
   else {
 
     const Loop* ChildL = immediateChildLoop(MyL, ExitingBBL);
-    if(PeelAttempt* LPA = getPeelAttempt(ChildL)) {
+    PeelAttempt* LPA = getPeelAttempt(ChildL);
+    if(LPA && LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i)
 	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, ExitingBBL, Walker, Ctx, firstPred);

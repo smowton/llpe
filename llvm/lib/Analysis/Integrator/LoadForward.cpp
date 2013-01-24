@@ -1147,7 +1147,7 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
   std::string failure;
   raw_string_ostream RSO(failure);
 
-  ValCtx ret = tryForwardLoad(LI, make_vc(LI->getPointerOperand(), this), LI->getType(), AA->getTypeStoreSize(LI->getOperand(0)->getType()), RSO);
+  ValCtx ret = tryForwardLoad(LI, make_vc(LI->getPointerOperand(), this), LI->getType(), AA->getTypeStoreSize(LI->getType()), RSO);
 
   if(ret == VCNull) {
     RSO.flush();
@@ -1210,7 +1210,7 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
 
   PBLoadForwardWalker Walker(LI, this, make_vc(LI->getOperand(0), this), 
-			     AA->getTypeStoreSize(LI->getOperand(0)->getType()),
+			     AA->getTypeStoreSize(LI->getType()),
 			     !finalise, LI->getType(), AA, TD);
 
   bool verbose = false;

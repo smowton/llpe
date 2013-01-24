@@ -434,6 +434,8 @@ bool IntegrationAttempt::getMemsetPV(MemSetInst* MSI, uint64_t nbytes, PartialVa
     validBuf[i] = true;
   }
 
+  NewPV.loadFinished = true;
+
   return true;
 
 }
@@ -550,6 +552,14 @@ bool IntegrationAttempt::getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOf
     error = "ShortRead";
     return false;
   }
+
+  for(uint64_t i = 0; i < nbytes; ++i) {
+
+    NewPV.partialValidBuf[i] = true;
+
+  }
+
+  NewPV.loadFinished = true;
 
   return true;
 
