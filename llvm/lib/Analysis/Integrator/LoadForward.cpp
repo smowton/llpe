@@ -36,6 +36,7 @@ public:
   LoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD) 
     : BackwardIAWalker(Start, IA, true), LoadedPtr(Ptr), LoadSize(Size), SourceCtx(IA), AA(_AA), TD(_TD) {
 
+    LoadPtrOffset = 0;
     LoadPtrBase = IA->GetBaseWithConstantOffset(LoadedPtr, IA, LoadPtrOffset);
 
   }
@@ -54,7 +55,7 @@ public:
   ValCtx FailureVC;
   std::string FailureCode;
 
-  NormalLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), inputPV(iPV) { }
+  NormalLoadForwardWalker(Instruction* Start, Value* Ptr, uint64_t Size, IntegrationAttempt* IA, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, IA, _AA, _TD), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize);
   virtual bool reachedTop();
@@ -106,6 +107,8 @@ bool LoadForwardWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 }
 
 WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
+
+  errs() << "Walk " << IA->itcache(*I) << "\n";
 
   Value* Ptr;
   uint64_t PtrSize;
@@ -201,7 +204,7 @@ void PartialVal::initByteArray(uint64_t nbytes) {
 
 }
 
-PartialVal::PartialVal(uint64_t nbytes) {
+PartialVal::PartialVal(uint64_t nbytes) : isVarargTainted(false), TotalVC(VCNull), C(0), ReadOffset(0), partialValidBuf(0)  {
 
   initByteArray(nbytes);
 
@@ -427,6 +430,22 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 }
 
 //// Implement Normal LF:
+
+bool llvm::containsPointerTypes(const Type* Ty) {
+
+  if(Ty->isPointerTy())
+    return true;
+
+  for(Type::subtype_iterator it = Ty->subtype_begin(), it2 = Ty->subtype_end(); it != it2; ++it) {
+
+    if(containsPointerTypes(*it))
+      return true;
+
+  }
+
+  return false;
+
+}
 
 bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, bool maySubquery) {
 
@@ -655,12 +674,14 @@ bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
 
   if(IA == LoadPtrBase.second) {
     
+    errs() << "mayAscendFrom " << IA->getShortHeader() << " FAIL\n";
     FailureVC = make_vc(IA->getEntryInstruction(), IA);
     FailureCode = "Scope";
     return false;
 
   }
     
+  errs() << "mayAscendFrom " << IA->getShortHeader() << " SUCCESS\n";
   return true;
 
 }
@@ -863,6 +884,8 @@ bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
 
 ValCtx IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream& RSO) {
 
+  assert(!Walker.resultPV.isEmpty());
+
   uint64_t LoadSize = (TD->getTypeSizeInBits(TargetType) + 7) / 8;
   PartialVal& PV = Walker.resultPV;
 
@@ -1049,8 +1072,12 @@ ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, Value* LoadPtr
   PartialVal emptyPV;
   NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, this, AA, TD, emptyPV);
 
-  bool* validBytes = Walker.getValidBuf();
-  markPaddingBytes(validBytes, TargetType, TD);
+  errs() << "Try forward load " << itcache(*StartInst) << "\n";
+  
+  if(TargetType->isStructTy() || TargetType->isArrayTy()) {
+    bool* validBytes = Walker.getValidBuf();
+    markPaddingBytes(validBytes, TargetType, TD);
+  }
 
   Walker.walk();
 

@@ -845,10 +845,10 @@ class BackwardIAWalker : public IAWalker {
   
   WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
-  virtual bool reachedTop() { return true; }
-  
+
  public:
 
+  virtual bool reachedTop() { return true; }
   virtual bool mayAscendFromContext(IntegrationAttempt*) { return true; }
 
   BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
@@ -1118,7 +1118,7 @@ protected:
 
   // Support functions for the generic IA graph walkers:
   void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx) = 0;
+  virtual bool queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx) = 0;
   void queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
   void queueSuccessorsFWFalling(BasicBlock* BB, const Loop* SuccLoop, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
   virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* ctx);
@@ -1443,7 +1443,7 @@ public:
 
   virtual void reduceDependentLoads(int64_t);
 
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual bool queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
   virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
@@ -1654,7 +1654,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
 
-  virtual void queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual bool queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
   virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 

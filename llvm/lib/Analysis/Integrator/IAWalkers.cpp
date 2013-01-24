@@ -57,27 +57,34 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlo
 
 }
 
-void InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
+bool InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
-  if(FromBB == &(F.getEntryBlock()) && parent && Walker->mayAscendFromContext(this)) {
+  if(FromBB == &(F.getEntryBlock())) {
+
+    if(!parent)
+      return Walker->reachedTop();
+    if(!Walker->mayAscendFromContext(this))
+      return false;
 
     Walker->queueWalkFrom(BIC(BasicBlock::iterator(CI), CI->getParent(), parent), Ctx, false);
+    return true;
 
   }
   else {
 
     queueNormalPredecessorsBW(FromBB, Walker, Ctx);
+    return true;
 
   }
 
 }
 
-void PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
+bool PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB == L->getHeader()) {
 
     if(!Walker->mayAscendFromContext(this))
-      return;
+      return false;
 
     if(iterationCount == 0) {
 
@@ -96,6 +103,8 @@ void PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Wa
     queueNormalPredecessorsBW(FromBB, Walker, Ctx);
 
   }
+
+  return true;
 
 }
 
@@ -206,17 +215,8 @@ void BackwardIAWalker::walkInternal() {
       else {
 
 	// Else we've hit the top of a block. Figure out what to do with each predecessor:
-	if(ThisStart.ctx->isRootMainCall()) {
-
-	  if(!reachedTop())
-	    return;
-
-	}
-	else {
-
-	  ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx);
-
-	}
+	if(!ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx))
+	  return;
 
       }
 
