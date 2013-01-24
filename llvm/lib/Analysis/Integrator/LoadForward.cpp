@@ -107,8 +107,6 @@ bool LoadForwardWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
 WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
 
-  errs() << "Walk " << IA->itcache(*I) << "\n";
-
   Value* Ptr;
   uint64_t PtrSize;
 
@@ -690,14 +688,12 @@ bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
 
   if(IA == LoadPtrBase.second) {
     
-    errs() << "mayAscendFrom " << IA->getShortHeader() << " FAIL\n";
     FailureVC = make_vc(IA->getEntryInstruction(), IA);
     FailureCode = "Scope";
     return false;
 
   }
     
-  errs() << "mayAscendFrom " << IA->getShortHeader() << " SUCCESS\n";
   return true;
 
 }
@@ -1088,8 +1084,6 @@ ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, ValCtx LoadPtr
   PartialVal emptyPV;
   NormalLoadForwardWalker Walker(StartInst, this, LoadPtr, LoadSize, AA, TD, emptyPV);
 
-  errs() << "Try forward load " << itcache(*StartInst) << "\n";
-  
   if(TargetType->isStructTy() || TargetType->isArrayTy()) {
     bool* validBytes = Walker.getValidBuf();
     markPaddingBytes(validBytes, TargetType, TD);
