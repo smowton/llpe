@@ -21,7 +21,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/PointerIntPair.h"
-#include "llvm/ADT/SmallSet.h"
 
 namespace llvm {
   class Function;
@@ -34,10 +33,7 @@ namespace llvm {
   class PredIteratorCache;
   class DominatorTree;
   class PHITransAddr;
-  class IntegrationAttempt;
-  class LoadForwardAttempt;
-  class LoadInst;
-
+  
   /// MemDepResult - A memory dependence query can return one of three different
   /// answers, described below.
   class MemDepResult {
@@ -76,41 +72,23 @@ namespace llvm {
       /// predecessor blocks.
       NonLocal
     };
-    
-    enum ClobberType {
-      Normal,
-      Entry,
-      PHITransFailure
-    };
-
     typedef PointerIntPair<Instruction*, 2, DepType> PairTy;
     PairTy Value;
-    IntegrationAttempt* Cookie;
-    ClobberType clobberType;
-    explicit MemDepResult(PairTy V, IntegrationAttempt* C = 0, ClobberType CT = Normal) : Value(V), Cookie(C), clobberType(CT) {}
+    explicit MemDepResult(PairTy V) : Value(V) {}
   public:
-    MemDepResult() : Value(0, Invalid), Cookie(0), clobberType(Normal) {}
+    MemDepResult() : Value(0, Invalid) {}
     
     /// get methods: These are static ctor methods for creating various
     /// MemDepResult kinds.
-    static MemDepResult getDef(Instruction *Inst, IntegrationAttempt* C = 0) {
-      return MemDepResult(PairTy(Inst, Def), C);
+    static MemDepResult getDef(Instruction *Inst) {
+      return MemDepResult(PairTy(Inst, Def));
     }
-    static MemDepResult getClobber(Instruction *Inst, IntegrationAttempt* C = 0) {
-      return MemDepResult(PairTy(Inst, Clobber), C);
+    static MemDepResult getClobber(Instruction *Inst) {
+      return MemDepResult(PairTy(Inst, Clobber));
     }
     static MemDepResult getNonLocal() {
       return MemDepResult(PairTy(0, NonLocal));
     }
-    static MemDepResult getEntryClobber(Instruction* Inst, IntegrationAttempt* C) {
-      return MemDepResult(PairTy(Inst, Clobber), C, Entry);
-    }
-    static MemDepResult getPHITransClobber(Instruction* Inst, IntegrationAttempt* C) {
-      return MemDepResult(PairTy(Inst, Clobber), C, PHITransFailure);
-    }
-
-    bool isEntryNonLocal() const { return clobberType == Entry; }
-    bool isPHITransFailure() const { return clobberType == PHITransFailure; }
 
     /// isClobber - Return true if this MemDepResult represents a query that is
     /// a instruction clobber dependency.
@@ -128,16 +106,13 @@ namespace llvm {
     /// getInst() - If this is a normal dependency, return the instruction that
     /// is depended on.  Otherwise, return null.
     Instruction *getInst() const { return Value.getPointer(); }
-
-    IntegrationAttempt* getCookie() const { return Cookie; }
-    void setCookie(IntegrationAttempt* Ctx) { Cookie = Ctx; }
     
     bool operator==(const MemDepResult &M) const { return Value == M.Value; }
     bool operator!=(const MemDepResult &M) const { return Value != M.Value; }
     bool operator<(const MemDepResult &M) const { return Value < M.Value; }
     bool operator>(const MemDepResult &M) const { return Value > M.Value; }
   private:
-    friend class MemoryDependenceAnalyser;
+    friend class MemoryDependenceAnalysis;
     /// Dirty - Entries with this marker occur in a LocalDeps map or
     /// NonLocalDeps map when the instruction they previously referenced was
     /// removed from MemDep.  In either case, the entry may include an
@@ -227,16 +202,14 @@ namespace llvm {
   /// must-alias'd pointers instead of all pointers interacts well with the
   /// internal caching mechanism.
   ///
-  class MemoryDependenceAnalyser {
-
-  public:
-
+  class MemoryDependenceAnalysis : public FunctionPass {
     // A map from instructions to their dependency.
     typedef DenseMap<Instruction*, MemDepResult> LocalDepMapType;
     LocalDepMapType LocalDeps;
 
+  public:
     typedef std::vector<NonLocalDepEntry> NonLocalDepInfo;
-
+  private:
     /// ValueIsLoadPair - This is a pair<Value*, bool> where the bool is true if
     /// the dependence is a read only dependence, false if read/write.
     typedef PointerIntPair<Value*, 1, bool> ValueIsLoadPair;
@@ -282,100 +255,8 @@ namespace llvm {
     /// Current AA implementation, just a cache.
     AliasAnalysis *AA;
     TargetData *TD;
-    IntegrationAttempt* parent;
-    bool ignoreLoads;
-    bool usePBKnowledge;
-    bool ignoreVolatile;
-
-    LoadForwardAttempt* LFA;
-
     OwningPtr<PredIteratorCache> PredCache;
-
-    MemoryDependenceAnalyser();
-    ~MemoryDependenceAnalyser();
-
-    // Do init that might be illegal at construction time
-    void init(AliasAnalysis*, IntegrationAttempt* parent = 0, LoadForwardAttempt* LFA = 0, bool ignoreLoads = false, bool ignoreVolatile = false);
-
-    /// Clean up memory in between runs
-    void releaseMemory();
-    
-    /// getDependency - Return the instruction on which a memory operation
-    /// depends.  See the class comment for more details.  It is illegal to call
-    /// this on non-memory instructions.
-    MemDepResult getDependency(Instruction *QueryInst);
-
-    /// getNonLocalCallDependency - Perform a full dependency query for the
-    /// specified call, returning the set of blocks that the value is
-    /// potentially live across.  The returned set of results will include a
-    /// "NonLocal" result for all blocks where the value is live across.
-    ///
-    /// This method assumes the instruction returns a "NonLocal" dependency
-    /// within its own block.
-    ///
-    /// This returns a reference to an internal data structure that may be
-    /// invalidated on the next non-local query or when an instruction is
-    /// removed.  Clients must copy this data if they want it around longer than
-    /// that.
-    const NonLocalDepInfo &getNonLocalCallDependency(CallSite QueryCS);
-    
-    
-    /// getNonLocalPointerDependency - Perform a full dependency query for an
-    /// access to the specified (non-volatile) memory location, returning the
-    /// set of instructions that either define or clobber the value.
-    ///
-    /// This method assumes the pointer has a "NonLocal" dependency within BB.
-    void getNonLocalPointerDependency(Value *Pointer, bool isLoad,
-                                      BasicBlock *BB,
-				      SmallVectorImpl<NonLocalDepResult> &Result);
-
-    /// removeInstruction - Remove an instruction from the dependence analysis,
-    /// updating the dependence of instructions that previously depended on it.
-    void removeInstruction(Instruction *InstToRemove);
-    
-    /// invalidateCachedPointerInfo - This method is used to invalidate cached
-    /// information about the specified pointer, because it may be too
-    /// conservative in memdep.  This is an optional call that can be used when
-    /// the client detects an equivalence between the pointer and some other
-    /// value and replaces the other value with ptr. This can make Ptr available
-    /// in more places that cached info does not necessarily keep.
-    void invalidateCachedPointerInfo(Value *Ptr);
-
-    /// invalidateCachedPredecessors - Clear the PredIteratorCache info.
-    /// This needs to be done when the CFG changes, e.g., due to splitting
-    /// critical edges.
-    void invalidateCachedPredecessors();
-    
-    MemDepResult getPointerDependencyFrom(Value *Pointer, uint64_t MemSize,
-                                          bool isLoad, 
-                                          BasicBlock::iterator ScanIt,
-                                          BasicBlock *BB);
-    MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
-                                           BasicBlock::iterator ScanIt,
-                                           BasicBlock *BB);
-    bool getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t Size,
-                                     bool isLoad, BasicBlock *BB,
-                                     SmallVectorImpl<NonLocalDepResult> &Result,
-                                     DenseMap<BasicBlock*, Value*> &Visited,
-                                     bool SkipFirstBlock);
-    MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
-                                         bool isLoad, BasicBlock *BB,
-                                         NonLocalDepInfo *Cache,
-                                         unsigned NumSortedEntries);
-
-    void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
-    
-    /// verifyRemoved - Verify that the specified instruction does not occur
-    /// in our internal data structures.
-    void verifyRemoved(Instruction *Inst) const;
-
-  };
-
-  class MemoryDependenceAnalysis : public FunctionPass {
-
   public:
-    typedef std::vector<NonLocalDepEntry> NonLocalDepInfo;
-
     MemoryDependenceAnalysis();
     ~MemoryDependenceAnalysis();
     static char ID;
@@ -436,9 +317,30 @@ namespace llvm {
     /// This needs to be done when the CFG changes, e.g., due to splitting
     /// critical edges.
     void invalidateCachedPredecessors();
-
+    
   private:
-    MemoryDependenceAnalyser defaultAnalyser;
+    MemDepResult getPointerDependencyFrom(Value *Pointer, uint64_t MemSize,
+                                          bool isLoad, 
+                                          BasicBlock::iterator ScanIt,
+                                          BasicBlock *BB);
+    MemDepResult getCallSiteDependencyFrom(CallSite C, bool isReadOnlyCall,
+                                           BasicBlock::iterator ScanIt,
+                                           BasicBlock *BB);
+    bool getNonLocalPointerDepFromBB(const PHITransAddr &Pointer, uint64_t Size,
+                                     bool isLoad, BasicBlock *BB,
+                                     SmallVectorImpl<NonLocalDepResult> &Result,
+                                     DenseMap<BasicBlock*, Value*> &Visited,
+                                     bool SkipFirstBlock = false);
+    MemDepResult GetNonLocalInfoForBlock(Value *Pointer, uint64_t PointeeSize,
+                                         bool isLoad, BasicBlock *BB,
+                                         NonLocalDepInfo *Cache,
+                                         unsigned NumSortedEntries);
+
+    void RemoveCachedNonLocalPointerDependencies(ValueIsLoadPair P);
+    
+    /// verifyRemoved - Verify that the specified instruction does not occur
+    /// in our internal data structures.
+    void verifyRemoved(Instruction *Inst) const;
     
   };
 
