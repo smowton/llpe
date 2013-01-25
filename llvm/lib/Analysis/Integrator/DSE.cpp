@@ -251,8 +251,6 @@ bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt*
 
 bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
 
-  LPDEBUG("Trying to kill instruction " << itcache(*Writer) << "\n");
-
   void* initialCtx = 0;
 
   if(Size != AliasAnalysis::UnknownSize) {
@@ -274,12 +272,14 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
   Walk.walk();
 
   if(!Walk.writeUsed) {
+    
     unusedWriters.insert(Writer);
     for(DenseSet<IntegrationAttempt*>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
 
       (*it)->addTraversingInst(make_vc(Writer, this));
 
     }
+
   }
 
   return !Walk.writeUsed;

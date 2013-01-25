@@ -28,13 +28,14 @@ BackwardIAWalker::BackwardIAWalker(Instruction* I, IntegrationAttempt* Ctx, bool
 
 void IntegrationAttempt::queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred) {
 
+  if(edgeIsDead(ExitingBB, ExitedBB))
+    return;
+
   const Loop* MyL = getLoopContext();
   if(MyL == ExitingBBL) {
 
-    if(!edgeIsDead(ExitingBB, ExitedBB)) {
-      Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this), Ctx, !firstPred);
-      firstPred = false;
-    }
+    Walker->queueWalkFrom(BIC(ExitingBB->end(), ExitingBB, this), Ctx, !firstPred);
+    firstPred = false;
 
   }
   else {
@@ -123,6 +124,10 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
     bool queueHere = false;
 
     BasicBlock* BB = *PI;
+
+    if(edgeIsDead(BB, FromBB))
+      continue;
+
     // CtxLoop != FromBBLoop indicates we're looking at loop blocks in an invariant context,
     // which in turn implies there's no point trying to climb into FromBBLoop or any of its
     // children.
@@ -150,9 +155,6 @@ void IntegrationAttempt::queueNormalPredecessorsBW(BasicBlock* FromBB, BackwardI
 
     if(queueHere) {
 
-      // Edges are never marked dead as a pseudo-invariant... yet.
-      if(CtxLoop == FromBBLoop && edgeIsDead(BB, FromBB))
-	continue;
       Walker->queueWalkFrom(BIC(BB->end(), BB, this), Ctx, !firstPred);
       firstPred = false;
 

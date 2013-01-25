@@ -1096,21 +1096,12 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
 
 void LoopPBAnalyser::run() {
 
-  struct timespec start;
-  clock_gettime(CLOCK_REALTIME, &start);
-
   std::vector<ValCtx> updatedVCs;
   runPointerBaseSolver(false, &updatedVCs);
-
-  struct timespec optend;
-  clock_gettime(CLOCK_REALTIME, &optend);
 
   std::sort(updatedVCs.begin(), updatedVCs.end());
   std::vector<ValCtx>::iterator startit, endit;
   endit = std::unique(updatedVCs.begin(), updatedVCs.end());
-
-  struct timespec sortend;
-  clock_gettime(CLOCK_REALTIME, &sortend);
 
   for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 	
@@ -1118,24 +1109,13 @@ void LoopPBAnalyser::run() {
 
   }
 
-  struct timespec requeueend;
-  clock_gettime(CLOCK_REALTIME, &requeueend);
-
   runPointerBaseSolver(true, 0);
-
-  struct timespec pesend;
-  clock_gettime(CLOCK_REALTIME, &pesend);
 
   for(startit = updatedVCs.begin(); startit != endit; ++startit) {
 
     startit->second->tryPromoteSingleValuedPB(startit->first);
     
   }
-
-  struct timespec end;
-  clock_gettime(CLOCK_REALTIME, &end);
-
-  errs() << "Analysis phases: opt " << time_diff(start, optend) << ", sort " << time_diff(optend, sortend) << ", requeue " << time_diff(sortend, requeueend) << ", pes " << time_diff(requeueend, pesend) << ", promote " << time_diff(pesend, end) << "\n";
 
 }
 
@@ -1172,15 +1152,7 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
 
   // Step 1: queue VCs falling within this loop.
 
-  struct timespec queuestart;
-  clock_gettime(CLOCK_REALTIME, &queuestart);
-  
   queueUpdatePBWholeLoop(L, &LPBA);
-
-  struct timespec queueend;
-  clock_gettime(CLOCK_REALTIME, &queueend);
-
-  errs() << "Consider entire loop " << L->getHeader()->getName() << " in " << F.getName() << " (queue time: " << time_diff(queuestart, queueend) << ")\n";
 
   // Step 2: consider every result in optimistic mode until stable.
   // In this mode, undefineds are ok and clobbers are ignored on the supposition that
@@ -1190,8 +1162,6 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
   // and undefined == overdefined.
 
   LPBA.run();
-
-  errs() << "Loop consideration complete\n";
 
 }
 

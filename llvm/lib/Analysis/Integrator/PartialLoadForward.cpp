@@ -40,10 +40,8 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
 					 ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
 
-  if (DefinerBase != DefinedBase) {
-    LPDEBUG("Definer " << itcache(DefinerBase) << " against target " << itcache(DefinedBase) << " do not share a base\n");
+  if (DefinerBase != DefinedBase)
     return false;
-  }
 
   // If the load and store don't overlap at all, the store doesn't provide
   // anything to the load.  In this case, they really don't alias at all, AA

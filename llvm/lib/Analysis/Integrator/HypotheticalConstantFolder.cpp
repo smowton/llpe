@@ -1559,6 +1559,12 @@ bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
   
 }
 
+bool IntegrationAttempt::valueWillBeDeleted(Value* V) {
+
+  return unusedWriters.count(V) || deadValues.count(V);
+
+}
+
 bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
 
   Instruction* I = dyn_cast<Instruction>(V);

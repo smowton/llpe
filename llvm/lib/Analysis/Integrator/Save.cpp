@@ -154,6 +154,30 @@ void IntegrationAttempt::localPrepareCommit() {
     }
 
   }
+
+  SmallVector<Value*, 4> toRemove;
+
+  // Anywhere we would replace a value with a pointer that has been found dead, delete it instead.
+  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
+
+    if(it->second.second) {
+
+      if(it->second.second->valueWillBeDeleted(it->second.first)) {
+
+	toRemove.push_back(it->first);
+
+      }
+
+    }
+
+  }
+
+  for(SmallVector<Value*, 4>::iterator it = toRemove.begin(), it2 = toRemove.end(); it != it2; ++it) {
+    
+    improvedValues.erase(*it);
+    deadValues.insert(*it);
+
+  }
   
 }
 

@@ -1209,6 +1209,7 @@ protected:
   void queueDIE(Value* V);
   bool valueWillBeRAUWdOrDeleted(Value* V);
   bool valueWillNotUse(Value* V, ValCtx);
+  bool valueWillBeDeleted(Value* V);
   bool inDeadValues(Value* V);
   void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);

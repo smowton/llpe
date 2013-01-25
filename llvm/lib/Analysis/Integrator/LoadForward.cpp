@@ -223,7 +223,7 @@ PartialVal& PartialVal::operator=(const PartialVal& Other) {
   TotalVC = Other.TotalVC;
   C = Other.C;
   ReadOffset = Other.ReadOffset;
-  
+
   if(Other.partialBuf) {
 
     partialBuf = new uint64_t[(Other.partialBufBytes + 7) / 8];
@@ -586,7 +586,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
     
     // MayAlias
 
-    int64_t WriteOffset;
+    int64_t WriteOffset = 0;
     ValCtx WriteBase = GetBaseWithConstantOffset(Ptr, IA, WriteOffset);
     if(IA->GetDefinedRange(LoadPtrBase, LoadPtrOffset, LoadSize,
 			   WriteBase, WriteOffset, PtrSize,
@@ -870,6 +870,25 @@ bool PBLoadForwardWalker::reachedTop() {
 
 bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
 
+  if(OptimisticMode) {
+
+    bool ignore = true;
+
+    if(!isa<MemIntrinsic>(CI)) {
+      Function* CF = IA->getCalledFunction(CI);
+      if(!CF)
+	ignore = false;
+      else {
+	if(!functionIsBlacklisted(CF))
+	  ignore = false;
+      }
+    }
+
+    if(ignore)
+      return false;
+
+  }
+
   std::string RStr;
   raw_string_ostream RSO(RStr);
   RSO << "UEC " << IA->itcache(make_vc(CI, IA), true);
@@ -1145,12 +1164,6 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
   if(tryResolveLoadFromConstant(LI, ConstResult))
     return ConstResult;
 
-  if(LI->getPointerOperand()->getName() == "__exit_cleanup") {
-
-    errs() << "Hit!";
-
-  }
-
   std::string failure;
   raw_string_ostream RSO(failure);
 
@@ -1235,24 +1248,7 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
   }
 
-  struct timespec start;
-  clock_gettime(CLOCK_REALTIME, &start);
-
   Walker.walk();
-
-  struct timespec end;
-  clock_gettime(CLOCK_REALTIME, &end);
-  
-  if(time_diff(start, end) > 0.1) {
-    errs() << "TFLPB took " << time_diff(start, end) << "\n";
-    /*
-    for(unsigned i = 0; i < Attempt.TraversedCtxs.size(); ++i) {
-
-      errs() << Attempt.TraversedCtxs[i]->getShortHeader() << "\n";
-
-    }
-    */
-  }
 
   for(std::vector<ValCtx>::iterator it = Walker.PredStores.begin(), it2 = Walker.PredStores.end(); it != it2; ++it) {
 

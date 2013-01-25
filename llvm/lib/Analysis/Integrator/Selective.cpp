@@ -253,10 +253,14 @@ public:
 
 uint64_t IntegrationAttempt::revertDeadValue(Value* V, bool simulateOnly) {
 
-  if(simulateOnly && (!unusedWriters.count(V)) && (!deadValues.count(V)))
-    return 0;
-  else if((!unusedWriters.erase(V)) && (!deadValues.erase(V)))
-    return 0;
+  if(simulateOnly) {
+    if((!unusedWriters.count(V)) && (!deadValues.count(V)))
+      return 0;
+  }
+  else {
+    if((!unusedWriters.erase(V)) && (!deadValues.erase(V)))
+      return 0;
+  }
 
   RevertDeadValueCallback CB(simulateOnly);
   walkOperands(V, CB);
