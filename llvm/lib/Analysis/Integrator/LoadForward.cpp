@@ -1158,6 +1158,23 @@ PartialVal IntegrationAttempt::tryForwardLoadTypeless(Instruction* StartInst, Va
 
 }
 
+void IntegrationAttempt::addForwardedInst(Instruction* I, ValCtx User) {
+
+  DenseMap<Instruction*, SmallVector<ValCtx, 4> >::iterator it = instIndirectUsers.find(I);
+  if(it != instIndirectUsers.end()) {
+
+    if(std::find(it->second.begin(), it->second.end(), User) == it->second.end())
+      it->second.push_back(User);
+
+  }
+  else {
+
+    instIndirectUsers[I].push_back(User);
+
+  }
+
+}
+
 ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
 
   ValCtx ConstResult;
@@ -1172,6 +1189,11 @@ ValCtx IntegrationAttempt::tryForwardLoad(LoadInst* LI) {
   if(ret == VCNull) {
     RSO.flush();
     normalLFFailures[LI] = failure;
+  }
+  else if(ret.second) {
+
+    ret.second->addForwardedInst(cast<Instruction>(ret.first), make_vc(LI, this));
+      
   }
 
   return ret;

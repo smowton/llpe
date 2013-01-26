@@ -1460,6 +1460,17 @@ void IntegrationAttempt::visitExitPHI(Instruction* UserI, VisitorContext& Visito
 
 }
   
+static void checkExitPHI(const Loop* PHIL, const Loop* L, Instruction* UserI, IntegrationAttempt* IA) {
+
+  if(PHIL && !PHIL->contains(L)) {
+    
+    errs() << PHIL->getHeader()->getName() << " does not contain " << L->getHeader()->getName() << " forwarding " << IA->itcache(make_vc(UserI, IA)) << "\n";
+    assert(0);
+    
+  }
+
+}
+
 void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
 
   // Used in a non-this, non-child scope. Because we require that programs are in LCSSA form, that means it's an exit PHI. It could however occur in any parent loop.
@@ -1467,6 +1478,8 @@ void PeelIteration::visitExitPHI(Instruction* UserI, VisitorContext& Visitor) {
     assert(isa<PHINode>(UserI));
     // No need for getBlockScopeVariant: exit PHI already known to be at lower scope.
     const Loop* PHIL = LI[&F]->getLoopFor(UserI->getParent());
+    DEBUG(checkExitPHI(PHIL, L, UserI, this));
+
     parent->visitExitPHIWithScope(UserI, Visitor, PHIL);
   }
 
@@ -1553,6 +1566,12 @@ bool IntegrationAttempt::inDeadValues(Value* V) {
 
 }
 
+bool IntegrationAttempt::valueWillBeReplacedWithConstantOrDeleted(Value* V) {
+
+  return valueWillNotUse(V, VCNull, true);
+
+}
+
 bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(Value* V) {
   
   return valueWillNotUse(V, VCNull);
@@ -1565,7 +1584,7 @@ bool IntegrationAttempt::valueWillBeDeleted(Value* V) {
 
 }
 
-bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
+bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC, bool mustReplWithConstant) {
 
   Instruction* I = dyn_cast<Instruction>(V);
 
@@ -1578,6 +1597,10 @@ bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC) {
   ValCtx VC = getReplacement(V);
   // The other value will be replaced with this V, so it will remain a user.
   if(VC == OtherVC)
+    return false;
+
+  // Not replaced with constant?
+  if(mustReplWithConstant && VC.second)
     return false;
 
   // Didn't improve?
@@ -1720,6 +1743,26 @@ bool IntegrationAttempt::valueIsDead(Value* V) {
   }
   else {
 
+    // Check indirect users if any:
+
+    if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+      DenseMap<Instruction*, SmallVector<ValCtx, 4> >::iterator it = instIndirectUsers.find(I);
+      if(it != instIndirectUsers.end()) {
+
+	for(SmallVector<ValCtx, 4>::iterator II = it->second.begin(), IE = it->second.end(); II != IE; ++II) {
+	  
+	  if(!II->second->inDeadValues(II->first))
+	    return false;
+
+	}
+
+      }
+
+    }
+
+    // Check direct users:
+
     DIVisitor DIV(V, this);
     visitUsers(V, DIV);
 
@@ -1784,9 +1827,11 @@ bool IntegrationAttempt::shouldDIE(Value* V) {
 
 void IntegrationAttempt::queueDIE(Value* V) {
 
+  //errs() << "Queue DIE " << itcache(make_vc(V, this)) << "\n";
+
   if(!shouldDIE(V))
     return;
-  if(!valueWillBeRAUWdOrDeleted(V))
+  if(!valueWillBeReplacedWithConstantOrDeleted(V))
     pass->queueDIE(this, V);
 
 }
@@ -1863,7 +1908,7 @@ void InlineAttempt::walkOperands(Value* V, OpCallback& CB) {
   if(Argument* A = dyn_cast<Argument>(V)) {
 
     if(CI) {
-      CB.callback(parent, CI->getArgOperand(A->getArgNo()));
+      parent->walkOperand(CI->getArgOperand(A->getArgNo()), CB);
     }
 
   }
@@ -1922,6 +1967,16 @@ public:
 
 void IntegrationAttempt::queueDIEOperands(Value* V) {
 
+  // If this instruction would get replaced with an instruction, recheck that instruction.
+  
+  ValCtx ReplVC = getReplacement(V);
+  if(ReplVC != getDefaultVC(V) && ReplVC.second) {
+
+    //errs() << "Queue DIE " << itcache(*ReplVC.first) << " in ctx " << ReplVC.second->getShortHeader() << "\n";
+    ReplVC.second->queueDIE(ReplVC.first);
+
+  }
+
   QueueDIECallback QDC;
   walkOperands(V, QDC);
 
@@ -1932,7 +1987,7 @@ void IntegrationAttempt::tryKillValue(Value* V) {
   if(deadValues.count(V))
     return;
 
-  LPDEBUG("Trying to kill " << itcache(*V) << "\n");
+  //errs() << "Trying to kill " << itcache(make_vc(V, this)) << "\n";
 
   Instruction* I = dyn_cast<Instruction>(V);
   if(I && I->mayHaveSideEffects()) {
@@ -1972,7 +2027,8 @@ void IntegrationAttempt::tryKillValue(Value* V) {
   if(valueIsDead(V)) {
 
     LPDEBUG("Success, queueing operands\n");
-
+    
+    improvedValues.erase(V);
     deadValues.insert(V);
     queueDIEOperands(V);
     
@@ -2061,7 +2117,7 @@ void InlineAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
   for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
 
     Argument* A = AI;
-    if((!valueWillBeRAUWdOrDeleted(A)) && P(A)) {
+    if((!valueWillBeReplacedWithConstantOrDeleted(A)) && P(A)) {
       queueDIE(A);
     }
 

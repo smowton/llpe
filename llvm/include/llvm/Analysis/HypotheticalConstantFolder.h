@@ -900,6 +900,9 @@ protected:
   // These should be discounted as unused writes if we are folded.
   DenseSet<ValCtx> unusedWritersTraversingThisContext;
 
+  // Map from pointer-typed instructions to loads that will resolve to them.
+  DenseMap<Instruction*, SmallVector<ValCtx, 4> > instIndirectUsers;
+
   int improvableInstructions;
   int improvableInstructionsIncludingLoops;
   int improvedInstructions;
@@ -1207,8 +1210,9 @@ protected:
   bool shouldDIE(Value* V);
   void queueDIE(Value* V, IntegrationAttempt* Ctx);
   void queueDIE(Value* V);
+  bool valueWillBeReplacedWithConstantOrDeleted(Value* V);
   bool valueWillBeRAUWdOrDeleted(Value* V);
-  bool valueWillNotUse(Value* V, ValCtx);
+  bool valueWillNotUse(Value* V, ValCtx, bool mustReplWithConstant = false);
   bool valueWillBeDeleted(Value* V);
   bool inDeadValues(Value* V);
   void queueDIEOperands(Value* V);
@@ -1216,6 +1220,7 @@ protected:
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
   void queueAllReturnInsts();
   void queueAllLiveValues();
+  void addForwardedInst(Instruction*, ValCtx);
 
   // Pointer base analysis
   bool getPointerBaseLocal(Value* V, PointerBase& OutPB);
