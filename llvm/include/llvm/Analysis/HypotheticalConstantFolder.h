@@ -887,7 +887,7 @@ protected:
 
   DenseMap<Value*, ValCtx> improvedValues;
 
-  SmallSet<BasicBlock*, 4> deadBlocks;
+  DenseSet<BasicBlock*> deadBlocks;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 4> certainBlocks;
 
@@ -1342,7 +1342,7 @@ protected:
   Instruction* getCommittedValue(Value*);
   void prepareCommit();
   virtual void localPrepareCommit();
-  void removeBlockFromLoops(BasicBlock*);
+  void removeBlockFromLoops(BasicBlock*, const Loop*);
   void foldVFSCalls();
   virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) = 0;
   
@@ -1556,7 +1556,7 @@ class PeelAttempt {
 
    void eraseBlockValues(BasicBlock*);
 
-   void removeBlockFromLoops(BasicBlock*);
+   void removeBlockFromLoops(BasicBlock*, const Loop*);
    
    void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser*);
 
@@ -1701,6 +1701,9 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialFPBytesOnStack(Function& F);
  ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target);
  ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
+
+#define release_assert(x) if(!(x)) { release_assert_fail(#x); }
+ void release_assert_fail(const char*);
 
 } // Namespace LLVM
 

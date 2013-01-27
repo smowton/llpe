@@ -460,18 +460,10 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
 
   }
 
-  const Loop* B1Scope = getBlockScope(B1);
+  // Always check all the way out to function scope, because we could kill this edge
+  // after it is dominated by an invariant edge.
 
-  const Loop* CheckScope;
-  if((!EdgeScope) || EdgeScope->contains(B1Scope))
-    CheckScope = EdgeScope;
-  else
-    CheckScope = B1Scope;
-
-  // Check the edge's scope or the block's, whichever is further out, since our predecessor might
-  // get outright killed even if his terminator branch is more variant.
-
-  return edgeIsDeadWithScope(B1, B2, CheckScope);
+  return edgeIsDeadWithScope(B1, B2, 0);
 
 }
 
@@ -568,27 +560,10 @@ bool IntegrationAttempt::blockIsDeadWithScope(BasicBlock* BB, const Loop* ScopeL
 
 bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
 
-  DenseMap<BasicBlock*, const Loop*>::iterator it = invariantBlocks.find(BB);
-  bool ret;
-  if(it == invariantBlocks.end()) {
-    ret = deadBlocks.count(BB);
-    //errs() << "blockIsDead " << BB->getName() << " (1): " << ret << "\n";
-  }
-  else {
-    const Loop* MyL = getLoopContext();
-    // If this block's context contains ours it is an invariant to us.
-    // Otherwise it is a variant and we cannot answer at this scope.
-    if((!it->second) || (MyL && it->second->contains(MyL))) {
-      ret = blockIsDeadWithScope(BB, it->second);
-      //errs() << "blockIsDead " << BB->getName() << " (2): " << ret << "\n";
-    }
-    else {
-      ret = false;
-      //errs() << "blockIsDead " << BB->getName() << " (3): " << ret << "\n";
-    }
-  }
+  // Like with edges, check all the way out to function scope
+  // because we might be dominated by a variant edge.
 
-  return ret;
+  return blockIsDeadWithScope(BB, 0);
 
 }
 
@@ -1850,13 +1825,13 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 
   for(DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator EdgeIt = pEdges->begin(), EdgeItE = pEdges->end(); EdgeIt != EdgeItE; ++EdgeIt) {
 
-    DEBUG(dbgs() << "Edge " << EdgeIt->first.first->getName() << " -> " << EdgeIt->first.second->getName() << " is invariant; will evaluate at scope " << (EdgeIt->second ? EdgeIt->second->getHeader()->getName() : "root") << "\n");
+    LPDEBUG("Edge " << EdgeIt->first.first->getName() << " -> " << EdgeIt->first.second->getName() << " is invariant; will evaluate at scope " << (EdgeIt->second ? EdgeIt->second->getHeader()->getName() : "root") << "\n");
 
   }
 
   for(DenseMap<BasicBlock*, const Loop*>::iterator BlockIt = pBlocks->begin(), BlockItE = pBlocks->end(); BlockIt != BlockItE; ++BlockIt) {
 
-    DEBUG(dbgs() << "Block " << BlockIt->first->getName() << " is invariant; will evaluate at scope " << (BlockIt->second ? BlockIt->second->getHeader()->getName() : "root") << "\n");
+    LPDEBUG("Block " << BlockIt->first->getName() << " is invariant; will evaluate at scope " << (BlockIt->second ? BlockIt->second->getHeader()->getName() : "root") << "\n");
 
   }
 
@@ -2413,4 +2388,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   AU.addRequired<VFSCallAliasAnalysis>();
   AU.setPreservesAll();
   
+}
+
+void llvm::release_assert_fail(const char* str) {
+
+  errs() << "Assertion failed: " << str << "\n";
+  exit(1);
+
 }

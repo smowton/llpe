@@ -14,6 +14,7 @@
 #include "../../VMCore/LLVMContextImpl.h"
 
 #include <unistd.h>
+#include <stdlib.h>
 
 using namespace llvm;
 
@@ -77,26 +78,31 @@ void IntegrationAttempt::prepareCommit() {
 
 }
 
-void IntegrationAttempt::removeBlockFromLoops(BasicBlock* BB) {
+void IntegrationAttempt::removeBlockFromLoops(BasicBlock* BB, const Loop* BBL) {
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  const Loop* NextL = immediateChildLoop(getLoopContext(), BBL);
 
-    std::vector<BasicBlock*>& Blocks = it->second->LoopBlocks;
-    std::vector<BasicBlock*>::iterator Found = std::find(Blocks.begin(), Blocks.end(), BB);
-    if(Found != Blocks.end()) {
-      Blocks.erase(Found);
-      it->second->removeBlockFromLoops(BB);
-    }
+  if(PeelAttempt* PA = getPeelAttempt(NextL)) {
+
+    PA->removeBlockFromLoops(BB, BBL);
 
   }
 
 }
 
-void PeelAttempt::removeBlockFromLoops(BasicBlock* BB) {
+void PeelAttempt::removeBlockFromLoops(BasicBlock* BB, const Loop* BBL) {
+
+  std::vector<BasicBlock*>::iterator removeit = std::find(LoopBlocks.begin(), LoopBlocks.end(), BB);
+  release_assert(removeit != LoopBlocks.end());
+
+  LoopBlocks.erase(removeit);
+
+  if(BBL == L)
+    return;
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
 
-    (*it)->removeBlockFromLoops(BB);
+    (*it)->removeBlockFromLoops(BB, BBL);
 
   }
 
@@ -198,18 +204,17 @@ void IntegrationAttempt::localPrepareCommit() {
   // Remove loop blocks which are invariant dead from the list of blocks belonging to that loop
   // This will stop the integration within that loop from considering it.
 
-  for(DenseMap<BasicBlock*, const Loop*>::iterator BI = invariantBlocks.begin(), BE = invariantBlocks.end(); BI != BE; ++BI) {
+  for(DenseSet<BasicBlock*>::iterator BI = deadBlocks.begin(), BE = deadBlocks.end(); BI != BE; ++BI) {
 
-    if(BI->second == getLoopContext()) {
+    const Loop* BlockL = LI[&F]->getLoopFor(*BI);
+    const Loop* MyL = getLoopContext();
 
-      if(deadBlocks.count(BI->first)) {
+    if(BlockL == MyL)
+      continue;
 
-	LPDEBUG("Removing invariant block " << BI->first->getName() << " from child contexts\n");
-	removeBlockFromLoops(BI->first);
+    release_assert((!MyL) || MyL->contains(BlockL));
 
-      }
-
-    }
+    removeBlockFromLoops(*BI, BlockL);
 
   }
 
@@ -478,14 +483,12 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB, bool innerScopesOnly
 
   bool blockIsInvar = false;
 
-  DenseMap<BasicBlock*, const Loop*>::iterator Inv = invariantBlocks.find(BB);
-  if(Inv != invariantBlocks.end()) {
+  const Loop* BlockL = LI[&F]->getLoopFor(BB);
+  if(BlockL != getLoopContext()) {
 
-    // If it's dead and usually belongs to another scope that indicates we've killed
-    // an entire loop. We'll pick this up in the second phase.
-
-    if(Inv->second == getLoopContext())
-      blockIsInvar = true;
+    // Blocks belonging to inner scopes must be removed before the loop unroller acts,
+    // otherwise it'll duplicate them and the child contexts won't know to kill it again.
+    blockIsInvar = true;
 
   }
 
@@ -500,8 +503,6 @@ void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB, bool innerScopesOnly
 
   // Get the copy of the block we should actually operate on:
   BB = cast<BasicBlock>(it->second);
-
-  LPDEBUG("Deleting block " << BB->getName() << "\n");
 
   MasterLI->removeBlock(BB);
   
