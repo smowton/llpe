@@ -344,95 +344,98 @@ bool PartialVal::convertToBytes(uint64_t size, TargetData* TD, std::string& erro
 
 bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error) {
 
- if(isEmpty()) {
+  if(Other.isVarargTainted)
+    isVarargTainted = true;
 
-   if(FirstDef == 0 && (FirstNotDef - FirstDef == LoadSize)) {
+  if(isEmpty()) {
 
-     *this = Other;
-     return true;
+    if(FirstDef == 0 && (FirstNotDef - FirstDef == LoadSize)) {
 
-   }
-   else {
+      *this = Other;
+      return true;
 
-     // Transition to bytewise load forwarding: this value can't satisfy
-     // the entire requirement. Turn into a PVByteArray and fall through.
-     initByteArray(LoadSize);
+    }
+    else {
 
-   }
+      // Transition to bytewise load forwarding: this value can't satisfy
+      // the entire requirement. Turn into a PVByteArray and fall through.
+      initByteArray(LoadSize);
 
- }
+    }
 
- assert(isByteArray());
+  }
 
- if(Other.isTotal()) {
+  assert(isByteArray());
 
-   Constant* TotalC = dyn_cast<Constant>(Other.TotalVC.first);
-   if(!TotalC) {
-     //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
-     error = "PP2";
-     return false;
-   }
-   Other.C = TotalC;
-   Other.ReadOffset = 0;
-   Other.type = PVPartial;
+  if(Other.isTotal()) {
 
- }
+    Constant* TotalC = dyn_cast<Constant>(Other.TotalVC.first);
+    if(!TotalC) {
+      //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
+      error = "PP2";
+      return false;
+    }
+    Other.C = TotalC;
+    Other.ReadOffset = 0;
+    Other.type = PVPartial;
 
- DEBUG(dbgs() << "This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
+  }
 
- // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
+  DEBUG(dbgs() << "This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
 
- unsigned char* tempBuf;
+  // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
 
- if(Other.isPartial()) {
+  unsigned char* tempBuf;
 
-   tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
-   // ReadDataFromGlobal assumes a zero-initialised buffer!
-   memset(tempBuf, 0, FirstNotDef - FirstDef);
+  if(Other.isPartial()) {
 
-   if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
-     DEBUG(dbgs() << "ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
-     error = "RDFG";
-     return false;
-   }
+    tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
+    // ReadDataFromGlobal assumes a zero-initialised buffer!
+    memset(tempBuf, 0, FirstNotDef - FirstDef);
 
- }
- else {
+    if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
+      DEBUG(dbgs() << "ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
+      error = "RDFG";
+      return false;
+    }
 
-   tempBuf = (unsigned char*)Other.partialBuf;
+  }
+  else {
 
- }
+    tempBuf = (unsigned char*)Other.partialBuf;
 
- assert(FirstDef < partialBufBytes);
- assert(FirstNotDef <= partialBufBytes);
+  }
 
- // Avoid rewriting bytes which have already been defined
- for(uint64_t i = 0; i < (FirstNotDef - FirstDef); ++i) {
-   if(partialValidBuf[FirstDef + i]) {
-     continue;
-   }
-   else {
-     ((unsigned char*)partialBuf)[FirstDef + i] = tempBuf[i]; 
-   }
- }
+  assert(FirstDef < partialBufBytes);
+  assert(FirstNotDef <= partialBufBytes);
 
- loadFinished = true;
- // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
- // and there's no hope we've finished.
- for(uint64_t i = 0; i < LoadSize && (loadFinished || i < FirstNotDef); ++i) {
+  // Avoid rewriting bytes which have already been defined
+  for(uint64_t i = 0; i < (FirstNotDef - FirstDef); ++i) {
+    if(partialValidBuf[FirstDef + i]) {
+      continue;
+    }
+    else {
+      ((unsigned char*)partialBuf)[FirstDef + i] = tempBuf[i]; 
+    }
+  }
 
-   if(i >= FirstDef && i < FirstNotDef) {
-     partialValidBuf[i] = true;
-   }
-   else {
-     if(!partialValidBuf[i]) {
-       loadFinished = false;
-     }
-   }
+  loadFinished = true;
+  // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
+  // and there's no hope we've finished.
+  for(uint64_t i = 0; i < LoadSize && (loadFinished || i < FirstNotDef); ++i) {
 
- }
+    if(i >= FirstDef && i < FirstNotDef) {
+      partialValidBuf[i] = true;
+    }
+    else {
+      if(!partialValidBuf[i]) {
+	loadFinished = false;
+      }
+    }
 
- return true;
+  }
+
+  return true;
 
 }
 
@@ -1128,6 +1131,9 @@ ValCtx IntegrationAttempt::tryForwardLoad(Instruction* StartInst, ValCtx LoadPtr
     RSO << "Can't forward " << itcache(Res);
     return VCNull;
   }
+
+  if(Walker.resultPV.isVarargTainted)
+    contextTaintedByVarargs = true;
 
   return Res;
 
