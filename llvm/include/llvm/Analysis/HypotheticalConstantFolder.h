@@ -1215,6 +1215,7 @@ protected:
   bool valueWillNotUse(Value* V, ValCtx, bool mustReplWithConstant = false);
   bool valueWillBeDeleted(Value* V);
   bool inDeadValues(Value* V);
+  void replaceDeadValue(Value* V, ValCtx);
   void queueDIEOperands(Value* V);
   void tryKillValue(Value* V);
   virtual void queueAllLiveValuesMatching(UnaryPred& P);
@@ -1666,6 +1667,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
   virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
+
+  virtual void localPrepareCommit();
 
   void revertDeadVFSOps();
   void retryDeadVFSOps();

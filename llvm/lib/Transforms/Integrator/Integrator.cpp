@@ -161,10 +161,16 @@ public:
 	  val = _(IA->getShortHeader());
 	  break;
 	case 1:
-	  val = wxString::Format(_("%u"), IA->getTotalInstructions());
+	  if(IA->isEnabled())
+	    val = wxString::Format(_("%u"), IA->getTotalInstructions());
+	  else
+	    val = wxEmptyString;
 	  break;
 	case 2:
-	  val = wxString::Format(_("%u"), IA->getElimdInstructions());
+	  if(IA->isEnabled())
+	    val = wxString::Format(_("%u"), IA->getElimdInstructions());
+	  else
+	    val = wxEmptyString;
 	  break;
 	case 3:
 	  if(IA->canDisable()) {
@@ -202,16 +208,11 @@ public:
 
   void notifyStatsChanged(IntegrationAttempt* IA) {
     
-    if(!IA->isEnabled())
-      return;
-
     ValueChanged(wxDataViewItem((void*)(&IA->tag)), 2);
 
     for(DenseMap<CallInst*, InlineAttempt*>::iterator it = IA->inlineChildren.begin(), it2 = IA->inlineChildren.end(); it != it2; ++it)
       notifyStatsChanged(it->second);
     for(DenseMap<const Loop*, PeelAttempt*>::iterator it = IA->peelChildren.begin(), it2 = IA->peelChildren.end(); it != it2; ++it) {
-      if(!it->second->isEnabled())
-	continue;
       for(std::vector<PeelIteration*>::iterator iter = it->second->Iterations.begin(), iterend = it->second->Iterations.end(); iter != iterend; ++iter)
 	notifyStatsChanged(*iter);
     }
@@ -238,7 +239,7 @@ public:
 	if(!IA->canDisable())
 	  return true;
 	if(IA->isEnabled() != newState) {
-	  GetChildren(item, changed);
+	  //GetChildren(item, changed);
 	  IA->setEnabled(val.GetBool());
 	}
 	break;
@@ -246,16 +247,18 @@ public:
     case IntegratorTypePA:
       {
 	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
-	GetChildren(item, changed);
+	//GetChildren(item, changed);
 	PA->setEnabled(val.GetBool());
 	break;
       }
     }
 
+    /*
     if(newState)
       ItemsAdded(item, changed);
     else
       ItemsDeleted(item, changed);
+    */
 
     // All other contexts will have recalculated their stats too.
     notifyStatsChanged(Root);
@@ -306,13 +309,13 @@ public:
     case IntegratorTypeIA:
       {
 	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	return IA->isEnabled() && IA->hasChildren();
+	return IA->hasChildren();
       }
       break;
     case IntegratorTypePA:
       {
 	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
-	return PA->isEnabled();
+	return true;
       }
       break;
     default:
