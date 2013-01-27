@@ -1212,6 +1212,7 @@ protected:
   void queueDIE(Value* V);
   bool valueWillBeReplacedWithConstantOrDeleted(Value* V);
   bool valueWillBeRAUWdOrDeleted(Value* V);
+  virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC) = 0;
   bool valueWillNotUse(Value* V, ValCtx, bool mustReplWithConstant = false);
   bool valueWillBeDeleted(Value* V);
   bool inDeadValues(Value* V);
@@ -1456,6 +1457,8 @@ public:
 
   virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
 
+  virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1669,6 +1672,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
 
   virtual void localPrepareCommit();
+
+  virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
 
   void revertDeadVFSOps();
   void retryDeadVFSOps();

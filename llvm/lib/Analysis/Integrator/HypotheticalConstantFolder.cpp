@@ -1584,6 +1584,44 @@ bool IntegrationAttempt::valueWillBeDeleted(Value* V) {
 
 }
 
+bool InlineAttempt::loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC) {
+
+  return false;
+
+}
+
+bool PeelIteration::loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC) {
+
+  // The precise problem here: we might have some ptr %alloc and a string of PHIs each resolved to
+  // %alloc all of which are dead except the last which has users. This is fine because PHIs are
+  // replaced with the pointer, not their predecessor PHI... except when the loop unroller or inliner
+  // get involved, then they just forward an immediate argument, so we cheat and bring the immediate
+  // arg back to life. The same treatment applies to dead actual args which are used as proxies for
+  // formal arguments.
+  
+  if(PHINode* PN = dyn_cast<PHINode>(V)) {
+
+    if(PN->getParent() == L->getHeader()) {
+
+      if(iterationCount == 0) {
+	if(OtherVC == parent->getDefaultVC(PN->getIncomingValueForBlock(L->getLoopPreheader())))
+	  return true;
+      }
+      else {
+	PeelIteration* prevIter = parentPA->Iterations[iterationCount-1];
+	ValCtx latchVC = prevIter->getDefaultVC(PN->getIncomingValueForBlock(L->getLoopLatch()));
+	if(OtherVC == latchVC)
+	  return true;
+      }
+
+    }
+
+  }
+
+  return false;
+
+}
+
 bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC, bool mustReplWithConstant) {
 
   Instruction* I = dyn_cast<Instruction>(V);
@@ -1595,7 +1633,10 @@ bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC, bool mustRepl
   if(I && blockIsDead(I->getParent()))
     return true;
   ValCtx VC = getReplacement(V);
+
   // The other value will be replaced with this V, so it will remain a user.
+  // This test might be redundant, because such a user is an indirect user so if it's alive
+  // we should be alive too.
   if(VC == OtherVC)
     return false;
 
@@ -1613,10 +1654,21 @@ bool IntegrationAttempt::valueWillNotUse(Value* V, ValCtx OtherVC, bool mustRepl
   if(VC.isPtrAsInt())
     return false;
 
-  // Will we be able to fold the replacement?
   if(VC.second) {
+
+    // Will we be able to fold the replacement?
     if(!VC.second->isAvailableFromCtx(this))
       return false;
+  
+    // Are we going to naively copy the OtherVC rather than get properly replaced
+    // by the pointer we're resolved to? (This happens if we're a header PHI or argument)
+    // Arguments analysed like this are already known to be direct users of OtherVC.
+    if(isa<Argument>(V))
+      return false;
+
+    if(loopHeaderPhiWillCopy(V, OtherVC))
+      return false;
+
   }
 
   return true;

@@ -117,26 +117,6 @@ void IntegrationAttempt::replaceDeadValue(Value* V, ValCtx VC) {
 
 void InlineAttempt::localPrepareCommit() {
 
-  if(parent) {
-
-    // If args are to be replaced with pointers, make sure our actual arg is alive.
-    for(Function::arg_iterator it = F.arg_begin(), itend = F.arg_end(); it != itend; ++it) {
-
-      Argument* A = it;
-      ValCtx ArgVC = getReplacement(A);
-
-      if(ArgVC != getDefaultVC(A) && ArgVC.second) {
-
-	ValCtx FwdVC = parent->getDefaultVC(CI->getArgOperand(A->getArgNo()));
-	if(FwdVC.second->inDeadValues(FwdVC.first))
-	  FwdVC.second->replaceDeadValue(FwdVC.first, ArgVC);
-
-      }
-
-    }
-
-  }
-
   IntegrationAttempt::localPrepareCommit();
 
 }
@@ -153,30 +133,6 @@ void PeelIteration::localPrepareCommit() {
   for(BasicBlock::iterator it = H->begin(), it2 = H->end(); it != it2 && isa<PHINode>(it); ++it) {
 
     PHINode* V = cast<PHINode>(it);
-
-    // If the header is due to be replaced with a pointer, make sure the value that will be forwarded
-    // has the same resolution.
-    // The precise problem here: we might have some ptr %alloc and a string of PHIs each resolved to
-    // %alloc all of which are dead except the last which has users. This is fine because PHIs are
-    // replaced with the pointer, not their predecessor PHI... except when the loop unroller or inliner
-    // get involved, then they just forward an immediate argument, so we cheat and bring the immediate
-    // arg back to life. The same treatment applies to dead actual args which are used as proxies for
-    // formal arguments.
-
-    ValCtx HVC = getReplacement(V);
-    if(HVC != getDefaultVC(V) && HVC.second) {
-
-      // Which inst will be forwarded? Use getDefaultVC to find natural scope.
-      ValCtx FwdVC;
-      if(iterationCount == 0) 
-	FwdVC = parent->getDefaultVC(V->getIncomingValueForBlock(L->getLoopPreheader()));
-      else
-	FwdVC = parentPA->Iterations[iterationCount-1]->getDefaultVC(V->getIncomingValueForBlock(LLatch));
-
-      if(FwdVC.second->inDeadValues(FwdVC.first))
-	FwdVC.second->replaceDeadValue(FwdVC.first, HVC);
-
-    }
 
     deadValues.erase(V);
     improvedValues.erase(V);
