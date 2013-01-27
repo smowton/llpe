@@ -2142,6 +2142,12 @@ void IntegrationAttempt::tryEvaluate(Value* V) {
 
     setReplacement(V, Improved);
 
+    if(Improved.second) {
+
+      Improved.second->addForwardedInst(cast<Instruction>(Improved.first), make_vc(V, this));
+
+    }
+
   }
 
 }
