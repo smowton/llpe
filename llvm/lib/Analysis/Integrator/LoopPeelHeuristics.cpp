@@ -592,7 +592,7 @@ const Loop* IntegrationAttempt::getBlockScopeVariant(BasicBlock* BB) {
 
 }
 
-bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
+bool IntegrationAttempt::blockCertainlyExecutes(BasicBlock* BB) {
 
   const Loop* BlockL = getBlockScopeVariant(BB);
   const Loop* MyL = getLoopContext();
@@ -604,7 +604,7 @@ bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
       if(FinalIter->isOnlyExitingIteration()) {
 
-	return FinalIter->blockIsCertain(BB);
+	return FinalIter->blockCertainlyExecutes(BB);
 
       }
       else {
@@ -618,6 +618,41 @@ bool IntegrationAttempt::blockIsCertain(BasicBlock* BB) {
   }
 
   return certainBlocks.count(BB);
+
+}
+
+bool IntegrationAttempt::blockAssumed(BasicBlock* BB) {
+
+  const Loop* BlockL = getBlockScopeVariant(BB);
+  const Loop* MyL = getLoopContext();
+
+  if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
+
+    if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyL, BlockL))) {
+
+      PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
+      if(FinalIter->isOnlyExitingIteration()) {
+
+	return FinalIter->blockAssumed(BB);
+
+      }
+      else {
+
+	return false;
+
+      }
+
+    }
+
+  }
+
+  return assumedCertainBlocks.count(BB);  
+
+}
+
+bool IntegrationAttempt::blockAssumedToExecute(BasicBlock* BB) {
+
+  return blockCertainlyExecutes(BB) || blockAssumed(BB);
 
 }
 
@@ -673,7 +708,7 @@ bool IntegrationAttempt::shouldInlineFunction(CallInst* CI) {
   Function* FCalled = getCalledFunction(CI);
   assert(FCalled && "shouldInlineFunction called on uncertain function pointer");
 
-  if(certainBlocks.count(CI->getParent()))
+  if(blockAssumedToExecute(CI->getParent()))
     return true;
 
   if(pass->shouldAlwaysInline(FCalled))
@@ -850,7 +885,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
     return PA;
   
   // Preheaders only have one successor (the header), so this is enough.
-  if(!certainBlocks.count(NewL->getLoopPreheader())) {
+  if(!blockAssumedToExecute(NewL->getLoopPreheader())) {
    
     LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain to execute\n");
     return 0;

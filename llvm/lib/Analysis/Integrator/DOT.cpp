@@ -339,8 +339,11 @@ void IntegrationAttempt::describeBlockAsDOT(BasicBlock* BB, SmallVector<std::pai
 
   Out << "<tr><td border=\"0\" align=\"left\" colspan=\"2\"";
   
-  if(blockIsCertain(BB)) {
+  if(blockCertainlyExecutes(BB)) {
     Out << " bgcolor=\"yellow\"";
+  }
+  else if(blockAssumed(BB)) {
+    Out << " bgcolor=\"orange\"";
   }
 
   Out << "><font point-size=\"14\">";

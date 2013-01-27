@@ -890,6 +890,7 @@ protected:
   DenseSet<BasicBlock*> deadBlocks;
   SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
   SmallSet<BasicBlock*, 4> certainBlocks;
+  SmallSet<BasicBlock*, 4> assumedCertainBlocks;
 
   // Instructions which have no users (discounting side-effects) after discounting instructions
   // which will be RAUW'd or deleted on commit.
@@ -1028,7 +1029,11 @@ protected:
   const Loop* getBlockScopeVariant(BasicBlock*);
   bool blockIsDeadWithScope(BasicBlock*, const Loop*);
 
-  bool blockIsCertain(BasicBlock*);
+  virtual bool entryBlockIsCertain() = 0;
+  virtual bool entryBlockAssumed() = 0;
+  bool blockCertainlyExecutes(BasicBlock*);
+  bool blockAssumed(BasicBlock*);
+  bool blockAssumedToExecute(BasicBlock*);
 
   bool shouldForwardValue(ValCtx);
 
@@ -1090,6 +1095,7 @@ protected:
   void checkSuccessors(BasicBlock* BB);
   void checkBlockPHIs(BasicBlock*);
   void markBlockCertain(BasicBlock* BB);
+  void markBlockAssumed(BasicBlock* BB);
   void checkEdge(BasicBlock*, BasicBlock*);
   void checkEdge(BasicBlock*, BasicBlock*, const Loop*);
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
@@ -1459,6 +1465,9 @@ public:
 
   virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
 
+  virtual bool entryBlockIsCertain();
+  virtual bool entryBlockAssumed();
+
   bool isOnlyExitingIteration();
   bool allExitEdgesDead();
   void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
@@ -1674,6 +1683,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void localPrepareCommit();
 
   virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
+
+  virtual bool entryBlockIsCertain();
+  virtual bool entryBlockAssumed();
 
   void revertDeadVFSOps();
   void retryDeadVFSOps();

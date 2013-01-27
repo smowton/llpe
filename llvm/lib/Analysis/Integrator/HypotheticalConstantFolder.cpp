@@ -194,6 +194,12 @@ void IntegrationAttempt::markBlockCertain(BasicBlock* BB) {
     
 }
 
+void IntegrationAttempt::markBlockAssumed(BasicBlock* BB) {
+
+  assumedCertainBlocks.insert(BB);
+
+}
+
 PostDominatorTree* IntegrationHeuristicsPass::getPostDomTree(Function* F) {
 
   DenseMap<Function*, PostDominatorTree*>::iterator it = PDTs.find(F);
@@ -331,6 +337,44 @@ void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
 
 }
 
+bool InlineAttempt::entryBlockIsCertain() {
+
+  if(!parent)
+    return true;
+  return parent->blockCertainlyExecutes(CI->getParent());
+
+}
+
+bool PeelIteration::entryBlockIsCertain() {
+
+  if(iterationCount == 0)
+    return parent->blockCertainlyExecutes(L->getLoopPreheader());
+
+  // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
+  PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
+  return prevIter->blockCertainlyExecutes(L->getHeader()) && prevIter->allExitEdgesDead();
+
+}
+
+bool InlineAttempt::entryBlockAssumed() {
+
+  if(!parent)
+    return true;
+  return parent->blockAssumed(CI->getParent());
+
+}
+
+bool PeelIteration::entryBlockAssumed() {
+
+  // All loops are only entered if certain or assumed
+  if(iterationCount == 0)
+    return true;
+
+  // Otherwise it's at least assumed if the previous iteration can't exit.
+  return parentPA->Iterations[iterationCount - 1]->allExitEdgesDead();
+
+}
+
 void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   LPDEBUG("Checking status of block " << BB->getName() << ": ");
@@ -347,10 +391,12 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   
   bool isDead = true;
   bool isCertain = true;
+  bool isAssumed = true;
 
   if(BB == getEntryBlock()) {
 
-    isCertain = true;
+    isCertain = entryBlockIsCertain();
+    isAssumed = isCertain || entryBlockAssumed();
     isDead = false;
 
   }
@@ -362,28 +408,36 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 	isDead = false;
 
-	if(blockIsCertain(*PI)) {
+	bool PICertain = blockCertainlyExecutes(*PI);
+	if(!PICertain)
+	  isCertain = false;
+
+	bool PIAssumed = PICertain || blockAssumed(*PI);
+
+	if(PIAssumed) {
 
 	  bool onlySuccessor = true;
 
-	  if(!shouldAssumeEdge(*PI, BB)) {
-	    for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+	  for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
 
-	      if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
-		onlySuccessor = false;
-		break;
-	      }
-
+	    if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
+	      onlySuccessor = false;
+	      break;
 	    }
+
 	  }
 
-	  if(!onlySuccessor)
+	  if(!onlySuccessor) {
 	    isCertain = false;
+	    if(!shouldAssumeEdge(*PI, BB))
+	      isAssumed = false;
+	  }
 
 	}
 	else {
-	  
+
 	  isCertain = false;
+	  isAssumed = false;
 
 	}
 
@@ -393,8 +447,10 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   }
 
-  if(isDead && isCertain)
+  if(isDead && (isCertain || isAssumed)) {
     isCertain = false;
+    isAssumed = false;
+  }
 
   if(isDead) {
 
@@ -409,7 +465,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     }
 
   }
-  else if(isCertain) {
+  else if(isCertain || isAssumed) {
 
     const Loop* MyL = getLoopContext();
     if(!MyL) {
@@ -419,7 +475,10 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 	BasicBlock* SB = DTN->getBlock();
 	if(getBlockScopeVariant(SB) == MyL) {
 	
-	  markBlockCertain(SB);
+	  if(isCertain)
+	    markBlockCertain(SB);
+	  else
+	    markBlockAssumed(SB);
 
 	}
 
@@ -436,7 +495,10 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 	  const Loop* BBL = getBlockScopeVariant(const_cast<BasicBlock*>(BW->BB));
 	  if(BBL == MyL) {
 
-	    markBlockCertain(const_cast<BasicBlock*>(BW->BB));
+	    if(isCertain)
+	      markBlockCertain(const_cast<BasicBlock*>(BW->BB));
+	    else
+	      markBlockAssumed(const_cast<BasicBlock*>(BW->BB));
 
 	  }
 
@@ -452,7 +514,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 bool IntegrationAttempt::shouldCheckBlock(BasicBlock* BB) {
 
-  return !(blockIsDead(BB) || blockIsCertain(BB));
+  return !(blockIsDead(BB) || blockAssumedToExecute(BB));
 
 }
 
