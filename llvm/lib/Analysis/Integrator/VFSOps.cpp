@@ -128,7 +128,7 @@ public:
       uniqueIncomingOffset(-1) { }
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
 
 };
 
@@ -205,7 +205,7 @@ bool FindVFSPredecessorWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt*
 	    
 }
 
-bool FindVFSPredecessorWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool FindVFSPredecessorWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
 
   uniqueIncomingOffset = -1;
   return true;
@@ -518,7 +518,7 @@ public:
 
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
 
 };
 
@@ -528,7 +528,7 @@ bool OpenInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttem
 
 }
 
-bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
 
   residualUserFound = true;
   return true;
@@ -598,7 +598,7 @@ public:
 
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
 
 };
 
@@ -608,7 +608,7 @@ bool SeekInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttem
 
 }
 
-bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
 
   seekNeeded = true;
   return true;

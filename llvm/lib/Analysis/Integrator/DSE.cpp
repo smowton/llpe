@@ -89,7 +89,7 @@ public:
 
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
   virtual void freeContext(void*);
   virtual void* copyContext(void*);
 
@@ -242,7 +242,7 @@ bool WriterUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
 }
 
-bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
 
   writeUsed = true;
   return true;

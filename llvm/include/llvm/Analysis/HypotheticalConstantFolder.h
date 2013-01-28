@@ -770,7 +770,7 @@ class IAWalker {
   
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*) = 0;
   virtual WalkInstructionResult walkFromBlock(BasicBlock*, IntegrationAttempt*, void* Context) {
     return WIRContinue;
   }
@@ -1208,7 +1208,7 @@ protected:
   void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   virtual bool basesMayAlias(ValCtx VC1, ValCtx VC2);
-  bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out);
+  bool tryForwardLoadPB(LoadInst*, bool finalise, PointerBase& out, BasicBlock* optBB, IntegrationAttempt* optIA);
   std::string describePBWalker(PBLoadForwardWalker& Walker);
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
   void addStoreToLoadSolverWork(Value* V);

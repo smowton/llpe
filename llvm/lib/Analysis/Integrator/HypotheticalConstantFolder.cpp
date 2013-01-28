@@ -2323,20 +2323,3 @@ namespace llvm {
 
 }
 
-void SymThunk::describe(raw_ostream& OS, IntegrationAttempt* IA) {
-  IA->printWithCache(RealVal, OS);
-}
-
-void SymGEP::describe(raw_ostream& OS, IntegrationAttempt* IA) {
-  OS << "GEP(";
-  for(SmallVector<Value*, 4>::iterator OI = Offsets.begin(), OE = Offsets.end(); OI != OE; OI++) {
-    if(OI != Offsets.begin())
-      OS << ", ";
-    IA->printWithCache(*OI, OS);
-  }
-  OS << ")";
-}
-
-void SymCast::describe(raw_ostream& OS, IntegrationAttempt* IA) {
-  OS << "Cast(" << *ToType << ")";
-}

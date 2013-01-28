@@ -340,7 +340,7 @@ void ForwardIAWalker::walkInternal() {
 	else {
 
 	  // Return value = should we abort?
-	  if(blockedByUnexpandedCall(StoppedCI, ThisStart.ctx))
+	  if(blockedByUnexpandedCall(StoppedCI, ThisStart.ctx, Ctx))
 	    return;
 
 	}

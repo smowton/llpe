@@ -987,7 +987,7 @@ WalkInstructionResult PBLoadForwardWalker::walkFromBlock(BasicBlock* BB, Integra
       if(activeCacheEntry) {
 
 	LFCacheKey delKey = LFCK(activeCacheEntryLoc.second, LoadPtrBase, LoadPtrOffset, LoadSize);
-	activeCacheEntryloc.first->deleteLFPBCacheEntry(delKey);
+	activeCacheEntryLoc.first->deleteLFPBCacheEntry(delKey);
 
       }
 
