@@ -757,6 +757,11 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
   Value* op0 = CmpI->getOperand(0);
   Value* op1 = CmpI->getOperand(1);
+
+  // Only integer and pointer types can possibly represent pointers:
+  if(!((op0->getType()->isIntegerTy() || op0->getType()->isPointerTy()) && 
+       (op1->getType()->isIntegerTy() || op1->getType()->isPointerTy())))
+    return false;
  
   Constant* op0C = getConstReplacement(op0);
   Constant* op1C = getConstReplacement(op1);
@@ -791,6 +796,8 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
     return true;   
 
   }
+
+  // Only instructions that ultimately refer to pointers from here on
 
   if(!(op0O.first->getType()->isPointerTy() && op1O.first->getType()->isPointerTy()))
     return false;
