@@ -615,7 +615,10 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
 
   if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
 
-    bool ret = tryForwardLoadPB(LI, finalise, NewPB);
+    BasicBlock* LHdr = LPBA ? LPBA->LHdr : 0;
+    IntegrationAttempt* LHdrIA = LPBA ? LPBA->LHdrIA : 0;
+
+    bool ret = tryForwardLoadPB(LI, finalise, NewPB, LHdr, LHdrIA);
     if(!ret)
       return false;
 
@@ -1148,7 +1151,7 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
 
   // L is an immediate child of this context.
 
-  LoopPBAnalyser LPBA;
+  LoopPBAnalyser LPBA(this, L->getHeader());
 
   // Step 1: queue VCs falling within this loop.
 

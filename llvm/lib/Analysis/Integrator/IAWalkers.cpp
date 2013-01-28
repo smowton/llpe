@@ -218,7 +218,14 @@ void BackwardIAWalker::walkInternal() {
       }
       else {
 
-	// Else we've hit the top of a block. Figure out what to do with each predecessor:
+	// Else we've hit the top of a block:
+	WalkInstructionResult leaveBlockResult = walkFromBlock(ThisStart.BB, ThisStart.ctx, Ctx);
+	if(leaveBlockResult == WIRStopThisPath)
+	  continue;
+	else if(leaveBlockResult == WIRStopWholeWalk)
+	  return;
+
+	// OK, queue predecessors.
 	if(!ThisStart.ctx->queuePredecessorsBW(ThisStart.BB, this, Ctx))
 	  return;
 
@@ -262,7 +269,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(BIC bic, void* Ctx, CallIns
       if(!bic.ctx->getInlineAttempt(CI)) {
 
 	// Return value = should we abort?
-	if(blockedByUnexpandedCall(CI, bic.ctx)) {
+	if(blockedByUnexpandedCall(CI, bic.ctx, Ctx)) {
 	  return WIRStopWholeWalk;
 	}
 	else {

@@ -32,8 +32,8 @@ protected:
 public:
 
 
-  LoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD) 
-    : BackwardIAWalker(Start, StartIA, true), LoadedPtr(Ptr), LoadSize(Size), AA(_AA), TD(_TD) {
+  LoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, void* InitialCtx) 
+    : BackwardIAWalker(Start, StartIA, true, InitialCtx), LoadedPtr(Ptr), LoadSize(Size), AA(_AA), TD(_TD) {
 
     LoadPtrOffset = 0;
     LoadPtrBase = GetBaseWithConstantOffset(Ptr.first, Ptr.second, LoadPtrOffset);
@@ -41,7 +41,7 @@ public:
   }
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize) = 0;
+  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx) = 0;
 
 };
 
@@ -54,14 +54,14 @@ public:
   ValCtx FailureVC;
   std::string FailureCode;
 
-  NormalLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
+  NormalLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD, 0), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
 
-  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize);
+  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
   virtual bool mayAscendFromContext(IntegrationAttempt* IA);
   bool addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, bool maySubquery);
   bool getMIOrReadValue(Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, std::string& error);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
   bool* getValidBuf();
 
 };
@@ -70,6 +70,11 @@ class PBLoadForwardWalker : public LoadForwardWalker {
 
   bool OptimisticMode;
   const Type* originalType;
+  
+  BasicBlock* optimisticBB;
+  IntegrationAttempt* optimisticIA;
+  PointerBase* activeCacheEntry;
+  std::pair<IntegrationAttempt*, BasicBlock*> activeCacheEntryLoc;
 
 public:
 
@@ -77,14 +82,26 @@ public:
   std::vector<std::string> OverdefReasons;
   std::vector<ValCtx> PredStores;
 
-  PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD), OptimisticMode(OM), originalType(OT) { }
+  PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* initialCtx) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD, initialCtx), OptimisticMode(OM), originalType(OT), optimisticBB(optBB), optimisticIA(optIA), activeCacheEntry(0) { }
 
-  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize);
+  virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx);
   void addPBDefn(PointerBase& NewPB);
+  void _addPBDefn(PointerBase& MergeWith, PointerBase& NewPB);
   void setPBOverdef(std::string reason);
   virtual bool reachedTop();
   virtual bool mayAscendFromContext(IntegrationAttempt* IA);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*);
+  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
+  virtual WalkInstructionResult walkFromBlock(BasicBlock* BB, IntegrationAttempt* IA, void* Ctx);
+
+  virtual void freeContext(void* ctx) {
+    delete ((bool*)ctx);
+  }
+
+  virtual void* copyContext(void* ctx) {
+    bool* newctx = new bool;
+    *newctx = *((bool*)ctx);
+    return newctx;
+  }
 
 };
 
@@ -105,7 +122,7 @@ bool LoadForwardWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
 
 }
 
-WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
+WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void* Ctx) {
 
   Value* Ptr;
   uint64_t PtrSize;
@@ -120,7 +137,7 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
   else if (isa<AllocaInst>(I) || (isa<CallInst>(I) && extractMallocCall(I))) {
     
     if(LoadPtrBase == make_vc(I, IA)) {
-      return handleAlias(I, IA, AliasAnalysis::MustAlias, I, LoadSize);
+      return handleAlias(I, IA, AliasAnalysis::MustAlias, I, LoadSize, Ctx);
     }
     else
       return WIRContinue;
@@ -175,7 +192,7 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
   if(R == AliasAnalysis::NoAlias)
     return WIRContinue;
 
-  return handleAlias(I, IA, R, Ptr, PtrSize);
+  return handleAlias(I, IA, R, Ptr, PtrSize, Ctx);
 
 }
 
@@ -539,7 +556,7 @@ bool NormalLoadForwardWalker::getMIOrReadValue(Instruction* I, IntegrationAttemp
 
 #define NLFWFail(Code) do { FailureCode = Code; FailureVC = make_vc(I, IA); return WIRStopWholeWalk; } while(0);
 
-WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize) { 
+WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void*) { 
 
   PartialVal NewPV;
   uint64_t FirstDef, FirstNotDef, ReadOffset;
@@ -645,7 +662,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(Instruction* I, Integ
 
 }
 
-bool NormalLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool NormalLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
 
   FailureCode = "UEC";
   FailureVC = make_vc(CI, IA);
@@ -709,24 +726,39 @@ bool* NormalLoadForwardWalker::getValidBuf() {
 
 //// Implement PBLF:
 
-void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB) {
-  bool WasOverdef = Result.Overdef;
-  Result.merge(NewPB);
-  if(Result.Overdef && (!WasOverdef) && (!NewPB.Overdef))
+void PBLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB) {
+
+  bool WasOverdef = MergeWith.Overdef;
+  MergeWith.merge(NewPB);
+  if(MergeWith.Overdef && (!WasOverdef) && (!NewPB.Overdef))
     OverdefReasons.push_back("Fan-in");
+
+}
+
+void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB) {
+
+  _addPBDefn(Result, NewPB);
+  if(activeCacheEntry)
+    _addPBDefn(*activeCacheEntry, NewPB);
+
 }
 
 void PBLoadForwardWalker::setPBOverdef(std::string reason) {
   OverdefReasons.push_back(reason);
   Result = PointerBase::getOverdef();
+  if(activeCacheEntry)
+    *activeCacheEntry = PointerBase::getOverdef();
 }
 
-WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize) {
+WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx) {
 
   // If we're in the optimistic phase, ignore anything but the following:
   // * Defining stores with an associated PB
   // * Defining alloca instructions
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
+  // Don't behave optimistically if we're outside the loop subject to consideration.
+
+  bool outOfLoop = *((bool*)Ctx);
 
   if(isa<StoreInst>(I)) {
 
@@ -734,7 +766,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 
   }
 
-  if(OptimisticMode) {
+  if(OptimisticMode && !outOfLoop) {
 
     bool ignore = true;
 
@@ -871,9 +903,9 @@ bool PBLoadForwardWalker::reachedTop() {
 
 }
 
-bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA) {
+bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void* Ctx) {
 
-  if(OptimisticMode) {
+  if(OptimisticMode && !*((bool*)Ctx)) {
 
     bool ignore = true;
 
@@ -911,6 +943,79 @@ bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
   }
     
   return true;
+
+}
+
+PointerBase* IntegrationAttempt::getLFPBCacheEntry(LFCacheKey& Key) {
+
+  DenseMap<LFCacheKey, PointerBase>::iterator it = LFPBCache.find(Key);
+  if(it != LFPBCache.end())
+    return &(it->second);
+  else
+    return 0;
+
+}
+
+void IntegrationAttempt::deleteLFPBCacheEntry(LFCacheKey& Key) {
+
+  LFPBCache.erase(Key);
+
+}
+
+PointerBase* IntegrationAttempt::createLFPBCacheEntry(LFCacheKey& Key) {
+
+  return &(LFPBCache[Key]);
+
+}
+
+WalkInstructionResult PBLoadForwardWalker::walkFromBlock(BasicBlock* BB, IntegrationAttempt* IA, void* Ctx) {
+
+  bool outOfLoop = *((bool*)Ctx);
+
+  if(outOfLoop) {
+
+    // No point either looking for cache entries or making them if the block isn't a certainty.
+    if(!IA->blockCertainlyExecutes(BB))
+      return WIRContinue;
+
+    // See if this block has a cache entry for us:
+    LFCacheKey Key = LFCK(BB, LoadPtrBase, LoadPtrOffset, LoadSize);
+    if(PointerBase* CachedPB = IA->getLFPBCacheEntry(Key)) {
+      
+      addPBDefn(*CachedPB);
+
+      if(activeCacheEntry) {
+
+	LFCacheKey delKey = LFCK(activeCacheEntryLoc.second, LoadPtrBase, LoadPtrOffset, LoadSize);
+	activeCacheEntryloc.first->deleteLFPBCacheEntry(delKey);
+
+      }
+
+      return WIRStopThisPath;
+
+    }
+    else {
+
+      // Make a cache entry here:
+      activeCacheEntry = IA->createLFPBCacheEntry(Key);
+      activeCacheEntryLoc = std::make_pair(IA, BB);
+      return WIRContinue;
+      
+    }
+
+  }
+  else {
+
+    // See if we're about to leave the critical loop.
+    if(BB == optimisticBB && IA == optimisticIA) {
+
+      *((bool*)Ctx) = 1;
+
+    }
+
+    return WIRContinue;
+
+  }
 
 }
 
@@ -1255,11 +1360,20 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // to be compatible with anything, the same as the mergepoint logic above
 // when finalise is false. When finalise = true this is just like normal load
 // forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB) {
+bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB, BasicBlock* optBB, IntegrationAttempt* optIA) {
+
+  // Freed by the walker:
+  bool* initialCtx = new bool;
+  // Meaning of this: the ctx signals whether the current walk path is outside any loop
+  // currently being investigated by the PB solver. true = outside the loop.
+  // optBB, optIA is the loop header that serves as the boundary.
+  // If optBB == 0, we start in out-of-loop state.
+  *initialCtx = (optBB == 0);
 
   PBLoadForwardWalker Walker(LI, this, make_vc(LI->getOperand(0), this), 
 			     AA->getTypeStoreSize(LI->getType()),
-			     !finalise, LI->getType(), AA, TD);
+			     !finalise, LI->getType(), AA, TD,
+			     optBB, optIA, initialCtx);
 
   bool verbose = false;
 

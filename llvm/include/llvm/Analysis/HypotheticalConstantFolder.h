@@ -276,6 +276,8 @@ inline bool operator>=(const BIC& B1, const BIC& B2) {
   return B1 > B2 || B1 == B2;
 }
 
+
+
 extern TargetData* GlobalTD;
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -572,65 +574,9 @@ inline bool operator!=(PartialVal V1, PartialVal V2) {
    return !(V1 == V2);
 }
 
-enum SymSubclasses {
+typedef std::pair<std::pair<std::pair<BasicBlock*, ValCtx>, uint64_t>, uint64_t> LFCacheKey;
 
-  SThunk,
-  SGEP,
-  SCast
-
-};
-
-class SymExpr { 
-
-public:
-  static inline bool classof(const SymExpr*) { return true; }
-  virtual void describe(raw_ostream& OS, IntegrationAttempt*) = 0;
-  virtual int getSymType() const = 0;
-  
-  virtual ~SymExpr() { }
-
-};
-
-class SymThunk : public SymExpr {
-
-public:
-  static inline bool classof(const SymExpr* S) { return S->getSymType() == SThunk; }
-  static inline bool classof(const SymThunk*) { return true; }
-  ValCtx RealVal;
-
-  SymThunk(ValCtx R) : RealVal(R) { }
-  void describe(raw_ostream& OS, IntegrationAttempt*);
-  int getSymType() const { return SThunk; }
-
-};
-
-class SymGEP : public SymExpr {
-
-public:
-  static inline bool classof(const SymExpr* S) { return S->getSymType() == SGEP; }
-  static inline bool classof(const SymGEP*) { return true; }
-  SmallVector<Value*, 4> Offsets; // Really all ConstantInts
-
-  SymGEP(SmallVector<Value*, 4> Offs) : Offsets(Offs) { }
-
-  void describe(raw_ostream& OS, IntegrationAttempt*);
-  int getSymType() const { return SGEP; }
-
-};
-
-class SymCast : public SymExpr {
-
-public:
-  static inline bool classof(const SymExpr* S) { return S->getSymType() == SCast; }
-  static inline bool classof(const SymCast*) { return true; }
-  const Type* ToType;
-
-  SymCast(const Type* T) : ToType(T) { }
-
-  void describe(raw_ostream& OS, IntegrationAttempt*);
-  int getSymType() const { return SCast; }
-
-};
+#define LFCK(x,y,z,w) std::make_pair(std::make_pair(std::make_pair(x, y), z), w)
 
 struct OpenStatus {
 
@@ -774,8 +720,11 @@ class LoopPBAnalyser {
   DenseSet<ValCtx> inLoopVCs;
 
 public:
+
+  IntegrationAttempt* LHdrIA;
+  BasicBlock* LHdr;
   
-  LoopPBAnalyser() {
+  LoopPBAnalyser(IntegrationAttempt* IA, BasicBlock* Hdr) : LHdrIA(IA), LHdr(Hdr) {
     PBProduceQ = &PBQueue1;
   }
 
@@ -822,8 +771,12 @@ class IAWalker {
   virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
   virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*) = 0;
+  virtual WalkInstructionResult walkFromBlock(BasicBlock*, IntegrationAttempt*, void* Context) {
+    return WIRContinue;
+  }
+
   virtual void freeContext(void*) { }
-  virtual void* copyContext(void*) {
+  virtual void* copyContext(void* x) {
     return 0;
   }
   virtual void walkInternal() = 0;
@@ -929,6 +882,8 @@ protected:
   // because they were created when a parent loop was opted out but then opted in again.
   DenseSet<CallInst*> ignoreIAs;
   DenseSet<const Loop*> ignorePAs;
+
+  DenseMap<LFCacheKey, PointerBase> LFPBCache;
 
   // A map from the Values used in all of the above to the clones of Instructions produced at commit time
   ValueMap<const Value*, Value*> CommittedValues;
@@ -1260,6 +1215,11 @@ protected:
   bool shouldCheckPB(Value*);
   void analyseLoopPBs(const Loop* L);
   void tryPromoteSingleValuedPB(Value* V);
+
+  // PBLF Caching
+  PointerBase* getLFPBCacheEntry(LFCacheKey& Key);
+  void deleteLFPBCacheEntry(LFCacheKey& Key);
+  PointerBase* createLFPBCacheEntry(LFCacheKey& Key);
 
   // Enabling / disabling exploration:
 
