@@ -63,6 +63,7 @@ static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
+static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -730,6 +731,9 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
   if(InlineAttempt* IA = getInlineAttempt(CI))
     return IA;
 
+  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+    return 0;
+
   Function* FCalled = getCalledFunction(CI);
   if(!FCalled) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
@@ -793,6 +797,9 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   if(PeelIteration* PI = getIteration(iter))
     return PI;
+
+  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+    return 0;
   
   LPDEBUG("Peeling iteration " << iter << " of loop " << L->getHeader()->getName() << "\n");
 
@@ -883,7 +890,10 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
   if(PeelAttempt* PA = getPeelAttempt(NewL))
     return PA;
-  
+
+  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+    return 0;
+ 
   // Preheaders only have one successor (the header), so this is enough.
   if(!blockAssumedToExecute(NewL->getLoopPreheader())) {
    
