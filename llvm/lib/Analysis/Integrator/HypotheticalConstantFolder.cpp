@@ -366,12 +366,8 @@ bool InlineAttempt::entryBlockAssumed() {
 
 bool PeelIteration::entryBlockAssumed() {
 
-  // All loops are only entered if certain or assumed
-  if(iterationCount == 0)
-    return true;
-
-  // Otherwise it's at least assumed if the previous iteration can't exit.
-  return parentPA->Iterations[iterationCount - 1]->allExitEdgesDead();
+  // Having been entered at all currently signifies at least the assumption that we will run.
+  return true;
 
 }
 
