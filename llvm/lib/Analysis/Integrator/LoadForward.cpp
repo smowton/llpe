@@ -19,7 +19,7 @@ namespace llvm {
 
 class LoadForwardWalker : public BackwardIAWalker {
 
-protected:
+public:
 
   ValCtx LoadedPtr;
   uint64_t LoadSize;
@@ -28,9 +28,6 @@ protected:
 
   ValCtx LoadPtrBase;
   int64_t LoadPtrOffset;
-
-public:
-
 
   LoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, void* InitialCtx) 
     : BackwardIAWalker(Start, StartIA, true, InitialCtx), LoadedPtr(Ptr), LoadSize(Size), AA(_AA), TD(_TD) {
@@ -73,15 +70,17 @@ class PBLoadForwardWalker : public LoadForwardWalker {
   
   BasicBlock* optimisticBB;
   IntegrationAttempt* optimisticIA;
-  PointerBase* activeCacheEntry;
 
 public:
 
   PointerBase Result;
   std::vector<std::string> OverdefReasons;
   std::vector<ValCtx> PredStores;
+  PointerBase* activeCacheEntry;
+  IntegrationAttempt* usedCacheEntryIA;
+  LFCacheKey usedCacheEntryKey;
 
-  PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* initialCtx) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD, initialCtx), OptimisticMode(OM), originalType(OT), optimisticBB(optBB), optimisticIA(optIA), activeCacheEntry(0) { }
+  PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* initialCtx) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD, initialCtx), OptimisticMode(OM), originalType(OT), optimisticBB(optBB), optimisticIA(optIA), activeCacheEntry(0), usedCacheEntryIA(0) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx);
   void addPBDefn(PointerBase& NewPB, bool cacheAllowed);
@@ -1024,17 +1023,15 @@ WalkInstructionResult PBLoadForwardWalker::walkFromBlock(BasicBlock* BB, Integra
       
     LPDEBUG("Use cache entry at " << BB->getName() << "\n");
     addPBDefn(*CachedPB, true);
-
-    if(activeCacheEntry) {
-
-      LPDEBUG("Delete cache entry at " << BB->getName() << "\n");
-      // Our new cache entry subsumes this old one, since we walk the program in topological order.
-      IA->deleteLFPBCacheEntry(Key);
-
-    }
-    // Else we weren't building a cache entry yet, keep this one.
+    
+    usedCacheEntryIA = IA;
+    usedCacheEntryKey = Key;
 
     return WIRStopThisPath;
+
+    // Don't delete this potentially redundant cache entry just yet!
+    // We might yet abort this walk and want to keep it.
+    // Instead clean it up in TFLPB below if necessary.
 
   }
   else if(!activeCacheEntry) {
@@ -1426,7 +1423,28 @@ bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBa
 
   }
 
+  struct timespec start;
+  clock_gettime(CLOCK_REALTIME, &start);
+  
   Walker.walk();
+
+  struct timespec end;
+  clock_gettime(CLOCK_REALTIME, &end);
+
+  if(time_diff(start, end) > 0.1) {
+
+    errs() << "Consider " << itcache(make_vc(LI, this)) << " took " << time_diff(start, end) << "\n";
+    errs() << "Cache params: " << itcache(Walker.LoadPtrBase) << ", " << Walker.LoadPtrOffset << ", " << Walker.LoadSize << ", " << (!!Walker.activeCacheEntry) << ", " << (Walker.usedCacheEntryIA ? Walker.usedCacheEntryIA->getShortHeader() : "(none)") << ", " << (Walker.usedCacheEntryIA ? Walker.usedCacheEntryKey.first.first.first->getName() : "(none)") << "\n";
+
+  }
+
+  if(Walker.activeCacheEntry && Walker.usedCacheEntryIA) {
+
+    LPDEBUG("Delete cache entry\n");
+    // Our new cache entry subsumes this old one, since we walk the program in topological order.
+    Walker.usedCacheEntryIA->deleteLFPBCacheEntry(Walker.usedCacheEntryKey);
+
+  }
 
   for(std::vector<ValCtx>::iterator it = Walker.PredStores.begin(), it2 = Walker.PredStores.end(); it != it2; ++it) {
 

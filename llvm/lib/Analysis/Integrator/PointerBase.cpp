@@ -1047,22 +1047,10 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
 
       assert(inLoopVCs.count(*it));
 
-      struct timespec start;
-      clock_gettime(CLOCK_REALTIME, &start);
-
       if(it->second->updateBasePointer(it->first, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
 	}
-      }
-
-      struct timespec end;
-      clock_gettime(CLOCK_REALTIME, &end);
-
-      if(time_diff(start, end) > 0.1) {
-
-	errs() << "Consider " << (*ConsumeQ)[0].second->itcache(*it) << " took " << time_diff(start, end) << "\n";
-
       }
 
       //++(considerCount[*it]);
