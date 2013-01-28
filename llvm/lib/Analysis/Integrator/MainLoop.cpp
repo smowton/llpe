@@ -29,20 +29,20 @@
 
 using namespace llvm;
 
-void InlineAttempt::analyseWithArgs() {
+void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
   for(Function::arg_iterator it = F.arg_begin(), it2 = F.arg_end(); it != it2; ++it) {
     tryEvaluate(it);
     if(!improvedValues.count(it)) {
-      updateBasePointer(it, true);
+      updateBasePointer(it, true, 0, CacheThresholdBB, CacheThresholdIA);
       tryPromoteSingleValuedPB(it);
     }
   }
-  analyse();
+  analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
 }
 
-void IntegrationAttempt::analyse() {
+void IntegrationAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
   std::vector<BasicBlock*> topOrderedBlocks;
   SmallSet<BasicBlock*, 8> visited;
@@ -51,17 +51,26 @@ void IntegrationAttempt::analyse() {
 
   for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
 
-    analyseBlock(*it);
+    analyseBlock(*it, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
   }
 
 }
 
-void PeelAttempt::analyse() {
+void IntegrationAttempt::analyse() {
+
+  // Analysis primary entry point:
+  BasicBlock* FirstThresholdBB = &F.getEntryBlock();
+  IntegrationAttempt* FirstThresholdIA = this;
+  analyse(false, FirstThresholdBB, FirstThresholdIA);
+
+}
+
+void PeelAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
   
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
-    PI->analyse();
+    PI->analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
   }
 
@@ -69,7 +78,7 @@ void PeelAttempt::analyse() {
 
 }
 
-void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
+void IntegrationAttempt::analyseBlock(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
   const Loop* MyL = getLoopContext();
 
@@ -93,33 +102,58 @@ void IntegrationAttempt::analyseBlock(BasicBlock* BB) {
 
     for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
 
+      // Thresholds should not be modified due to withinUnboundedLoop = true,
+      // but just to be safe...
+
+      BasicBlock* InvarCTBB = CacheThresholdBB;
+      IntegrationAttempt* InvarCTIA = CacheThresholdIA;
+
       checkBlock(*it);
       if(!blockIsDead(*it))
-	analyseBlockInstructions(*it);
+	analyseBlockInstructions(*it, true, InvarCTBB, InvarCTIA);
 
     }
 
+    BasicBlock* LThresholdBB = CacheThresholdBB;
+    IntegrationAttempt* LThresholdIA = CacheThresholdIA;
+
     // Now explore the loop, if possible.
     PeelAttempt* LPA = getOrCreatePeelAttempt(BBL);
-    if(LPA)
-      LPA->analyse();
+    if(LPA) {
+      LPA->analyse(withinUnboundedLoop, LThresholdBB, LThresholdIA);
+    }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
     if((!LPA) || (LPA->Iterations.back()->iterStatus != IterationStatusFinal)) {
-      analyseLoopPBs(BBL);
+      analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
+    }
+    else {
+      // Loop terminated, permit a within-loop-threshold (block certainty constraint implies
+      // there is no path around the loop).
+      CacheThresholdBB = LThresholdBB;
+      CacheThresholdIA = LThresholdIA;
+      LPDEBUG("Accept loop threshold adv -> " << CacheThresholdBB->getName() << "\n");
     }
 
   }
   else {
 
+    if((!withinUnboundedLoop) && blockCertainlyExecutes(BB)) {
+
+      LPDEBUG("Advance threshold to " << BB->getName() << "\n");
+      CacheThresholdBB = BB;
+      CacheThresholdIA = this;
+
+    }
+    
     // Else we should just analyse this block here.
-    analyseBlockInstructions(BB);
+    analyseBlockInstructions(BB, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
   }
 
 }
 
-void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
+void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
   const Loop* MyL = getLoopContext();
 
@@ -140,7 +174,7 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
       if(tryResolveVFSCall(CI))
 	continue;
       if(InlineAttempt* IA = getOrCreateInlineAttempt(CI))
-	IA->analyseWithArgs();
+	IA->analyseWithArgs(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
       // Fall through to try to get the call's return value
 
@@ -158,7 +192,7 @@ void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB) {
     // mode is merged with the ordinary constant folder.
     if(!improvedValues.count(BI)) {
       // This works for either LF or ordinary const prop:
-      updateBasePointer(BI, true);
+      updateBasePointer(BI, true, 0, CacheThresholdBB, CacheThresholdIA);
       tryPromoteSingleValuedPB(BI);
     }
 

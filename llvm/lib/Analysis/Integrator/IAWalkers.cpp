@@ -65,7 +65,7 @@ bool InlineAttempt::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Wa
 
     if(!parent)
       return Walker->reachedTop();
-    if(!Walker->mayAscendFromContext(this))
+    if(!Walker->mayAscendFromContext(this, Ctx))
       return false;
 
     Walker->queueWalkFrom(BIC(BasicBlock::iterator(CI), CI->getParent(), parent), Ctx, false);
@@ -85,7 +85,7 @@ bool PeelIteration::queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Wa
 
   if(FromBB == L->getHeader()) {
 
-    if(!Walker->mayAscendFromContext(this))
+    if(!Walker->mayAscendFromContext(this, Ctx))
       return false;
 
     if(iterationCount == 0) {

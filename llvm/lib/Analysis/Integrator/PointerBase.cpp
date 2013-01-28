@@ -564,7 +564,7 @@ void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, Integr
 
 }
 
-bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA) {
+bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   // Quick escape for values we can't handle:
 
@@ -615,10 +615,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
 
   if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
 
-    BasicBlock* LHdr = LPBA ? LPBA->LHdr : 0;
-    IntegrationAttempt* LHdrIA = LPBA ? LPBA->LHdrIA : 0;
-
-    bool ret = tryForwardLoadPB(LI, finalise, NewPB, LHdr, LHdrIA);
+    bool ret = tryForwardLoadPB(LI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
     if(!ret)
       return false;
 
@@ -1053,7 +1050,7 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
       struct timespec start;
       clock_gettime(CLOCK_REALTIME, &start);
 
-      if(it->second->updateBasePointer(it->first, finalise, this)) {
+      if(it->second->updateBasePointer(it->first, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
 	}
@@ -1147,11 +1144,11 @@ void IntegrationAttempt::tryPromoteSingleValuedPB(Value* V) {
 
 }
 
-void IntegrationAttempt::analyseLoopPBs(const Loop* L) {
+void IntegrationAttempt::analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   // L is an immediate child of this context.
 
-  LoopPBAnalyser LPBA(this, L->getHeader());
+  LoopPBAnalyser LPBA(CacheThresholdBB, CacheThresholdIA);
 
   // Step 1: queue VCs falling within this loop.
 

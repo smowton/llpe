@@ -58,7 +58,7 @@ public:
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
-  virtual bool mayAscendFromContext(IntegrationAttempt* IA);
+  virtual bool mayAscendFromContext(IntegrationAttempt* IA, void*);
   bool addPartialVal(PartialVal& PV, std::string& error, Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, bool maySubquery);
   bool getMIOrReadValue(Instruction* I, IntegrationAttempt* IA, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, std::string& error);
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
@@ -74,7 +74,6 @@ class PBLoadForwardWalker : public LoadForwardWalker {
   BasicBlock* optimisticBB;
   IntegrationAttempt* optimisticIA;
   PointerBase* activeCacheEntry;
-  std::pair<IntegrationAttempt*, BasicBlock*> activeCacheEntryLoc;
 
 public:
 
@@ -85,13 +84,14 @@ public:
   PBLoadForwardWalker(Instruction* Start, IntegrationAttempt* StartIA, ValCtx Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* initialCtx) : LoadForwardWalker(Start, StartIA, Ptr, Size, _AA, _TD, initialCtx), OptimisticMode(OM), originalType(OT), optimisticBB(optBB), optimisticIA(optIA), activeCacheEntry(0) { }
 
   virtual WalkInstructionResult handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx);
-  void addPBDefn(PointerBase& NewPB);
+  void addPBDefn(PointerBase& NewPB, bool cacheAllowed);
   void _addPBDefn(PointerBase& MergeWith, PointerBase& NewPB);
-  void setPBOverdef(std::string reason);
+  void setPBOverdef(std::string reason, bool cacheAllowed);
   virtual bool reachedTop();
-  virtual bool mayAscendFromContext(IntegrationAttempt* IA);
+  virtual bool mayAscendFromContext(IntegrationAttempt* IA, void*);
   virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
   virtual WalkInstructionResult walkFromBlock(BasicBlock* BB, IntegrationAttempt* IA, void* Ctx);
+  void cancelCache();
 
   virtual void freeContext(void* ctx) {
     delete ((bool*)ctx);
@@ -704,7 +704,7 @@ bool NormalLoadForwardWalker::reachedTop() {
 
 }
 
-bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
+bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void*) {
 
   if(IA == LoadPtrBase.second) {
     
@@ -735,19 +735,31 @@ void PBLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB)
 
 }
 
-void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB) {
+void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB, bool cacheAllowed) {
 
   _addPBDefn(Result, NewPB);
-  if(activeCacheEntry)
+  if(activeCacheEntry && cacheAllowed)
     _addPBDefn(*activeCacheEntry, NewPB);
 
 }
 
-void PBLoadForwardWalker::setPBOverdef(std::string reason) {
+void PBLoadForwardWalker::setPBOverdef(std::string reason, bool cacheAllowed) {
   OverdefReasons.push_back(reason);
   Result = PointerBase::getOverdef();
-  if(activeCacheEntry)
+  if(activeCacheEntry && cacheAllowed)
     *activeCacheEntry = PointerBase::getOverdef();
+}
+
+void PBLoadForwardWalker::cancelCache() {
+
+  if(activeCacheEntry) {
+
+    LFCacheKey Key = LFCK(optimisticBB, LoadPtrBase, LoadPtrOffset, LoadSize);
+    optimisticIA->deleteLFPBCacheEntry(Key);
+    activeCacheEntry = 0;
+
+  }
+
 }
 
 WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, IntegrationAttempt* IA, AliasAnalysis::AliasResult R, Value* Ptr, uint64_t PtrSize, void* Ctx) {
@@ -758,7 +770,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
-  bool outOfLoop = *((bool*)Ctx);
+  bool cacheAllowed = *((bool*)Ctx);
 
   if(isa<StoreInst>(I)) {
 
@@ -766,7 +778,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 
   }
 
-  if(OptimisticMode && !outOfLoop) {
+  if(OptimisticMode && !cacheAllowed) {
 
     bool ignore = true;
 
@@ -801,10 +813,10 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 	  raw_string_ostream RSO(RStr);
 	  RSO << "DO " << IA->itcache(make_vc(I, IA), true);
 	  RSO.flush();
-	  setPBOverdef(RStr);
+	  setPBOverdef(RStr, cacheAllowed);
 	}
 	else {
-	  addPBDefn(NewPB);
+	  addPBDefn(NewPB, cacheAllowed);
 	}
       }
       else {
@@ -821,7 +833,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 	  prout << "Add PB ";
 	  IA->printPB(prout, PB);
 	  prout << "\n";
-	  addPBDefn(PB);
+	  addPBDefn(PB, cacheAllowed);
 	}
 	else {
 	  prout << "Overdef (1) on " << IA->itcache(Repl) << " / " << IA->itcache(ReplUO) << "\n";
@@ -829,7 +841,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 	  raw_string_ostream RSO(RStr);
 	  RSO << "DN " << IA->itcache(make_vc(I, IA), true);
 	  RSO.flush();
-	  setPBOverdef(RStr);
+	  setPBOverdef(RStr, cacheAllowed);
 	}
       }
     }
@@ -837,7 +849,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
 
       // Allocas have no defined initial value, so just assume null.
       PointerBase NewPB = PointerBase::get(const_vc(Constant::getNullValue(AI->getType())));
-      addPBDefn(NewPB);
+      addPBDefn(NewPB, cacheAllowed);
 
     }
     else {
@@ -846,7 +858,7 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
       raw_string_ostream RSO(RStr);
       RSO << "DNS " << IA->itcache(make_vc(I, IA), true);
       RSO.flush();
-      setPBOverdef(RStr);
+      setPBOverdef(RStr, cacheAllowed);
     }
 
   }
@@ -859,12 +871,15 @@ WalkInstructionResult PBLoadForwardWalker::handleAlias(Instruction* I, Integrati
     raw_string_ostream RSO(RStr);
     RSO << "C " << IA->itcache(make_vc(Inst, IA), true);
     RSO.flush();
-    setPBOverdef(RStr);
+    setPBOverdef(RStr, cacheAllowed);
 
   }
 
-  if(Result.Overdef)
+  if(Result.Overdef && !cacheAllowed) {
+    // If we abort within the loop, whatever results we gathered from without will be partial.
+    cancelCache();
     return WIRStopWholeWalk;
+  }
   else
     return WIRStopThisPath;
   
@@ -886,7 +901,7 @@ bool PBLoadForwardWalker::reachedTop() {
 	  
 	  assert(isa<Constant>(FieldVC.first));
 	  PointerBase NewPB = PointerBase::get(FieldVC);
-	  addPBDefn(NewPB);
+	  addPBDefn(NewPB, true);
 	  return true;
 	  
 	}
@@ -897,7 +912,7 @@ bool PBLoadForwardWalker::reachedTop() {
     
   }
 
-  setPBOverdef("Reached top");
+  setPBOverdef("Reached top", true);
 
   return false;
 
@@ -905,7 +920,9 @@ bool PBLoadForwardWalker::reachedTop() {
 
 bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void* Ctx) {
 
-  if(OptimisticMode && !*((bool*)Ctx)) {
+  bool cacheAllowed = *((bool*)Ctx);
+
+  if(OptimisticMode && !cacheAllowed) {
 
     bool ignore = true;
 
@@ -928,16 +945,24 @@ bool PBLoadForwardWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttem
   raw_string_ostream RSO(RStr);
   RSO << "UEC " << IA->itcache(make_vc(CI, IA), true);
   RSO.flush();  
-  setPBOverdef(RStr);
+  setPBOverdef(RStr, cacheAllowed);
+
+  if(!cacheAllowed)
+    cancelCache();
+
   return true;
 
 }
 
-bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA) {
+bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
+
+  bool cacheAllowed = *((bool*)Ctx);
 
   if(IA == LoadPtrBase.second) {
     
-    setPBOverdef("Scope");
+    setPBOverdef("Scope", cacheAllowed);
+    if(!cacheAllowed)
+      cancelCache();
     return false;
 
   }
@@ -958,7 +983,7 @@ PointerBase* IntegrationAttempt::getLFPBCacheEntry(LFCacheKey& Key) {
 
 void IntegrationAttempt::deleteLFPBCacheEntry(LFCacheKey& Key) {
 
-  LFPBCache.erase(Key);
+  release_assert(LFPBCache.erase(Key));
 
 }
 
@@ -970,49 +995,60 @@ PointerBase* IntegrationAttempt::createLFPBCacheEntry(LFCacheKey& Key) {
 
 WalkInstructionResult PBLoadForwardWalker::walkFromBlock(BasicBlock* BB, IntegrationAttempt* IA, void* Ctx) {
 
-  bool outOfLoop = *((bool*)Ctx);
+  bool cacheAllowed = *((bool*)Ctx);
 
-  if(outOfLoop) {
+  if(!cacheAllowed) {
 
-    // No point either looking for cache entries or making them if the block isn't a certainty.
-    if(!IA->blockCertainlyExecutes(BB))
-      return WIRContinue;
+    // See if we're walking from the first block that is cache-eligible
+    if(BB == optimisticBB && IA == optimisticIA) {
 
-    // See if this block has a cache entry for us:
-    LFCacheKey Key = LFCK(BB, LoadPtrBase, LoadPtrOffset, LoadSize);
-    if(PointerBase* CachedPB = IA->getLFPBCacheEntry(Key)) {
-      
-      addPBDefn(*CachedPB);
-
-      if(activeCacheEntry) {
-
-	LFCacheKey delKey = LFCK(activeCacheEntryLoc.second, LoadPtrBase, LoadPtrOffset, LoadSize);
-	activeCacheEntryLoc.first->deleteLFPBCacheEntry(delKey);
-
-      }
-
-      return WIRStopThisPath;
+      LPDEBUG("Left loop at " << BB->getName() << "\n");
+      *((bool*)Ctx) = 1;
 
     }
     else {
 
-      // Make a cache entry here:
-      activeCacheEntry = IA->createLFPBCacheEntry(Key);
-      activeCacheEntryLoc = std::make_pair(IA, BB);
       return WIRContinue;
-      
+
     }
 
   }
-  else {
 
-    // See if we're about to leave the critical loop.
-    if(BB == optimisticBB && IA == optimisticIA) {
+  // No point either looking for cache entries or making them if the block isn't a certainty.
+  if(!IA->blockCertainlyExecutes(BB))
+    return WIRContinue;
 
-      *((bool*)Ctx) = 1;
+  // See if this block has a cache entry for us:
+  LFCacheKey Key = LFCK(BB, LoadPtrBase, LoadPtrOffset, LoadSize);
+  if(PointerBase* CachedPB = IA->getLFPBCacheEntry(Key)) {
+      
+    LPDEBUG("Use cache entry at " << BB->getName() << "\n");
+    addPBDefn(*CachedPB, true);
+
+    if(activeCacheEntry) {
+
+      LPDEBUG("Delete cache entry at " << BB->getName() << "\n");
+      // Our new cache entry subsumes this old one, since we walk the program in topological order.
+      IA->deleteLFPBCacheEntry(Key);
 
     }
+    // Else we weren't building a cache entry yet, keep this one.
 
+    return WIRStopThisPath;
+
+  }
+  else if(!activeCacheEntry) {
+
+    // This is necessarily the cache threshold:
+    LPDEBUG("Create cache entry at " << BB->getName() << "\n");
+    // Make a cache entry here:
+    activeCacheEntry = IA->createLFPBCacheEntry(Key);
+    return WIRContinue;
+      
+  }
+  else {
+      
+    // Keep building existing entry
     return WIRContinue;
 
   }
@@ -1360,20 +1396,20 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // to be compatible with anything, the same as the mergepoint logic above
 // when finalise is false. When finalise = true this is just like normal load
 // forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB, BasicBlock* optBB, IntegrationAttempt* optIA) {
+bool IntegrationAttempt::tryForwardLoadPB(LoadInst* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   // Freed by the walker:
   bool* initialCtx = new bool;
-  // Meaning of this: the ctx signals whether the current walk path is outside any loop
-  // currently being investigated by the PB solver. true = outside the loop.
-  // optBB, optIA is the loop header that serves as the boundary.
-  // If optBB == 0, we start in out-of-loop state.
-  *initialCtx = (optBB == 0);
+  // Per-block context records whether we've passed the cache threshold.
+  // Always start with 0, might immediately flip and cache in the starting block.
+  // When we're outside the cache threshold we also switch to pessimistic mode
+  // since everything before that point is a fixed certainty.
+  *initialCtx = 0;
 
   PBLoadForwardWalker Walker(LI, this, make_vc(LI->getOperand(0), this), 
 			     AA->getTypeStoreSize(LI->getType()),
 			     !finalise, LI->getType(), AA, TD,
-			     optBB, optIA, initialCtx);
+			     CacheThresholdBB, CacheThresholdIA, initialCtx);
 
   bool verbose = false;
 

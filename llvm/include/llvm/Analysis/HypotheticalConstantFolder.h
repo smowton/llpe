@@ -721,10 +721,10 @@ class LoopPBAnalyser {
 
 public:
 
-  IntegrationAttempt* LHdrIA;
-  BasicBlock* LHdr;
+  BasicBlock* CacheThresholdBB;
+  IntegrationAttempt* CacheThresholdIA;
   
-  LoopPBAnalyser(IntegrationAttempt* IA, BasicBlock* Hdr) : LHdrIA(IA), LHdr(Hdr) {
+  LoopPBAnalyser(BasicBlock* CTBB, IntegrationAttempt* CTIA) : CacheThresholdBB(CTBB), CacheThresholdIA(CTIA) {
     PBProduceQ = &PBQueue1;
   }
 
@@ -804,7 +804,7 @@ class BackwardIAWalker : public IAWalker {
  public:
 
   virtual bool reachedTop() { return true; }
-  virtual bool mayAscendFromContext(IntegrationAttempt*) { return true; }
+  virtual bool mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return true; }
 
   BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
   
@@ -1022,8 +1022,9 @@ protected:
 
   // The toplevel loop:
   void analyse();
-  void analyseBlock(BasicBlock* BB);
-  void analyseBlockInstructions(BasicBlock* BB);
+  void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+  void analyseBlock(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+  void analyseBlockInstructions(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
   void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops);
 
   // Constant propagation:
@@ -1192,7 +1193,7 @@ protected:
   bool getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI);
   bool getValSetOrReplacement(Value* V, PointerBase& OutPB, Instruction* UserI = 0);
   bool getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB);
-  bool updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA = 0);
+  bool updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool updateBinopValSet(Instruction* I, PointerBase& PB);
   bool updateUnaryValSet(Instruction* I, PointerBase &PB);
   void queueUpdatePB(IntegrationAttempt*, Value*, LoopPBAnalyser*);
@@ -1213,7 +1214,7 @@ protected:
   void addMemWriterEffect(Instruction*, LoadInst*, IntegrationAttempt*);
   void addStoreToLoadSolverWork(Value* V);
   bool shouldCheckPB(Value*);
-  void analyseLoopPBs(const Loop* L);
+  void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   void tryPromoteSingleValuedPB(Value* V);
 
   // PBLF Caching
@@ -1484,7 +1485,7 @@ class PeelAttempt {
 	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth);
    ~PeelAttempt();
 
-   void analyse();
+   void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
 
    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
 
@@ -1652,7 +1653,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   void disableVarargsContexts();
 
-  void analyseWithArgs();
+  void analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
 
 };
 
