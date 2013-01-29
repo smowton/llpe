@@ -1272,14 +1272,16 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	if(I->getOpcode() == Instruction::PtrToInt) {
 
 	  Improved = tryFoldPtrToInt(I);
-	  tryConstFold = false;
+	  if(Improved == VCNull)
+	    tryConstFold = true;
 
 	}
 
 	else if(I->getOpcode() == Instruction::IntToPtr) {
 
 	  Improved = tryFoldIntToPtr(I);
-	  tryConstFold = false;
+	  if(Improved == VCNull)
+	    tryConstFold = true;
 	  
 	}
 

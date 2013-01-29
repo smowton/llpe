@@ -63,6 +63,7 @@ static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
+static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
@@ -2429,23 +2430,27 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   IA->analyse();
 
-  DEBUG(dbgs() << "Finding dead MTIs\n");
-  IA->tryKillAllMTIs();
+  if(!SkipDIE) {
 
-  DEBUG(dbgs() << "Finding dead stores\n");
-  IA->tryKillAllStores();
+    DEBUG(dbgs() << "Finding dead MTIs\n");
+    IA->tryKillAllMTIs();
 
-  DEBUG(dbgs() << "Finding dead allocations\n");
-  IA->tryKillAllAllocs();
+    DEBUG(dbgs() << "Finding dead stores\n");
+    IA->tryKillAllStores();
 
-  DEBUG(dbgs() << "Finding dead VFS operations\n");
-  IA->tryKillAllVFSOps();
+    DEBUG(dbgs() << "Finding dead allocations\n");
+    IA->tryKillAllAllocs();
 
-  DEBUG(dbgs() << "Finding remaining dead instructions\n");
+    DEBUG(dbgs() << "Finding dead VFS operations\n");
+    IA->tryKillAllVFSOps();
 
-  IA->queueAllLiveValues();
+    DEBUG(dbgs() << "Finding remaining dead instructions\n");
 
-  runDIEQueue();
+    IA->queueAllLiveValues();
+
+    runDIEQueue();
+
+  }
 
   IA->collectStats();
   
