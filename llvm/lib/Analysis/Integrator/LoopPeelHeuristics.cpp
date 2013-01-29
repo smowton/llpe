@@ -706,7 +706,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "write" || 
 	  F->getName() == "__libc_fcntl" ||
 	  F->getName() == "posix_fadvise" ||
-	  F->getName() == "stat");
+	  F->getName() == "stat" ||
+	  F->getName() == "isatty");
 
 }
 

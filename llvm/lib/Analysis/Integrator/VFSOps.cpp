@@ -223,7 +223,8 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   const FunctionType *FT = F->getFunctionType();
   
   if(!(F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
-       F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat"))
+       F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat" ||
+       F->getName() == "isatty"))
     return false;
 
   if(F->getName() == "stat") {
@@ -262,7 +263,14 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
 
   OpenStatus& OS = OpenCall.second->getOpenStatus(cast<CallInst>(OpenCall.first));
 
-  if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
+  if(F->getName() == "isatty") {
+
+    // OpenStatus items like this are always real files, not TTYs, for now.
+    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    return true;
+
+  }
+  else if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
 
     // Check for needed values now:
     Constant* whence = getConstReplacement(CI->getArgOperand(2));
