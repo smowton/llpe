@@ -299,6 +299,15 @@ static LibCallFunctionInfo::LocationMRInfo WriteMR[] = {
 
 };
 
+static LibCallFunctionInfo::LocationMRInfo StatMR[] = {
+
+  { 0, AliasAnalysis::Mod },
+  { 2, AliasAnalysis::Ref },
+  { 5, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(Ctx->getConstReplacement(const_cast<Value*>(CS.getArgument(1))))) {
@@ -335,6 +344,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
   { "__libc_fcntl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "posix_fadvise", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "stat", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StatMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

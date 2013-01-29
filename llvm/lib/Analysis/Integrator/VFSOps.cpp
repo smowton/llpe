@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <errno.h>
 
 // Implement a backward walker to identify a VFS operation's predecessor, and a forward walker to identify open instructions
 // which can be shown pointless because along all paths it ends up at a close instruction.
@@ -222,8 +223,34 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   const FunctionType *FT = F->getFunctionType();
   
   if(!(F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
-       F->getName() == "lseek64" || F->getName() == "close"))
+       F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat"))
     return false;
+
+  if(F->getName() == "stat") {
+
+    // TODO: Add LF resolution code notifying file size. All users so far have just
+    // used stat as an existence test. Similarly set errno = ENOENT as appropriate.
+
+    ValCtx NameArg = getReplacement(CI->getArgOperand(0));
+
+    std::string Filename;
+    if (!GetConstantStringInfo(NameArg.first, Filename)) {
+      LPDEBUG("Can't resolve stat call " << itcache(*CI) << " because its filename argument is unresolved\n");
+      return true;
+    }
+    
+    struct stat file_stat;
+    int stat_ret = ::stat(Filename.c_str(), &file_stat);
+
+    if(stat_ret == -1 && errno != ENOENT)
+      return true;
+
+    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), stat_ret)));
+    return true;
+
+  }
+
+  // All calls beyond here operate on FDs.
 
   Value* FD = CI->getArgOperand(0);
   if(isUnresolved(FD))

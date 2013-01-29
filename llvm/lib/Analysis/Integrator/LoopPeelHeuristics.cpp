@@ -705,9 +705,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "lseek64" || F->getName() == "close" ||
 	  F->getName() == "write" || 
 	  F->getName() == "__libc_fcntl" ||
-	  F->getName() == "posix_fadvise"/* ||
-	  F->getName() == "exit" ||
-	  F->getName() == "atexit"*/);
+	  F->getName() == "posix_fadvise" ||
+	  F->getName() == "stat");
 
 }
 
@@ -876,12 +875,14 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     return 0;
       
   }
+  /*
   else if(iterationCount > 1000) {
 
     LPDEBUG("Won't peel loop " << L->getHeader()->getName() << ": max iterations 1000\n");
     return 0;
 
   }
+  */
 
   errs() << "Peel loop " << L->getHeader()->getName() << "\n";
 
