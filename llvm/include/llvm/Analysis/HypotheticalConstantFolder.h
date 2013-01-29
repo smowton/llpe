@@ -33,6 +33,7 @@ class ConstantInt;
 class Type;
 class Argument;
 class CallInst;
+class InvokeInst;
 class StoreInst;
 class MemTransferInst;
 class MemIntrinsic;
@@ -1016,7 +1017,9 @@ protected:
   void setBlockDead(BasicBlock*);
 
   virtual Constant* getConstReplacement(Value* V);
-  virtual Function* getCalledFunction(CallInst*);
+  virtual Function* getCalledFunction(const CallInst*);
+  virtual Function* getCalledFunction(const InvokeInst*);
+  virtual Function* getCalledFunction(const Instruction*);
   
   virtual InlineAttempt* getFunctionRoot() = 0;
 

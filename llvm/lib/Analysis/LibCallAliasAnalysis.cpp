@@ -55,7 +55,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   // If that didn't tell us that the function is 'readnone', check to see
   // if we have detailed info and if 'P' is any of the locations we know
   // about.
-  const LibCallFunctionInfo::LocationMRInfo *Details;
+  const LibCallFunctionInfo::LocationMRInfo *Details = 0;
 
   if(FI->LocationDetails)
     Details = FI->LocationDetails;
@@ -105,6 +105,18 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   return MRInfo;
 }
 
+static const Function* getCalledFunction(ImmutableCallSite& CS, IntegrationAttempt* CSCtx) {
+
+  if(const Function* F = CS.getCalledFunction())
+    return F;
+    
+  if(CSCtx)
+    return CSCtx->getCalledFunction(CS.getInstruction());
+  else
+    return 0;
+
+}
+
 // getModRefInfo - Check to see if the specified callsite can clobber the
 // specified memory object.
 //
@@ -116,7 +128,7 @@ LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   // If this is a direct call to a function that LCI knows about, get the
   // information about the runtime function.
   if (LCI) {
-    if (const Function *F = CS.getCalledFunction()) {
+    if (const Function *F = getCalledFunction(CS, CSCtx)) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
         MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, CSCtx, PCtx, usePBKnowledge));
         if (MRInfo == NoModRef) return NoModRef;

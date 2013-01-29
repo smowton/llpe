@@ -339,15 +339,16 @@ Constant* IntegrationAttempt::getConstReplacement(Value* V) {
 
 }
 
-Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
+static Function* getReplacementFunction(const Value* CCalledV, IntegrationAttempt* IA) {
 
-  Constant* C = getConstReplacement(CI->getCalledValue()->stripPointerCasts());
+  Value* CalledV = const_cast<Value*>(CCalledV->stripPointerCasts());
+  Constant* C = IA->getConstReplacement(CalledV);
 
   if(!C) {
 
     Constant* OnlyVal = 0;
     PointerBase PB;
-    if(getPointerBaseFalling(CI->getCalledValue()->stripPointerCasts(), PB)) {
+    if(IA->getPointerBaseFalling(CalledV, PB)) {
      
       if(!PB.Overdef) {
 
@@ -382,6 +383,29 @@ Function* IntegrationAttempt::getCalledFunction(CallInst* CI) {
     return 0;
 
   return dyn_cast<Function>(C->stripPointerCasts());
+
+}
+
+Function* IntegrationAttempt::getCalledFunction(const CallInst* CI) {
+
+  return getReplacementFunction(CI->getCalledValue(), this);
+
+}
+
+Function* IntegrationAttempt::getCalledFunction(const InvokeInst* II) {
+
+  return getReplacementFunction(II->getCalledValue(), this);
+
+}
+
+Function* IntegrationAttempt::getCalledFunction(const Instruction* I) {
+
+  if(const CallInst* CI = dyn_cast<CallInst>(I))
+    return getCalledFunction(CI);
+  else if(const InvokeInst* II = dyn_cast<InvokeInst>(I))
+    return getCalledFunction(II);
+  release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
+  return 0;
 
 }
 
