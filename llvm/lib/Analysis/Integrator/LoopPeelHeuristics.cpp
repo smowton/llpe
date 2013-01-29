@@ -1599,7 +1599,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     }
     else {
       assert(TD->getTypeSizeInBits(IntResult->getType()) == TD->getTypeSizeInBits(Ty));
-      // We know the target type does not contain pointers
+      // We know the target type does not contain non-null pointers
 
       Constant* Result = ConstantExpr::getBitCast(IntResult, Ty); // The bitcast might eval here
       if(ConstantExpr* CE = dyn_cast_or_null<ConstantExpr>(Result))
@@ -1613,6 +1613,18 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
       }
     }
 	
+  }
+  else if(Ty->isPointerTy()) {
+
+    uint64_t PtrSize = TD->getTypeStoreSize(Ty);
+    for(unsigned i = 0; i < PtrSize; ++i) {
+
+      assert(!Bytes[i]);
+
+    }
+
+    return Constant::getNullValue(Ty);
+
   }
   else if(const ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
 

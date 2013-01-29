@@ -1113,11 +1113,6 @@ ValCtx IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker, cons
 
   }
 
-  if(containsPointerTypes(TargetType)) {
-    RSO << "PtrBOps";
-    return VCNull;
-  }
-
   // Finally build it from bytes.
   std::string error;
   if(!PV.convertToBytes(LoadSize, TD, error)) {
@@ -1126,6 +1121,21 @@ ValCtx IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker, cons
   }
 
   assert(PV.isByteArray());
+
+  if(containsPointerTypes(TargetType)) {
+
+    // If we're trying to synthesise a pointer from raw bytes, only a null pointer is allowed.
+    unsigned char* checkBuf = (unsigned char*)PV.partialBuf;
+    for(unsigned i = 0; i < PV.partialBufBytes; ++i) {
+
+      if(checkBuf[i]) {
+	RSO << "Non-null Ptr Byteops";
+	return VCNull;
+      }
+
+    }
+
+  }
 
   return const_vc(constFromBytes((unsigned char*)PV.partialBuf, TargetType, TD));
 
