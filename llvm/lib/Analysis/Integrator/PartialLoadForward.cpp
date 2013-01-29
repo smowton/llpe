@@ -511,6 +511,14 @@ bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialV
 
 }
 
+bool IntegrationAttempt::getReallocPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+
+  // Handling an alias against the result of a realloc, try investigating as an alias against the original
+  // allocation, passed as arg0.
+  return getPVFromCopy(CI->getArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+
+}
+
 bool IntegrationAttempt::getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   return getPVFromCopy(CI->getArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);

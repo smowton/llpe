@@ -1129,6 +1129,7 @@ protected:
   bool getMemcpyPV(MemTransferInst* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
   bool getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
   bool getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
+  bool getReallocPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error);
   bool getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
   // Load forwarding extensions for varargs:

@@ -2420,6 +2420,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   Function& F = *FoundF;
 
+  // Mark realloc as an identified object if the function is defined:
+  if(Function* Realloc = M.getFunction("realloc")) {
+
+    Realloc->setDoesNotAlias(0);
+
+  }
+
   DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, TD, AA, 0, getInstScopes(&F), getEdgeScopes(&F), getBlockScopes(&F), 0);

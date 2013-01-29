@@ -167,6 +167,12 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(Instruction* I, Integra
 	PtrSize = 24;
 
       }
+      else if(CalledF->getName() == "realloc") {
+
+	Ptr = CI;
+	PtrSize = AliasAnalysis::UnknownSize;
+
+      }
       else {
 
 	return WIRContinue;
@@ -539,6 +545,12 @@ bool NormalLoadForwardWalker::getMIOrReadValue(Instruction* I, IntegrationAttemp
     else if(F->getName() == "llvm.va_start") {
 
       return IA->getVaStartPV(CI, ReadOffset, NewPV, error);
+
+    }
+    else if(F->getName() == "realloc") {
+
+      bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
+      return IA->getReallocPV(CI, FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
 
     }
     else {
