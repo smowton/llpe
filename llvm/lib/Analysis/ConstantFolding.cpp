@@ -527,8 +527,10 @@ static Constant *SymbolicallyEvaluateBinop(unsigned Opc, Constant *Op0,
 /// explicitly cast them so that they aren't implicitly casted by the
 /// getelementptr.
 static Constant *CastGEPIndices(Constant *const *Ops, unsigned NumOps,
-                                const Type *ResultTy,
-                                const TargetData *TD) {
+				const Type *ResultTy, const TargetData *TD,
+				bool preserveGEPSign = false)
+
+{
   if (!TD) return 0;
   const Type *IntPtrTy = TD->getIntPtrType(ResultTy->getContext());
 
@@ -553,17 +555,19 @@ static Constant *CastGEPIndices(Constant *const *Ops, unsigned NumOps,
 
   Constant *C =
     ConstantExpr::getGetElementPtr(Ops[0], &NewIdxs[0], NewIdxs.size());
+
   if (ConstantExpr *CE = dyn_cast<ConstantExpr>(C))
-    if (Constant *Folded = ConstantFoldConstantExpression(CE, TD))
+    if (Constant *Folded = ConstantFoldConstantExpression(CE, TD, preserveGEPSign))
       C = Folded;
   return C;
 }
 
 /// SymbolicallyEvaluateGEP - If we can symbolically evaluate the specified GEP
 /// constant expression, do so.
-static Constant *SymbolicallyEvaluateGEP(Constant *const *Ops, unsigned NumOps,
-                                         const Type *ResultTy,
-                                         const TargetData *TD) {
+Constant *SymbolicallyEvaluateGEP(Constant *const *Ops, unsigned NumOps,
+				  const Type *ResultTy,
+				  const TargetData *TD,
+				  bool preserveSign = false) {
   Constant *Ptr = Ops[0];
   if (!TD || !cast<PointerType>(Ptr->getType())->getElementType()->isSized())
     return 0;
@@ -576,10 +580,25 @@ static Constant *SymbolicallyEvaluateGEP(Constant *const *Ops, unsigned NumOps,
   for (unsigned i = 1; i != NumOps; ++i)
     if (!isa<ConstantInt>(Ops[i]))
       return 0;
+
+  uint64_t InitOffset;
+
+  if(preserveSign) { 
+
+    bool overflow = false;
+    InitOffset = (uint64_t)TD->getIndexedOffsetS(Ptr->getType(), (Value**)Ops+1, NumOps-1, overflow);
+    if(overflow)
+      return 0;
+
+  }
+  else {
+
+    InitOffset = TD->getIndexedOffset(Ptr->getType(), (Value**)Ops+1, NumOps-1);
+
+  }
   
-  APInt Offset = APInt(BitWidth,
-                       TD->getIndexedOffset(Ptr->getType(),
-                                            (Value**)Ops+1, NumOps-1));
+  APInt Offset = APInt(BitWidth, InitOffset, preserveSign);
+
   Ptr = cast<Constant>(Ptr->stripPointerCasts());
 
   // If this is a GEP of a GEP, fold it all into a single GEP.
@@ -597,11 +616,39 @@ static Constant *SymbolicallyEvaluateGEP(Constant *const *Ops, unsigned NumOps,
       break;
 
     Ptr = cast<Constant>(GEP->getOperand(0));
-    Offset += APInt(BitWidth,
-                    TD->getIndexedOffset(Ptr->getType(),
-                                         (Value**)NestedOps.data(),
-                                         NestedOps.size()));
+
+    uint64_t NextOffset;
+
+    if(preserveSign) {
+      
+      bool overflow = false;
+      NextOffset = (uint64_t)TD->getIndexedOffsetS(Ptr->getType(), (Value**)NestedOps.data(), NestedOps.size(), overflow);
+      if(overflow)
+	return 0;
+
+    }
+    else {
+
+      NextOffset = TD->getIndexedOffset(Ptr->getType(), (Value**)NestedOps.data(), NestedOps.size());
+     
+    }
+
+    bool wasNeg = Offset.isNegative();
+
+    APInt NextOffAP = APInt(BitWidth, NextOffset, preserveSign);
+    Offset += NextOffAP;
+
+    if(preserveSign) {
+
+      if(wasNeg && (!Offset.isNegative()) && (NextOffAP.isNegative()))
+	return 0;
+      if((!wasNeg) && (!NextOffAP.isNegative()) && Offset.isNegative())
+	return 0;
+
+    }
+
     Ptr = cast<Constant>(Ptr->stripPointerCasts());
+
   }
 
   // If the base value for this address is a literal integer value, fold the
@@ -640,7 +687,11 @@ static Constant *SymbolicallyEvaluateGEP(Constant *const *Ops, unsigned NumOps,
       APInt ElemSize(BitWidth, TD->getTypeAllocSize(ATy->getElementType()));
       if (ElemSize == 0)
         return 0;
-      APInt NewIdx = Offset.udiv(ElemSize);
+      APInt NewIdx;
+      if(preserveSign)
+	NewIdx = Offset.sdiv(ElemSize);
+      else
+	NewIdx = Offset.udiv(ElemSize);
       Offset -= NewIdx * ElemSize;
       NewIdxs.push_back(ConstantInt::get(TD->getIntPtrType(Ty->getContext()),
                                          NewIdx));
@@ -734,13 +785,14 @@ Constant *llvm::ConstantFoldInstruction(Instruction *I, const TargetData *TD) {
 /// using the specified TargetData.  If successful, the constant result is
 /// result is returned, if not, null is returned.
 Constant *llvm::ConstantFoldConstantExpression(const ConstantExpr *CE,
-                                               const TargetData *TD) {
+                                               const TargetData *TD,
+					       bool preserveGEPSign) {
   SmallVector<Constant*, 8> Ops;
   for (User::const_op_iterator i = CE->op_begin(), e = CE->op_end(); i != e; ++i) {
     Constant *NewC = cast<Constant>(*i);
     // Recursively fold the ConstantExpr's operands.
     if (ConstantExpr *NewCE = dyn_cast<ConstantExpr>(NewC))
-      NewC = ConstantFoldConstantExpression(NewCE, TD);
+      NewC = ConstantFoldConstantExpression(NewCE, TD, preserveGEPSign);
     Ops.push_back(NewC);
   }
 
@@ -748,7 +800,7 @@ Constant *llvm::ConstantFoldConstantExpression(const ConstantExpr *CE,
     return ConstantFoldCompareInstOperands(CE->getPredicate(), Ops[0], Ops[1],
                                            TD);
   return ConstantFoldInstOperands(CE->getOpcode(), CE->getType(),
-                                  Ops.data(), Ops.size(), TD);
+                                  Ops.data(), Ops.size(), TD, preserveGEPSign);
 }
 
 /// ConstantFoldInstOperands - Attempt to constant fold an instruction with the
@@ -763,7 +815,7 @@ Constant *llvm::ConstantFoldConstantExpression(const ConstantExpr *CE,
 ///
 Constant *llvm::ConstantFoldInstOperands(unsigned Opcode, const Type *DestTy, 
                                          Constant* const* Ops, unsigned NumOps,
-                                         const TargetData *TD) {
+                                         const TargetData *TD, bool preserveGEPSign) {
   // Handle easy binops first.
   if (Instruction::isBinaryOp(Opcode)) {
     if (isa<ConstantExpr>(Ops[0]) || isa<ConstantExpr>(Ops[1]))
@@ -834,9 +886,9 @@ Constant *llvm::ConstantFoldInstOperands(unsigned Opcode, const Type *DestTy,
   case Instruction::ShuffleVector:
     return ConstantExpr::getShuffleVector(Ops[0], Ops[1], Ops[2]);
   case Instruction::GetElementPtr:
-    if (Constant *C = CastGEPIndices(Ops, NumOps, DestTy, TD))
+    if (Constant *C = CastGEPIndices(Ops, NumOps, DestTy, TD, preserveGEPSign))
       return C;
-    if (Constant *C = SymbolicallyEvaluateGEP(Ops, NumOps, DestTy, TD))
+    if (Constant *C = SymbolicallyEvaluateGEP(Ops, NumOps, DestTy, TD, preserveGEPSign))
       return C;
     
     return ConstantExpr::getGetElementPtr(Ops[0], Ops+1, NumOps-1);

@@ -40,7 +40,8 @@ Constant *ConstantFoldInstruction(Instruction *I, const TargetData *TD = 0);
 /// using the specified TargetData.  If successful, the constant result is
 /// result is returned, if not, null is returned.
 Constant *ConstantFoldConstantExpression(const ConstantExpr *CE,
-                                         const TargetData *TD = 0);
+                                         const TargetData *TD = 0,
+					 bool preserveGEPSign = false);
 
 /// ConstantFoldInstOperands - Attempt to constant fold an instruction with the
 /// specified operands.  If successful, the constant result is returned, if not,
@@ -50,7 +51,7 @@ Constant *ConstantFoldConstantExpression(const ConstantExpr *CE,
 ///
 Constant *ConstantFoldInstOperands(unsigned Opcode, const Type *DestTy,
                                    Constant *const *Ops, unsigned NumOps,
-                                   const TargetData *TD = 0);
+                                   const TargetData *TD = 0, bool preserveGEPSign = false);
 
 /// ConstantFoldCompareInstOperands - Attempt to constant fold a compare
 /// instruction (icmp/fcmp) with the specified operands.  If it fails, it
@@ -79,6 +80,7 @@ bool canConstantFoldCallTo(const Function *F);
 Constant *
 ConstantFoldCall(Function *F, Constant *const *Operands, unsigned NumOperands);
 
+// Useful functions exported for the integrator:
 
 bool ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
 			unsigned char *CurPtr, unsigned BytesLeft,

@@ -29,6 +29,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include <algorithm>
 #include <cstdlib>
+
 using namespace llvm;
 
 // Handle the Pass registration stuff necessary to use TargetData's.
@@ -570,6 +571,76 @@ const IntegerType *TargetData::getIntPtrType(LLVMContext &C) const {
   return IntegerType::get(C, getPointerSizeInBits());
 }
 
+int64_t TargetData::getIndexedOffsetS(const Type *ptrTy, Value* const* Indices,
+                                      unsigned NumIndices, bool& overflow) const {
+
+  overflow = false;
+
+  const Type *Ty = ptrTy;
+  assert(Ty->isPointerTy() && "Illegal argument for getIndexedOffset()");
+  int64_t Result = 0;
+
+  generic_gep_type_iterator<Value* const*>
+    TI = gep_type_begin(ptrTy, Indices, Indices+NumIndices);
+  for (unsigned CurIDX = 0; CurIDX != NumIndices; ++CurIDX, ++TI) {
+    if (const StructType *STy = dyn_cast<StructType>(*TI)) {
+      assert(Indices[CurIDX]->getType() ==
+             Type::getInt32Ty(ptrTy->getContext()) &&
+             "Illegal struct idx");
+      unsigned FieldNo = cast<ConstantInt>(Indices[CurIDX])->getZExtValue();
+
+      // Get structure layout information...
+      const StructLayout *Layout = getStructLayout(STy);
+
+      // Add in the offset, as calculated by the structure layout info...
+      uint64_t ThisOffset = Layout->getElementOffset(FieldNo);
+
+      if(ThisOffset > ((uint64_t)INT64_MAX)) {
+	overflow = true;
+	return 0;
+      }
+
+      if(Result > 0 && (INT64_MAX - ((int64_t)ThisOffset) < Result)) {
+	overflow = true;
+	return 0;
+      }
+
+      Result += (int64_t)ThisOffset;
+
+      // Update Ty to refer to current element
+      Ty = STy->getElementType(FieldNo);
+    } else {
+      // Update Ty to refer to current element
+      Ty = cast<SequentialType>(Ty)->getElementType();
+
+      // Get the array index and the size of each array element.
+      if (int64_t arrayIdx = cast<ConstantInt>(Indices[CurIDX])->getSExtValue()) {
+	
+	uint64_t TySize = getTypeAllocSize(Ty);
+	if(TySize > INT32_MAX || arrayIdx > INT32_MAX || arrayIdx < INT32_MIN) {
+	  overflow = true;
+	  return 0;
+	}
+	int64_t ThisOffset = arrayIdx * getTypeAllocSize(Ty);
+
+	if(ThisOffset > 0 && Result > 0 && (INT64_MAX - Result < ThisOffset)) {
+	  overflow = true;
+	  return 0;
+	}
+	else if(ThisOffset < 0 && Result < 0 && (ThisOffset < INT64_MIN - Result)) {
+	  overflow = true;
+	  return 0;
+	}
+
+	Result += ThisOffset;
+
+      }
+    }
+  }
+
+  return Result;
+
+}
 
 uint64_t TargetData::getIndexedOffset(const Type *ptrTy, Value* const* Indices,
                                       unsigned NumIndices) const {

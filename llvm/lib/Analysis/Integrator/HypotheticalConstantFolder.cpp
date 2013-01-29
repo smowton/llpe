@@ -1347,20 +1347,6 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 	      tryConstFold = false;
 
 	    }
-	    /*
-	    else {
-	      ValCtx OpRepl = getReplacement(*(GEP->idx_begin()));
-	      if(OpRepl.isVaArg()) {
-
-		assert(OpRepl.first == Base.first && OpRepl.second == Base.second);
-		LPDEBUG("Assuming GEP " << itcache(*GEP) << " idx by symbolic offset " << itcache(OpRepl) << " is vararg indexing operation\n");
-		Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, Base.va_arg + OpRepl.va_arg);
-		tryConstFold = false;
-
-	      }	      
-
-	    }
-	    */
 
 	  }
 	  
@@ -1400,12 +1386,13 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
 	if(instOperands.size() == I->getNumOperands()) {
 	  Constant* newConst = 0;
+
 	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
 	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
 	  else if(isa<LoadInst>(I))
 	    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
 	  else
-	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD);
+	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
 
 	  if(newConst) {
 	    LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");

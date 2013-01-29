@@ -255,6 +255,9 @@ public:
   uint64_t getIndexedOffset(const Type *Ty,
                             Value* const* Indices, unsigned NumIndices) const;
 
+  int64_t getIndexedOffsetS(const Type *Ty, Value* const* Indices, 
+			     unsigned NumIndices, bool& Overflow) const;
+
   /// getStructLayout - Return a StructLayout object, indicating the alignment
   /// of the struct, its size, and the offsets of its fields.  Note that this
   /// information is lazily cached.
