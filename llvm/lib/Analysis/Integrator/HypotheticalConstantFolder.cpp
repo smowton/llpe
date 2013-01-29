@@ -750,6 +750,23 @@ bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
 
 }
 
+static unsigned getSignedPred(unsigned Pred) {
+
+  switch(Pred) {
+  default:
+    return Pred;
+  case CmpInst::ICMP_UGT:
+    return CmpInst::ICMP_SGT;
+  case CmpInst::ICMP_UGE:
+    return CmpInst::ICMP_SGE;
+  case CmpInst::ICMP_ULT:
+    return CmpInst::ICMP_SLT;
+  case CmpInst::ICMP_ULE:
+    return CmpInst::ICMP_SLE;
+  }
+
+}
+
 // Return value as above: true for "we've handled it" and false for "try constant folding"
 bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
@@ -806,9 +823,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
   if(op0O.first == op1O.first && op0O.second == op1O.second) {
 
+    // Always do a signed test here, assuming that negative indexing off a pointer won't wrap the address
+    // space and end up with something large and positive.
+
     op0Arg = ConstantInt::get(I64, op0Off);
     op1Arg = ConstantInt::get(I64, op1Off);
-    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
+    Improved = const_vc(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
     return true;
 
   }
