@@ -22,6 +22,88 @@
 
 using namespace llvm;
 
+bool IntegrationAttempt::getConstantString(Value* LocalPtr, ValCtx Ptr, Instruction* Where, std::string& Result) {
+
+  if(GetConstantStringInfo(Ptr.first, Result))
+    return true;
+
+  errs() << "forwarding off " << *(LocalPtr) << "\n";
+
+  Result = "";
+  
+  // Try to LF one character at a time until we get null or a failure.
+  // Insert instructions to work off like memcpy. Base them on the pointer actually used here
+  // since that's certainly available.
+
+  Value* BPtr;
+
+  const Type* byteArrayType = Type::getInt8PtrTy(Where->getContext());
+  const Type* byteType = Type::getInt8Ty(Where->getContext());
+
+  if(LocalPtr->getType() != byteArrayType) {
+
+    BPtr = new BitCastInst(LocalPtr, byteArrayType, "", Where);
+
+  }
+  else {
+
+    BPtr = LocalPtr;
+
+  }
+
+  errs() << "forwarding off " << *(BPtr) << "\n";
+
+  bool success = true;
+
+  for(uint64_t Offset = 0; success; ++Offset) {
+
+    // Create a GEP to access the next byte:
+    ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(Where->getContext()), Offset);
+    Instruction* gepInst = GetElementPtrInst::Create(BPtr, OffsetCI, "", Where);
+    
+    errs() << "forwarding off " << *(gepInst) << "\n";
+
+    std::string fwdError;
+    raw_string_ostream RSO(fwdError);
+
+    ValCtx byte = tryForwardLoad(Where, make_vc(gepInst, this), byteType, 1, RSO);
+    if(byte == VCNull) {
+
+      RSO.flush();
+      errs() << "Open forwarding error: " << fwdError << "\n";
+      success = false;
+
+    }
+    else {
+
+      errs() << "Open forwarding success: " << itcache(byte) << "\n";
+
+      uint64_t nextChar = cast<ConstantInt>(byte.first)->getLimitedValue();
+      if(!nextChar) {
+	
+	// Null terminator.
+	break;
+
+      }
+      else {
+
+	Result.push_back((unsigned char)nextChar);
+
+      }
+
+    }
+
+    gepInst->eraseFromParent();
+
+  }
+
+  if(BPtr != LocalPtr)
+    cast<Instruction>(BPtr)->eraseFromParent();
+
+  return success;
+
+}
+
 bool IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
   
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
@@ -50,7 +132,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	  
 	  ValCtx NameArg = getReplacement(CI->getArgOperand(0));
 	  std::string Filename;
-	  if (!GetConstantStringInfo(NameArg.first, Filename)) {
+	  if (!getConstantString(CI->getArgOperand(0), NameArg, CI, Filename)) {
 	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its filename argument is unresolved\n");
 	    return true;
 	  }

@@ -1085,6 +1085,7 @@ protected:
   PartialVal tryForwardLoadSubquery(Instruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, PartialVal& resolvedSoFar, std::string& error);
   ValCtx tryForwardLoad(LoadInst* LI);
   ValCtx getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream&);
+  bool getConstantString(Value* LocalPtr, ValCtx Ptr, Instruction* Where, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
   void queueLoopExitingBlocksBW(BasicBlock* ExitedBB, BasicBlock* ExitingBB, const Loop* ExitingBBL, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
