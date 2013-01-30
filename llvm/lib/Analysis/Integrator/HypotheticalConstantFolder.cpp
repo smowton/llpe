@@ -138,6 +138,7 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 
 	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = exitEdges.begin(), endit = exitEdges.end(); it != endit; ++it) {
 
+	  /*
 	  const Loop* edgeScope = getEdgeScope(it->first, it->second);
 	  if(edgeScope == getLoopContext() || L->contains(edgeScope)) {
 	    // The edge is either invariant at our scope, or ordinarily a loop variant
@@ -149,6 +150,9 @@ bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* To
 	  else {
 	    LPDEBUG("Ignored edge to " << it->second->getName() << " (invariant)\n");
 	  }
+	  */
+
+	  deadEdges.insert(*it);
 
 	}
 
