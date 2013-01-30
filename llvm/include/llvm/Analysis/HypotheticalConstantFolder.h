@@ -1300,7 +1300,7 @@ protected:
   unsigned getTotalInstructions();
   unsigned getElimdInstructions();
   int64_t getTotalInstructionsIncludingLoops();
-  IntegrationAttempt* searchFunctions(std::string&, bool skipFirst);
+  IntegrationAttempt* searchFunctions(std::string&, IntegrationAttempt*& startAt);
 
   // Saving our results as a bitcode file:
 

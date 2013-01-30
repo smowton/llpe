@@ -558,7 +558,7 @@ void IntegratorFrame::OnSearchFunctionsNext(wxCommandEvent& event) {
   }
 
   std::string stdSearchString(searchLastString.mb_str());
-  IntegrationAttempt* IA = searchLastIA->searchFunctions(stdSearchString, skipFirst);
+  IntegrationAttempt* IA = IHP->getRoot()->searchFunctions(stdSearchString, searchLastIA);
 
   if(IA) {
     wxDataViewItem key((void*)&(IA->tag));

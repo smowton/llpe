@@ -715,7 +715,9 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "posix_fadvise" ||
 	  F->getName() == "stat" ||
 	  F->getName() == "isatty" ||
-	  F->getName() == "__libc_sigaction");
+	  F->getName() == "__libc_sigaction" ||
+	  F->getName() == "socket" || F->getName() == "bind" ||
+	  F->getName() == "listen" || F->getName() == "setsockopt");
 
 }
 
@@ -1510,9 +1512,14 @@ IntegratorTag* PeelAttempt::getParentTag() {
 
 }
 
-IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, bool skipFirst) {
+IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, IntegrationAttempt*& startAt) {
 
-  if(!skipFirst) {
+  if(startAt == this) {
+    
+    startAt = 0;
+
+  }
+  else if(!startAt) {
 
     if(getShortHeader().find(search) != std::string::npos) {
       
@@ -1520,25 +1527,25 @@ IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, boo
 
     }
 
-    for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  }
 
-      if(IntegrationAttempt* SubRes = it->second->searchFunctions(search, skipFirst))
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    if(IntegrationAttempt* SubRes = it->second->searchFunctions(search, startAt))
+      return SubRes;
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
+
+      if(IntegrationAttempt* SubRes = it->second->Iterations[i]->searchFunctions(search, startAt))
 	return SubRes;
 
     }
 
-    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-      for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
-
-	if(IntegrationAttempt* SubRes = it->second->Iterations[i]->searchFunctions(search, skipFirst))
-	  return SubRes;
-
-      }
-
-    }
-
-  }  
+  }
 
   return 0;
 
