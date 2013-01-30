@@ -478,11 +478,13 @@ bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
     return true;
 
   const Loop* MyScope = getLoopContext();
-  const Loop* EdgeScope = getEdgeScope(B1, B2);
+  //const Loop* EdgeScope = getEdgeScope(B1, B2);
+  const Loop* EdgeScope = LI[&F]->getLoopFor(B1);
 
   if((MyScope != EdgeScope) && ((!MyScope) || MyScope->contains(EdgeScope))) {
 
-    return edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
+    if(edgeIsDeadWithScopeRising(B1, B2, EdgeScope))
+      return true;
 
   }
 
