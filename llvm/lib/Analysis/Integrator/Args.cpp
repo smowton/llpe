@@ -134,6 +134,7 @@ void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigne
     ++Arg;
 
   const Type* Int64 = Type::getInt64Ty(F->getContext());
+  const Type* BytePtr = Type::getInt8PtrTy(F->getContext());
   for(unsigned i = 0; i < argc; ++i) {
 
     if(lineStarts[i] != -1) {
@@ -150,6 +151,12 @@ void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigne
     }
 
   }
+
+  // Null terminate the argv array:
+  Constant* gepArg = ConstantInt::get(Int64, argc);
+  Instruction* argvEndPtr = GetElementPtrInst::Create(Arg, gepArg, "argv_end_ptr", InsertBefore);
+  Constant* nullPtr = Constant::getNullValue(BytePtr);
+  new StoreInst(nullPtr, argvEndPtr, InsertBefore);
 
   F->addAttribute(argvIdx+1, Attribute::NoAlias);
 
