@@ -510,11 +510,12 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
     PeelIteration* FinalIter = LPA->Iterations.back();
     if(FinalIter->iterStatus == IterationStatusFinal) {
 
-      const Loop* B1Scope = getBlockScopeVariant(B1);
+      //const Loop* B1Scope = getBlockScopeVariant(B1);
       const Loop* B2Scope = getBlockScopeVariant(B2);
 
-      if(B1Scope != B2Scope && ((!B2Scope) || B2Scope->contains(B1Scope))) {
-	// Exit edge: dead if no iteration takes it.
+      if(B2Scope == MyScope || ((!B2Scope) || B2Scope->contains(MyScope))) {
+
+	// This edge exits at least to the querying scope: check no iteration takes it.
 
 	for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
 	  
@@ -528,7 +529,10 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
       }
       else if(FinalIter->isOnlyExitingIteration()) {
 
-	// Edge within loop: check final iter if it's the sole exit iteration.
+	// The edge target is within a child loop; AFAIK we must be asking in the context
+	// of checkBlock checking the other successors of a block with an exiting edge.
+	// Call it dead if the final iteration says so.
+
 	return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
 
       }
@@ -710,7 +714,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "__libc_fcntl" ||
 	  F->getName() == "posix_fadvise" ||
 	  F->getName() == "stat" ||
-	  F->getName() == "isatty");
+	  F->getName() == "isatty" ||
+	  F->getName() == "__libc_sigaction");
 
 }
 
@@ -1502,6 +1507,40 @@ IntegratorTag* PeelIteration::getParentTag() {
 IntegratorTag* PeelAttempt::getParentTag() {
 
   return &(parent->tag);
+
+}
+
+IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, bool skipFirst) {
+
+  if(!skipFirst) {
+
+    if(getShortHeader().find(search) != std::string::npos) {
+      
+      return this;
+
+    }
+
+    for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+      if(IntegrationAttempt* SubRes = it->second->searchFunctions(search, skipFirst))
+	return SubRes;
+
+    }
+
+    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+      for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
+
+	if(IntegrationAttempt* SubRes = it->second->Iterations[i]->searchFunctions(search, skipFirst))
+	  return SubRes;
+
+      }
+
+    }
+
+  }  
+
+  return 0;
 
 }
 

@@ -69,6 +69,10 @@ class IntegratorFrame: public wxFrame
   wxStaticBitmap* image;
   wxBoxSizer* imagePanelSizer;
   wxScrolledWindow* imagePanel;
+  wxDataViewCtrl* menuPanelData;
+
+  IntegrationAttempt* searchLastIA;
+  wxString searchLastString;
 
   std::string dotpath;
   std::string pngpath;
@@ -84,6 +88,8 @@ public:
   void OnQuit(wxCommandEvent& event);
   void OnBriefToggle(wxCommandEvent& event);
   void OnSelectionChanged(wxDataViewEvent&);
+  void OnSearchFunctions(wxCommandEvent&);
+  void OnSearchFunctionsNext(wxCommandEvent&);
 
   void redrawImage();
 
@@ -96,13 +102,17 @@ enum
   ID_Quit = wxID_HIGHEST + 1,
   ID_TreeView,
   ID_SelectionChanged,
-  ID_BriefToggle
+  ID_BriefToggle,
+  ID_SearchFunctions,
+  ID_SearchFunctionsNext
 };
 
 BEGIN_EVENT_TABLE(IntegratorFrame, wxFrame)
   EVT_CLOSE(IntegratorFrame::OnClose)
   EVT_MENU(ID_Quit, IntegratorFrame::OnQuit)
   EVT_MENU(ID_BriefToggle, IntegratorFrame::OnBriefToggle)
+  EVT_MENU(ID_SearchFunctions, IntegratorFrame::OnSearchFunctions)
+  EVT_MENU(ID_SearchFunctionsNext, IntegratorFrame::OnSearchFunctionsNext)
   EVT_DATAVIEW_SELECTION_CHANGED(ID_TreeView, IntegratorFrame::OnSelectionChanged)
 END_EVENT_TABLE()
 
@@ -392,9 +402,14 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
     ROS.flush();
   }
 
+  searchLastString = "";
+  searchLastIA = 0;
+
   wxMenu *menuFile = new wxMenu;
   menuFile->Append( ID_Quit, _("E&xit") );
   menuFile->Append( ID_BriefToggle, _("&Brief") );
+  menuFile->Append( ID_SearchFunctions, _("&Search") );
+  menuFile->Append( ID_SearchFunctionsNext, _("S&earch next") );
 
   wxMenuBar *menuBar = new wxMenuBar;
   menuBar->Append( menuFile, _("&File") );
@@ -411,7 +426,7 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   
   wxBoxSizer* menuPanelSizer = new wxBoxSizer(wxVERTICAL);
 
-  wxDataViewCtrl* menuPanelData = new wxDataViewCtrl(menuPanel, ID_TreeView);
+  menuPanelData = new wxDataViewCtrl(menuPanel, ID_TreeView);
   wxDataViewTextRenderer* textColRend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
   wxDataViewColumn* col0 = new wxDataViewColumn("Name", textColRend, 0, 300, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
 
@@ -529,6 +544,39 @@ void IntegratorFrame::OnSelectionChanged(wxDataViewEvent& event) {
     redrawImage();
 
   }
+
+}
+
+void IntegratorFrame::OnSearchFunctionsNext(wxCommandEvent& event) {
+
+  if(searchLastString == "")
+    return;
+  bool skipFirst = true;
+  if(searchLastIA == 0) {
+    searchLastIA = IHP->getRoot();
+    skipFirst = false;
+  }
+
+  std::string stdSearchString(searchLastString.mb_str());
+  IntegrationAttempt* IA = searchLastIA->searchFunctions(stdSearchString, skipFirst);
+
+  if(IA) {
+    wxDataViewItem key((void*)&(IA->tag));
+    menuPanelData->Select(key);
+  }
+  else {
+    wxMessageBox("No more matches", "Search");
+  }
+
+  searchLastIA = IA;
+
+}
+
+void IntegratorFrame::OnSearchFunctions(wxCommandEvent& event) {
+
+  searchLastString = wxGetTextFromUser("Enter function name", "Search");
+  searchLastIA = 0;
+  OnSearchFunctionsNext(event);
 
 }
 
