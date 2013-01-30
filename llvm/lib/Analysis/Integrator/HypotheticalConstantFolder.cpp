@@ -861,6 +861,18 @@ ValCtx IntegrationAttempt::tryFoldPtrToInt(Instruction* PII) {
 
   Value* Arg = PII->getOperand(0);
   ValCtx ArgRep = getReplacement(Arg);
+
+  // First try to knock out a trivial CE:
+  if(ConstantExpr* CE = dyn_cast<ConstantExpr>(ArgRep.first)) {
+
+    if(CE->getOpcode() == Instruction::IntToPtr) {
+
+      return const_vc(CE->getOperand(0));
+
+    }
+
+  }
+
   if(shouldForwardValue(ArgRep)) {
    
     return make_vc(ArgRep.first, ArgRep.second, 0);
