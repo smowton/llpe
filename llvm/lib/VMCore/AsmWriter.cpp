@@ -1267,7 +1267,7 @@ public:
   void writeAllMDNodes();
 
   void printTypeSymbolTable(const TypeSymbolTable &ST);
-  void printGlobal(const GlobalVariable *GV);
+  void printGlobal(const GlobalVariable *GV, bool nameOnly = false);
   void printAlias(const GlobalAlias *GV);
   void printFunction(const Function *F);
   void printArgument(const Argument *FA, Attributes Attrs);
@@ -1440,7 +1440,15 @@ static void PrintVisibility(GlobalValue::VisibilityTypes Vis,
   }
 }
 
-void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
+void AssemblyWriter::printGlobal(const GlobalVariable *GV, bool nameOnly) {
+
+  if(nameOnly) {
+
+    Out << "@" << GV->getName();
+    return;
+
+  }
+
   if (GV->isMaterializable())
     Out << "; Materializable\n";
 
@@ -2128,6 +2136,29 @@ namespace llvm {
 	FRSO.flush();
 	    
       }
+
+    }
+
+  }
+
+  void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
+
+    SlotTracker SlotTable(M);
+    formatted_raw_ostream FRSO;
+    AssemblyWriter W(FRSO, SlotTable, M, 0);
+
+    for(Module::const_global_iterator it = M->global_begin(), itend = M->global_end(); it != itend; ++it) {
+
+      std::string& GVStr = GVMap[it];
+      raw_string_ostream RSO(GVStr);
+      FRSO.setStream(RSO);
+      W.printGlobal(it);
+      FRSO.flush();
+      std::string& GVStrBrief = BriefGVMap[it];
+      raw_string_ostream RSOBrief(GVStrBrief);
+      FRSO.setStream(RSOBrief);
+      W.printGlobal(it, true);
+      FRSO.flush();
 
     }
 

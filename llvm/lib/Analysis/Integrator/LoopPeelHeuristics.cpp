@@ -878,7 +878,7 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
   std::pair<BasicBlock*, BasicBlock*>& OE = parentPA->OptimisticEdge;
 
-  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second)) || allExitEdgesDead();
+  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second) && !edgeIsDead(L->getLoopLatch(), L->getHeader())) || allExitEdgesDead();
 
   if(!willIterate) {
 
@@ -2467,6 +2467,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
 
   Function& F = *FoundF;
+
+  populateGVCaches(&M);
 
   // Mark realloc as an identified object if the function is defined:
   if(Function* Realloc = M.getFunction("realloc")) {

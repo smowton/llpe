@@ -309,8 +309,12 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    IntegrationAttempt* RootIA;
 
+   DenseMap<const GlobalVariable*, std::string> GVCache;
+   DenseMap<const GlobalVariable*, std::string> GVCacheBrief;
+
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
+
    bool cacheDisabled;
 
    unsigned mallocAlignment;
@@ -354,6 +358,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    // Caching text representations of instructions:
 
    DenseMap<const Instruction*, std::string>& getFunctionCache(const Function* F, bool brief);
+   DenseMap<const GlobalVariable*, std::string>& getGVCache(bool brief);
+   void populateGVCaches(const Module*);
    void printValue(raw_ostream& ROS, const Value* V, bool brief);
    void printValue(raw_ostream& ROS, ValCtx VC, bool brief);
    void disableValueCache();
@@ -1678,6 +1684,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
+ void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
 
  bool isGlobalIdentifiedObject(ValCtx VC);
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
