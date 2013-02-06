@@ -1050,7 +1050,8 @@ protected:
   ValCtx tryFoldPtrToInt(Instruction*);
   ValCtx tryFoldIntToPtr(Instruction*);
   bool tryFoldPtrAsIntOp(Instruction*, ValCtx&);
-  //bool tryFoldVarargAdd(BinaryOperator*, ValCtx&);
+  bool tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved);
+  bool tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved);
 
   // CFG analysis:
 

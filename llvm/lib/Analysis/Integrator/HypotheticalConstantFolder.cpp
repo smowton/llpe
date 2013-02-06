@@ -771,6 +771,135 @@ static unsigned getSignedPred(unsigned Pred) {
 
 }
 
+static unsigned getReversePred(unsigned Pred) {
+
+  switch(Pred) {
+   
+  case CmpInst::ICMP_UGT:
+    return CmpInst::ICMP_ULT;
+  case CmpInst::ICMP_ULT:
+    return CmpInst::ICMP_UGT;
+  case CmpInst::ICMP_UGE:
+    return CmpInst::ICMP_ULE;
+  case CmpInst::ICMP_ULE:
+    return CmpInst::ICMP_UGE;
+  case CmpInst::ICMP_SGT:
+    return CmpInst::ICMP_SLT;
+  case CmpInst::ICMP_SLT:
+    return CmpInst::ICMP_SGT;
+  case CmpInst::ICMP_SGE:
+    return CmpInst::ICMP_SLE;
+  case CmpInst::ICMP_SLE:
+    return CmpInst::ICMP_SGE;
+  default:
+    assert(0 && "getReversePred applied to non-integer-inequality");
+    return CmpInst::BAD_ICMP_PREDICATE;
+
+  }
+
+}
+
+bool IntegrationAttempt::tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved) {
+
+  // Only handle integer comparison
+  unsigned Pred = CmpI->getPredicate();
+  if(Pred < CmpInst::FIRST_ICMP_PREDICATE || Pred > CmpInst::LAST_ICMP_PREDICATE)
+    return false;
+
+  // Only handle inequalities
+  switch(Pred) {
+  case CmpInst::ICMP_EQ:
+  case CmpInst::ICMP_NE:
+    return false;
+  default:
+    break;
+  }
+
+  Constant* Op0C = getConstReplacement(CmpI->getOperand(0));
+  Constant* Op1C = getConstReplacement(CmpI->getOperand(1));
+  ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
+  ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
+
+  // Only handle constant vs. nonconstant here; 2 constants is handled elsewhere.
+  if((!!Op0C) == (!!Op1C))
+    return false;
+
+  if(!Op1C) {
+    std::swap(Op0C, Op1C);
+    std::swap(Op0CI, Op1CI);
+    Pred = getReversePred(Pred);
+  }
+
+  assert(Op1C);
+
+  // OK, we have a nonconst LHS against a const RHS.
+  // Note that the operands to CmpInst must be of the same type.
+
+  switch(Pred) {
+  default:
+    break;
+  case CmpInst::ICMP_UGT:
+    // Never u> ~0
+    if(Op1CI && Op1CI->isAllOnesValue()) {
+      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_UGE:
+    // Always u>= 0
+    if(Op1C->isNullValue()) {
+      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_ULT:
+    // Never u< 0
+    if(Op1C->isNullValue()) {
+      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_ULE:
+    // Always u<= ~0
+    if(Op1CI && Op1CI->isAllOnesValue()) {
+      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_SGT:
+    // Never s> maxint
+    if(Op1CI && Op1CI->isMaxValue(true)) {
+      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_SGE:
+    // Always s>= minint
+    if(Op1CI && Op1CI->isMinValue(true)) {
+      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_SLT:
+    // Never s< minint
+    if(Op1CI && Op1CI->isMinValue(true)) {
+      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return true;
+    }
+    break;
+  case CmpInst::ICMP_SLE:
+    // Always s<= maxint
+    if(Op1CI && Op1CI->isMaxValue(true)) {
+      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return true;     
+    }
+    break;
+  }
+
+  return false;
+
+}
+
 // Return value as above: true for "we've handled it" and false for "try constant folding"
 bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
@@ -1141,6 +1270,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
 
 }
 
+
+
 bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
 
   Instruction* I;
@@ -1170,6 +1301,62 @@ bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
   }
 
   return true;
+
+}
+
+bool IntegrationAttempt::tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved) {
+
+  switch(BOp->getOpcode()) {
+  default:
+    return false;
+  case Instruction::And:
+  case Instruction::Or:
+    break;
+  }
+
+  Constant* Op0C = getConstReplacement(BOp->getOperand(0));
+  Constant* Op1C = getConstReplacement(BOp->getOperand(1));
+
+  if(BOp->getOpcode() == Instruction::And) {
+
+    if((Op0C && Op0C->isNullValue()) || (Op1C && Op1C->isNullValue())) {
+
+      Improved = const_vc(Constant::getNullValue(BOp->getType()));
+      return true;
+
+    }
+
+  }
+  else {
+
+    bool allOnes = false;
+
+    if(ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C)) {
+
+      if(Op0CI->isAllOnesValue())
+	allOnes = true;
+
+    }
+      
+    if(!allOnes) {
+      if(ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C)) {
+
+	if(Op1CI->isAllOnesValue())
+	  allOnes = true;
+
+      }
+    }
+
+    if(allOnes) {
+
+      Improved = const_vc(Constant::getAllOnesValue(BOp->getType()));
+      return true;
+
+    }
+
+  }
+
+  return false;
 
 }
 
@@ -1334,7 +1521,7 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
       // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
       else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
-	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved));
+	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved) || tryFoldNonConstCmp(CmpI, Improved));
 
       }
 
@@ -1392,9 +1579,11 @@ ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
 
       }
 
-      else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And) {
+      else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
 
 	tryConstFold = /*(!tryFoldVarargAdd(BOp, Improved)) && */(!tryFoldPtrAsIntOp(I, Improved));
+	if(tryConstFold)
+	  tryConstFold = !tryFoldBitwiseOp(I, Improved);
 	    
       }
 
