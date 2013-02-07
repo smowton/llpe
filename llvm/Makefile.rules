@@ -242,9 +242,11 @@ ifeq ($(ENABLE_OPTIMIZED),1)
   LD.Flags  += $(OPTIMIZE_OPTION)
   ifdef DEBUG_SYMBOLS
     BuildMode := $(BuildMode)+Debug
-    CXX.Flags += -g
-    C.Flags   += -g
-    LD.Flags  += -g
+
+    CXX.Flags := $(filter-out -fomit-frame-pointer,$(CXX.Flags)) -g -fno-omit-frame-pointer
+    C.Flags   := $(filter-out -fomit-frame-pointer,$(C.Flags)) -g -fno-omit-frame-pointer
+    LD.Flags  := $(filter-out -fomit-frame-pointer,$(LD.Flags)) -g -fno-omit-frame-pointer
+
     KEEP_SYMBOLS := 1
   endif
 else
