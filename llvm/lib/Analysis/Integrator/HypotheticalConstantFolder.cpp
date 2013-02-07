@@ -2313,10 +2313,30 @@ void IntegrationAttempt::queueDIEOperands(Value* V) {
 
 }
 
+static uint32_t DIEProgressN = 0;
+const uint32_t DIEProgressLimit = 1000;
+
+static void DIEProgress() {
+
+  if(!mainDIE)
+    return;
+
+  DIEProgressN++;
+  if(DIEProgressN == DIEProgressLimit) {
+
+    errs() << ".";
+    DIEProgressN = 0;
+
+  }
+
+}
+
 void IntegrationAttempt::tryKillValue(Value* V) {
 
   if(deadValues.count(V))
     return;
+
+  DIEProgress();
 
   //errs() << "Trying to kill " << itcache(make_vc(V, this)) << "\n";
 

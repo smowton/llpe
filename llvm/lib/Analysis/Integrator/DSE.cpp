@@ -249,7 +249,29 @@ bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt*
 
 }
 
+bool llvm::mainDIE = false;
+
+static uint32_t DSEProgressN = 0;
+const uint32_t DSEProgressLimit = 1000;
+
+static void DSEProgress() {
+
+  if(!mainDIE)
+    return;
+
+  DSEProgressN++;
+  if(DSEProgressN == DSEProgressLimit) {
+
+    errs() << ".";
+    DSEProgressN = 0;
+
+  }
+
+}
+
 bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
+
+  DSEProgress();
 
   void* initialCtx = 0;
 

@@ -238,47 +238,6 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
-struct BIC {
-  BasicBlock::iterator it;
-  BasicBlock* BB;
-  IntegrationAttempt* ctx;
-
-BIC(BasicBlock::iterator _it, BasicBlock* _BB, IntegrationAttempt* _ctx) : it(_it), BB(_BB), ctx(_ctx) { }
-BIC(Instruction* I, IntegrationAttempt* _ctx);
-};
-
-inline bool operator==(const BIC& B1, const BIC& B2) {
-  return B1.it == B2.it && B1.BB == B2.BB && B1.ctx == B2.ctx;
-}
-
-inline bool operator!=(const BIC& B1, const BIC& B2) {
-  return !(B1 == B2);
-}
-
-inline bool operator<(const BIC& B1, const BIC& B2) {
-
-  if(B1.BB != B2.BB) 
-    return B1.BB < B2.BB;
-  if(B1.it != B2.it)
-    return ((Instruction*)B1.it) < ((Instruction*)B2.it);
-  return B1.ctx < B2.ctx;
-    
-}
-
-inline bool operator>(const BIC& B1, const BIC& B2) {
-  return B2 < B1;
-}
-
-inline bool operator<=(const BIC& B1, const BIC& B2) {
-  return B1 < B2 || B1 == B2;
-}
-
-inline bool operator>=(const BIC& B1, const BIC& B2) {
-  return B1 > B2 || B1 == B2;
-}
-
-
-
 extern TargetData* GlobalTD;
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -762,12 +721,12 @@ class IAWalker {
 
  protected:
 
-  SmallSet<BIC, 8> Visited;
-  SmallVector<std::pair<BIC, void*>, 8> Worklist1;
-  SmallVector<std::pair<BIC, void*>, 8> Worklist2;
+  DenseSet<ValCtx> Visited;
+  SmallVector<std::pair<ValCtx, void*>, 8> Worklist1;
+  SmallVector<std::pair<ValCtx, void*>, 8> Worklist2;
 
-  SmallVector<std::pair<BIC, void*>, 8>* PList;
-  SmallVector<std::pair<BIC, void*>, 8>* CList;
+  SmallVector<std::pair<ValCtx, void*>, 8>* PList;
+  SmallVector<std::pair<ValCtx, void*>, 8>* CList;
 
   SmallVector<void*, 4> Contexts;
   
@@ -795,13 +754,13 @@ class IAWalker {
  }
 
   void walk();
-  void queueWalkFrom(BIC, void* context, bool copyContext);
+  void queueWalkFrom(ValCtx, void* context, bool copyContext);
 
 };
 
 class BackwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(BasicBlock::iterator, BasicBlock*, IntegrationAttempt*, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
 
  public:
@@ -815,7 +774,7 @@ class BackwardIAWalker : public IAWalker {
 
 class ForwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(BIC, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(BasicBlock::iterator, BasicBlock*, IntegrationAttempt*, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
   
  public:
@@ -1691,6 +1650,8 @@ class InlineAttempt : public IntegrationAttempt {
 
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
  void release_assert_fail(const char*);
+
+ extern bool mainDIE;
 
 } // Namespace LLVM
 

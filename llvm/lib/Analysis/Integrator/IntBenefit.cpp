@@ -13,6 +13,21 @@ using namespace llvm;
 const uint32_t eliminatedInstructionPoints = 2;
 const uint32_t extraInstructionPoints = 1;
 
+static uint32_t intBenefitProgressN = 0;
+const uint32_t intBenefitProgressLimit = 1000;
+
+static void intBenefitProgress() {
+
+  intBenefitProgressN++;
+  if(intBenefitProgressN == intBenefitProgressLimit) {
+
+    errs() << ".";
+    intBenefitProgressN = 0;
+
+  }
+
+}
+
 // getResidualInstructions: return a best-case residual instruction count, where we assume
 // that any code size increase will cause us to opt not to unroll a loop.
 
@@ -183,7 +198,7 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
 
   totalIntegrationGoodness = itersGoodness + daeBonus - nonTermPenalty;
 
-  errs() << getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n";
+  //errs() << getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n";
 
   if(totalIntegrationGoodness < 0) {
 
@@ -293,7 +308,9 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
   }
 
-  errs() << getShortHeader() << ": int-goodness " << totalIntegrationGoodness << " (child: " << childIntegrationGoodness << ", codesize: " << newInstPenalty << ", timebonus: " << timeBonus << ")\n";
+  intBenefitProgress();
+
+  //errs() << getShortHeader() << ": int-goodness " << totalIntegrationGoodness << " (child: " << childIntegrationGoodness << ", codesize: " << newInstPenalty << ", timebonus: " << timeBonus << ")\n";
 
 }
 
@@ -338,7 +355,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   }
 
-  errs() << getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n";
+  //errs() << getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n";
 
   if(parent && (totalIntegrationGoodness < 0)) {
 
@@ -419,7 +436,7 @@ void IntegrationAttempt::propagateDependentLoads() {
 
 void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
 
-  errs() << "Selecting initial integration candidates...\n";
+  //errs() << "Selecting initial integration candidates...\n";
 
   Module& M = RootIA->getModule();
 

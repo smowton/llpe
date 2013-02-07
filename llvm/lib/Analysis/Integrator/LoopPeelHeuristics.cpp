@@ -147,6 +147,20 @@ PeelAttempt::~PeelAttempt() {
     delete *it;
   }
 }
+static uint32_t mainPhaseProgressN = 0;
+const uint32_t mainPhaseProgressLimit = 1000;
+
+static void mainPhaseProgress() {
+
+  mainPhaseProgressN++;
+  if(mainPhaseProgressN == mainPhaseProgressLimit) {
+
+    errs() << ".";
+    mainPhaseProgressN = 0;
+
+  }
+
+}
 
 // Does this instruction count for accounting / performance measurement? Essentially: can this possibly be improved?
 bool instructionCounts(Instruction* I) {
@@ -792,7 +806,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  errs() << "Inline new fn " << FCalled->getName() << "\n";
+  //errs() << "Inline new fn " << FCalled->getName() << "\n";
+  mainPhaseProgress();
 
   InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
   inlineChildren[CI] = IA;
@@ -834,6 +849,8 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
     return 0;
   
   LPDEBUG("Peeling iteration " << iter << " of loop " << L->getHeader()->getName() << "\n");
+
+  mainPhaseProgress();
 
   assert(iter == Iterations.size());
 
@@ -893,7 +910,7 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
   }
   */
 
-  errs() << "Peel loop " << L->getHeader()->getName() << "\n";
+  //errs() << "Peel loop " << L->getHeader()->getName() << "\n";
 
   iterStatus = IterationStatusNonFinal;
   LPDEBUG("Loop known to iterate: creating next iteration\n");
@@ -2453,9 +2470,14 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   parseArgs(IA, F);
 
+  errs() << "Interpreting";
   IA->analyse();
+  errs() << "\n";
 
   if(!SkipDIE) {
+
+    errs() << "Killing memory instructions";
+    mainDIE = true;
 
     DEBUG(dbgs() << "Finding dead MTIs\n");
     IA->tryKillAllMTIs();
@@ -2471,16 +2493,26 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
     DEBUG(dbgs() << "Finding remaining dead instructions\n");
 
+    errs() << "\n";
+    errs() << "Killing other instructions";
+
     IA->queueAllLiveValues();
 
     runDIEQueue();
+
+    errs() << "\n";
+
+    mainDIE = false;
 
   }
 
   IA->collectStats();
   
-  if(!SkipBenefitAnalysis)
+  if(!SkipBenefitAnalysis) {
+    errs() << "Picking integration candidates";
     estimateIntegrationBenefit();
+    errs() << "\n";
+  }
 
   IA->disableVarargsContexts();
 
