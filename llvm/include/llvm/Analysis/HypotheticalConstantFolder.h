@@ -291,8 +291,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, PostDominatorTree*> PDTs;
    DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
 
-   DenseMap<Function*, BasicBlock*> uniqueReturnBlocks;
-
    SmallSet<Function*, 4> alwaysInline;
    DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
@@ -345,8 +343,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
    DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
-
-   BasicBlock* getUniqueReturnBlock(Function* F);
 
    void runQueues();
    bool runQueue();
@@ -1575,7 +1571,6 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   CallInst* CI;
-  BasicBlock* UniqueReturnBlock;
   SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
  public:

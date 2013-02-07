@@ -93,8 +93,6 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   IntegrationAttempt(Pass, P, F, LI, TD, AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
   CI(_CI)
   { 
-    UniqueReturnBlock = Pass->getUniqueReturnBlock(&F);
-
     raw_string_ostream OS(HeaderStr);
     OS << (!CI ? "Root " : "") << "Function " << F.getName();
     if(CI && !CI->getType()->isVoidTy())
@@ -1761,36 +1759,6 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     return 0;
 
   }
-
-}
-
-BasicBlock* IntegrationHeuristicsPass::getUniqueReturnBlock(Function* F) {
-
-  DenseMap<Function*, BasicBlock*>::iterator it = uniqueReturnBlocks.find(F);
-  
-  if(it != uniqueReturnBlocks.end())
-    return it->second;
-
-  BasicBlock* uniqueReturnBlock = 0;
-
-  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
-
-    BasicBlock* BB = FI;
-
-    if(isa<ReturnInst>(BB->getTerminator())) {
-      if(!uniqueReturnBlock)
-	uniqueReturnBlock = BB;
-      else {
-	uniqueReturnBlock = 0;
-	break;
-      }
-    }
-
-  }
-
-  uniqueReturnBlocks[F] = uniqueReturnBlock;
-
-  return uniqueReturnBlock;
 
 }
 
