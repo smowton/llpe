@@ -31,12 +31,15 @@ using namespace llvm;
 
 void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
-  for(Function::arg_iterator it = F.arg_begin(), it2 = F.arg_end(); it != it2; ++it) {
-    tryEvaluate(it);
-    if(!improvedValues.count(it)) {
-      updateBasePointer(it, true, 0, CacheThresholdBB, CacheThresholdIA);
-      tryPromoteSingleValuedPB(it);
+  for(unsigned i = 0; i < F.arg_size(); ++i) {
+
+    ShadowArg* SArg = argShadows[i];
+    tryEvaluateArg(SArg);
+    if(!isResolved(SArg) {
+      updateBasePointer(SArg, true, 0, CacheThresholdBB, CacheThresholdIA);
+      tryPromoteSingleValuedPB(SArg);
     }
+
   }
   analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
@@ -44,14 +47,9 @@ void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& Cache
 
 void IntegrationAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
-  std::vector<BasicBlock*> topOrderedBlocks;
-  SmallSet<BasicBlock*, 8> visited;
+  for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
-  createTopOrderingFrom(getEntryBlock(), topOrderedBlocks, visited, getLoopContext(), true);
-
-  for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
-
-    analyseBlock(*it, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+    analyseBlock(i, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
   }
 
@@ -62,6 +60,7 @@ void IntegrationAttempt::analyse() {
   // Analysis primary entry point:
   BasicBlock* FirstThresholdBB = &F.getEntryBlock();
   IntegrationAttempt* FirstThresholdIA = this;
+
   analyse(false, FirstThresholdBB, FirstThresholdIA);
 
 }
@@ -78,12 +77,10 @@ void PeelAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdB
 
 }
 
-void IntegrationAttempt::analyseBlock(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+void IntegrationAttempt::analyseBlock(uint32_t blockIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
-  const Loop* MyL = getLoopContext();
-
-  checkBlock(BB);
-  if(blockIsDead(BB))
+  checkBlock(blockIdx);
+  if(!BBs[blockIdx])
     return;
 
   // Use getLoopFor instead of getBlockScopeVariant because even if the loop is explicitly

@@ -238,6 +238,145 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
+// Helper for shadow structures
+
+template<typename T> class ImmutableArray {
+
+  const T* arr;
+  size_t n;
+
+ public:
+
+ ImmutableArray() : arr(0), n(0) { }
+ ImmutableArray(const T* _arr, size_t _n) : arr(_arr), n(_n) { }
+
+  ImmutableArray(const ImmutableArray& other) {
+    arr = other.arr;
+    n = other.n;
+  }
+
+  ImmutableArray& operator=(const ImmutableArray& other) {
+    arr = other.arr;
+    n = other.n;
+    return *this;
+  }
+
+  const T& operator[](size_t n) const {
+    return arr[n];
+  }
+
+  size_t size() const {
+    return n;
+  }
+
+};
+
+// Shadow data structures
+
+#define INVALID_BLOCK_IDX 0xffffffff;
+#define INVALID_INSTRUCTION_IDX 0xffffffff;
+
+struct ShadowInstIdx {
+
+  uint32_t blockIdx;
+  uint32_t instIdx;
+
+ShadowInstIdx() : blockIdx(INVALID_BLOCK_IDX), instIdx(INVALID_INSTRUCTION_IDX) { }
+ShadowInstIdx(uint32_t b, uint32_t i) : blockIdx(b), instIdx(i) { }
+
+};
+
+struct ShadowInstructionInvar {
+  
+  Instruction* I;
+  const Loop* scope;
+  ImmutableArray<ShadowInstIdx> operandIdxs;
+  ImmutableArray<ShadowInstIdx> userIdxs;
+
+};
+
+enum ShadowInstDIEStatus {
+
+  INSTSTATUS_ALIVE = 0,
+  INSTSTATUS_DEAD = 1,
+  INSTSTATUS_UNUSED_WRITER = 2
+
+};
+
+struct InstArgImprovement {
+
+  ValCtx replaceWith;
+  ValCtx baseObject;
+  uint64_t baseOffset;
+  SmallVector<ValCtx, 4>* indirectUsers;
+  ShadowInstDIEStatus dieStatus;
+
+InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }
+
+};
+
+struct ShadowInstruction {
+
+  uint32_t idx;
+  ShadowInstructionInvar* invar;
+  InstArgImprovement i;
+
+};
+
+struct ShadowArgInvar {
+
+  Argument* A;
+  ImmutableArray<ShadowInstIdx> userIdxs;
+
+};
+
+struct ShadowArg {
+
+  ShadowArgInvar* invar;
+  InstArgImprovement i;  
+
+};
+
+enum ShadowBBStatus {
+
+  BBSTATUS_UNKNOWN,
+  BBSTATUS_CERTAIN,
+  BBSTATUS_ASSUMED
+
+};
+
+struct ShadowBBInvar {
+
+  uint32_t idx;
+  BasicBlock* BB;
+  ImmutableArray<uint32_t> succIdxs;
+  ImmutableArray<uint32_t> predIdxs;
+  ImmutableArray<ShadowInstruction> insts;
+  const Loop* outerScope;
+  const Loop* scope;
+  const Loop* naturalScope;
+
+};
+
+struct ShadowBB {
+
+  ShadowBBInvar* invar;
+  bool* succsAlive;
+  bool* predsAlive;
+  ShadowBBStatus status;
+
+};
+
+struct ShadowFunctionInvar {
+
+  ImmutableArray<ShadowBBInvar> BBs;
+  ImmutableArray<ShadowArgInvar> Args;
+  DenseMap<const Loop*, uint32_t> LoopHeaderIndices;
+  DenseMap<const Loop*, uint32_t> LoopPreheaderIndices;
+  DenseMap<const Loop*, uint32_t> LoopLatchIndices;
+
+};
+
 extern TargetData* GlobalTD;
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -788,6 +927,13 @@ class IntegrationAttempt {
 protected:
 
   IntegrationHeuristicsPass* pass;
+  ShadowFunctionInvar* invarInfo;
+  ShadowBB* BBs;
+  uint32_t nBBs;
+  // BBsOffset: offset from indices in the BBs array to invarInfo.BBs.
+  // For inlineAttempts this is 0; for loop iterations it is the index of the loop's header
+  // within the invar info.
+  uint32_t BBsOffset;
 
   // Analyses created by the Pass.
   DenseMap<Function*, LoopInfo*>& LI;
@@ -800,24 +946,9 @@ protected:
   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
 
-  DenseMap<Value*, ValCtx> improvedValues;
-
-  DenseSet<BasicBlock*> deadBlocks;
-  SmallSet<std::pair<BasicBlock*, BasicBlock*>, 4> deadEdges;
-  SmallSet<BasicBlock*, 4> certainBlocks;
-  SmallSet<BasicBlock*, 4> assumedCertainBlocks;
-
-  // Instructions which have no users (discounting side-effects) after discounting instructions
-  // which will be RAUW'd or deleted on commit.
-  DenseSet<Value*> deadValues;
-  // Instructions which write memory, but whose results are never read. These may be deleted.
-  DenseSet<Value*> unusedWriters;
   // A list of dead stores and allocations which in the course of being found dead traversed this context.
   // These should be discounted as unused writes if we are folded.
   DenseSet<ValCtx> unusedWritersTraversingThisContext;
-
-  // Map from pointer-typed instructions to loads that will resolve to them.
-  DenseMap<Instruction*, SmallVector<ValCtx, 4> > instIndirectUsers;
 
   int improvableInstructions;
   int improvableInstructionsIncludingLoops;
@@ -863,6 +994,7 @@ protected:
  public:
 
   Function& F;
+  const Loop* L;
 
   bool contextIsDead;
 
@@ -962,7 +1094,6 @@ protected:
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
-  virtual const Loop* getLoopContext() = 0;
   virtual Instruction* getEntryInstruction() = 0;
   virtual void collectAllLoopStats() = 0;
   void printHeader(raw_ostream& OS) const;
@@ -1010,8 +1141,6 @@ protected:
 
   // CFG analysis:
 
-  bool shouldCheckBlock(BasicBlock* BB);
-  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) = 0;
   void checkBlock(BasicBlock* BB);
   void checkSuccessors(BasicBlock* BB);
   void checkBlockPHIs(BasicBlock*);
@@ -1317,7 +1446,6 @@ protected:
 class PeelIteration : public IntegrationAttempt {
 
   int iterationCount;
-  const Loop* L;
   PeelAttempt* parentPA;
 
   BasicBlock* LHeader;
@@ -1336,11 +1464,8 @@ public:
 
   virtual Instruction* getEntryInstruction();
   virtual BasicBlock* getEntryBlock();
-  virtual const Loop* getLoopContext();
 
   virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
-
-  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
 
   void checkExitEdge(BasicBlock*, BasicBlock*);
   void checkFinalIteration();
@@ -1529,7 +1654,8 @@ class PeelAttempt {
 
 class InlineAttempt : public IntegrationAttempt { 
 
-  CallInst* CI;
+  ShadowInstruction* CI;
+  ShadowBB* CIBB;
   SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
  public:
@@ -1537,14 +1663,13 @@ class InlineAttempt : public IntegrationAttempt {
   InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
 		DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth);
 
+  ShadowArg* argShadows;
+
   virtual ValCtx tryEvaluateResult(Value*);
   
   virtual Instruction* getEntryInstruction();
   virtual BasicBlock* getEntryBlock();
-  virtual const Loop* getLoopContext();
 
-  virtual bool shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB);
-  
   ValCtx tryGetReturnValue();
   
   ValCtx getImprovedCallArgument(Argument* A);

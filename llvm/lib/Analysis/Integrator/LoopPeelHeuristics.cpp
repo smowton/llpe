@@ -99,6 +99,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
       OS << " at " << itcache(*CI, true);
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
+    prepareShadows();
   }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
@@ -110,12 +111,11 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   parentPA(PP),
   iterStatus(IterationStatusUnknown)
 { 
-
   raw_string_ostream OS(HeaderStr);
   OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
   SeqNumber = Pass->getSeq();
   OS << " / " << SeqNumber;
-
+  prepareShadows();
 }
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
@@ -436,22 +436,42 @@ void IntegrationAttempt::eraseReplacement(Value* V) {
 
 }
 
-const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
+const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
 
-  const Loop* MyL = getLoopContext();
+  if(!L)
+    return 0;
 
-  if(MyL != InstL && ((!MyL) || MyL->contains(InstL))) {
+  Function* F = L->getHeader()->getParent();
+  
+  while(L && shouldIgnoreLoop(F, L->getHeader())) {
 
-    for(const Loop* L = InstL; L != MyL; L = L->getParentLoop()) {
-
-      if(pass->shouldIgnoreLoop(&F, L->getHeader()))
-	InstL = L->getParentLoop();
-
-    }
+    L = L->getParentLoop();
 
   }
 
-  return InstL;
+  return L;
+
+}
+
+const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
+
+  return pass->applyIgnoreLoops(InstL);
+
+}
+
+const Loop* IntegrationHeuristicsPass::getInstructionScope(Instruction* I) {
+
+  DenseMap<Instruction*, const Loop*>& instScopeMap = getInstScopes(I->getParent()->getParent());
+
+  const Loop* InstL;
+
+  DenseMap<Instruction*, const Loop*>::iterator it = instScopeMap.find(I);
+  if(it != instScopeMap.end())
+    InstL = it->second;
+  else
+    InstL = LIs[I->getParent()->getParent()]->getLoopFor(I->getParent());
+  
+  return applyIgnoreLoops(InstL);
 
 }
 
@@ -460,14 +480,7 @@ const Loop* IntegrationAttempt::getValueScope(Value* V) {
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
 
-    const Loop* InstL;
-    DenseMap<Instruction*, const Loop*>::iterator it = invariantInsts.find(I);
-    if(it != invariantInsts.end())
-      InstL = it->second;
-    else
-      InstL = LI[&F]->getLoopFor(I->getParent());
-
-    return applyIgnoreLoops(InstL);
+    return pass->getInstructionScope(I);
 
   }
   else if(isa<Argument>(V)) {
@@ -484,54 +497,80 @@ bool IntegrationAttempt::isUnresolved(Value* V) {
 
 }
 
-bool IntegrationAttempt::edgeIsDead(BasicBlock* B1, BasicBlock* B2) {
+bool IntegrationAttempt::localEdgeIsDead(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
 
-  if(deadEdges.count(std::make_pair(B1, B2)))
-    return true;
+  bool BB1InScope;
 
-  const Loop* MyScope = getLoopContext();
-  //const Loop* EdgeScope = getEdgeScope(B1, B2);
-  const Loop* EdgeScope = LI[&F]->getLoopFor(B1);
+  if(ShadowBB* BB1 = getBB(BB1Idx, BB1InScope)) {
 
-  if((MyScope != EdgeScope) && ((!MyScope) || MyScope->contains(EdgeScope))) {
+    bool foundLiveEdge = false;
 
-    if(edgeIsDeadWithScopeRising(B1, B2, EdgeScope))
+    for(uint32_t i = 0; i < BB1I.succIdxs.size() && !foundLiveEdge; ++i) {
+
+      if(BB2I.idx == BB1I.succIdxs[i]) {
+
+	if(BB1.succsAlive[i])
+	  foundLiveEdge = true;
+
+      }
+
+    }
+
+    if(!foundLiveEdge)
       return true;
 
   }
+  else if(BB1InScope) {
 
-  // Always check all the way out to function scope, because we could kill this edge
-  // after it is dominated by an invariant edge.
+    // Source block doesn't exist despite being in scope, edge must be dead.
+    return true;
 
-  return edgeIsDeadWithScope(B1, B2, 0);
+  }
+
+  return false;
 
 }
 
-bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B2, const Loop* EdgeScope) {
+bool IntegrationAttempt::edgeIsDead(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
 
-  if(deadEdges.count(std::make_pair(B1, B2)))
+  if(BB1I.naturalScope != L && ((!L) || L->contains(BB1I.naturalScope))) {
+    if(edgeIsDeadWithScopeRising(BB1I, BB2I))
+      return true;
+  }
+  else {
+    if(localEdgeIsDead(BB1I, BB2I))
+      return true;
+  }
+
+  // Check out to parent scopes because the edge might be killed as an invariant.
+
+  if(L)
+    return parent->edgeIsDeadFalling(BB1I, BB2I);
+  else
+    return false;
+
+}
+
+bool IntegrationAttempt::edgeIsDeadRising(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
+
+  if(localEdgeIsDead(BB1I, BB2I))
     return true;
 
-  const Loop* MyScope = getLoopContext();
-
-  if(EdgeScope == MyScope)
-    return edgeIsDeadWithScope(B1, B2, EdgeScope);
+  if(BB1I.naturalScope == L)
+    return false;
   
-  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyScope, EdgeScope))) {
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BB1I.naturalScope))) {
 
     PeelIteration* FinalIter = LPA->Iterations.back();
     if(FinalIter->iterStatus == IterationStatusFinal) {
 
-      //const Loop* B1Scope = getBlockScopeVariant(B1);
-      const Loop* B2Scope = getBlockScopeVariant(B2);
-
-      if(B2Scope == MyScope || ((!B2Scope) || B2Scope->contains(MyScope))) {
+      if(BB2I.scope == L || ((!BB2I.scope) || BB2I.scope->contains(L))) {
 
 	// This edge exits at least to the querying scope: check no iteration takes it.
 
 	for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
 	  
-	  if(!LPA->Iterations[i]->edgeIsDeadWithScopeRising(B1, B2, EdgeScope))
+	  if(!LPA->Iterations[i]->edgeIsDeadRising(BB1I, BB2I))
 	    return false;
 
 	}
@@ -545,7 +584,7 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
 	// of checkBlock checking the other successors of a block with an exiting edge.
 	// Call it dead if the final iteration says so.
 
-	return FinalIter->edgeIsDeadWithScopeRising(B1, B2, EdgeScope);
+	return FinalIter->edgeIsDeadRising(BB1I, BB2I);
 
       }
 
@@ -557,17 +596,15 @@ bool IntegrationAttempt::edgeIsDeadWithScopeRising(BasicBlock* B1, BasicBlock* B
 
 }
 
-bool IntegrationAttempt::edgeIsDeadWithScope(BasicBlock* B1, BasicBlock* B2, const Loop* ScopeL) {
+bool IntegrationAttempt::edgeIsDeadFalling(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
 
-  if(deadEdges.count(std::make_pair(B1, B2)))
+  if(localEdgeIsDead(BB1I, BB2I))
     return true;
-  
-  const Loop* MyScope = getLoopContext();
 
-  if(ScopeL == MyScope)
+  if(!L)
     return false;
 
-  return parent->edgeIsDeadWithScope(B1, B2, ScopeL);
+  return parent->edgeIsDeadFalling(BB1I, BB2I);
 
 }
 
@@ -575,19 +612,6 @@ void IntegrationAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
 
   std::pair<BasicBlock*, BasicBlock*> Edge = std::make_pair(B1, B2);
   deadEdges.insert(Edge);
-
-}
-
-const Loop* IntegrationAttempt::getEdgeScope(BasicBlock* B1, BasicBlock* B2) {
-
-  DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>::iterator it = invariantEdges.find(std::make_pair(B1, B2));
-  const Loop* L;
-  if(it != invariantEdges.end())
-    L = it->second;
-  else
-    L = LI[&F]->getLoopFor(B1);
-
-  return applyIgnoreLoops(L);
 
 }
 
@@ -617,16 +641,26 @@ void IntegrationAttempt::setBlockDead(BasicBlock* BB) {
 
 }
 
-const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
+const Loop* IntegrationHeuristicsPass::getBlockScope(BasicBlock* BB) {
+  
+  Function* F = BB->getParent();
 
-  DenseMap<BasicBlock*, const Loop*>::iterator it = invariantBlocks.find(BB);
+  DenseMap<BasicBlock*, const Loop*>& Map = getBlockScopes(F);
+
+  DenseMap<BasicBlock*, const Loop*>::iterator it = Map.find(BB);
   const Loop* L;
-  if(it == invariantBlocks.end())
-    L = LI[&F]->getLoopFor(BB);
+  if(it == Maps.end())
+    L = LIs[F]->getLoopFor(BB);
   else
     L = it->second;
 
   return applyIgnoreLoops(L);
+
+}
+
+const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
+
+  return pass->getBlockScope(BB);
   
 }
 
@@ -636,10 +670,10 @@ const Loop* IntegrationAttempt::getBlockScopeVariant(BasicBlock* BB) {
 
 }
 
-bool IntegrationAttempt::blockCertainlyExecutes(BasicBlock* BB) {
+bool IntegrationAttempt::blockCertainlyExecutes(ShadowBBInvar& BBI) {
 
-  const Loop* BlockL = getBlockScopeVariant(BB);
-  const Loop* MyL = getLoopContext();
+  const Loop* BlockL = BBI.scope;
+  const Loop* MyL = L;
 
   if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
 
@@ -648,7 +682,7 @@ bool IntegrationAttempt::blockCertainlyExecutes(BasicBlock* BB) {
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
       if(FinalIter->isOnlyExitingIteration()) {
 
-	return FinalIter->blockCertainlyExecutes(BB);
+	return FinalIter->blockCertainlyExecutes(BBI);
 
       }
       else {
@@ -661,14 +695,20 @@ bool IntegrationAttempt::blockCertainlyExecutes(BasicBlock* BB) {
 
   }
 
-  return certainBlocks.count(BB);
+  bool BBInScope;
+  if(ShadowBB* BB = getBB(BBI, BBInScope)) {
+    assert(BBInScope);
+    return BBI->status == BBSTATUS_CERTAIN;
+  }
+
+  return false;
 
 }
 
-bool IntegrationAttempt::blockAssumed(BasicBlock* BB) {
+bool IntegrationAttempt::blockAssumed(ShadowBBInvar& BBI) {
 
-  const Loop* BlockL = getBlockScopeVariant(BB);
-  const Loop* MyL = getLoopContext();
+  const Loop* BlockL = BBI.scope;
+  const Loop* MyL = L;
 
   if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
 
@@ -677,7 +717,7 @@ bool IntegrationAttempt::blockAssumed(BasicBlock* BB) {
       PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
       if(FinalIter->isOnlyExitingIteration()) {
 
-	return FinalIter->blockAssumed(BB);
+	return FinalIter->blockAssumed(BBI);
 
       }
       else {
@@ -690,7 +730,13 @@ bool IntegrationAttempt::blockAssumed(BasicBlock* BB) {
 
   }
 
-  return assumedCertainBlocks.count(BB);  
+  bool BBInScope;
+  if(ShadowBB* BB = getBB(BBI, BBInScope)) {
+    assert(BBInScope);
+    return BBI->status == BBSTATUS_ASSUMED;
+  }
+
+  return false;
 
 }
 

@@ -345,18 +345,18 @@ bool InlineAttempt::entryBlockIsCertain() {
 
   if(!parent)
     return true;
-  return parent->blockCertainlyExecutes(CI->getParent());
+  return parent->blockCertainlyExecutes(CIBB);
 
 }
 
 bool PeelIteration::entryBlockIsCertain() {
 
   if(iterationCount == 0)
-    return parent->blockCertainlyExecutes(L->getLoopPreheader());
+    return parent->blockCertainlyExecutes(parentPA->preheaderBB);
 
   // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
   PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
-  return prevIter->blockCertainlyExecutes(L->getHeader()) && prevIter->allExitEdgesDead();
+  return prevIter->blockCertainlyExecutes(parentPA->latchIdx) && prevIter->allExitEdgesDead();
 
 }
 
@@ -375,16 +375,16 @@ bool PeelIteration::entryBlockAssumed() {
 
 }
 
-void IntegrationAttempt::checkBlock(BasicBlock* BB) {
+void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
-  LPDEBUG("Checking status of block " << BB->getName() << ": ");
+  const ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
+  BasicBlock* BB = SBBI.BB;
 
-  if(!shouldCheckBlock(BB)) {
-    DEBUG(dbgs() << "already known\n");
+  LPDEBUG("Checking status of block " << BB->getName() << "\n");
+
+  if(getBB(blockIdx)) {
+    DEBUG(dbgs() << "Status already known\n");
     return;
-  }
-  else {
-    DEBUG(dbgs() << "\n");
   }
 
   // Check whether this block has become dead or certain
@@ -402,13 +402,15 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
   }
   else {
 
-    for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
+    for(unsigned i = 0, ilim = SBBI.predIdxs.size(); i < ilim; ++i) {
 
-      if(!edgeIsDead(*PI, BB)) {
+      const ShadowBBInvar& PSBBI = invarInfo->BBs[SBBI.predIdxs[i]];
+
+      if(!edgeIsDead(PSBBI, SBBI)) {
 
 	isDead = false;
 
-	bool PICertain = blockCertainlyExecutes(*PI);
+	bool PICertain = blockCertainlyExecutes(PSBBI);
 	if(!PICertain)
 	  isCertain = false;
 
@@ -418,9 +420,11 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 	  bool onlySuccessor = true;
 
-	  for(succ_iterator SI = succ_begin(*PI), SE = succ_end(*PI); SI != SE; ++SI) {
+	  for(uint32_t j = 0, jlim = PSBBI.succIdxs.size(); j != jlim; ++j) {
 
-	    if((*SI) != BB && !edgeIsDead(*PI, *SI)) {
+	    const ShadowBBInvar& SSBBI = invarInfo->BBs[PSBBI.succIdxs[j]];
+
+	    if(SBBI.BB != SSBBI.BB && !edgeIsDead(PSBBI, SSBBI)) {
 	      onlySuccessor = false;
 	      break;
 	    }
@@ -429,7 +433,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
 	  if(!onlySuccessor) {
 	    isCertain = false;
-	    if(!shouldAssumeEdge(*PI, BB))
+	    if(!shouldAssumeEdge(PSBBI.BB, SBBI.BB))
 	      isAssumed = false;
 	  }
 
@@ -454,6 +458,7 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
 
   if(isDead) {
 
+    /*
     LPDEBUG("Block is dead. Killing outgoing edges\n"); 
     deadBlocks.insert(BB);
     
@@ -463,11 +468,15 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
       checkLoopSpecialEdge(BB, *SI);
 
     }
+    */
+
+    // Block is implied dead as we do not create a BB structure for it at this point.
+    return;
 
   }
   else if(isCertain || isAssumed) {
 
-    const Loop* MyL = getLoopContext();
+    const Loop* MyL = L;
     if(!MyL) {
 
       for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
@@ -509,39 +518,12 @@ void IntegrationAttempt::checkBlock(BasicBlock* BB) {
     }
 
   }
-
-}
-
-bool IntegrationAttempt::shouldCheckBlock(BasicBlock* BB) {
-
-  return !(blockIsDead(BB) || blockAssumedToExecute(BB));
-
-}
-
-bool InlineAttempt::shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  return shouldCheckBlock(ToBB);
-
-}
-
-bool PeelIteration::shouldCheckEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  if(FromBB == L->getLoopLatch() && ToBB == L->getHeader()) {
-
-    PeelIteration* NextIter = getNextIteration();
-    if(!NextIter)
-      return true;
-    else
-      return NextIter->shouldCheckBlock(ToBB);
-
-  }
   else {
 
-    // All other complicated cases (loop entry and exit edges) are taken care of in shouldCheckBlock -> blockIsDead.
-    return shouldCheckBlock(ToBB);
+    createBlockShadow(SBBI);
 
   }
-  
+
 }
 
 bool IntegrationAttempt::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
