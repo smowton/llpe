@@ -191,16 +191,20 @@ bool PeelIteration::isOnlyExitingIteration() {
 
 }
 
-void IntegrationAttempt::markBlockCertain(BasicBlock* BB) {
+void IntegrationAttempt::markBlockCertain(ShadowBBInvar* BB) {
 
-  LPDEBUG("Block " << BB->getName() << " is certain to execute. Queueing successors and calls.\n");
-  certainBlocks.insert(BB);
+  LPDEBUG("Block " << BB->getName() << " is certain to execute\n");
+  if(!BBs[BB->idx])
+    createBB(BB->idx);
+  BB->status = BBSTATUS_CERTAIN;
     
 }
 
-void IntegrationAttempt::markBlockAssumed(BasicBlock* BB) {
+void IntegrationAttempt::markBlockAssumed(ShadowBBInvar* BB) {
 
-  assumedCertainBlocks.insert(BB);
+  if(!BBs[BB->idx])
+    createBB(BB->idx);
+  BB->status = BBSTATUS_ASSUMED;
 
 }
 
@@ -249,7 +253,7 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
   DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> >::iterator it = LoopPDTs.find(L);
   if(it != LoopPDTs.end()) {
 
-    P = std::make_pair(it->second.first, it->second.second);
+    P = it->second;
 
   }
   else {
@@ -375,6 +379,19 @@ bool PeelIteration::entryBlockAssumed() {
 
 }
 
+// Create the ShadowBB structure for the given block index.
+void IntegrationAttempt::createBB(uint32_t blockIdx) {
+
+  release_assert((!BBs[blockIdx]) && "Creating block for the second time");
+  ShadowBB* newBB = new ShadowBB();
+  newBB->invar = invarInfo->BBs[blockIdx];
+  newBB->succsAlive = new bool[newBB->invar->predIdxs.size()];
+  for(unsigned i = 0, ilim = newBB->invar->predIdxs.size(); i != ilim; ++i)
+    newBB->succsAlive[i] = true;
+  newBB->status = BBSTATUS_UNKNOWN;
+
+}
+
 void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
   const ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
@@ -458,18 +475,6 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
   if(isDead) {
 
-    /*
-    LPDEBUG("Block is dead. Killing outgoing edges\n"); 
-    deadBlocks.insert(BB);
-    
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-      
-      deadEdges.insert(std::make_pair<BasicBlock*, BasicBlock*>(BB, *SI));
-      checkLoopSpecialEdge(BB, *SI);
-
-    }
-    */
-
     // Block is implied dead as we do not create a BB structure for it at this point.
     return;
 
@@ -477,39 +482,19 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
   else if(isCertain || isAssumed) {
 
     const Loop* MyL = L;
-    if(!MyL) {
 
-      for(DomTreeNode* DTN = (*getPostDomTree())[BB]; DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
-
-	BasicBlock* SB = DTN->getBlock();
-	if(getBlockScopeVariant(SB) == MyL) {
+    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, BB); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 	
-	  if(isCertain)
-	    markBlockCertain(SB);
-	  else
-	    markBlockAssumed(SB);
-
-	}
-
-      }
-
-    }
-    else {
-
-      for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, BB); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
-	
-	const BBWrapper* BW = DTN->getBlock();
-	if(BW->BB) {
+      const BBWrapper* BW = DTN->getBlock();
+      if(BW->BB) {
 	  
-	  const Loop* BBL = getBlockScopeVariant(const_cast<BasicBlock*>(BW->BB));
-	  if(BBL == MyL) {
+	const Loop* BBL = const_cast<ShadowBBInvar*>(BW->BB)->scope;
+	if(BBL == MyL) {
 
-	    if(isCertain)
-	      markBlockCertain(const_cast<BasicBlock*>(BW->BB));
-	    else
-	      markBlockAssumed(const_cast<BasicBlock*>(BW->BB));
-
-	  }
+	  if(isCertain)
+	    markBlockCertain(const_cast<ShadowBBInvar*>(BW->BB));
+	  else
+	    markBlockAssumed(const_cast<ShadowBBInvar*>(BW->BB));
 
 	}
 
@@ -520,7 +505,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
   }
   else {
 
-    createBlockShadow(SBBI);
+    createBB(SBBI.idx);
 
   }
 

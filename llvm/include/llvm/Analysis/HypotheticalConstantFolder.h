@@ -345,8 +345,11 @@ enum ShadowBBStatus {
 
 };
 
+struct ShadowFunctionInvar;
+
 struct ShadowBBInvar {
 
+  ShadowFunctionInvar* F;
   uint32_t idx;
   BasicBlock* BB;
   ImmutableArray<uint32_t> succIdxs;
@@ -356,13 +359,18 @@ struct ShadowBBInvar {
   const Loop* scope;
   const Loop* naturalScope;
 
+  inline ShadowBBInvar* getPred(uint32_t i);
+  inline uint32_t preds_size();
+
+  inline ShadowBBInvar* getSucc(uint32_t i);  
+  inline uint32_t succs_size();
+
 };
 
 struct ShadowBB {
 
   ShadowBBInvar* invar;
   bool* succsAlive;
-  bool* predsAlive;
   ShadowBBStatus status;
 
 };
@@ -374,8 +382,27 @@ struct ShadowFunctionInvar {
   DenseMap<const Loop*, uint32_t> LoopHeaderIndices;
   DenseMap<const Loop*, uint32_t> LoopPreheaderIndices;
   DenseMap<const Loop*, uint32_t> LoopLatchIndices;
+  
+  // TODO: Remove this map once we never need to map raw BBs onto indices.
+  DenseMap<BasicBlock*, ShadowBBInvar*> BBMap;
 
 };
+
+ShadowBBInvar* ShadowBBInvar::getPred(uint32_t i) {
+  return F->BBs[predIdxs[i]];
+}
+
+uint32_t ShadowBBInvar::preds_size() { 
+  return predIdxs.size();
+}
+
+ShadowBBInvar* ShadowBBInvar::getSucc(uint32_t i) {
+  return F->BBs[succIdxs[i]];
+}
+  
+uint32_t ShadowBBInvar::succs_size() {
+  return succIdxs.size();
+}
 
 extern TargetData* GlobalTD;
 
@@ -386,7 +413,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* > invariantEdgeScopes;
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
 
-   DenseMap<Function*, PostDominatorTree*> PDTs;
    DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
 
    SmallSet<Function*, 4> alwaysInline;
@@ -446,7 +472,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool runQueue();
    void runDIEQueue();
 
-   PostDominatorTree* getPostDomTree(Function*);
    DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, BasicBlock*);
 
    // Caching text representations of instructions:
@@ -1057,6 +1082,7 @@ protected:
   virtual ValCtx getReplacement(Value* V);
   virtual bool edgeIsDead(BasicBlock*, BasicBlock*);
   virtual bool blockIsDead(BasicBlock*);
+  void createBB(uint32_t idx);
 
   Function& getFunction() { return F; }
   
@@ -1151,7 +1177,6 @@ protected:
   void checkVariantEdge(BasicBlock*, BasicBlock*, const Loop* Scope);
   void checkLocalEdge(BasicBlock*, BasicBlock*);
   bool checkLoopSpecialEdge(BasicBlock*, BasicBlock*);
-  PostDominatorTree* getPostDomTree();
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }

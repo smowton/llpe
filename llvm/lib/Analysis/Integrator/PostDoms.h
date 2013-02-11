@@ -17,24 +17,18 @@ namespace llvm {
 // Use this godawful wrapper class to carry a map from BBs to Loops so that we can store
 // <BB, Loop> pairs somewhere we can take addresses.
 
+struct LoopWrapper;
+
 struct BBWrapper {
 
-  const BasicBlock* BB;
-  const Loop* L;
-  DenseMap<const BasicBlock*, BBWrapper>* Map;
+  const ShadowBBInvar* BB;
+  const LoopWrapper* L;
+  bool hideSuccessors;
 
 BBWrapper(): BB(0), L(0), Map(0) { }
-BBWrapper(const BasicBlock* _BB, const Loop* _L, DenseMap<const BasicBlock*, BBWrapper>* _Map) : BB(_BB), L(_L), Map(_Map) { }
+BBWrapper(const BasicBlock* _BB, bool hide, const LoopWrapper* _L) : BB(_BB), hideSuccessors(hide), L(_L) { }
 
-  const BBWrapper* get(const BasicBlock* BB) const {
-
-    DenseMap<const BasicBlock*, BBWrapper>::const_iterator it = Map->find(BB);
-    if(it != Map->end())
-      return &(it->second);
-    else
-      return 0;
-
-  }
+  const BBWrapper* get(const ShadowBBInvar* BB) const;
 
 };
 
@@ -43,46 +37,93 @@ BBWrapper(const BasicBlock* _BB, const Loop* _L, DenseMap<const BasicBlock*, BBW
 
 struct LoopWrapper {
 
+  ShadowFunctionInvar& F;
   const Loop* L;
-  std::vector<const BBWrapper*> BBs;
-  DenseMap<const BasicBlock*, BBWrapper> Map;
+  std::vector<BBWrapper*> BBs;
+  BBWrapper* latchBB;
+  uint32_t BBIdxOffset;
 
-LoopWrapper(const Loop* _L) : L(_L) {
+LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : L(_L), F(_F) {
 
-  for(Loop::block_iterator LI = L->block_begin(), LE = L->block_end(); LI != LE; ++LI) {
-    Map[*LI] = BBWrapper(*LI, L, &Map);
-  }
+  if(L) {
 
-  SmallVector<BasicBlock*, 4> ExitBlocks;
-  L->getExitBlocks(ExitBlocks);
+    // Step 1: find lowest numbered BB we need to care about.
+    uint32_t LowestIdx = (uint32_t)-1;
+    uint32_t HighestIdx = 0;
   
-  for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
-    Map[*it] = BBWrapper(*it, L, &Map);
+    for(Loop::block_iterator LI = L->block_begin(), LE = L->block_end(); LI != LE; ++LI) {
+      uint32_t ThisIdx = F.BBMap[*LI].idx;
+      if(ThisIdx < LowestIdx)
+	LowestIdx = ThisIdx;
+      if(ThisIdx > HighestIdx)
+	HighestIdx = ThisIdx;
+    }  
+
+    SmallVector<BasicBlock*, 4> ExitBlocks;
+    L->getExitBlocks(ExitBlocks);
+
+    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {  
+      uint32_t ThisIdx = F.BBMap[*LI].idx;
+      if(ThisIdx < LowestIdx)
+	LowestIdx = ThisIdx;
+      if(ThisIdx > HighestIdx)
+	HighestIdx = ThisIdx;
+
+    }
+
+    release_assert(LowestIdx != (uint32_t)-1);
+
+    BBIdxOffset = LowestIdx;
+
+    // One extra space for the dummy next iter node.
+    BBs.resize((HighestIdx - LowestIdx) + 2);
+
+    for(Loop::block_iterator LI = L->block_begin(), LE = L->block_end(); LI != LE; ++LI) {
+      ShadowBBInvar* SBB = F.BBMap[*LI];
+      BBs[SBB->idx - BBIdxOffset] = new BBWrapper(SBB, /* hide successors = */ false, this);
+      if(*LI == L->getLoopLatch())
+	latchBB = BBs[SBB->idx - BBIdxOffset];
+    }
+  
+    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
+      ShadowBBInvar* SBB = F.BBMap[*it];
+      BBs[SBB->idx - BBIdxOffset] = new BBWrapper(SBB, /* hide successors = */ true, this);
+    }
+  
+    release_assert(L->getHeader() == BBs[0]->BB->BB);
+
+    BBs[BBs.size() - 1] = new BBWrapper(0, true, this);
+
   }
+  else {
 
-  Map[0] = BBWrapper(0, L, &Map);
+    // Not in a loop, no trickery required.
 
-  for(DenseMap<const BasicBlock*, BBWrapper>::iterator MI = Map.begin(), ME = Map.end(); MI != ME; ++MI) {
+    BBIdxOffset = 0;
 
-    BBs.push_back(&(MI->second));
+    BBs.resize(F.BBs.size());
+    for(uint32_t i = 0, ilim = F.BBs.size(); ++i)
+      BBs[i] = new BBWrapper(F.BBs[i], false, this);
 
   }
 
 }
 
-  const BBWrapper* get(const BasicBlock* BB) const {
+  const BBWrapper* get(const ShadowBBInvar* BB) const {
 
-    DenseMap<const BasicBlock*, BBWrapper>::const_iterator it = Map.find(BB);
-    if(it == Map.end())
+    // First case symbolises the dummy next iteration node, only applies to loops.
+    if(!BB)
+      return BBs[BBs.size() - 1];
+    else if(BB->idx < BBIdxOffset || (BB->idx - BBIdxOffset) >= BBs.size())
       return 0;
     else
-      return &(it->second);
-
+      return BBs[BB->idx];
+    
   }
 
   const BBWrapper& front() const {
 
-    return *get(L->getHeader());
+    return *(BBs[0]);
 
   }
   
@@ -94,9 +135,10 @@ LoopWrapper(const Loop* _L) : L(_L) {
 
   struct iterator {
 
-    std::vector<const BBWrapper*>::const_iterator it;
+    std::vector<BBWrapper*>::const_iterator it;
+    std::vector<BBWrapper*>::const_iterator itend;
 
-  iterator(std::vector<const BBWrapper*>::const_iterator _it) : it(_it) { }
+  iterator(std::vector<BBWrapper*>::const_iterator _it, std::vector<BBWrapper*>::const_iterator _itend) : it(_it), itend(_itend) { }
 
     bool operator==(const iterator& x) const {
       return x.it == it;
@@ -105,7 +147,11 @@ LoopWrapper(const Loop* _L) : L(_L) {
       return x.it != it;
     }
     iterator& operator++() {
-      it++;
+      // Skip past gaps in the BBWrapper vector, if any.
+      assert(it != itend && "Iterator out of range");
+      do {
+	it++;
+      } while(it != itend && !*it);
       return *this;
     }
     operator const BBWrapper*() { return *it; }
@@ -117,53 +163,43 @@ LoopWrapper(const Loop* _L) : L(_L) {
 
 };
 
-template <class Ptr, class USE_iterator> // Predecessor Iterator
+const BBWrapper* BBWrapper::get(const ShadowBBInvar* BB) {
+
+  return LW->get(BB);
+
+}
+
+template <class Ptr> // Predecessor Iterator
 class LoopPredIterator : public std::iterator<std::forward_iterator_tag,
 						Ptr, ptrdiff_t> {
   typedef std::iterator<std::forward_iterator_tag, Ptr, ptrdiff_t> super;
-  typedef LoopPredIterator<Ptr, USE_iterator> Self;
+  typedef LoopPredIterator<Ptr> Self;
   Ptr* ThisBB;
-  USE_iterator It;
+  uint32_t nextPred;
   bool isNextIter;
   bool isEnd;
-
-  inline bool shouldSkipUse(const User* U) {
-
-    if(isa<TerminatorInst>(U)) {
-      return ThisBB->L->getHeader() == ThisBB->BB;
-    }
-    else {
-      return true;
-    }
-   
-  }
-
-  inline void advancePastNonTerminators() {
-    // Loop to ignore non terminator uses (for example PHI nodes).
-    while (!It.atEnd() && shouldSkipUse(*It))
-      ++It;
-  }
 
 public:
   typedef typename super::pointer pointer;
 
   explicit inline LoopPredIterator(Ptr *bb) : ThisBB(bb), It() {
-    if(bb->BB && bb->BB != bb->L->getHeader()) {
+    if(bb->BB && ((!bb->BB->L->L) ZZ bb->BB->BB != bb->BB->L->L->getHeader())) {
       isNextIter = false;
-      It = USE_iterator(bb->BB->use_begin());
-      advancePastNonTerminators();
+      nextPred = 0;
     }
     else {
+      // This is the special next-iteration node
       isNextIter = true;
       isEnd = false;
     }
   }
   inline LoopPredIterator(Ptr *bb, bool) : ThisBB(bb), It() {
-    if(bb->BB && bb->BB != bb->L->getHeader()) {
+    if(bb->BB && ((!bb->BB->L->L) || bb->BB->BB != bb->BB->L->L->getHeader())) {
       isNextIter = false;
-      It = USE_iterator(bb->BB->use_end());
+      nextPred = bb->BB->preds_size();
     }
     else {
+      // This is the special next-iteration node
       isNextIter = true;
       isEnd = true;
     }
@@ -172,7 +208,7 @@ public:
   inline bool operator==(const Self& x) const { 
 
     if(!isNextIter)
-      return It == x.It; 
+      return nextPred == x.nextPred;
     else
       return isEnd == x.isEnd;
 
@@ -183,12 +219,12 @@ public:
   inline pointer operator*() const {
    
     if(!isNextIter) {
-      assert(!It.atEnd() && "pred_iterator out of range!");
-      return ThisBB->get(cast<TerminatorInst>(*It)->getParent());
+      assert(nextPred < ThisBB->BB->preds_size() && "pred_iterator out of range!");
+      return ThisBB->get(ThisBB->BB->getPred(nextPred));
     }
     else {
       assert(!isEnd);
-      return ThisBB->get(ThisBB->L->getLoopLatch());
+      return ThisBB->L->latchBB;
     }
 
   }
@@ -196,8 +232,8 @@ public:
 
   inline Self& operator++() {   // Preincrement
     if(!isNextIter) {
-      assert(!It.atEnd() && "pred_iterator out of range!");
-      ++It; advancePastNonTerminators();
+      assert(nextPred < ThisBB->BB->preds_size() && "pred_iterator out of range!");
+      ++nextPred;
     }
     else {
       assert(!isEnd);
@@ -211,54 +247,45 @@ public:
   }
 };
 
-typedef LoopPredIterator<BBWrapper, Value::use_iterator> loop_pred_iterator;
-typedef LoopPredIterator<const BBWrapper,
-			   Value::const_use_iterator> const_loop_pred_iterator;
+typedef LoopPredIterator<BBWrapper> loop_pred_iterator;
+typedef LoopPredIterator<const BBWrapper> const_loop_pred_iterator;
 
 inline const_loop_pred_iterator loop_pred_begin(const BBWrapper* BB) { return const_loop_pred_iterator(BB); }
 inline const_loop_pred_iterator loop_pred_end(const BBWrapper *BB) { return const_loop_pred_iterator(BB, true); }
 
-template <class Term_, class BB_>           // Successor Iterator
+template <class BB_>           // Successor Iterator
 class LoopSuccIterator : public std::iterator<std::bidirectional_iterator_tag,
                                           BB_, ptrdiff_t> {
   const BB_* Block;
-  Term_ Term;
-  unsigned idx;
+  uint32_t idx;
   typedef std::iterator<std::bidirectional_iterator_tag, BB_, ptrdiff_t> super;
-  typedef LoopSuccIterator<Term_, BB_> Self;
+  typedef LoopSuccIterator<BB_> Self;
 
   inline bool index_is_valid(int idx) {
     if(!Block->BB)
       return idx == 0;
     else
-      return idx >= 0 && (unsigned) idx < Term->getNumSuccessors();
+      return idx >= 0 && idx < Block->succs_size();
   }
 
 public:
   typedef typename super::pointer pointer;
   // TODO: This can be random access iterator, only operator[] missing.
 
-  explicit inline LoopSuccIterator(BB_* B) : Block(B), idx(0) {// begin iterator
-    // Hide successors of exit blocks and the "next iteration" psuedo-node.
-    if(B->BB && B->L->contains(B->BB))
-      Term = B->BB->getTerminator();
-    else
-      Term = 0;
-  }
+  explicit inline LoopSuccIterator(BB_* B) : Block(B), idx(0) {// begin iterator}
 
   inline LoopSuccIterator(BB_* B, bool) : Block(B) {
-    if(B->BB && B->L->contains(B->BB)) {
-      Term = B->BB->getTerminator();
-      idx = Term->getNumSuccessors();
-    }
-    else {
-      Term = 0;
+
+    // We hide the successor nodes of the special next-iteration node and loop exit blocks.
+    if(!B->hideSuccessors)
+      idx = B->BB->succs_size();
+    else
       idx = 0;
-    }
+
   }
 
   inline const Self &operator=(const Self &I) {
-    assert(Term == I.Term &&"Cannot assign iterators to two different blocks!");
+    assert(Block == I.Block && "Cannot assign iterators to two different blocks!");
     idx = I.idx;
     return *this;
   }
@@ -271,9 +298,9 @@ public:
   inline bool operator!=(const Self& x) const { return !operator==(x); }
 
   inline pointer operator*() const { 
-    assert(Term && "Can't dereference dummy iterator!");
-    const BasicBlock* NextBB = Term->getSuccessor(idx);
-    if(NextBB == Block->L->getHeader() && Block->BB == Block->L->getLoopLatch())
+    const ShadowBBWrapper* NextBB = Block->BB->getSucc(idx);
+    // Loop latch's successor is not the loop header but the dummy next-iteration node.
+    if(Block->L->L && NextBB->BB == Block->L->L->getHeader() && Block->BB->BB == Block->L->L->getLoopLatch())
       return Block->get(0);
     else
       return Block->get(NextBB);
@@ -332,7 +359,7 @@ public:
   }
 
   inline int operator-(const Self& x) {
-    assert(Term == x.Term && "Cannot work on iterators of different blocks!");
+    assert(Block == x.Block && "Cannot work on iterators of different blocks!");
     int distance = idx - x.idx;
     return distance;
   }
@@ -356,7 +383,7 @@ public:
   }
 };
 
-typedef LoopSuccIterator<const TerminatorInst*, const BBWrapper> loop_succ_iterator;
+typedef LoopSuccIterator<const BBWrapper> loop_succ_iterator;
 
 inline loop_succ_iterator loop_succ_begin(const BBWrapper* BB) {
   return loop_succ_iterator(BB);

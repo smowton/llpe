@@ -60,7 +60,9 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 
     BasicBlock* BB = TopOrderedBlocks[i];
     ShadowBBInvar& SBB = FShadowBlocks[i];
+    RetInfo.BBMap[BB] = &SBB;
     
+    SBB.F = &RetInfo;
     SBB.idx = i;
     SBB.BB = BB;
     SBB.outerScope = getBlockScope(BB);
