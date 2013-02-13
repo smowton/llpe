@@ -269,9 +269,60 @@ template<typename T> class ImmutableArray {
     return n;
   }
 
+  const T& back() {
+    return arr[size()-1];
+  }
+
 };
 
 // Shadow data structures
+class ShadowArg;
+class ShadowInstruction;
+
+// Just a tagged union of a ShadowInstruction, a ShadowArg or a Value which is neither.
+enum ShadowValType {
+
+  SHADOWVAL_ARG,
+  SHADOWVAL_INST,
+  SHADOWVAL_OTHER,
+  SHADOWVAL_INVAL;
+
+};
+
+struct ShadowValue {
+
+  ShadowValType t;
+  union {
+    ShadowArg* A;
+    ShadowInstruction* I;
+    Value* V;
+  } u;
+
+ShadowValue() : t(SHADOWVAL_INVAL) { }
+ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG), u.A(_A) { }
+ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST), u.I(_I) { }
+ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V) { }
+
+  bool isArg() {
+    return t == SHADOWVAL_ARG;
+  }
+  bool isInst() {
+    return t == SHADOWVAL_INST;
+  }
+  bool isVal() {
+    return t == SHADOWVAL_OTHER;
+  }
+  ShadowArg* getArg() {
+    return t == SHADOWVAL_ARG ? u.A : 0;
+  }
+  ShadowInstruction* getInst() {
+    return t == SHADOWVAL_INST ? u.I : 0;
+  }
+  Value* getVal() {
+    return t == SHADOWVAL_OTHER ? u.V : 0;
+  }
+
+};
 
 #define INVALID_BLOCK_IDX 0xffffffff;
 #define INVALID_INSTRUCTION_IDX 0xffffffff;
@@ -294,6 +345,18 @@ struct ShadowInstructionInvar {
   ImmutableArray<ShadowInstIdx> userIdxs;
 
 };
+
+template<class X> inline bool inst_is(ShadowInstructionInvar* SII) {
+   return isa<X>(SII->I);
+}
+
+template<class X> inline X* dyn_cast_inst(ShadowInstructionInvar* SII) {
+  return dyn_cast<X>(SII->I);
+}
+
+template<class X> inline X* cast_inst(ShadowInstructionInvar* SII) {
+  return cast<X>(SII->I);
+}
 
 enum ShadowInstDIEStatus {
 
@@ -318,10 +381,61 @@ InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), d
 struct ShadowInstruction {
 
   uint32_t idx;
+  ShadowBB* parent;
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
 
+  uint32_t getNumOperands() {
+    return invar->operandIdxs.size();
+  }
+
+  ShadowValue getOperand(uin32_t i) {
+
+    ShadowInstIdx& SII = invar->operandIdxs[i];
+    uint32_t blockOpIdx = SII.blockIdx;
+    if(blockOpIdx == INVALID_BLOCK_IDX) {
+      Value* ArgV = invar->I->getOperand(i);
+      if(Argument* A = dyn_cast<Argument>(ArgV)) {
+	return ShadowValue(parent->IA->getFunctionRoot()->args[A->getArgNo()]);
+      }
+      else {
+	return ShadowValue(V);
+      }
+    }
+    else {
+      ShadowBB* OpBB = parent->IA->BBs[blockOpIDx];
+      ShadowInstruction* OpI = OpBB->insts[SII.instIdx];
+      return ShadowValue(OpI);
+    }
+
+  }
+
+  ShadowValue getCallArgOperand(uint32_t i) {
+    return getOperand(i + 1);
+  }
+
+  uint32_t getNumUsers() {
+    return invar->userIdxs.size();
+  }
+
+  ShadowInstruction* getUser(uint32_t i) {
+    ShadowInstIdx& SII = invar->userIdxs[i];
+    return parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx];
+  }
+
 };
+
+template<class X> inline bool inst_is(ShadowInstruction* SI) {
+  return inst_is<X>(SI->invar);
+}
+
+template<class X> inline X* dyn_cast_inst(ShadowInstruction* SI) {
+  return dyn_cast_inst<X>(SI->invar);
+}
+
+template<class X> inline X* cast_inst(ShadowInstruction* SI) {
+  return cast_inst<X>(SI->invar);
+}
 
 struct ShadowArgInvar {
 
@@ -354,7 +468,7 @@ struct ShadowBBInvar {
   BasicBlock* BB;
   ImmutableArray<uint32_t> succIdxs;
   ImmutableArray<uint32_t> predIdxs;
-  ImmutableArray<ShadowInstruction> insts;
+  ImmutableArray<ShadowInstructionInvar> insts;
   const Loop* outerScope;
   const Loop* scope;
   const Loop* naturalScope;
@@ -369,9 +483,11 @@ struct ShadowBBInvar {
 
 struct ShadowBB {
 
+  IntegrationAttempt* IA;
   ShadowBBInvar* invar;
   bool* succsAlive;
   ShadowBBStatus status;
+  ImmutableArray<ShadowInstruction> insts;
 
 };
 
@@ -885,19 +1001,22 @@ class IAWalker {
 
  protected:
 
-  DenseSet<ValCtx> Visited;
-  SmallVector<std::pair<ValCtx, void*>, 8> Worklist1;
-  SmallVector<std::pair<ValCtx, void*>, 8> Worklist2;
+  typedef std::pair<uint32_t, ShadowBB*> WLItem;
+  WLItem makeWL(uint32_t x, ShadowBB* y) { return std::make_pair(x, y); }
 
-  SmallVector<std::pair<ValCtx, void*>, 8>* PList;
-  SmallVector<std::pair<ValCtx, void*>, 8>* CList;
+  DenseSet<WLItem> Visited;
+  SmallVector<std::pair<WLItem, void*>, 8> Worklist1;
+  SmallVector<std::pair<WLItem, void*>, 8> Worklist2;
+
+  SmallVector<std::pair<WLItem, void*>, 8>* PList;
+  SmallVector<std::pair<WLItem, void*>, 8>* CList;
 
   SmallVector<void*, 4> Contexts;
   
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context) = 0;
-  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*) = 0;
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*) = 0;
-  virtual WalkInstructionResult walkFromBlock(BasicBlock*, IntegrationAttempt*, void* Context) {
+  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context) = 0;
+  virtual bool shouldEnterCall(ShadowInstruction*) = 0;
+  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*) = 0;
+  virtual WalkInstructionResult walkFromBlock(ShadowBB*, void* Context) {
     return WIRContinue;
   }
 
@@ -918,13 +1037,13 @@ class IAWalker {
  }
 
   void walk();
-  void queueWalkFrom(ValCtx, void* context, bool copyContext);
+  void queueWalkFrom(ShadowValue, void* context, bool copyContext);
 
 };
 
 class BackwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(BasicBlock::iterator, BasicBlock*, IntegrationAttempt*, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
 
  public:
@@ -932,13 +1051,13 @@ class BackwardIAWalker : public IAWalker {
   virtual bool reachedTop() { return true; }
   virtual bool mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return true; }
 
-  BackwardIAWalker(Instruction*, IntegrationAttempt*, bool skipFirst, void* IC = 0);
+  BackwardIAWalker(, bool skipFirst, void* IC = 0);
   
 };
 
 class ForwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(BasicBlock::iterator, BasicBlock*, IntegrationAttempt*, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, IntegrationAttempt*, void* Ctx, CallInst*& StoppedCI);
   virtual void walkInternal();
   
  public:
@@ -1576,6 +1695,8 @@ class PeelAttempt {
 
    const Loop* L;
 
+   uint32_t preheaderIndex, latchIndex;
+
    DenseMap<Instruction*, const Loop*>& invariantInsts;
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
    DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
@@ -1680,7 +1801,6 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   ShadowInstruction* CI;
-  ShadowBB* CIBB;
   SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
  public:

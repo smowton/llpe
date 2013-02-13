@@ -104,7 +104,9 @@ bool IntegrationAttempt::getConstantString(Value* LocalPtr, ValCtx Ptr, Instruct
 
 }
 
-bool IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
+bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
+
+  CallInst* CI = cast<CallInst>(SI->invar->I);
   
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
     const FunctionType *FT = SysOpen->getFunctionType();
@@ -113,11 +115,11 @@ bool IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
         FT->getParamType(1)->isIntegerTy(32) &&
 	FT->isVarArg()) {
 
-      if(Function* FCalled = getCalledFunction(CI)) {
+      if(Function* FCalled = getCalledFunction(SI)) {
 
 	if(FCalled == SysOpen) {
 
-	  ValCtx ModeArg = getReplacement(CI->getArgOperand(1));
+	  ValCtx ModeArg = getReplacement(SI->getCallArgOperand(1));
 	  if(ConstantInt* ModeValue = dyn_cast<ConstantInt>(ModeArg.first)) {
 	    int RawMode = (int)ModeValue->getLimitedValue();
 	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
@@ -130,7 +132,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(CallInst* CI) {
 	    return true;
 	  }
 	  
-	  ValCtx NameArg = getReplacement(CI->getArgOperand(0));
+	  ValCtx NameArg = getReplacement(SI->getCallArgOperand(0));
 	  std::string Filename;
 	  if (!getConstantString(CI->getArgOperand(0), NameArg, CI, Filename)) {
 	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its filename argument is unresolved\n");
@@ -215,12 +217,14 @@ public:
 
 };
 
-WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
+WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(ShadowInstruction* I, void*) {
 
   // Determine whether this instruction is a VFS call using our FD.
   // No need to worry about call instructions, just return WIRContinue and we'll enter it if need be.
 
-  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+  IntegrationAttempt* IA = I->parent->IA;
+
+  if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 
     WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD, true);
     if(WIR == WIRStopThisPath) {
@@ -255,12 +259,15 @@ WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(Instruction* I, 
 
 }
 
-static bool callMayUseFD(CallInst* CI, IntegrationAttempt* IA, ValCtx FD) {
+static bool callMayUseFD(ShadowInstruction* SI, ValCtx FD) {
+
+  CallInst* CI = cast_inst<CallInst>(SI);
+  IntegrationAttempt* IA = SI->parent->IA;
 
  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
   
   OpenStatus& OS = FD.second->getOpenStatus(cast<CallInst>(FD.first));
-  Function* calledF = IA->getCalledFunction(CI);
+  Function* calledF = getCalledFunction(SI);
 
   // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
   if(isa<MemIntrinsic>(CI) || isa<DbgInfoIntrinsic>(CI) || (calledF && functionIsBlacklisted(calledF)))
@@ -270,10 +277,11 @@ static bool callMayUseFD(CallInst* CI, IntegrationAttempt* IA, ValCtx FD) {
 
   for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
 
-    ValCtx ArgVC = IA->getReplacement(CI->getArgOperand(i));
+    ShadowValue ArgOp = SI->getCallArgOperand(i);
+    ValCtx ArgVC = getReplacement(ArgOp);
     if(ArgVC == FD)
       return true;
-    if(IA->isUnresolved(CI->getArgOperand(i)))
+    if(isUnresolved(ArgOp))
       return true;
     
   }
@@ -282,13 +290,13 @@ static bool callMayUseFD(CallInst* CI, IntegrationAttempt* IA, ValCtx FD) {
 
 }
 
-bool FindVFSPredecessorWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+bool FindVFSPredecessorWalker::shouldEnterCall(ShadowInstruction* SI) {
 
-  return callMayUseFD(CI, IA, FD);
+  return callMayUseFD(SI, FD);
 	    
 }
 
-bool FindVFSPredecessorWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
+bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
 
   uniqueIncomingOffset = -1;
   return true;
@@ -296,9 +304,11 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(CallInst* CI, Integration
 }
 
 // Return value: is this a VFS call (regardless of whether we resolved it successfully)
-bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
+bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
-  Function* F = getCalledFunction(CI);
+  CallInst* CI = cast<CallInst>(SI->invar->I);
+
+  Function* F = getCalledFunction(SI);
   if(!F)
     return false;
 
@@ -314,7 +324,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     // TODO: Add LF resolution code notifying file size. All users so far have just
     // used stat as an existence test. Similarly set errno = ENOENT as appropriate.
 
-    ValCtx NameArg = getReplacement(CI->getArgOperand(0));
+    ValCtx NameArg = getReplacement(SI->getCallArgOperand(0));
 
     std::string Filename;
     if (!GetConstantStringInfo(NameArg.first, Filename)) {
@@ -328,15 +338,15 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     if(stat_ret == -1 && errno != ENOENT)
       return true;
 
-    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), stat_ret)));
+    setReplacement(SI, const_vc(ConstantInt::get(FT->getReturnType(), stat_ret)));
     return true;
 
   }
 
   // All calls beyond here operate on FDs.
+  ShadowInstruction* FD = SI->getCallArgOperand(0);
 
-  Value* FD = CI->getArgOperand(0);
-  if(isUnresolved(FD))
+  if((!FD) || isUnresolved(FD))
     return true;
 
   ValCtx OpenCall = getReplacement(FD);
@@ -348,15 +358,15 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   if(F->getName() == "isatty") {
 
     // OpenStatus items like this are always real files, not TTYs, for now.
-    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    setReplacement(SI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
     return true;
 
   }
   else if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
 
     // Check for needed values now:
-    Constant* whence = getConstReplacement(CI->getArgOperand(2));
-    Constant* newOffset = getConstReplacement(CI->getArgOperand(1));
+    Constant* whence = getConstReplacement(SI->getCallArgOperand(2));
+    Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
     
     if((!newOffset) || (!whence))
       return true;
@@ -394,7 +404,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
     if(!needsWalk) {
 
       // Doesn't matter what came before, resolve this call here.
-      setReplacement(CI, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
+      setReplacement(SI, const_vc(ConstantInt::get(FT->getParamType(1), intOffset)));
       resolveSeekCall(CI, SeekFile(&OS, intOffset));
       return true;
 
@@ -405,13 +415,13 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
   else if(F->getName() == "close") {
 
     resolvedCloseCalls[CI] = CloseFile(&OS, OpenCall);    
-    setReplacement(CI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
+    setReplacement(SI, const_vc(ConstantInt::get(FT->getReturnType(), 0)));
     return true;
 
   }
   // Else it's a read call or relative seek, and we need the incoming file offset.
 
-  FindVFSPredecessorWalker Walk(CI, this, OpenCall);
+  FindVFSPredecessorWalker Walk(SI, this, OpenCall);
   Walk.walk();
 
   if(Walk.uniqueIncomingOffset == -1)
@@ -419,7 +429,7 @@ bool IntegrationAttempt::tryResolveVFSCall(CallInst* CI) {
 
   if(F->getName() == "read") {
 
-    Value* readBytes = CI->getArgOperand(2);
+    ShadowValue* readBytes = SI->getCallArgOperand(2);
     ConstantInt* intBytes = cast<ConstantInt>(getConstReplacement(readBytes));
     
     int64_t cBytes = intBytes->getLimitedValue();
@@ -494,7 +504,7 @@ ReadFile* IntegrationAttempt::tryGetReadFile(CallInst* CI) {
 
 }
 
-WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, ValCtx FD, bool ignoreClose) {
+WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VFSCall, ValCtx FD, bool ignoreClose) {
   
   // Is VFSCall a call to open, read, seek or close that concerns FD?
   
@@ -502,13 +512,13 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, Va
   if(!Callee)
     return WIRContinue;
 
-  if(make_vc(VFSCall, this) == FD)
+  if(make_vc(VFSCall->invar->I, this) == FD)
     return WIRStopThisPath;
 
   StringRef CalleeName = Callee->getName();
   if(CalleeName == "read") {
     
-    Value* readFD = VFSCall->getArgOperand(0);
+    ShadowValue readFD = VFSCall->getCallArgOperand(0);
     if(isUnresolved(readFD)) {
       
       LPDEBUG("Can't resolve VFS call because FD argument of " << itcache(*VFSCall) << " is unresolved\n");
@@ -536,7 +546,7 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(CallInst* VFSCall, Va
   }
   else if(CalleeName == "llseek" || CalleeName == "lseek" || CalleeName == "lseek64") {
     
-    Value* seekFD = VFSCall->getArgOperand(0);
+    ShadowValue seekFD = VFSCall->getCallArgOperand(0);
     if(isUnresolved(seekFD)) {
       return WIRStopWholeWalk;
     }
@@ -598,14 +608,14 @@ bool IntegrationAttempt::isSuccessfulVFSCall(const Instruction* I) {
 
 }
 
-bool IntegrationAttempt::isUnusedReadCall(CallInst* CI) {
+bool IntegrationAttempt::isUnusedReadCall(ShadowInstruction* CI) {
 
   // Return true if CI is a read instruction that won't be in the final committed program:
   // this is true if it's zero-length or if there are no live users of the buffer it writes.
   DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
   if(it != resolvedReadCalls.end()) {
 
-    return unusedWriters.count(CI) || !it->second.readSize;
+    return CI->dieStatus & INSTSTATUS_UNUSED_WRITER || !it->second.readSize;
 
   }
 
@@ -631,41 +641,41 @@ public:
   SmallVector<ValCtx, 4> UserInstructions;
   bool residualUserFound;
 
-  OpenInstructionUnusedWalker(Instruction* I, IntegrationAttempt* IA) : ForwardIAWalker(I, IA, true), OpenInst(make_vc(I, IA)), residualUserFound(false) { }
+  OpenInstructionUnusedWalker(ShadowInstruction* I) : ForwardIAWalker(I, true), OpenInst(make_vc(I->invar->I, IA)), residualUserFound(false) { }
 
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
-  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
+  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
+  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
 
-bool OpenInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+bool OpenInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI) {
 
-  return callMayUseFD(CI, IA, OpenInst);
+  return callMayUseFD(SI, OpenInst);
 
 }
 
-bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
+bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
 
   residualUserFound = true;
   return true;
 
 }
 
-WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
+WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(ShadowInstruction* I, void*) {
 
-  CallInst* CI = dyn_cast<CallInst>(I);
+  CallInst* CI = dyn_cast_inst<CallInst>(I);
   if(!CI)
     return WIRContinue;
 
-  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, OpenInst, false);
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(I, OpenInst, false);
 
   if(WIR == WIRContinue)
     return WIR;
   else if(WIR == WIRStopThisPath) {
 
     // This call definitely uses this FD.
-    if(!IA->isResolvedVFSCall(CI)) {
+    if(!I->parent->IA->isResolvedVFSCall(CI)) {
 
       // But apparently we couldn't understand it. Perhaps some of its arguments are vague.
       residualUserFound = true;
@@ -711,38 +721,40 @@ public:
   SmallVector<ValCtx, 4> SuccessorInstructions;
   bool seekNeeded;
 
-  SeekInstructionUnusedWalker(ValCtx _FD, CallInst* Start, IntegrationAttempt* StartCtx) : ForwardIAWalker(Start, StartCtx, true), FD(_FD), seekNeeded(false) { }
+  SeekInstructionUnusedWalker(ValCtx _FD, ShadowInstruction* Start) : ForwardIAWalker(Start, true), FD(_FD), seekNeeded(false) { }
 
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void*);
-  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
+  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
+  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
 
-bool SeekInstructionUnusedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+bool SeekInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI) {
 
-  return callMayUseFD(CI, IA, FD);
+  return callMayUseFD(SI, FD);
 
 }
 
-bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
+bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
 
   seekNeeded = true;
   return true;
 
 }
 
-WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void*) {
+WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(ShadowInstruction* I, void*) {
 
-  CallInst* CI = dyn_cast<CallInst>(I);
+  CallInst* CI = dyn_cast_inst<CallInst>(I);
   if(!CI)
     return WIRContinue;
 
-  WalkInstructionResult WIR = IA->isVfsCallUsingFD(CI, FD, false);
+  WalkInstructionResult WIR = IA->isVfsCallUsingFD(I, FD, false);
 
   if(WIR == WIRContinue)
     return WIR;
   else if(WIR == WIRStopThisPath) {
+
+    IntegrationAttempt* IA = I->parent->IA;
 
     // This call definitely uses this FD.
     if(!IA->isResolvedVFSCall(CI)) {
@@ -816,46 +828,80 @@ void IntegrationAttempt::recordDependentContexts(CallInst* CI, SmallVector<ValCt
 
 void IntegrationAttempt::tryKillAllVFSOps() {
 
-  for(DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.begin(), it2 = resolvedReadCalls.end(); it != it2; ++it) {
+  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
 
-    ValCtx FD = getReplacement(it->first->getArgOperand(0));
-    SeekInstructionUnusedWalker Walk(FD, it->first, this);
-    Walk.walk();
-    if(!Walk.seekNeeded) {
-      recordDependentContexts(it->first, Walk.SuccessorInstructions);
-      it->second.needsSeek = false;
-    }
-
-  }
-
-  for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
-
-    ValCtx FD = getReplacement(it->first->getArgOperand(0));
-    SeekInstructionUnusedWalker Walk(FD, it->first, this);
-    Walk.walk();
-    if(!Walk.seekNeeded) {
-      recordDependentContexts(it->first, Walk.SuccessorInstructions);
-      it->second.MayDelete = true;
-    }
-
-  }
-
-  for(DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
-
-    // Skip failed opens, we can always delete those
-    if(!it->second->success)
+    ShadowBB* BB = getBB(i);
+    if(!BB)
       continue;
 
-    OpenInstructionUnusedWalker Walk(it->first, this);
-    Walk.walk();
-    if(!Walk.residualUserFound) {
+    for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
-      recordDependentContexts(it->first, Walk.UserInstructions);
+      ShadowInstruction* SI = BB->insts[j];
+      if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
-      it->second->MayDelete = true;
-      for(unsigned i = 0; i < Walk.CloseInstructions.size(); ++i) {
+	{
+	  DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+	  if(it != resolvedReadCalls.end()) {
+	    ValCtx FD = getReplacement(SI->getCallArgOperand(0));
+	    SeekInstructionUnusedWalker Walk(FD, SI, this);
+	    Walk.walk();
+	    if(!Walk.seekNeeded) {
+	      recordDependentContexts(it->first, Walk.SuccessorInstructions);
+	      it->second.needsSeek = false;
+	    }	    
+	    continue;
+	  }
+	}
+	{
+	  DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+	  if(it != resolvedSeekCalls.end()) {
+	    ValCtx FD = getReplacement(SI->getCallArgOperand(0));
+	    SeekInstructionUnusedWalker Walk(FD, SI, this);
+	    Walk.walk();
+	    if(!Walk.seekNeeded) {
+	      recordDependentContexts(it->first, Walk.SuccessorInstructions);
+	      it->second.MayDelete = true;
+	    }
+	  }
+	}
 
-	Walk.CloseInstructions[i].second->markCloseCall(cast<CallInst>(Walk.CloseInstructions[i].first));
+      }
+
+    }
+
+  }
+
+
+  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
+
+    ShadowBB* BB = getBB(i);
+    if(!BB)
+      continue;
+
+    for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+      ShadowInstruction* SI = BB->insts[j];
+      if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
+
+	DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+	// Skip failed opens, we can always delete those
+	if(!it->second->success)
+	  continue;
+
+	OpenInstructionUnusedWalker Walk(SI, this);
+	Walk.walk();
+	if(!Walk.residualUserFound) {
+
+	  recordDependentContexts(it->first, Walk.UserInstructions);
+
+	  it->second->MayDelete = true;
+	  for(unsigned i = 0; i < Walk.CloseInstructions.size(); ++i) {
+
+	    Walk.CloseInstructions[i].second->markCloseCall(cast<CallInst>(Walk.CloseInstructions[i].first));
+
+	  }
+
+	}
 
       }
 
@@ -906,14 +952,16 @@ void IntegrationAttempt::revertDeadVFSOp(CallInst* CI) {
 
 }
 
-void IntegrationAttempt::retryDeadVFSOp(CallInst* CI) {
+void IntegrationAttempt::retryDeadVFSOp(ShadowInstruction* SI) {
+
+  CallInst* CI = cast_inst<CallInst>(SI);
 
   {
     DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
     if(it != resolvedReadCalls.end()) {
 
-      ValCtx FD = getReplacement(it->first->getArgOperand(0));
-      SeekInstructionUnusedWalker Walk(FD, it->first, this);
+      ValCtx FD = getReplacement(SI->getCallArgOperand(0));
+      SeekInstructionUnusedWalker Walk(FD, SI);
       Walk.walk();
       if(!Walk.seekNeeded)
 	it->second.needsSeek = false;
@@ -926,8 +974,8 @@ void IntegrationAttempt::retryDeadVFSOp(CallInst* CI) {
     DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
     if(it != resolvedSeekCalls.end()) {
 
-      ValCtx FD = getReplacement(it->first->getArgOperand(0));
-      SeekInstructionUnusedWalker Walk(FD, it->first, this);
+      ValCtx FD = getReplacement(SI->getCallArgOperand(0));
+      SeekInstructionUnusedWalker Walk(FD, SI);
       Walk.walk();
       if(!Walk.seekNeeded)
 	it->second.MayDelete = true;
@@ -940,7 +988,7 @@ void IntegrationAttempt::retryDeadVFSOp(CallInst* CI) {
     DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
     if(it != forwardableOpenCalls.end()) {
 
-      OpenInstructionUnusedWalker Walk(it->first, this);
+      OpenInstructionUnusedWalker Walk(SI);
       Walk.walk();
       if(!Walk.residualUserFound) {
 

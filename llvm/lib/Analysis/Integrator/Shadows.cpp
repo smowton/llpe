@@ -244,13 +244,13 @@ void PeelIteration::prepareShadows() {
 
 }
 
-ShadowBB* IntegrationAttempt::getBB(ShadowBBInvar& BBI, bool& inScope) {
+ShadowBB* IntegrationAttempt::getBB(ShadowBBInvar& BBI, bool* inScope) {
 
   return getBB(BBI.idx, inScope);
   
 }
 
-ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool& inScope) {
+ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool* inScope) {
 
   if(!(idx >= BBsOffset && idx < (BBsOffset + nBBs))) {
     inScope = false;
@@ -259,6 +259,32 @@ ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool& inScope) {
   else {
     inScope = true;
     return BBs[idx - BBsOffset];
+  }
+
+}
+
+ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
+
+  return invarInfo->BBs[idx];
+
+}
+
+void IntegrationAttempt::createBB(uint32_t blockIdx) {
+
+  release_assert((!BBs[blockIdx]) && "Creating block for the second time");
+  ShadowBB* newBB = new ShadowBB();
+  newBB->invar = invarInfo->BBs[blockIdx];
+  newBB->succsAlive = new bool[newBB->invar->predIdxs.size()];
+  for(unsigned i = 0, ilim = newBB->invar->predIdxs.size(); i != ilim; ++i)
+    newBB->succsAlive[i] = true;
+  newBB->status = BBSTATUS_UNKNOWN;
+  newBB->IA = this;
+
+  ShadowInstruction* insts = new ShadowInstruction[newBB->invar->insts.size()];
+  for(uint32_t i = 0, ilim = newBB->invar->insts.size(); i != ilim; ++i) {
+    insts[i].idx = i;
+    insts[i].invar = newBB->invar->insts[i];
+    insts[i].parent = newBB;
   }
 
 }

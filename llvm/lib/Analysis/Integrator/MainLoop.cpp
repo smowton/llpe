@@ -49,6 +49,7 @@ void IntegrationAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThr
 
   for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
+    // analyseBlock can increment i past loops
     analyseBlock(i, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
   }
@@ -77,43 +78,47 @@ void PeelAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdB
 
 }
 
-void IntegrationAttempt::analyseBlock(uint32_t blockIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
   checkBlock(blockIdx);
-  if(!BBs[blockIdx])
+  // Was block killed?
+
+  ShadowBB* BB = getBB(blockIdx);
+  if(!BB)
     return;
 
-  // Use getLoopFor instead of getBlockScopeVariant because even if the loop is explicitly
+  // Use natural scope rather than scope because even if a loop is
   // ignored we want to notice that it exists so we can call analyseLoopPBs.
-  const Loop* BBL = LI[&F]->getLoopFor(BB);
+  const Loop* BBL = BB->invar->naturalScope;
+  const Loop* MyL = L;
     
   if(BBL != MyL) {
 
     // By construction of our top-ordering, must be a loop entry block.
+    release_assert(BBL && "Walked into root context?");
+
+    // This works because loop blocks are all topologically before any loop exit blocks, because by 
+    // definition of a loop block there's a path back to the header and then to the exit block.
+    // Therefore we can scan blockIdx forwards until we leave the loop BBL.
    
     // First, examine each block in the loop to discover invariants, including invariant dead blocks.
-    std::vector<BasicBlock*> topOrderedBlocks;
-    SmallSet<BasicBlock*, 8> visited;
-
-    createTopOrderingFrom(BBL->getHeader(), topOrderedBlocks, visited, BBL, false);
-
-    for(std::vector<BasicBlock*>::reverse_iterator it = topOrderedBlocks.rbegin(), it2 = topOrderedBlocks.rend(); it != it2; ++it) {
-
+    for(uint32_t i = blockIdx; i < invarInfo->BBs.size() && BBL->contains(invarInfo->BBs[i]->naturalScope; ++i)) {
+      
       // Thresholds should not be modified due to withinUnboundedLoop = true,
       // but just to be safe...
-
+      
       BasicBlock* InvarCTBB = CacheThresholdBB;
       IntegrationAttempt* InvarCTIA = CacheThresholdIA;
-
-      checkBlock(*it);
-      if(!blockIsDead(*it))
-	analyseBlockInstructions(*it, true, InvarCTBB, InvarCTIA);
-
+      
+      checkBlock(i);
+      if(ShadowBB* LoopBB = getBB(i))
+	analyseBlockInstructions(LoopBB, true, InvarCTBB, InvarCTIA);
+      
     }
 
     BasicBlock* LThresholdBB = CacheThresholdBB;
     IntegrationAttempt* LThresholdIA = CacheThresholdIA;
-
+    
     // Now explore the loop, if possible.
     PeelAttempt* LPA = getOrCreatePeelAttempt(BBL);
     if(LPA) {
@@ -132,10 +137,13 @@ void IntegrationAttempt::analyseBlock(uint32_t blockIdx, bool withinUnboundedLoo
       LPDEBUG("Accept loop threshold adv -> " << CacheThresholdBB->getName() << "\n");
     }
 
+    // Advance the main loop past this loop.
+    blockIdx = i;
+
   }
   else {
 
-    if((!withinUnboundedLoop) && blockCertainlyExecutes(BB)) {
+    if((!withinUnboundedLoop) && BB->status == BBSTATUS_CERTAIN) {
 
       LPDEBUG("Advance threshold to " << BB->getName() << "\n");
       CacheThresholdBB = BB;
@@ -150,27 +158,31 @@ void IntegrationAttempt::analyseBlock(uint32_t blockIdx, bool withinUnboundedLoo
 
 }
 
-void IntegrationAttempt::analyseBlockInstructions(BasicBlock* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
-  const Loop* MyL = getLoopContext();
+  const Loop* MyL = L;
 
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
-    if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
+    ShadowInstruction* SI = BB->insts[i];
+    ShadowInstructionInvar* SII = SI->invar;
+    Instruction* I = SII->I;
+
+    if(BranchInst* BrI = dyn_cast<BranchInst>(I)) {
       if(!BrI->isConditional())
 	break;
     }
 
-    if(getValueScope(BI) != MyL)
+    if(SII->scope != MyL)
       continue;
     
     if(CallInst* CI = dyn_cast<CallInst>(BI)) {
 
-      if(tryPromoteOpenCall(CI))
+      if(tryPromoteOpenCall(SI))
 	continue;
-      if(tryResolveVFSCall(CI))
+      if(tryResolveVFSCall(SI))
 	continue;
-      if(InlineAttempt* IA = getOrCreateInlineAttempt(CI))
+      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
 	IA->analyseWithArgs(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
       // Fall through to try to get the call's return value

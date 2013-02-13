@@ -379,19 +379,6 @@ bool PeelIteration::entryBlockAssumed() {
 
 }
 
-// Create the ShadowBB structure for the given block index.
-void IntegrationAttempt::createBB(uint32_t blockIdx) {
-
-  release_assert((!BBs[blockIdx]) && "Creating block for the second time");
-  ShadowBB* newBB = new ShadowBB();
-  newBB->invar = invarInfo->BBs[blockIdx];
-  newBB->succsAlive = new bool[newBB->invar->predIdxs.size()];
-  for(unsigned i = 0, ilim = newBB->invar->predIdxs.size(); i != ilim; ++i)
-    newBB->succsAlive[i] = true;
-  newBB->status = BBSTATUS_UNKNOWN;
-
-}
-
 void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
   const ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
