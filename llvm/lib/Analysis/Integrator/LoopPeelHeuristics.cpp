@@ -186,36 +186,35 @@ Module& IntegrationAttempt::getModule() {
 
 }
 
-ValCtx IntegrationAttempt::getLocalReplacement(Value* V) {
+ValCtx IntegrationAttempt::getLocalReplacement(ShadowInstructionInvar* SII) {
 
-  DenseMap<Value*, ValCtx >::iterator it = improvedValues.find(V);
-  if(it == improvedValues.end())
-    return make_vc(V, this);
-  else
-    return it->second;  
+  if(ShadowBB* SBB = getBB(SII->parent)) {
+
+    ShadowInstruction* SI = SBB->insts[SII->idx];
+    if(SI->replaceWith != VCNull)
+      return SI->replaceWith;
+
+  }
+
+  return make_vc(SII->I, this);
 
 }
 
-ValCtx IntegrationAttempt::getReplacement(Value* V) {
+ValCtx IntegrationAttempt::getNonLocalReplacement(ShadowInstructionInvar* SII) {
 
-  // V is visible directly from within this loop. Therefore, due to LCSSA form, it's either a variant (in this loop)
-  // or an invariant belonging to one of my parent loops, or the root function.
-  // One exception: it's a variant, but we're being asked in the context of trying to load-forward through an unpeeled loop.
-  // In that case it's never valid to resolve a variant so I just return the unresolved answer. The same applies to getDefaultVC.
+  // SII is not local to this scope (that case is handled in HypotheticalConstantFolder.h::getReplacement)
+  // The proper replacement might be in a child scope (in which case we can't use it)
+  // or in a parent scope (in which case we used gRUS to find it).
   // The case for reading an exit PHI is taken care of by the PHI resolution code.
 
-  if(Constant* C = dyn_cast<Constant>(V))
-    return const_vc(C);
-
-  const Loop* evalScope = getValueScope(V);
-  const Loop* L = getLoopContext();
+  const Loop* evalScope = SII->scope;
 
   if(L != evalScope && ((!L) || L->contains(evalScope))) {
     // The load-forwarding case mentioned above.
-    return make_vc(V, this);
+    return make_vc(SII->I, this);
   }
   else {
-    return getReplacementUsingScope(V, evalScope);
+    return getReplacementUsingScope(SII, evalScope);
   }
 
 }
@@ -232,80 +231,29 @@ void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
 class GetReplacementCallback : public Callable {
 
-  Value* V;
+  ShadowInstructionInvar* SII;
 
 public:
 
   ValCtx Result;
 
-  GetReplacementCallback(Value* _V) : V(_V) { }
+  GetReplacementCallback(ShadowInstructionInvar* _SII) : SII(_SII) { }
 
   virtual void callback(IntegrationAttempt* Ctx) {
 
-    Result = Ctx->getLocalReplacement(V);
+    Result = Ctx->getLocalReplacement(SII);
 
   }
 
 };
 
-ValCtx IntegrationAttempt::getReplacementUsingScope(Value* V, const Loop* LScope) {
+ValCtx IntegrationAttempt::getReplacementUsingScope(ShadowInstructionInvar* SII) {
 
   GetReplacementCallback CB(V);
-  callWithScope(CB, LScope);
+  callWithScope(CB, SII->scope);
   return CB.Result;
 
 }
-
-ValCtx IntegrationAttempt::getReplacementUsingScopeRising(Instruction* I, BasicBlock* ExitingBB, BasicBlock* ExitBB, const Loop* LScope) {
-
-  const Loop* MyScope = getLoopContext();
-
-  if(LScope == MyScope)
-    return getLocalReplacement(I);
-
-  // Read from child loop if appropriate:
-  if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(MyScope, LScope))) {
-
-    ValCtx OnlyDef = VCNull;
-
-    if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
-
-      for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
-
-	PeelIteration* Iter = PA->Iterations[i];
-	if(Iter->edgeIsDead(ExitingBB, ExitBB))
-	  continue;
-
-	ValCtx ThisDef = Iter->getReplacementUsingScopeRising(I, ExitingBB, ExitBB, LScope);
-	if(ThisDef == VCNull)
-	  return ThisDef;
-
-	if(OnlyDef == VCNull)
-	  OnlyDef = ThisDef;
-	else if(OnlyDef != ThisDef)
-	  return VCNull;	
-
-      }
-
-      return OnlyDef;
-
-    }
-    else {
-	    
-      LPDEBUG("Unable to read from loop " << LScope->getHeader()->getName() << " because loop is not known to terminate yet\n");
-      return VCNull;
-
-    }
-
-  }
-  else {
-
-    LPDEBUG("Unable to read from loop " << LScope->getHeader()->getName() << " because loop has not been peeled yet\n");
-    return VCNull;
-
-  }
-
-}  
 
 ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
 
@@ -338,7 +286,7 @@ Constant* llvm::getConstReplacement(Value* V, IntegrationAttempt* Ctx) {
   if(Constant* C = dyn_cast<Constant>(V))
     return C;
   ValCtx Replacement = Ctx->getReplacement(V);
-  if(Replacement.isPtrAsInt())
+
     return 0;
   if(Constant* C = dyn_cast<Constant>(Replacement.first))
     return C;
@@ -422,20 +370,6 @@ Function* IntegrationAttempt::getCalledFunction(const Instruction* I) {
 
 }
 
-// Only ever called on things that belong in this scope, thanks to shouldIgnoreBlock et al.
-void IntegrationAttempt::setReplacement(Value* V, ValCtx R) {
-
-  assert(getValueScope(V) == getLoopContext());
-  improvedValues[V] = R;
-
-}
-
-void IntegrationAttempt::eraseReplacement(Value* V) {
-
-  improvedValues.erase(V);
-
-}
-
 const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
 
   if(!L)
@@ -456,38 +390,6 @@ const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
 const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
 
   return pass->applyIgnoreLoops(InstL);
-
-}
-
-const Loop* IntegrationHeuristicsPass::getInstructionScope(Instruction* I) {
-
-  DenseMap<Instruction*, const Loop*>& instScopeMap = getInstScopes(I->getParent()->getParent());
-
-  const Loop* InstL;
-
-  DenseMap<Instruction*, const Loop*>::iterator it = instScopeMap.find(I);
-  if(it != instScopeMap.end())
-    InstL = it->second;
-  else
-    InstL = LIs[I->getParent()->getParent()]->getLoopFor(I->getParent());
-  
-  return applyIgnoreLoops(InstL);
-
-}
-
-// Get the loop scope at which a given instruction should be resolved.
-const Loop* IntegrationAttempt::getValueScope(Value* V) {
-
-  if(Instruction* I = dyn_cast<Instruction>(V)) {
-
-    return pass->getInstructionScope(I);
-
-  }
-  else if(isa<Argument>(V)) {
-    return 0;
-  }
-  else
-    return getLoopContext();
 
 }
 
@@ -796,12 +698,9 @@ bool InlineAttempt::stackIncludesCallTo(Function* FCalled) {
 
 }
 
-bool IntegrationAttempt::shouldInlineFunction(CallInst* CI) {
+bool IntegrationAttempt::shouldInlineFunction(ShadowInstruction* SI, Function* FCalled) {
 
-  Function* FCalled = getCalledFunction(CI);
-  assert(FCalled && "shouldInlineFunction called on uncertain function pointer");
-
-  if(blockAssumedToExecute(CI->getParent()))
+  if(SI->parent->status & (BBSTATUS_CERTAIN | BBSTATUS_ASSUMED))
     return true;
 
   if(pass->shouldAlwaysInline(FCalled))
@@ -815,7 +714,9 @@ bool IntegrationAttempt::shouldInlineFunction(CallInst* CI) {
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI) {
+
+  CallInst* CI = cast_inst<CallInst>(SI);
 
   if(ignoreIAs.count(CI))
     return 0;
@@ -826,7 +727,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
   if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
     return 0;
 
-  Function* FCalled = getCalledFunction(CI);
+  Function* FCalled = getCalledFunction(SI);
   if(!FCalled) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
     return 0;
@@ -837,12 +738,12 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(CallInst* CI) {
     return 0;
   }
 
-  if(!shouldInlineFunction(CI)) {
+  if(!shouldInlineFunction(SI, FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return 0;
   }
   
-  if(getLoopContext() != getValueScope(CI)) {
+  if(L != SI->scope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
@@ -1030,42 +931,46 @@ const Loop* PeelIteration::getLoopContext() {
 
 }
 
-ValCtx InlineAttempt::tryGetReturnValue() {
+ShadowValue InlineAttempt::tryGetReturnValue(ShadowInstruction* CallerInst) {
 
   // Let's have a go at supplying a return value to our caller. Simple measure:
   // we know the value if all the 'ret' instructions except one are dead,
   // and we know that instruction's operand.
 
   if(F.getReturnType()->isVoidTy())
-    return VCNull;
+    return ShadowValue();
 
-  ValCtx returnVal = VCNull;
-  bool foundReturnInst = false;
+  ShadowValue returnVal;
+  ShadowInstruction* retValSource;
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; FI++) {
-    if(blockIsDead(FI))
-      continue;
-    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; BI++) {
-      if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
-	if(foundReturnInst) {
-	  LPDEBUG("Can't determine return value: more than one 'ret' is live\n");
-	  returnVal = VCNull;
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    if(ShadowBB* BB = BBs[i]) {
+
+      ShadowInstruction* TI = BB->insts.back();
+      if(inst_is<ReturnInst>(TI)) {
+
+	ShadowValue thisRet = getReplacement(TI->getOperand(0));
+	if(returnVal == thisRet)
+	  continue;
+	else if(returnVal.isInval()) {
+	  returnVal = thisRet;
+	  retValSource = TI->getOperand(0);
+	}
+	else if(returnVal != thisRet) {
+	  returnVal = ShadowValue();
 	  break;
 	}
-	else
-	  foundReturnInst = true;
-	Value* ThisRet = RI->getReturnValue();
-	returnVal = getReplacement(ThisRet);
-	if(!returnVal.first) {
-	  LPDEBUG("Can't determine return value: live instruction " << itcache(*RI) << " has non-forwardable value " << itcache(*(RI->getReturnValue())) << "\n");
-	  break;
-	}
+
       }
+
     }
+
   }
   
-  if(returnVal.first) {
+  if(!returnVal.isInval()) {
     LPDEBUG("Found return value: " << itcache(returnVal) << "\n");
+    copyBaseAndOffset(retValSource, CI);
   }
   
   return returnVal;
@@ -1110,15 +1015,17 @@ bool IntegrationAttempt::isRootMainCall() {
 
 }
 
-ValCtx InlineAttempt::getImprovedCallArgument(Argument* A) {
-
-  return parent->getReplacement(CI->getArgOperand(A->getArgNo()));
-
-}
-
-bool llvm::isGlobalIdentifiedObject(ValCtx VC) {
-
-  return isIdentifiedObject(VC.first) && ((VC.second && VC.second->isRootMainCall()) || !isa<Argument>(VC.first));
+bool llvm::isGlobalIdentifiedObject(ShadowValue& V) {
+  
+  if(ShadowInstruction* SI = V.getInst()) {
+    return isIdentifiedObject(SI->I.first);
+  }
+  else if(ShadowArg* SA = V.getArg()) {
+    return SA->parent->isRootMainCall();
+  }
+  else {
+    return isIdentifiedObject(V.getVal());
+  }
 
 }
 

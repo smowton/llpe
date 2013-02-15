@@ -95,53 +95,23 @@ bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffs
 /// GetBaseWithConstantOffset - Analyze the specified pointer to see if it can
 /// be expressed as a base pointer plus a constant offset.  Return the base and
 /// offset to the caller.
-ValCtx llvm::GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset) {
+ShadowValue llvm::GetBaseWithConstantOffset(Constant* Ptr, int64_t &Offset) {
 
   Operator *PtrOp = dyn_cast<Operator>(Ptr);
   
   // Just look through bitcasts.
   if (PtrOp && PtrOp->getOpcode() == Instruction::BitCast)
-    return GetBaseWithConstantOffset(PtrOp->getOperand(0), PtrCtx, Offset);
+    return GetBaseWithConstantOffset(cast<Constant>(PtrOp->getOperand(0)), Offset);
   
   // If this is a GEP with constant indices, we can look through it.
   GEPOperator *GEP = dyn_cast_or_null<GEPOperator>(PtrOp);
-  if (GEP == 0) {
-    if(PtrCtx) {
-      ValCtx NewVC = PtrCtx->getPtrAsIntReplacement(Ptr);
-      if(NewVC == make_vc(Ptr, PtrCtx))
-	return NewVC;
-      else {
-	ValCtx Ret = GetBaseWithConstantOffset(NewVC.first, NewVC.second, Offset);
-	if(NewVC.isPtrAsInt())
-	  Offset += Ret.offset;
-	return Ret;
-      }
-    }
-    else {
-      return make_vc(Ptr, PtrCtx);
-    }
-  }
+  if(!GEP)
+    return ShadowValue(Ptr);
   
   gep_type_iterator GTI = gep_type_begin(GEP);
   for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
        ++I, ++GTI) {
-    ConstantInt *OpC;
-    if(PtrCtx)
-      OpC = dyn_cast_or_null<ConstantInt>(PtrCtx->getConstReplacement(*I));
-    else
-      OpC = dyn_cast<ConstantInt>(*I);
-    if(!OpC)
-      return make_vc(Ptr, PtrCtx);
-  }
-  
-  GTI = gep_type_begin(GEP);
-  for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
-       ++I, ++GTI) {
-    ConstantInt *OpC;
-    if(PtrCtx)
-      OpC = cast<ConstantInt>(PtrCtx->getConstReplacement(*I));
-    else
-      OpC = cast<ConstantInt>(*I);
+    ConstantInt* OpC = cast<ConstantInt>(*I);
     if (OpC->isZero()) continue;
     
     // Handle a struct and array indices which add their offset to the pointer.
@@ -159,7 +129,7 @@ ValCtx llvm::GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, i
   if (PtrSize < 64)
     Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
   
-  return GetBaseWithConstantOffset(GEP->getPointerOperand(), PtrCtx, Offset);
+  return GetBaseWithConstantOffset(cast<Constant>(GEP->getPointerOperand()), Offset);
 
 }
 

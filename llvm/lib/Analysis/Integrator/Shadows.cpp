@@ -101,6 +101,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
       ShadowInstructionInvar& SI = insts[j];
 
       SI.idx = j;
+      SI.parent = &SBB;
       SI.I = I;
       SI.scope = getInstructionScope(I);
       
@@ -286,5 +287,121 @@ void IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].invar = newBB->invar->insts[i];
     insts[i].parent = newBB;
   }
+
+}
+
+ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint32_t instidx) {
+
+  return invarInfo->BBs[blockidx]->insts[instidx];
+
+}
+
+ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
+
+  if(BB->naturalScope == L) {
+
+    bool inScope;
+    ShadowBB* LocalBB = getBB(BB);
+    if(!LocalBB)
+      return 0;
+    return LocalBB->insts[instIdx];
+
+  }
+  else {
+
+    return parent->getInstFalling(BB, instIdx);
+
+  }
+
+}
+
+ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
+
+  bool inScope;
+  ShadowBBInvar* OpBBI = invarInfo->BBs[blockIdx];
+  ShadowInstructionInvar* OpII = OpBBI->insts[instIdx];
+
+  if(OpII->scope != L)
+    return getInstFalling(OpBBI, instIdx);
+
+  ShadowBB* OpBB = getBB(blockIdx, &inScope);
+  if(!inScope) {
+
+    // Access to parent context.
+    return getInstFalling(OpBBI, instIdx);
+
+  }
+  else if(!OpBB) {
+    
+    return 0;
+
+  }
+  else {
+
+    return OpBB->insts[instIdx];
+
+  }
+
+}
+
+ShadowInstruction* IntegrationAttempt::getInst(ShadowInstructionInvar* SII) {
+
+  return getInst(SII->parent->idx, SII->idx);
+
+}
+
+// Get the ShadowValue for this instruction's operand.
+// For most kinds of ShadowValue they're just passed through,
+// but for ShadowInstructions we must make sure if the operand is
+// a loop invariant then we find the right version of the SI.
+// Note that due to LCSSA form operands are always in the same context or a parent,
+// except for exit PHI operands, which are special cased in HCF's
+// getPHINodeValue function.
+ShadowValue ShadowInstruction::getOperand(uint32_t i); {
+
+  ShadowInstIdx& SII = invar->operandIdxs[i];
+  uint32_t blockOpIdx = SII.blockIdx;
+  if(blockOpIdx == INVALID_BLOCK_IDX) {
+    Value* ArgV = invar->I->getOperand(i);
+    if(Argument* A = dyn_cast<Argument>(ArgV)) {
+      return ShadowValue(parent->IA->getFunctionRoot()->args[A->getArgNo()]);
+    }
+    else {
+      return ShadowValue(V);
+    }
+  }
+  else {
+    return ShadowValue(parent->IA->getInst(blockOpIdx, SII.instIdx));
+  }
+
+}
+
+// This is just like the above, but admits the possibility that the
+// operand is a variant in a child loop, in which case we must fetch
+// the instruction
+ShadowValue ShadowInstruction::getExitPHIOperand(uint32_t i) {
+
+  ShadowInstructionInvar* SII = parent->invar->insts[i];
+
+
+      if(ShadowInstruction* PredI = PredV.getInst()) {
+
+	const Loop* predLoop = PredI->scope;
+	
+	// If the predecessor comes from a descendent of the PHI's loop
+	if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
+
+	  PredRepl = getReplacementUsingScopeRising(cast<Instruction>(oldValue), *PI, PN->getParent(), predLoop);
+	}
+	else {
+      
+	  PredRepl = getReplacement(PredV);
+
+}
+
+ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
+
+  ShadowInstIdx& SII = invar->userIdxs[i];
+  return parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx];
 
 }

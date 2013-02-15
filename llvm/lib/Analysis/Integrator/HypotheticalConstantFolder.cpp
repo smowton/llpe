@@ -107,65 +107,6 @@ bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
 
 }
 
-bool IntegrationAttempt::checkLoopSpecialEdge(BasicBlock* FromBB, BasicBlock* ToBB) {
-
-  // Check for a loop header being entered for the first time (i.e., a child loop should perhaps be expanded?)
-  const Loop* L = getBlockScopeVariant(ToBB);
-
-  if(!L)
-    return false;
-
-  bool isSpecialEdge = (ToBB == L->getHeader()) && (FromBB == L->getLoopPreheader());
-
-  if(isSpecialEdge) {
-    // I *think* this is necessarily an immediate child of this loop.
-
-    if(!getPeelAttempt(L)) {
-
-      if(edgeIsDead(FromBB, ToBB)) {
-
-	LPDEBUG("Loop header " << ToBB->getName() << " killed. Marking exit edges dead, and successors for consideration.\n");
-
-	for(Loop::block_iterator BI = L->block_begin(), BE = L->block_end(); BI != BE; ++BI) {
-
-	  deadBlocks.insert(*BI);
-
-	} 
-
-	SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
-
-	L->getExitEdges(exitEdges);
-
-	for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator it = exitEdges.begin(), endit = exitEdges.end(); it != endit; ++it) {
-
-	  /*
-	  const Loop* edgeScope = getEdgeScope(it->first, it->second);
-	  if(edgeScope == getLoopContext() || L->contains(edgeScope)) {
-	    // The edge is either invariant at our scope, or ordinarily a loop variant
-	    // Use contains(edgeScope) rather than L == edgeScope to catch edges which break
-	    // out of more than one loop.
-	    LPDEBUG("Killed edge to " << it->second->getName() << "\n");
-	    deadEdges.insert(*it);
-	  }
-	  else {
-	    LPDEBUG("Ignored edge to " << it->second->getName() << " (invariant)\n");
-	  }
-	  */
-
-	  deadEdges.insert(*it);
-
-	}
-
-      }
-
-    }
-
-  }
-
-  return isSpecialEdge;
-
-}
-
 bool PeelAttempt::allNonFinalIterationsDoNotExit() {
 
   for(unsigned i = 0; i < Iterations.size() - 1; ++i) {
@@ -498,31 +439,48 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 }
 
-bool IntegrationAttempt::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
+bool IntegrationAttempt::getLoopHeaderPHIValue(ShadowInstruction* SI, ValCtx& result) {
 
   return false;
 
 }
 
-bool PeelIteration::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
+bool PeelIteration::getLoopHeaderPHIValue(ShadowInstruction* SI, ShadowValue& result) {
 
+  PHINode* PN = cast_inst<PHINode>(SI);
   bool isHeaderPHI = PN->getParent() == L->getHeader();
 
   if(isHeaderPHI) {
 
+    ShadowValue predValue;
+    // PHI node operands go value, block, value, block, so 2*value index = operand index.
+
     if(iterationCount == 0) {
 
       LPDEBUG("Pulling PHI value from preheader\n");
-      result = parent->getReplacement(PN->getIncomingValueForBlock(L->getLoopPreheader()));
+      // Can just use normal getOperand/replacement here.
+      int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
+      assert(predIdx >= 0 && "Failed to find preheader block");
+      predValue = SI->getOperand(predIdx * 2);
 
     }
     else {
 
       LPDEBUG("Pulling PHI value from previous iteration latch\n");
-      PeelIteration* PreviousIter = parentPA->getIteration(iterationCount - 1);
-      result = PreviousIter->getReplacement(PN->getIncomingValueForBlock(L->getLoopLatch()));
+      int predIdx = PN->getBasicBlockIndex(L->getLoopLatch());
+      assert(predIdx >= 0 && "Failed to find latch block");
+      // Find equivalent instruction in previous iteration:
+      IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
+      ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx * 2];
+      if(SII.blockIdx != INVALID_BLOCK_IDX)
+	predValue = ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
+      else
+	predValue = SI->getOperand(predIdx * 2);
 
     }
+
+    result = getReplacement(predValue);
+    copyBaseAndOffset(predValue, SI);
 
   }
 
@@ -530,69 +488,125 @@ bool PeelIteration::getLoopHeaderPHIValue(PHINode* PN, ValCtx& result) {
 
 }
 
-ValCtx IntegrationAttempt::getPHINodeValue(PHINode* PN) {
+void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops) {
 
-  BasicBlock* BB = PN->getParent();
-  ValCtx onlyValue = VCNull;
+  // SI block dead at this scope?
+  // I don't use edgeIsDead here because that recursively checks loop iterations
+  // which we're about to do anyway.
+  if(!getBB(SI->parent->idx))
+    return;
 
-  if(!getLoopHeaderPHIValue(PN, onlyValue)) {
-
-    LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
-    const Loop* phiLoop = getValueScope(PN);
-      
-    for(pred_iterator PI = pred_begin(BB), PE = pred_end(BB); PI != PE; ++PI) {
-      
-      if(edgeIsDead(*PI, BB))
-	continue;
-
-      Value* oldValue = PN->getIncomingValueForBlock(*PI);
-      ValCtx predValue;
-
-      const Loop* predLoop = getValueScope(oldValue);
-      // If the predecessor comes from a descendent of the PHI's loop
-      if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
-
-	predValue = getReplacementUsingScopeRising(cast<Instruction>(oldValue), *PI, PN->getParent(), predLoop);
-	if(predValue == VCNull) {
-	  onlyValue = VCNull;
-	  break;
-	}
-
-      }
-      else {
-      
-	// Predecessor comes from the same scope or a parent; getReplacement handles both cases
-	predValue = getReplacement(oldValue);
-
-      }
-
-      if(onlyValue == VCNull)
-	onlyValue = predValue;
-      else if(onlyValue != predValue) {
-	onlyValue = VCNull;
-	break;
-      }
-      
-    }
+  if(SI->scope != L) {
     
+  // Read from child loop if appropriate:
+  if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, SI->scope))) {
+
+    if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
+
+      for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
+
+	PeelIteration* Iter = PA->Iterations[i];
+	Iter->getOperandRising(SI, ExitedBB, ops);
+
+      }
+
+      return;
+
+    }
+
   }
 
-  if(onlyValue.first && shouldForwardValue(onlyValue)) {
+  // Value is local, or in a child loop which is unterminated or entirely unexpanded.
+  if(!edgeIsDead(SI->parent, ExitedBB))
+    ops.push_back(getInst(SI));
+
+}
+
+void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops) {
+
+  ShadowInstructionInvar* SII = SI->invar;
+  
+  ShadowInstIdx valOp = SII->preds[i];
+  ShadowInstIdx blockOp = SII->preds[i+1];
+
+  assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
+
+  // PHI arg is an instruction?
+  if(valOp.blockIdx != INVALID_BLOCK_IDX) {
+
+    // PHI arg at child scope?
+    ShadowInstructionInvar* PredSII = getInstInvar(valOp.blockIdx, valOp.instIdx);
+    if(!((!PredSII->scope) || PredSII->scope->contains(L))) {
+
+      getOperandRising(PredSII, SII->parent, ops);
+      return;
+
+    }
+
+  }
+  
+  // Arg is local or a constant or argument, use normal getOperand.
+  ShadowBBInvar* BB = getBBInvar(blockOp.blockIdx);
+  if(!edgeIsDead(BB, SI->parent->invar))
+    ops.push_back(SI->getOperand(valOpIdx));
+
+}
+
+ShadowValue IntegrationAttempt::getPHINodeValue(ShadowInstruction* SI) {
+
+  PHINode* PN = cast_inst<PHINode>(SI);
+
+  ShadowValue onlyValue;
+  ShadowValue onlyValueSource;
+
+  if(!getLoopHeaderPHIValue(SI, onlyValue)) {
+
+    LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
+   
+    bool breaknow = false;
+    ShadowInstructionInvar* SII = SI->invar;
+
+    for(uint32_t i = 0, ilim = SII->preds.size(); i != ilim && !breaknow; i+=2) {
+      
+      SmallVector<ShadowValue, 1> predValues;
+      ShadowValue PredV = getExitPHIOperands(SI, i, predValues);
+
+      for(SmallVector<ShadowValue, 1>::iterator it = predValues.begin(), it2 = predValues.end(); it != it2 && !breaknow; ++it) {
+
+	ShadowValue PredRepl = getReplacement(*it);
+
+	if(onlyValue.isInval()) {
+	  onlyValue = PredRepl;
+	  onlyValueSource = *it;
+	}
+	else if(onlyValue != PredRepl) {
+	  onlyValue = ShadowValue();
+	  breakNow = true;
+	}
+      
+      }
+    
+    }
+
+  }
+
+  if(!onlyValue.isInval() && shouldForwardValue(onlyValue)) {
+    copyBaseAndOffset(predValue, SI);
     LPDEBUG("Improved to " << itcache(onlyValue) << "\n");
     return onlyValue;
   }
   else {
     LPDEBUG("Not improved\n");
-    return VCNull;
+    return ShadowValue();
   }
   
 }
 
-ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
+ShadowValue IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
 
   if(CmpInt->getBitWidth() > 64) {
     LPDEBUG("Using an int wider than int64 for an FD\n");
-    return VCNull;
+    return ShadowValue();
   }
 
   CmpInst::Predicate Pred = CmpI->getPredicate();
@@ -624,59 +638,65 @@ ValCtx IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bo
 
   case CmpInst::ICMP_EQ:
     if(CmpVal < 0)
-      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
     break;
   case CmpInst::ICMP_NE:
     if(CmpVal < 0)
-      return const_vc(ConstantInt::getTrue(CmpI->getContext()));    
+      return ShadowValue(ConstantInt::getTrue(CmpI->getContext()));    
     break;
   case CmpInst::ICMP_SGT:
     if(CmpVal < 0)
-      return const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
     break;
   case CmpInst::ICMP_SGE:
     if(CmpVal <= 0)
-      return const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      return ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
     break;
   case CmpInst::ICMP_SLT:
     if(CmpVal <= 0)
-      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
     break;
   case CmpInst::ICMP_SLE:
     if(CmpVal < 0)
-      return const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      return ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
     break;
   default:
     LPDEBUG("Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
     break;
   }
 
-  return VCNull;
+  return ShadowValue();
 
 }
 
 // Return true if this turned out to be a compare against open
 // (and so false if there's any point trying normal const folding)
-bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
+bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, ShadowValue& Improved) {
+
+  CmpInst* CmpI = cast_inst<CmpInst>(SI->invar->I);
 
   bool flip;
   bool exists;
   ConstantInt* CmpInt = 0;
-  ValCtx op0 = getReplacement(CmpI->getOperand(0));
-  ValCtx op1 = getReplacement(CmpI->getOperand(1));
-  if(op0.second && op0.second->isForwardableOpenCall(op0.first)) {
+  ShadowValue op0 = getReplacement(SI->getOperand(0));
+  ShadowValue op1 = getReplacement(SI->getOperand(1));
+  ShadowInstruction* op0I = op0->getInst();
+  ShadowInstruction* op1I = op1->getInst();
+
+  if(op0I && op0I->parent->IA->isForwardableOpenCall(op0->invar->I)) {
     flip = false;
-    exists = op0.second->openCallSucceeds(op0.first);
-    CmpInt = dyn_cast<ConstantInt>(op1.first);
+    exists = op0I->parent->IA->openCallSucceeds(op0->invar->I);
+    CmpInt = dyn_cast<ConstantInt>(op1.getVal());
   }
-  else if(op1.second && op1.second->isForwardableOpenCall(op1.first)) {
+  else if(op1I && op1I->parent->IA->isForwardableOpenCall(op1->invar->I)) {
     flip = true;
-    exists = op1.second->openCallSucceeds(op1.first);
-    CmpInt = dyn_cast<ConstantInt>(op0.first);
+    exists = op1I->parent->IA->openCallSucceeds(op1->invar->I);
+    CmpInt = dyn_cast<ConstantInt>(op0.getVal());
   }
   else {
     return false;
   }
+
   if(CmpInt) {
     
     if(!exists) {
@@ -686,7 +706,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ValCtx& Improved) {
       Arg1 = CmpInt;
       if(flip)
 	std::swap(Arg0, Arg1);
-      Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
+      Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
       return true;
 
     }
@@ -753,7 +773,9 @@ static unsigned getReversePred(unsigned Pred) {
 
 }
 
-bool IntegrationAttempt::tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved) {
+bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, ShadowValue& Improved) {
+
+  CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
   // Only handle integer comparison
   unsigned Pred = CmpI->getPredicate();
@@ -769,8 +791,8 @@ bool IntegrationAttempt::tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved) {
     break;
   }
 
-  Constant* Op0C = getConstReplacement(CmpI->getOperand(0));
-  Constant* Op1C = getConstReplacement(CmpI->getOperand(1));
+  Constant* Op0C = getConstReplacement(SI->getOperand(0));
+  Constant* Op1C = getConstReplacement(SI->getOperand(1));
   ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
   ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
 
@@ -795,56 +817,56 @@ bool IntegrationAttempt::tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved) {
   case CmpInst::ICMP_UGT:
     // Never u> ~0
     if(Op1CI && Op1CI->isAllOnesValue()) {
-      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_UGE:
     // Always u>= 0
     if(Op1C->isNullValue()) {
-      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULT:
     // Never u< 0
     if(Op1C->isNullValue()) {
-      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULE:
     // Always u<= ~0
     if(Op1CI && Op1CI->isAllOnesValue()) {
-      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGT:
     // Never s> maxint
     if(Op1CI && Op1CI->isMaxValue(true)) {
-      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGE:
     // Always s>= minint
     if(Op1CI && Op1CI->isMinValue(true)) {
-      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLT:
     // Never s< minint
     if(Op1CI && Op1CI->isMinValue(true)) {
-      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLE:
     // Always s<= maxint
     if(Op1CI && Op1CI->isMaxValue(true)) {
-      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;     
     }
     break;
@@ -855,23 +877,27 @@ bool IntegrationAttempt::tryFoldNonConstCmp(CmpInst* CmpI, ValCtx& Improved) {
 }
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
+bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, ShadowValue& Improved) {
+
+  CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
   // Check for special cases of pointer comparison that we can understand:
 
-  Value* op0 = CmpI->getOperand(0);
-  Value* op1 = CmpI->getOperand(1);
+  ShadowValue op0 = SI->getOperand(0);
+  ShadowValue op1 = SI->getOperand(1);
 
   // Only integer and pointer types can possibly represent pointers:
-  if(!((op0->getType()->isIntegerTy() || op0->getType()->isPointerTy()) && 
-       (op1->getType()->isIntegerTy() || op1->getType()->isPointerTy())))
+  if(!((op0.getType()->isIntegerTy() || op0.getType()->isPointerTy()) && 
+       (op1.getType()->isIntegerTy() || op1.getType()->isPointerTy())))
     return false;
  
   Constant* op0C = getConstReplacement(op0);
   Constant* op1C = getConstReplacement(op1);
   int64_t op0Off = 0, op1Off = 0;
-  ValCtx op0O = GetBaseWithConstantOffset(op0, this, op0Off);
-  ValCtx op1O = GetBaseWithConstantOffset(op1, this, op1Off);
+  
+  ShadowValue op0O, op1O;
+  if((!getBaseAndOffset(op0, op0O, op0Off)) || (!getBaseAndOffset(op1, op1O, op1Off)))
+    return false;
 
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
   // against an integer null. The code for case 1 works for these; all other cases require that both
@@ -886,17 +912,17 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0O.first->getType()->isPointerTy() && isGlobalIdentifiedObject(op0O))
+  else if(op0O.getType()->isPointerTy() && isGlobalIdentifiedObject(op0O))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1O.first->getType()->isPointerTy() && isGlobalIdentifiedObject(op1O))
+  else if(op1O.getType()->isPointerTy() && isGlobalIdentifiedObject(op1O))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
     
-    Improved = const_vc(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
+    Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
     return true;   
 
   }
@@ -915,7 +941,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
     op0Arg = ConstantInt::get(I64, op0Off);
     op1Arg = ConstantInt::get(I64, op1Off);
-    Improved = const_vc(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
+    Improved = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
     return true;
 
   }
@@ -926,11 +952,11 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
   if(isGlobalIdentifiedObject(op0O) && isGlobalIdentifiedObject(op1O) && op0O != op1O) {
 
     if(CmpI->getPredicate() == CmpInst::ICMP_EQ) {
-      Improved = const_vc(ConstantInt::getFalse(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     else if(CmpI->getPredicate() == CmpInst::ICMP_NE) {
-      Improved = const_vc(ConstantInt::getTrue(CmpI->getContext()));
+      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
 
@@ -940,52 +966,38 @@ bool IntegrationAttempt::tryFoldPointerCmp(CmpInst* CmpI, ValCtx& Improved) {
 
 }
 
-ValCtx IntegrationAttempt::tryFoldPtrToInt(Instruction* PII) {
+ShadowValue IntegrationAttempt::tryFoldPtrToInt(ShadowInstruction* SPII) {
 
-  Value* Arg = PII->getOperand(0);
-  ValCtx ArgRep = getReplacement(Arg);
+  ShadowValue Arg = SPII->getOperand(0);
+  ShadowValue ArgRep = getReplacement(Arg);
 
   // First try to knock out a trivial CE:
-  if(ConstantExpr* CE = dyn_cast<ConstantExpr>(ArgRep.first)) {
+  if(Value* V = ArgRep.getVal()) {
 
-    if(CE->getOpcode() == Instruction::IntToPtr) {
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V)) {
 
-      return const_vc(CE->getOperand(0));
+      if(CE->getOpcode() == Instruction::IntToPtr) {
+
+	return ShadowValue(CE->getOperand(0));
+
+      }
 
     }
 
   }
 
-  if(shouldForwardValue(ArgRep)) {
-   
-    return make_vc(ArgRep.first, ArgRep.second, 0);
-
-  }
-  else {
-
-    return VCNull;
-
-  }
+  copyBaseAndOffset(Arg, SPII);
+  return ShadowValue();
 
 }
 
-ValCtx IntegrationAttempt::tryFoldIntToPtr(Instruction* IPI) {
+ShadowValue IntegrationAttempt::tryFoldIntToPtr(ShadowInstruction* IPI) {
 
-  Value* Arg = IPI->getOperand(0);
-  ValCtx ArgRep = getReplacement(Arg);
+  ShadowValue Arg = IPI->getOperand(0);
+  ShadowValue ArgRep = getReplacement(Arg);
   
-  if(ArgRep.offset == 0) {
-
-    return make_vc(ArgRep.first, ArgRep.second);
-
-  }
-  else {
-
-    // Could do better: search for a live GEP, or accept pointer-with-offset as a value replacement everywhere,
-    // expanding to GEPs as necessary at the output stage.
-    return VCNull;
-
-  }
+  copyBaseAndOffset(Arg, IPI);
+  return ShadowValue();
 
 }
 
@@ -1007,19 +1019,34 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
-static ValCtx evaluatePtrAsIntCE(Constant* C) {
+struct constPtrAsInt {
+
+  Constant* BaseOrConst;
+  bool isPtrAsInt;
+  int64_t Offset;
+
+  constPtrAsInt(Constant* B, int64_t O) : BaseOrConst(B), isPtrAsInt(true), Offset(O) { }
+  constPtrAsInt(Constant* C) : BaseOrConst(C), isPtrAsInt(false);
+
+};
+
+static constPtrAsInt evaluatePtrAsIntCE(Constant* C) {
 
   ConstantExpr* CE = dyn_cast<ConstantExpr>(C);
   if(!CE)
-    return const_vc(C);
+    return constPtrAsInt(C);
 
   if(!containsPtrAsInt(CE))
-    return const_vc(CE);
+    return constPtrAsInt(C);
 
   switch(CE->getOpcode()) {
 
   case Instruction::PtrToInt:
-    return make_vc(CE->getOperand(0), 0, 0);
+    {
+      int64_t Offset;
+      Constant* Base = GetBaseWithConstantOffset(CE->getOperand(0), Offset);
+      return constPtrAsInt(Base, Offset);
+    }
   case Instruction::SExt:
   case Instruction::ZExt:
     return evaluatePtrAsIntCE(CE->getOperand(0));
@@ -1027,31 +1054,30 @@ static ValCtx evaluatePtrAsIntCE(Constant* C) {
   case Instruction::Sub:
     {
 
-      ValCtx Op1 = evaluatePtrAsIntCE(CE->getOperand(0));
-      ValCtx Op2 = evaluatePtrAsIntCE(CE->getOperand(0));
+      constPtrAsInt Op1 = evaluatePtrAsIntCE(CE->getOperand(0));
+      constPtrAsInt Op2 = evaluatePtrAsIntCE(CE->getOperand(1));
 
-      if(!(Op1.isPtrAsInt() || Op2.isPtrAsInt())) {
+      if(!(Op1.isPtrAsInt || Op2.isPtrAsInt)) {
 
-	assert(isa<Constant>(Op1.first) && isa<Constant>(Op2.first));
 	if(CE->getOpcode() == Instruction::Add)
-	  return const_vc(ConstantExpr::getAdd(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
+	  return constPtrAsInt(ConstantExpr::getAdd(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
 	else
-	  return const_vc(ConstantExpr::getSub(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
+	  return constPtrAsInt(ConstantExpr::getSub(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
 
       }
 
       if(CE->getOpcode() == Instruction::Add) {
 
-	if(Op2.isPtrAsInt())
+	if(Op2.isPtrAsInt)
 	  std::swap(Op1, Op2);
 
-	if(Op2.isPtrAsInt()) // Can't add 2 pointers
-	  return const_vc(CE);
+	if(Op2.isPtrAsInt) // Can't add 2 pointers
+	  return constPtrAsInt(CE);
 
-	if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.first))
-	  return make_vc(Op1.first, Op1.second, Op1.offset + Op2C->getLimitedValue());
+	if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.BaseOrConst))
+	  return constPtrAsInt(Op1.BaseOrConst, Op1.Offset + Op2C->getLimitedValue());
 	else
-	  return const_vc(CE);
+	  return constPtrAsInt(CE);
 
       }
       else {
@@ -1060,9 +1086,9 @@ static ValCtx evaluatePtrAsIntCE(Constant* C) {
 	  
 	  if(Op2.isPtrAsInt()) {
 	    
-	    if(Op1.first == Op2.first && Op1.second == Op2.second) {
+	    if(Op1.ConstOrBase == Op2.ConstOrBase) {
 
-	      return const_vc(ConstantInt::get(Type::getInt64Ty(CE->getContext()), Op1.offset - Op2.offset));
+	      return constPtrAsInt(ConstantInt::get(Type::getInt64Ty(CE->getContext()), Op1.offset - Op2.offset));
 	      
 	    }
 	    // Else can't subtract 2 pointers with unknown base
@@ -1070,10 +1096,10 @@ static ValCtx evaluatePtrAsIntCE(Constant* C) {
 	  }
 	  else {
 
-	    if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.first))
-	      return make_vc(Op1.first, Op1.second, Op1.offset - Op2C->getLimitedValue());
+	    if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.BaseOrConst))
+	      return constPtrAsInt(Op1.BaseOrConst, Op1.Offset - Op2C->getLimitedValue());
 	    else
-	      return const_vc(CE);
+	      return constPtrAsInt(CE);
 
 	  }
 	  
@@ -1086,84 +1112,127 @@ static ValCtx evaluatePtrAsIntCE(Constant* C) {
     }	
 
   default:
-    return const_vc(CE);
+    return constPtrAsInt(CE);
 
   }
 
 }
 
-ValCtx IntegrationAttempt::getPtrAsIntReplacement(Value* V) {
+void IntegrationAttempt::getPtrAsIntReplacement(ShadowValue& V, bool& isPtr, ShadowValue& Base, int64_t& Offset) {
 
-  ValCtx VC = getReplacement(V);
-  if(VC.first && !VC.isPtrAsInt()) {
+  ShadowValue VC = getReplacement(V);
 
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(VC.first)) {
+  if(Value* VCV = VC.getVal()) {
 
-      return evaluatePtrAsIntCE(CE);
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(VCV)) {
+
+      constPtrAsInt CPI = evaluatePtrAsIntCE(CE);
+      isPtr = CPI.isPtrAsInt;
+      Base = ShadowValue(CPI.BaseOrConst);
+      Offset = CPI.Offset;
+      return;
+
+    }
+    else {
+
+      isPtr = false;
+      Base = ShadowValue(VCV);
+      return;
 
     }
 
   }
- 
-  return VC;
+  else {
+
+    isPtr = getBaseAndOffset(Base, Offset);
+
+  }
 
 }
 
-bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
+// These two methods are closely related: this one tries to establish a pointer base and offset,
+// whilst the one below tries to establish a mundane constant result, e.g. (ptrasint(x) + 1 - ptrasint(x)) = 1.
+bool IntegrationAttempt::tryGetPtrOpBase(ShadowInstruction* SI, ShadowValue& Base, int64_t& Offset) {
 
-  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And)
+  Instruction* BOp = SI->invar->I;
+  
+  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub && BOp->getOpcode())
     return false;
 
-  ValCtx Op0 = getPtrAsIntReplacement(BOp->getOperand(0));
-  ValCtx Op1 = getPtrAsIntReplacement(BOp->getOperand(1));
+  ShadowValue Op0, Op1;
+  bool Op0Ptr, Op1Ptr;
+  int64_t Op0Offset, Op1Offset;
 
-  bool Op0Ptr = Op0.isPtrAsInt();
-  bool Op1Ptr = Op1.isPtrAsInt();
-
-  if((!Op0Ptr) && (!Op1Ptr))
-    return false;
+  getPtrAsIntReplacement(SI->getOperand(0), Op0Ptr, Op0, Op0Offset);
+  getPtrAsIntReplacement(SI->getOperand(1), Op1Ptr, Op1, Op1Offset);
 
   if(BOp->getOpcode() == Instruction::Add) {
   
     if(Op0Ptr && Op1Ptr)
       return false;
 
-    ValCtx PtrV = Op0Ptr ? Op0 : Op1;
-    ConstantInt* NumC = dyn_cast<ConstantInt>(Op0Ptr ? Op1.first : Op0.first);
+    ShadowValue PtrV = Op0Ptr ? Op0 : Op1;
+    int64_t PtrOff = Op0Ptr ? Op0Offset : Op1Offset;
+    ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Op1.getVal() : Op0.getVal());
     
     if(!NumC)
       return false;
 
-    Improved = make_vc(PtrV.first, PtrV.second, PtrV.offset + NumC->getSExtValue());
+    Base = PtrV;
+    Offset = NumC->getSExtValue() + Op0Offset;
+
     return true;
 
   }
   else if(BOp->getOpcode() == Instruction::Sub) {
 
-    if(!Op0Ptr)
+    if((!Op0Ptr) || Op1Ptr)
+      return false;
+
+    if(ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Op1.getVal())) {
+
+      // Subtract int from pointer:
+      Base = Op0;
+      Offset = Op0Offset - Op1I->getSExtValue();
+      return true;
+      
+    }
+    
+  }
+
+}
+
+bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& Improved) {
+
+  Instruction* BOp = SI->invar->I;
+  
+  if(BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And)
+    return false;
+
+  if(!SI->getType()->isIntegerTy())
+    return false;
+  
+  ShadowValue Op0, Op1;
+  bool Op0Ptr, Op1Ptr;
+  int64_t Op0Offset, Op1Offset;
+
+  getPtrAsIntReplacement(SI->getOperand(0), Op0Ptr, Op0, Op0Offset);
+  getPtrAsIntReplacement(SI->getOperand(1), Op1Ptr, Op1, Op1Offset);
+
+  if((!Op0Ptr) && (!Op1Ptr))
+    return false;
+
+  else if(BOp->getOpcode() == Instruction::Sub) {
+
+    if(!(Op0Ptr && Op1Ptr))
       return false;
 
     if(Op1Ptr) {
 
-      int64_t Op0Off = 0, Op1Off = 0;
-      ValCtx Op0Base = GetBaseWithConstantOffset(Op0.first, Op0.second, Op0Off);
-      ValCtx Op1Base = GetBaseWithConstantOffset(Op1.first, Op1.second, Op1Off);
-
-      if(Op0Base.first == Op1Base.first && Op0Base.second == Op1Base.second) {
+      if(Op0 == Op1) {
 
 	// Subtracting pointers with a common base.
-	Improved = const_vc(ConstantInt::getSigned(BOp->getType(), (Op0.offset + Op0Off) - (Op1.offset + Op1Off)));
-	return true;
-
-      }
-
-    }
-    else {
-
-      if(ConstantInt* Op1I = dyn_cast<ConstantInt>(Op1.first)) {
-
-	// Subtract int from pointer:
-	Improved = make_vc(Op0.first, Op0.second, Op0.offset - Op1I->getSExtValue());
+	Improved = ShadowValue(ConstantInt::getSigned(BOp->getType(), Op0Offset - Op1Offset));
 	return true;
 
       }
@@ -1179,18 +1248,11 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
     if((!Op0Ptr) || Op1Ptr)
       return false;
 
-    ConstantInt* MaskC = dyn_cast<ConstantInt>(Op1.first);
+    ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Op1.getVal());
     if(!MaskC)
       return false;
 
-    // Find the offset due to GEP instructions before inttoptr was called.
-    int64_t Offset;
-    ValCtx PtrBase = GetBaseWithConstantOffset(Op0.first, Op0.second, Offset);
-    assert((PtrBase != VCNull) && "Couldn't resolve known pointer?");
-
-    Offset += Op0.offset;
-
-    if(Offset < 0)
+    if(Op0Offset < 0)
       return false;
 
     uint64_t UOff = (uint64_t)Offset;
@@ -1198,22 +1260,26 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
     // Try to get alignment:
 
     unsigned Align = 0;
-    if(GlobalValue* GV = dyn_cast<GlobalValue>(PtrBase.first))
+    if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Op0.getVal()))
       Align = GV->getAlignment();
-    else if(AllocaInst* AI = dyn_cast<AllocaInst>(PtrBase.first))
-      Align = AI->getAlignment();
-    else if(CallInst* CI = dyn_cast<CallInst>(PtrBase.first)) {
-      Function* F = PtrBase.second->getCalledFunction(CI);
-      if(F && F->getName() == "malloc") {
-	Align = pass->getMallocAlignment();
+    else if(ShadowInstruction* SI = Op0.getInst()) {
+
+      if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
+	Align = AI->getAlignment();
+      else if(CallInst* CI = dyn_cast<CallInst>(SI->invar->I)) {
+	Function* F = getCalledFunction(SI);
+	if(F && F->getName() == "malloc") {
+	  Align = pass->getMallocAlignment();
+	}
       }
+
     }
-      
+
     uint64_t Mask = MaskC->getLimitedValue();
 	
     if(Align > Mask) {
 
-      Improved = const_vc(ConstantInt::get(BOp->getType(), Mask & UOff));
+      Improved = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
       return true;
 
     }
@@ -1224,41 +1290,9 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(Instruction* BOp, ValCtx& Improved) {
 
 }
 
+bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, ShadowValue& Improved) {
 
-
-bool IntegrationAttempt::shouldTryEvaluate(Value* ArgV, bool verbose) {
-
-  Instruction* I;
-  Argument* A;
-
-  if((I = dyn_cast<Instruction>(ArgV))) {
-    if(blockIsDead(I->getParent())) {
-      if(verbose)
-	DEBUG(dbgs() << itcache(*ArgV) << " already eliminated (in dead block)\n");
-      return false;
-    }
-  }
-  else if((A = dyn_cast<Argument>(ArgV))) {
-    // Fall through
-  }
-  else {
-    if(verbose)
-      DEBUG(dbgs() << "Improvement candidate " << itcache(*I) << " neither an instruction nor an argument!");
-    return false;
-  }
-
-  ValCtx Improved = getReplacement(ArgV);
-  if(Improved != getDefaultVC(ArgV)) {
-    if(verbose)
-      DEBUG(dbgs() << itcache(*ArgV) << " already improved\n");
-    return false;
-  }
-
-  return true;
-
-}
-
-bool IntegrationAttempt::tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved) {
+  Instruction* BOp = SI->invar->I;
 
   switch(BOp->getOpcode()) {
   default:
@@ -1268,14 +1302,14 @@ bool IntegrationAttempt::tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved) {
     break;
   }
 
-  Constant* Op0C = getConstReplacement(BOp->getOperand(0));
-  Constant* Op1C = getConstReplacement(BOp->getOperand(1));
+  Constant* Op0C = getConstReplacement(SI->getOperand(0));
+  Constant* Op1C = getConstReplacement(SI->getOperand(1));
 
   if(BOp->getOpcode() == Instruction::And) {
 
     if((Op0C && Op0C->isNullValue()) || (Op1C && Op1C->isNullValue())) {
 
-      Improved = const_vc(Constant::getNullValue(BOp->getType()));
+      Improved = ShadowValue(Constant::getNullValue(BOp->getType()));
       return true;
 
     }
@@ -1303,7 +1337,7 @@ bool IntegrationAttempt::tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved) {
 
     if(allOnes) {
 
-      Improved = const_vc(Constant::getAllOnesValue(BOp->getType()));
+      Improved = ShadowValue(Constant::getAllOnesValue(BOp->getType()));
       return true;
 
     }
@@ -1314,305 +1348,300 @@ bool IntegrationAttempt::tryFoldBitwiseOp(Instruction* BOp, ValCtx& Improved) {
 
 }
 
-ValCtx IntegrationAttempt::tryEvaluateResult(Value* ArgV) {
+ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
   
-  if(!shouldTryEvaluate(ArgV)) {
-    return VCNull;
-  }
+  Instruction* I = SI->invar->I;
+  ShadowValue Improved;
 
-  Instruction* I;
-  ValCtx Improved = VCNull;
-  if((I = dyn_cast<Instruction>(ArgV))) {
+  if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
 
-    if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
+    // Unconditional branches are already eliminated.
+    // Both switches and conditional branches use operand 0 for the condition.
+    ShadowValue Condition = SI->getOperand(0);
+      
+    ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
 
-      Value* Condition;
-      // Both Branches and Switches have one potentially non-const arg which we now know is constant.
-      // The mechanism used by InlineCosts.cpp here emphasises code size. I try to look for
-      // time instead, by searching for PHIs that will be made constant.
-      if(BranchInst* BI = dyn_cast<BranchInst>(I))
-	Condition = BI->getCondition();
+    if(ConstCondition) {
+
+      BasicBlock* takenTarget = 0;
+
+      if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
+	// This ought to be a boolean.
+	if(ConstCondition->isZero())
+	  takenTarget = BI->getSuccessor(1);
+	else
+	  takenTarget = BI->getSuccessor(0);
+      }
       else {
 	SwitchInst* SI = cast<SwitchInst>(I);
-	Condition = SI->getCondition();
+	unsigned targetidx = SI->findCaseValue(ConstCondition);
+	takenTarget = SI->getSuccessor(targetidx);
       }
-      
-      ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
+      if(takenTarget) {
+	// We know where the instruction is going -- remove this block as a predecessor for its other targets.
+	LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
 
-      if(ConstCondition) {
+	TerminatorInst* TI = cast<TerminatorInst>(I);
 
-	BasicBlock* takenTarget = 0;
+	const unsigned NumSucc = TI->getNumSuccessors();
 
-	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
-	  // This ought to be a boolean.
-	  if(ConstCondition->isZero())
-	    takenTarget = BI->getSuccessor(1);
-	  else
-	    takenTarget = BI->getSuccessor(0);
-	}
-	else {
-	  SwitchInst* SI = cast<SwitchInst>(I);
-	  unsigned targetidx = SI->findCaseValue(ConstCondition);
-	  takenTarget = SI->getSuccessor(targetidx);
-	}
-	if(takenTarget) {
-	  // We know where the instruction is going -- remove this block as a predecessor for its other targets.
-	  LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
+	for (unsigned I = 0; I != NumSucc; ++I) {
 
-	  TerminatorInst* TI = cast<TerminatorInst>(I);
+	  BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	  const unsigned NumSucc = TI->getNumSuccessors();
+	  if(thisTarget != takenTarget) {
 
-	  for (unsigned I = 0; I != NumSucc; ++I) {
-
-	    BasicBlock* thisTarget = TI->getSuccessor(I);
-
-	    if(thisTarget != takenTarget) {
-	      if(!edgeIsDead(TI->getParent(), thisTarget)) {
-		setEdgeDead(TI->getParent(), thisTarget);
-		checkLoopSpecialEdge(TI->getParent(), thisTarget);
-	      }
-	    }
+	    // Mark outgoing edge dead.
+	    SI->parent->succsAlive[I] = false;
 
 	  }
 
-	}
-
-      }
-
-      return VCNull;
-
-    }
-    else {
-
-      // A non-branch instruction. First check for instructions with non-standard ways to evaluate / non-standard things to do with the result:
-
-      bool tryConstFold = false;
-
-      if(CallInst* CI = dyn_cast<CallInst>(I)) {
-	
-	InlineAttempt* IA = getInlineAttempt(CI);
-	if(IA) {
-	 
-	  Improved = IA->tryGetReturnValue();
-
-	}
-
-      }
-      else if(PHINode* PN = dyn_cast<PHINode>(I)) {
-
-	// PHI nodes are special because of their BB arguments, and the special-case "constant folding" that affects them
-	Improved = getPHINodeValue(PN);
-
-      }
-
-      // Try to calculate a constant value resulting from this instruction. Only possible if
-      // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
-
-      else if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
-
-	Constant* Cond = getConstReplacement(SI->getCondition());
-	if(Cond) {
-	  if(cast<ConstantInt>(Cond)->isZero())
-	    Improved = getReplacement(SI->getFalseValue());
-	  else
-	    Improved = getReplacement(SI->getTrueValue());
-	}
-
-      }
-
-      // Special cases for forwarding file descriptors, which are not represented as constants but rather VCs pointing to open instructions and so don't fall into the else case:
-      // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
-
-      else if(CastInst* CI = dyn_cast<CastInst>(I)) {
-
-	if(I->getOpcode() == Instruction::PtrToInt) {
-
-	  Improved = tryFoldPtrToInt(I);
-	  if(Improved == VCNull)
-	    tryConstFold = true;
-
-	}
-
-	else if(I->getOpcode() == Instruction::IntToPtr) {
-
-	  Improved = tryFoldIntToPtr(I);
-	  if(Improved == VCNull)
-	    tryConstFold = true;
-	  
-	}
-
-	else {
-
-	  const Type* SrcTy = CI->getSrcTy();
-	  const Type* DestTy = CI->getDestTy();
-	
-	  ValCtx SrcVC = getReplacement(CI->getOperand(0));
-
-	  if(SrcVC.isVaArg()) {
-
-	    Improved = SrcVC;
-
-	  }
-
-	  else if(((SrcVC.second && SrcVC.second->isForwardableOpenCall(SrcVC.first)) || SrcVC.isPtrAsInt())
-		  && (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
-		  && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
-
-	    Improved = SrcVC;
-
-	  }
-	  else {
-
-	    tryConstFold = true;
-
-	  }
-
-	}
-
-      }
-
-      // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
-      else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
-
-	tryConstFold = !(tryFoldOpenCmp(CmpI, Improved) || tryFoldPointerCmp(CmpI, Improved) || tryFoldNonConstCmp(CmpI, Improved));
-
-      }
-
-      else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
-
-	tryConstFold = true;
-	
-	ValCtx Base = getReplacement(GEP->getPointerOperand());
-	if(Base.isVaArg()) {
-
-	  if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
-
-	    if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(*(GEP->idx_begin())))) {
-
-	      uint64_t GEPOff = CI->getLimitedValue();
-	      assert(GEPOff % 8 == 0);
-	      GEPOff /= 8;
-
-	      int64_t newVaArg = -1;
-	      switch(Base.getVaArgType()) {
-	      case va_arg_type_baseptr:
-		// This is indexing off the frame base pointer.
-		// Determine which zone it's in:
-		if(GEPOff < 6) {
-		  // Non-FP zone:
-		  newVaArg = GEPOff - (getInitialBytesOnStack(Base.second->getFunction()) / 8);
-		}
-		else if(GEPOff >= 6 && GEPOff < 22) {
-		  newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(Base.second->getFunction()) / 16)) + ValCtx::first_fp_arg;
-		}
-		else {
-		  newVaArg = ValCtx::not_va_arg;
-		}
-		break;
-	      case va_arg_type_fp:
-	      case va_arg_type_nonfp:
-		assert(GEPOff == 1);
-		// In the spilled zone. Find the next spilled argument:
-		newVaArg = Base.second->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
-		break;
-	      default:
-		assert(0);
-	      }
-
-	      if(newVaArg != ValCtx::not_va_arg) {
-		Improved = make_vc(Base.first, Base.second, ValCtx::noOffset, newVaArg);
-	      }
-	      tryConstFold = false;
-
-	    }
-
-	  }
-	  
-	}
-
-      }
-
-      else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
-
-	tryConstFold = /*(!tryFoldVarargAdd(BOp, Improved)) && */(!tryFoldPtrAsIntOp(I, Improved));
-	if(tryConstFold)
-	  tryConstFold = !tryFoldBitwiseOp(I, Improved);
-	    
-      }
-
-      else {
-
-	tryConstFold = true;
-
-      }
-
-      if(tryConstFold) {
-
-	SmallVector<Constant*, 4> instOperands;
-
-	// This isn't as good as it could be, because the constant-folding library wants an array of constants,
-	// whereas we might have somethig like 1 && x, which could fold but x is not a Constant*. Could work around this,
-	// don't at the moment.
-	for(unsigned i = 0; i < I->getNumOperands(); i++) {
-	  Value* op = I->getOperand(i);
-	  if(Constant* C = getConstReplacement(op))
-	    instOperands.push_back(C);
-	  else {
-	    LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(*op) << "\n");
-	    break;
-	  }
-	}
-
-
-	if(instOperands.size() == I->getNumOperands()) {
-	  Constant* newConst = 0;
-
-	  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
-	  else if(isa<LoadInst>(I))
-	    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
-	  else
-	    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
-
-	  if(newConst) {
-	    LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
-	    Improved = const_vc(newConst);
-	  }
-	  else {
-	    if(I->mayReadFromMemory() || I->mayHaveSideEffects()) {
-	      LPDEBUG("User " << itcache(*I) << " may read or write global state; not propagating\n");
-	    }
-	    else {
-	      LPDEBUG("User " << itcache(*I) << " has all-constant arguments, but couldn't be constant folded\n");
-	    }
-	    Improved = VCNull;
-	  }
 	}
 
       }
 
     }
+
+    return VCNull;
 
   }
   else {
-    LPDEBUG("Improvement candidate " << itcache(*I) << " neither an instruction nor an argument!\n");
-    return VCNull;
+
+    // A non-branch instruction. First check for instructions with non-standard ways to evaluate / non-standard things to do with the result:
+
+    bool tryConstFold = false;
+
+    if(CallInst* CI = dyn_cast<CallInst>(I)) {
+	
+      InlineAttempt* IA = getInlineAttempt(CI);
+      if(IA) {
+	 
+	Improved = IA->tryGetReturnValue(SI);
+
+      }
+
+    }
+    else if(PHINode* PN = dyn_cast<PHINode>(I)) {
+
+      // PHI nodes are special because of their BB arguments and the need to route values
+      // from child scopes.
+      Improved = getPHINodeValue(SI);
+
+    }
+
+    // Try to calculate a constant value resulting from this instruction. Only possible if
+    // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
+
+    else if(SelectInst* SelI = dyn_cast<SelectInst>(I)) {
+
+      Constant* Cond = getConstReplacement(SI->getOperand(0));
+      if(Cond) {
+	ShadowValue copy;
+	if(cast<ConstantInt>(Cond)->isZero())
+	  copy = SI->getOperand(2);
+	else
+	  copy = SI->getOperand(1);
+	Improved = getReplacement(copy);
+	copyBaseAndOffset(copy, SI);
+      }
+
+    }
+
+    // Special cases for forwarding file descriptors, which are not represented as constants but rather replacements pointing to open instructions and so don't fall into the else case:
+    // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
+
+    else if(CastInst* CI = dyn_cast<CastInst>(I)) {
+
+      // All casts 
+
+      if(I->getOpcode() == Instruction::PtrToInt) {
+
+	Improved = tryFoldPtrToInt(SI);
+	if(Improved.isInval())
+	  tryConstFold = true;
+
+      }
+
+      else if(I->getOpcode() == Instruction::IntToPtr) {
+
+	Improved = tryFoldIntToPtr(SI);
+	if(Improved.isInval())
+	  tryConstFold = true;
+	  
+      }
+
+      else {
+
+	const Type* SrcTy = CI->getSrcTy();
+	const Type* DestTy = CI->getDestTy();
+	
+	ShadowValue SrcVal = getReplacement(SI->getCallArgOperand(0));
+
+	if(ShadowInstruction* SI = SrcVal.getInst()) {
+
+	  if(SrcVal.isVaArg()) {
+
+	    Improved = SrcVal;
+
+	  }
+	  else if(SI->parent->IA->isForwardableOpenCall(SI->invar->I)) || SrcVal.isPtrAsInt())
+		&& (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
+		&& (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+
+	  Improved = SrcVal;
+
+	}
+	else {
+
+	  tryConstFold = true;
+
+	}
+
+      }
+
+    }
+
+    // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
+    else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
+
+      tryConstFold = !(tryFoldOpenCmp(SI, Improved) || tryFoldPointerCmp(SI, Improved) || tryFoldNonConstCmp(SI, Improved));
+
+    }
+
+    else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
+
+      tryConstFold = true;
+
+      // Inherit base object from GEP if known.
+      copyBaseAndObject(SI->getOperand(0), SI);
+
+      if(!SI->i.baseObject.isInval()) {
+	// Bump base by amount indexed by GEP:
+	gep_type_iterator GTI = gep_type_begin(GEP);
+	for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
+	     ++I, ++GTI) {
+	  ConstantInt* OpC = cast_or_null<ConstantInst>(getConstReplacement(*I));
+
+	  if(!OpC) {
+	    // Uncertain -- there's no point tracking vague pointers here
+	    // as that work is currently done in the PB solver.
+	    SI->i.baseObject = ShadowValue();
+	    SI->i.baseOffset = 0;
+	  }
+	  if (OpC->isZero()) continue;
+    
+	  // Handle a struct and array indices which add their offset to the pointer.
+	  if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	    SI->i.baseOffset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+	  } else {
+	    uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
+	    SI->i.baseOffset += OpC->getSExtValue()*Size;
+	  }
+	}
+      }
+	
+      ShadowValue Base = getReplacement(SI->getOperand(0));
+      if(Base.isVaArg()) {
+
+	if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
+
+	  if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getOperand(1)))) {
+
+	    Function* calledF = Base.getInst()->parent->getFunction();
+
+	    uint64_t GEPOff = CI->getLimitedValue();
+	    assert(GEPOff % 8 == 0);
+	    GEPOff /= 8;
+
+	    int64_t newVaArg = -1;
+	    switch(Base.getVaArgType()) {
+	    case va_arg_type_baseptr:
+	      // This is indexing off the frame base pointer.
+	      // Determine which zone it's in:
+	      if(GEPOff < 6) {
+		// Non-FP zone:
+		newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
+	      }
+	      else if(GEPOff >= 6 && GEPOff < 22) {
+		newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ShadowValue::first_fp_arg;
+	      }
+	      else {
+		newVaArg = ShadowValue::not_va_arg;
+	      }
+	      break;
+	    case va_arg_type_fp:
+	    case va_arg_type_nonfp:
+	      assert(GEPOff == 1);
+	      // In the spilled zone. Find the next spilled argument:
+	      newVaArg = Base.getInst()->parent->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
+	      break;
+	    default:
+	      assert(0);
+	    }
+
+	    if(newVaArg != ValCtx::not_va_arg) {
+	      Improved = ShadowValue(Base, ShadowValue::noOffset, newVaArg);
+	    }
+	    tryConstFold = false;
+
+	  }
+
+	}
+	  
+      }
+
+    }
+
+    else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
+
+      tryConstFold = (!tryFoldPtrAsIntOp(SI, Improved)) && (!tryFoldBitwiseOp(SI, Improved));
+	    
+    }
+
+    else {
+
+      tryConstFold = true;
+
+    }
+
+    if(tryConstFold) {
+
+      SmallVector<Constant*, 4> instOperands;
+
+      for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
+	ShadowValue op = SI->getOperand(i);
+	if(Constant* C = getConstReplacement(op))
+	  instOperands.push_back(C);
+	else {
+	  LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(op) << "\n");
+	  break;
+	}
+      }
+
+      if(instOperands.size() == I->getNumOperands()) {
+	Constant* newConst = 0;
+
+	if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+	  newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+	else if(isa<LoadInst>(I))
+	  newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+	else
+	  newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
+
+	if(newConst) {
+	  LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
+	  Improved = ShadowValue(newConst);
+	}
+	else {
+	  Improved = ShadowValue();
+	}
+      }
+
+    }
+
   }
 
   return Improved;
-
-}
-
-ValCtx InlineAttempt::tryEvaluateResult(Value* V) {
-
-  Argument* A;
-  if((A = dyn_cast<Argument>(V))) {
-    return getImprovedCallArgument(A);
-  }
-  else {
-    return IntegrationAttempt::tryEvaluateResult(V);
-  }
 
 }
 
@@ -2439,17 +2468,18 @@ void PeelAttempt::queueAllLiveValuesMatching(UnaryPred& P) {
 
 }
 
-void IntegrationAttempt::tryEvaluate(Value* V) {
+void IntegrationAttempt::tryEvaluate(ShadowInstruction* SI) {
 
-  ValCtx Improved = tryEvaluateResult(V);
+  ShadowValue Improved = tryEvaluateResult(SI);
  
-  if(Improved.first && shouldForwardValue(Improved)) {
+  if((!Improved.isInval()) && shouldForwardValue(Improved)) {
+    
+    SI->i.replaceWith = Improved;
 
-    setReplacement(V, Improved);
+    if(ShadowInstruction* ImpSI = Improved.getInst()) {
 
-    if(Improved.second) {
-
-      Improved.second->addForwardedInst(cast<Instruction>(Improved.first), make_vc(V, this));
+      if(std::find(ImpSI->indirectUsers.begin(), ImpSI->indirectUsers.end(), SI) == ImpSI->indirectUsers.end())
+	ImpSI->indirectUsers.push_back(SI);
 
     }
 
@@ -2457,10 +2487,17 @@ void IntegrationAttempt::tryEvaluate(Value* V) {
 
 }
 
-void IntegrationAttempt::checkLoad(LoadInst* LI) {
+void InlineAttempt::tryEvaluateArg(ShadowArg* SA) {
 
-  if(!shouldTryEvaluate(LI))
-    return;
+  ShadowValue& copy = CI->getCallArgOperand(SA->invar->A->getArgNo());
+  ShadowValue Repl = getReplacement(copy);
+  if(shouldForwardValue(Repl))
+    SA->i.replaceWith = Repl;
+  copyBaseAndOffset(copy, SA);
+
+}
+
+void IntegrationAttempt::checkLoad(LoadInst* LI) {
 
   ValCtx Result = tryForwardLoad(LI);
   if(Result.first) {

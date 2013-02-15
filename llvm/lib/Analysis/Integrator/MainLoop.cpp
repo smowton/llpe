@@ -35,7 +35,7 @@ void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& Cache
 
     ShadowArg* SArg = argShadows[i];
     tryEvaluateArg(SArg);
-    if(!isResolved(SArg) {
+    if(isUnresolved(SArg)) {
       updateBasePointer(SArg, true, 0, CacheThresholdBB, CacheThresholdIA);
       tryPromoteSingleValuedPB(SArg);
     }
