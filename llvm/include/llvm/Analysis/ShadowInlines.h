@@ -67,12 +67,11 @@ struct ShadowValue {
     ShadowInstruction* I;
     Value* V;
   } u;
-  int64_t offset;
   int64_t va_arg;
 
 ShadowValue() : t(SHADOWVAL_INVAL), offset(_o), va_arg(_v), offset(LLONG_MAX), va_arg(-1) { }
 ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG), u.A(_A), offset(LLONG_MAX), va_arg(-1) { }
-ShadowValue(ShadowInstruction* _I, int64_t _o = LLONG_MAX, int64_t _v = -1) : t(SHADOWVAL_INST), u.I(_I), offset(_o), va_arg(_v) { }
+ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST), u.I(_I), va_arg(_v) { }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(-1) { }
 
   bool isInval() {
@@ -97,18 +96,12 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
     return t == SHADOWVAL_OTHER ? u.V : 0;
   }
 
-  static const int64_t noOffset = LLONG_MAX;
-
   // Values of va_arg:
   static const int64_t not_va_arg = -1;
   static const int64_t va_baseptr = -2;
   static const int64_t first_nonfp_arg = 0;
   static const int64_t first_fp_arg = 0x00010000;
   static const int64_t max_arg = 0x00020000;
-
-  bool isPtrAsInt() {
-    return offset != noOffset;
-  }
 
   bool isVaArg() {
     return va_arg != not_va_arg;
@@ -154,6 +147,29 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
       return u.V->getType();
     case SHADOWVAL_INVAL:
       return 0;
+    }
+
+  }
+
+  ShadowValue stripPointerCasts() {
+
+    if(isArg())
+      return *this;
+    if(ShadowInstruction* SI = getInst()) {
+
+      if(inst_is<CastInst>()) {
+	ShadowValue Op = SI->getOperand(0);
+	return Op.stripPointerCasts();
+      }
+      else {
+	return *this;
+      }
+
+    }
+    else {
+
+      return getVal()->stripPointerCasts();
+
     }
 
   }
@@ -208,7 +224,8 @@ struct InstArgImprovement {
   ShadowValue replaceWith;
   ShadowValue baseObject;
   int64_t baseOffset;
-  SmallVector<ValCtx, 4>* indirectUsers;
+  SmallVector<ShadowInstruction*, 4> indirectUsers;
+  SmallVector<ShadowInstruction*, 1> PBIndirectUsers; 
   ShadowInstDIEStatus dieStatus;
 
 InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }
@@ -228,6 +245,10 @@ struct ShadowInstruction {
   }
 
   ShadowValue getOperand(uint32_t i);
+
+  ShadowValue getOperandFromEnd(uint32_t i) {
+    return getOperand(invar->operandIdxs.size() - i);
+  }
 
   ShadowValue getCallArgOperand(uint32_t i) {
     return getOperand(i + 1);
@@ -337,25 +358,25 @@ uint32_t ShadowBBInvar::succs_size() {
   return succIdxs.size();
 }
 
-inline ShadowValue getReplacement(ShadowArg* SA) {
+inline ShadowValue getReplacement(ShadowArg* SA, bool mustImprove = false) {
  
   if(SA->i.replaceWith->isInval())
-    return ShadowValue(SA);
+    return mustImprove ? ShadowValue() : ShadowValue(SA);
   else
     return SA->replaceWith;
 
 }
 
-inline ShadowValue getReplacement(ShadowInstruction* SI) {
+inline ShadowValue getReplacement(ShadowInstruction* SI, bool mustImprove = false) {
 
   if(SI->i.replaceWith->isInval())
-    return ShadowValue(SI);
+    return mustImprove ? ShadowValue() : ShadowValue(SI);
   else
     return SI->replaceWith;
 
 }
 
-inline ShadowValue getReplacement(ShadowValue& SV) {
+inline ShadowValue getReplacement(ShadowValue& SV, bool mustImprov = false) {
 
   if(ShadowInstruction* SI = SV.getInst()) {
     return getReplacement(SI);
@@ -438,4 +459,16 @@ inline void copyBaseAndOffset(ShadowValue& From, ShadowArgument* To) {
 
   copyBaseAndOffset(From, To->i);
 
+}
+
+inline bool isUnresolved(InstArgImprovement& IAI) {
+  return !IAI.replaceWith.isInval();
+}
+
+inline bool isUnresolved(ShadowInstruction* SI) {
+  return isUnresolved(SI->i);
+}
+
+inline bool isUnresolved(ShadowArg* SA) {
+  return isUnresolved(SA->i);
 }

@@ -128,7 +128,7 @@ bool functionIsBlacklisted(Function*);
 struct PointerBase {
 
   ValSetType Type;
-  SmallVector<ValCtx, 4> Values;
+  SmallVector<ShadowValue, 4> Values;
   bool Overdef;
 
 PointerBase() : Type(ValSetTypeUnknown), Overdef(false) { }
@@ -392,13 +392,12 @@ enum PartialValType {
 
 struct PartialVal {
 
-  // Might be empty, a VC, a constant with bounding parameters, or an array of bytes.
+  // Might be empty, an SV, a constant with bounding parameters, or an array of bytes.
   PartialValType type;
   // Value is tainted by varargs at any point?
   bool isVarargTainted;
 
-  // Used if it's a VC:
-  ValCtx TotalVC;
+  ShadowValue TotalSV;
 
   // Used if it's a bounded constant:
   Constant* C;
@@ -420,12 +419,12 @@ struct PartialVal {
 
   void initByteArray(uint64_t);
   
- PartialVal(ValCtx Total) : 
-  type(PVTotal), isVarargTainted(false), TotalVC(Total), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+ PartialVal(ShadowValue Total) : 
+  type(PVTotal), isVarargTainted(false), TotalSV(Total), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
  PartialVal(Constant* _C, uint64_t Off) : 
-  type(PVPartial), isVarargTainted(false), TotalVC(VCNull), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  type(PVPartial), isVarargTainted(false), TotalSV(), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
  PartialVal() :
-  type(PVEmpty), isVarargTainted(false), TotalVC(VCNull), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  type(PVEmpty), isVarargTainted(false), TotalSV(), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
   PartialVal(uint64_t nBytes); // Byte array constructor
   PartialVal(const PartialVal& Other);
   PartialVal& operator=(const PartialVal& Other);
@@ -440,8 +439,8 @@ struct PartialVal {
     return PartialVal(_C, Off);
   }
 
-  static PartialVal getTotal(ValCtx VC) {
-    return PartialVal(VC);
+  static PartialVal getTotal(ShadowValue SV) {
+    return PartialVal(SV);
   }
   
   static PartialVal getByteArray(uint64_t size) {
@@ -456,7 +455,7 @@ inline bool operator==(PartialVal V1, PartialVal V2) {
   if(V1.type == PVEmpty && V2.type == PVEmpty)
     return true;
   else if(V1.type == PVTotal && V2.type == PVTotal)
-    return V1.TotalVC == V2.TotalVC;
+    return V1.TotalSV == V2.TotalSV;
   else if(V1.type == PVPartial && V2.type == PVPartial)
     return ((V1.C == V2.C) &&
 	    (V1.ReadOffset == V2.ReadOffset));
@@ -479,7 +478,7 @@ inline bool operator!=(PartialVal V1, PartialVal V2) {
    return !(V1 == V2);
 }
 
-typedef std::pair<std::pair<std::pair<BasicBlock*, ValCtx>, uint64_t>, uint64_t> LFCacheKey;
+typedef std::pair<std::pair<std::pair<ShadowBB*, ShadowValue>, uint64_t>, uint64_t> LFCacheKey;
 
 #define LFCK(x,y,z,w) std::make_pair(std::make_pair(std::make_pair(x, y), z), w)
 

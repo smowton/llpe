@@ -558,12 +558,6 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
 
 }
 
-void IntegrationAttempt::addMemWriterEffect(Instruction* I, LoadInst* LI, IntegrationAttempt* Ctx) {
-
-  memWriterEffects[I].insert(std::make_pair(LI, Ctx));
-
-}
-
 bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   // Quick escape for values we can't handle:

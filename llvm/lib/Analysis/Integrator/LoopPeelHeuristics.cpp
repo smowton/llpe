@@ -249,61 +249,17 @@ public:
 
 ValCtx IntegrationAttempt::getReplacementUsingScope(ShadowInstructionInvar* SII) {
 
-  GetReplacementCallback CB(V);
+  GetReplacementCallback CB(SII);
   callWithScope(CB, SII->scope);
   return CB.Result;
 
 }
 
-ValCtx IntegrationAttempt::getDefaultVC(Value* V) {
+static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
-  if(Constant* C = dyn_cast<Constant>(V))
-    return const_vc(C);
-  
-  const Loop* evalScope = getValueScope(V);
-  const Loop* L = getLoopContext();
+  ShadowValue CalledV = const_cast<Value*>(CCalledV.stripPointerCasts());
 
-  if(L != evalScope && ((!L) || L->contains(evalScope))) {
-    return make_vc(V, this);
-  }
-  else {
-    return getDefaultVCWithScope(V, evalScope);
-  }
-
-}
-
-ValCtx IntegrationAttempt::getDefaultVCWithScope(Value* V, const Loop* LScope) {
-
-  if(LScope == getLoopContext())
-    return make_vc(V, this);
-  else
-    return parent->getDefaultVCWithScope(V, LScope);
-
-}
-
-Constant* llvm::getConstReplacement(Value* V, IntegrationAttempt* Ctx) {
-
-  if(Constant* C = dyn_cast<Constant>(V))
-    return C;
-  ValCtx Replacement = Ctx->getReplacement(V);
-
-    return 0;
-  if(Constant* C = dyn_cast<Constant>(Replacement.first))
-    return C;
-  return 0;
-
-}
-
-Constant* IntegrationAttempt::getConstReplacement(Value* V) {
-
-  return llvm::getConstReplacement(V, this);
-
-}
-
-static Function* getReplacementFunction(const Value* CCalledV, IntegrationAttempt* IA) {
-
-  Value* CalledV = const_cast<Value*>(CCalledV->stripPointerCasts());
-  Constant* C = IA->getConstReplacement(CalledV);
+  Constant* C = getConstReplacement(CalledV);
 
   if(!C) {
 
@@ -347,24 +303,12 @@ static Function* getReplacementFunction(const Value* CCalledV, IntegrationAttemp
 
 }
 
-Function* IntegrationAttempt::getCalledFunction(const CallInst* CI) {
+Function* IntegrationAttempt::getCalledFunction(const ShadowInstruction* SI) {
 
-  return getReplacementFunction(CI->getCalledValue(), this);
-
-}
-
-Function* IntegrationAttempt::getCalledFunction(const InvokeInst* II) {
-
-  return getReplacementFunction(II->getCalledValue(), this);
-
-}
-
-Function* IntegrationAttempt::getCalledFunction(const Instruction* I) {
-
-  if(const CallInst* CI = dyn_cast<CallInst>(I))
-    return getCalledFunction(CI);
-  else if(const InvokeInst* II = dyn_cast<InvokeInst>(I))
-    return getCalledFunction(II);
+  if(inst_is<CallInst>(SI))
+    return getReplacementFunction(SI, SI->getOperandFromEnd(1));
+  else if(inst_is<InvokeInst>(SI))
+    return getReplacementFunction(SI, SI->getOperandFromEnd(3));
   release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
   return 0;
 
@@ -390,12 +334,6 @@ const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
 const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
 
   return pass->applyIgnoreLoops(InstL);
-
-}
-
-bool IntegrationAttempt::isUnresolved(Value* V) {
-
-  return (!shouldForwardValue(getDefaultVC(V))) && (getDefaultVC(V) == getReplacement(V));
 
 }
 
@@ -1050,26 +988,28 @@ ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
 
 }
 
-void InlineAttempt::getVarArg(int64_t idx, ValCtx& Result) {
+void InlineAttempt::getVarArg(int64_t idx, ShadowValue& Result) {
 
   unsigned numNonFPArgs = 0;
   unsigned numFPArgs = 0;
 
-  Value* Found = 0;
+  uint32_t argIdx;
+
+  CallInst* RawCI = cast_inst<CallInst>(CI);
 
   for(unsigned i = F.arg_size(); i < CI->getNumArgOperands(); ++i) {
 
-    Value* Arg = CI->getArgOperand(i);
+    Value* Arg = RawCI->getArgOperand(i);
     if(Arg->getType()->isPointerTy() || Arg->getType()->isIntegerTy()) {
       if(idx < ValCtx::first_fp_arg && idx == numNonFPArgs) {
-	Found = Arg;
+	argIdx = i;
 	break;
       }
       numNonFPArgs++;
     }
     else if(Arg->getType()->isFloatingPointTy()) {
       if(idx >= ValCtx::first_fp_arg && (idx - ValCtx::first_fp_arg) == numFPArgs) {
-	Found = Arg;
+	argIdx = i;
 	break;
       }
       numFPArgs++;
@@ -1078,17 +1018,17 @@ void InlineAttempt::getVarArg(int64_t idx, ValCtx& Result) {
   }
 
   if(Found)
-    Result = parent->getReplacement(Found);
+    Result = CI->getCallArgOperand(i)->getReplacement();
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
-    Result = VCNull;
+    Result = ShadowValue();
 
   }
 
 }
 
-void PeelIteration::getVarArg(int64_t idx, ValCtx& Result) {
+void PeelIteration::getVarArg(int64_t idx, ShadowValue& Result) {
 
   parent->getVarArg(idx, Result);
 
@@ -1537,46 +1477,31 @@ bool llvm::allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, Targ
 
 }
 
-ValCtx llvm::getAsPtrAsInt(ValCtx VC, const Type* Target) {
-
-  assert(VC.first->getType()->isPointerTy());
-
-  if(Constant* C = dyn_cast<Constant>(VC.first)) {
-
-    if(C->isNullValue())
-      return const_vc(Constant::getNullValue(Target));
-
-  }
-
-  return make_vc(VC.first, VC.second, 0);
-
-}
-
-ValCtx llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
+Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
 
   const Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
 
   if(Offset == 0 && TargetSize == FromSize) {
     if(allowTotalDefnImplicitCast(FromType, Target))
-      return const_vc(FromC);
+      return (FromC);
     else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
-      return getAsPtrAsInt(const_vc(FromC), Target);
+      return ConstExpr::getPtrToInt(FromC, Target);
     DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
-    return VCNull;
+    return 0;
   }
 
   if(Offset < 0 || Offset + TargetSize > FromSize) {
 
     DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
-    return VCNull;
+    return 0;
 
   }
 
   if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
 
     // Wholly subsumed within a zeroinitialiser:
-    return const_vc(Constant::getNullValue(Target));
+    return (Constant::getNullValue(Target));
 
   }
 
@@ -1603,7 +1528,7 @@ ValCtx llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Typ
     const StructLayout* SL = TD->getStructLayout(CS->getType());
     if(!SL) {
       DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
-      return VCNull;
+      return 0;
     }
 
     StartE = SL->getElementContainingOffset(Offset);
@@ -1624,7 +1549,7 @@ ValCtx llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Typ
     DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
   }
 
-  return VCNull;
+  return 0;
 
 }
 

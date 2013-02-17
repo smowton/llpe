@@ -77,31 +77,23 @@ bool IntegrationAttempt::isForwardableOpenCall(Value* V) {
 
 }
 
-bool IntegrationAttempt::shouldForwardValue(ValCtx V) {
+bool llvm::shouldForwardValue(ShadowValue& V) {
 
-  if(isa<Constant>(V.first))
-    return true;
-
-  if(V.isPtrAsInt())
+  if(V.getVal() && isa<Constant>(V.getVal()))
     return true;
 
   if(V.isVaArg())
     return true;
   
-  if(V.first->getType()->isPointerTy()) {
-    
-    ValCtx O = V.second->getUltimateUnderlyingObject(V.first);
-    // Reject forwarding expressions based on constant pointers because this means we're something like %1 in:
-    // %0 = (some pointer-typed expression that resolves to a constant (so either null or a constexpr of a global))
-    // %1 = cast or gep of %0, ...
-    // This means %1 will evaluate to a constexpr; we should reconsider at that time.
-    if(isGlobalIdentifiedObject(O) && !isa<Constant>(O.first))
+  if(ShadowInstruction* SI = V.getInst()) {
+
+    if(!SI->baseObject.isInval())
+      return true;
+
+    if(SI->parent->IA->isForwardableOpenCall(SI))
       return true;
 
   }
-
-  if(V.second->isForwardableOpenCall(V.first))
-    return true;
 
   return false;
 
@@ -1144,7 +1136,9 @@ void IntegrationAttempt::getPtrAsIntReplacement(ShadowValue& V, bool& isPtr, Sha
   }
   else {
 
-    isPtr = getBaseAndOffset(Base, Offset);
+    isPtr = getBaseAndOffset(V, Base, Offset);
+    if(!isPtr)
+      Base = getReplacement(V);
 
   }
 
@@ -1179,7 +1173,7 @@ bool IntegrationAttempt::tryGetPtrOpBase(ShadowInstruction* SI, ShadowValue& Bas
       return false;
 
     Base = PtrV;
-    Offset = NumC->getSExtValue() + Op0Offset;
+    Offset = NumC->getSExtValue() + PtrOff;
 
     return true;
 
@@ -1205,13 +1199,15 @@ bool IntegrationAttempt::tryGetPtrOpBase(ShadowInstruction* SI, ShadowValue& Bas
 bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& Improved) {
 
   Instruction* BOp = SI->invar->I;
+
+  if(!SI->getType()->isIntegerTy())
+    return false;
+
+  tryGetPtrOpBase(SI, SI->i.baseObject, SI->i.baseOffset);
   
   if(BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And)
     return false;
 
-  if(!SI->getType()->isIntegerTy())
-    return false;
-  
   ShadowValue Op0, Op1;
   bool Op0Ptr, Op1Ptr;
   int64_t Op0Offset, Op1Offset;
@@ -2497,12 +2493,11 @@ void InlineAttempt::tryEvaluateArg(ShadowArg* SA) {
 
 }
 
-void IntegrationAttempt::checkLoad(LoadInst* LI) {
+void IntegrationAttempt::checkLoad(ShadowInstruction* LI) {
 
-  ValCtx Result = tryForwardLoad(LI);
-  if(Result.first) {
-    setReplacement(LI, Result);
-  }
+  ShadowValue Result = tryForwardLoad(LI);
+  if(!Result.isInval())
+    LI->i.replaceWith = Result;
 
 }
 

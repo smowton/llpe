@@ -191,9 +191,9 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     tryEvaluate(BI);
 
-    if(LoadInst* LI = dyn_cast<LoadInst>(BI)) {
-      if(isUnresolved(LI))
-	checkLoad(LI);
+    if(inst_is<LoadInst>(SI)) {
+      if(isUnresolved(SI))
+	checkLoad(SI);
     }
 
     // Don't use isUnresolved here because the PB solver requires that we *do*

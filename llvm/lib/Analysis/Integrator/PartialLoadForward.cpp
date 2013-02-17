@@ -36,8 +36,8 @@ using namespace llvm;
 
 // Returns false if there is no overlap at all.
 
-bool IntegrationAttempt::GetDefinedRange(ValCtx DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
-					 ValCtx DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
+bool IntegrationAttempt::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
+					 ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
 
   if (DefinerBase != DefinedBase)
@@ -198,7 +198,7 @@ uint32_t llvm::getInitialFPBytesOnStack(Function& F) {
 
 }
 
-int64_t IntegrationAttempt::getSpilledVarargAfter(CallInst* CI, int64_t OldArg) {
+int64_t IntegrationAttempt::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
 
   Function* F = getCalledFunction(CI);
   assert(F && F->isVarArg());
@@ -216,7 +216,7 @@ int64_t IntegrationAttempt::getSpilledVarargAfter(CallInst* CI, int64_t OldArg) 
   unsigned FPArgs = 0;
   for(unsigned i = F->getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
 
-    const Type* T = CI->getArgOperand(i)->getType();
+    const Type* T = cast_inst<CallInst>(CI)->getArgOperand(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       if(nonFPBytesLeft <= 0) {
@@ -347,7 +347,7 @@ void PeelAttempt::disableVarargsContexts() {
   // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
   // passing through a memcpy.
 
-bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool IntegrationAttempt::getPVFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
   const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
@@ -378,11 +378,11 @@ bool IntegrationAttempt::getPVFromCopy(Value* copySource, Instruction* copyInst,
 
 }
 
-bool IntegrationAttempt::getMemsetPV(MemSetInst* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
+bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
 
   // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
   // independently of what the offset is.
-  ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getValue()));
+  ConstantInt *Val = dyn_cast_or_null<ConstantInt>(getConstReplacement(MSI->getCallArgOperand(1)));
   if(!Val) {
 
     LPDEBUG("Won't forward load from uncertain memset " << itcache(*MSI) << "\n");
@@ -408,32 +408,33 @@ bool IntegrationAttempt::getMemsetPV(MemSetInst* MSI, uint64_t nbytes, PartialVa
 
 }
 
-bool IntegrationAttempt::getMemcpyPV(MemTransferInst* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool IntegrationAttempt::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
-
-  MemTransferInst *MTI = cast<MemTransferInst>(I);
 
   // First of all check for an easy case: the memcpy is from a constant global.
   // Then we can just appropriately bracket the source constant and the outside
   // extract-element-from-aggregate code will pick it up.
 
-  Value* CpySrc = MTI->getSource();
-  int64_t Offset;
-  ValCtx CpyBase = GetBaseWithConstantOffset(CpySrc, this, Offset);
-  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.first)) {
+  if(Constant* CpySrc = getConstReplacement(I->getCallArgOperand(1))) {
 
-    if(GV->isConstant()) {
+    int64_t Offset;
+    Constant* CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
+    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase)) {
+
+      if(GV->isConstant()) {
       
-      Constant* C = GV->getInitializer();
-      NewPV = PartialVal::getPartial(C, ReadOffset + Offset);
+	Constant* C = GV->getInitializer();
+	NewPV = PartialVal::getPartial(C, ReadOffset + Offset);
+
+      }
 
     }
 
   }
 
-  return getPVFromCopy(MTI->getSource(), MTI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPVFromCopy(I->getCallArgOperand(1), I, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
 
 }
 
