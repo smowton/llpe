@@ -115,7 +115,7 @@ bool LoadForwardWalker::shouldEnterCall(ShadowInstruction* SI) {
 
   CallInst* CI = cast_inst<CallInst>(SI);
 
-  switch(AA->getModRefInfo(CI, LoadedPtr.first, LoadSize, IA, LoadedPtr.second, true)) {
+  switch(AA->getModRefInfo(SI, LoadedPtr, LoadSize, true)) {
 
   case AliasAnalysis::NoModRef:
   case AliasAnalysis::Ref:

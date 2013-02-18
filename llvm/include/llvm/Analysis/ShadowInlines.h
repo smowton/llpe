@@ -174,7 +174,68 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
 
   }
 
+  IntegrationAttempt* getCtx() {
+
+    switch(t) {
+    case SHADOWVAL_ARG:
+      return u.A->IA;
+    case SHADOWVAL_INST:
+      return u.I->parent->IA;
+    default:
+      return 0;
+    }
+
+  }
+
+  Value* getBareVal() {
+
+    switch(t) {
+    case SHADOWVAL_ARG:
+      return return u.A->invar->A;
+    case SHADOWVAL_INST:
+      return u.I->invar->I;
+    case SHADOWVAL_VAL:
+      return u.V;
+    default:
+      return 0;
+    }
+
+  }
+
+  bool isIdentifiedObject() {
+
+    return isIdentifiedObject(getBareVal());
+
+  }
+
 };
+
+template<class X> inline bool val_is(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return isa<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return isa<X>(A->invar->A);
+  else
+    return inst_is<X>(V.getInst());
+}
+
+template<class X> inline X* dyn_cast_val(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return dyn_cast<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return dyn_cast<X>(A->invar->A);
+  else
+    return dyn_cast_inst<X>(V.getInst());
+}
+
+template<class X> inline X* cast_val(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return cast<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return cast<X>(A->invar->A);
+  else
+    return cast_inst<X>(V.getInst());
+}
 
 #define INVALID_BLOCK_IDX 0xffffffff;
 #define INVALID_INSTRUCTION_IDX 0xffffffff;
@@ -251,7 +312,7 @@ struct ShadowInstruction {
   }
 
   ShadowValue getCallArgOperand(uint32_t i) {
-    return getOperand(i + 1);
+    return getOperand(i);
   }
 
   uint32_t getNumUsers() {

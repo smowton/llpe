@@ -843,7 +843,7 @@ class CallInst : public Instruction {
             const Twine &NameStr,
             // This argument ensures that we have an iterator we can
             // do arithmetic on in constant time
-            std::random_access_iterator_tag) {
+           std::random_access_iterator_tag) {
     unsigned NumArgs = (unsigned)std::distance(ArgBegin, ArgEnd);
 
     // This requires that the iterator points to contiguous memory.

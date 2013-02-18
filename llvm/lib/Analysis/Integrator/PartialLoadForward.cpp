@@ -36,9 +36,9 @@ using namespace llvm;
 
 // Returns false if there is no overlap at all.
 
-bool IntegrationAttempt::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
-					 ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
-					 uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
+bool llvm::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
+			   ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
+			   uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset) {
 
   if (DefinerBase != DefinedBase)
     return false;
@@ -198,7 +198,7 @@ uint32_t llvm::getInitialFPBytesOnStack(Function& F) {
 
 }
 
-int64_t IntegrationAttempt::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
+int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
 
   Function* F = getCalledFunction(CI);
   assert(F && F->isVarArg());
@@ -272,13 +272,13 @@ static int64_t getFirstSpilledVararg(IntegrationAttempt* IA) {
 // This can go away when we forward port to an LLVM version that uses the va_arg instruction
 // instead of having the frontend lower by itself!
 
-bool IntegrationAttempt::isVarargsTainted() {
+bool llvm::isVarargsTainted() {
 
   return contextTaintedByVarargs;
 
 }
 
-void IntegrationAttempt::disableChildVarargsContexts() {
+void llvm::disableChildVarargsContexts() {
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
@@ -347,7 +347,7 @@ void PeelAttempt::disableVarargsContexts() {
   // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
   // passing through a memcpy.
 
-bool IntegrationAttempt::getPVFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getPVFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
   const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
@@ -408,7 +408,7 @@ bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std
 
 }
 
-bool IntegrationAttempt::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
@@ -438,7 +438,7 @@ bool IntegrationAttempt::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, ui
 
 }
 
-bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
+bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
 
   int32_t initialOffset = getInitialBytesOnStack(F);
   int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(F);
@@ -447,14 +447,14 @@ bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialV
 	
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-    NewPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
+    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
 
   }
   else if(ReadOffset == 4) {
 
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-    NewPV = PartialVal::getTotal(const_vc(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
 
   }
   else if(ReadOffset == 8) {
@@ -467,13 +467,13 @@ bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialV
       return false;
     }
 
-    NewPV = PartialVal::getTotal(make_vc(CI, this, ValCtx::noOffset, initialVararg));
+    NewPV = PartialVal::getTotal(ShadowValue(CI, initialVararg));
 
   }
   else if(ReadOffset == 16) {
 
     LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-    NewPV = PartialVal::getTotal(make_vc(CI, this, ValCtx::noOffset, ValCtx::va_baseptr));
+    NewPV = PartialVal::getTotal(ShadowValue(CI, ValCtx::va_baseptr));
 
   }
 
@@ -482,24 +482,25 @@ bool IntegrationAttempt::getVaStartPV(CallInst* CI, int64_t ReadOffset, PartialV
 
 }
 
-bool IntegrationAttempt::getReallocPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getReallocPV(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
   // Handling an alias against the result of a realloc, try investigating as an alias against the original
   // allocation, passed as arg0.
-  return getPVFromCopy(CI->getArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPVFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
 
 }
 
-bool IntegrationAttempt::getVaCopyPV(CallInst* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getVaCopyPV(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
 
-  return getPVFromCopy(CI->getArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPVFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
 
 }
 
-bool IntegrationAttempt::getReadPV(CallInst* CI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
+bool llvm::getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
 
   // First determine whether the read targets the same buffer as the load, similar to memcpy analysis.
-  ReadFile* RF = tryGetReadFile(CI);
+  CallInst* CI = cast_inst<CallInst>(SI);
+  ReadFile* RF = SI->parent->IA->tryGetReadFile(CI);
   assert(RF);
 
   int fd = open(RF->openArg->Name.c_str(), O_RDONLY);

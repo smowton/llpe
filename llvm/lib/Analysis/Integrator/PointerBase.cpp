@@ -1170,7 +1170,7 @@ bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
 
 }
 
-bool IntegrationAttempt::basesMayAlias(ValCtx VC1, ValCtx VC2) {
+bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
 
   if(VC1.first == VC2.first) {
 

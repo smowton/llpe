@@ -85,10 +85,11 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                             const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
+AliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
 
-  assert(!!CSCtx == !!PCtx);
+  assert(!!CS.getCtx() == !!P.getCtx());
+
+  ImmutableCallSite CS(CSV.getBareVal());
 
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
@@ -96,26 +97,24 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
   ModRefBehavior MRB = getModRefBehavior(CS);
   if (MRB == DoesNotAccessMemory)
     return NoModRef;
-
+  
   ModRefResult Mask = ModRef;
   if (MRB == OnlyReadsMemory)
     Mask = Ref;
   else if (MRB == AliasAnalysis::AccessesArguments) {
     bool doesAlias = false;
-    for (ImmutableCallSite::arg_iterator AI = CS.arg_begin(), AE = CS.arg_end();
-         AI != AE; ++AI)
-      if (!isNoAlias(make_vc(*AI, CSCtx), ~0U, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge)) {
+    for(unsigned i = 0; i < CS.getNumArgOperands() && !doesAlias; ++i) {
+      if (!isNoAlias(getValArgOperand(CS, 0), ~0U, P, Size, usePBKnowledge))
         doesAlias = true;
-        break;
-      }
-
+    }
+    
     if (!doesAlias)
       return NoModRef;
   }
-
+  
   // If P points to a constant memory location, the call definitely could not
   // modify the memory location.
-  if ((Mask & Mod) && pointsToConstantMemory(P))
+  if ((Mask & Mod) && pointsToConstantMemory(P.getBareVal()))
     Mask = ModRefResult(Mask & ~Mod);
 
   // If this is BasicAA, don't forward.
@@ -123,13 +122,16 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS, P, Size, CSCtx, PCtx, usePBKnowledge) & Mask);
+  return ModRefResult(AA->getModRefInfo(CSV, P, Size, usePBKnowledge) & Mask);
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, IntegrationAttempt* CS1Ctx, IntegrationAttempt* CS2Ctx, bool usePBKnowledge) {
+AliasAnalysis::getModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKnowledge) {
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
+
+  ImmutableCallSite CS1(CS1V.getBareVal());
+  ImmutableCallSite CS2(CS2V.getBareVal());
 
   assert(!!CS1Ctx == !!CS2Ctx);
 
@@ -156,11 +158,8 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, Integ
   // CS2's arguments.
   if (CS2B == AccessesArguments) {
     AliasAnalysis::ModRefResult R = NoModRef;
-    for (ImmutableCallSite::arg_iterator
-         I = CS2.arg_begin(), E = CS2.arg_end(); I != E; ++I) {
-      R = ModRefResult((R | getModRefInfo(CS1, *I, UnknownSize, CS1Ctx, CS2Ctx)) & Mask);
-      if (R == Mask)
-        break;
+    for(unsigned i = 0; i < CS2.getNumArgOperands() && R != Mask; ++i) {
+      R = ModRefResult((R | getModRefInfo(CS1, getValArgOperand(CS2V, i), UnknownSize)) & Mask);
     }
     return R;
   }
@@ -169,12 +168,12 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, Integ
   // any of the memory referenced by CS1's arguments. If not, return NoModRef.
   if (CS1B == AccessesArguments) {
     AliasAnalysis::ModRefResult R = NoModRef;
-    for (ImmutableCallSite::arg_iterator
-         I = CS1.arg_begin(), E = CS1.arg_end(); I != E; ++I)
-      if (getModRefInfo(CS2, *I, UnknownSize, CS2Ctx, CS1Ctx, usePBKnowledge) != NoModRef) {
+    for(unsigned i = 0; i < CS1.getNumArgOperands() && R != Mask; ++i) {
+      if (getModRefInfo(CS2, getValArgOperand(CS1V, i), UnknownSize, usePBKnowledge) != NoModRef) {
         R = Mask;
         break;
       }
+    }
     if (R == NoModRef)
       return R;
   }
@@ -184,7 +183,7 @@ AliasAnalysis::getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, Integ
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx, usePBKnowledge) & Mask);
+  return ModRefResult(AA->getModRefInfo(CS1V, CS2V, usePBKnowledge) & Mask);
 }
 
 AliasAnalysis::ModRefBehavior
@@ -219,17 +218,17 @@ AliasAnalysis::getModRefBehavior(const Function *F) {
 //===----------------------------------------------------------------------===//
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, IntegrationAttempt* LCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
+AliasAnalysis::getLoadModRefInfo(ShadowValue L, ShadowValue P, unsigned Size, bool usePBKnowledge) {
 
-  assert(!!LCtx == !!PCtx);
+  assert(!!L.getCtx() == !!P.getCtx());
 
   // Be conservative in the face of volatile.
-  if (L->isVolatile())
+  if (cast_val<LoadInst>(L)->isVolatile())
     return ModRef;
 
   // If the load address doesn't alias the given address, it doesn't read
   // or write the specified memory.
-  if (!aliasHypothetical(make_vc(L->getOperand(0), LCtx), getTypeStoreSize(L->getType()), make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
+  if (!aliasHypothetical(getValOperand(L, 0), getTypeStoreSize(L.getType()), P, Size, usePBKnowledge))
     return NoModRef;
 
   // Otherwise, a load just reads.
@@ -237,42 +236,41 @@ AliasAnalysis::getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, I
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, IntegrationAttempt* SCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
+AliasAnalysis::getStoreModRefInfo(ShadowValue S, ShadowValue P, unsigned Size, bool usePBKnowledge) {
 
-  assert(!!SCtx == !!PCtx);
+  assert(!!S.getCtx() == !!P.getCtx());
 
   // Be conservative in the face of volatile.
-  if (S->isVolatile())
+  if (cast_val<StoreInst>(S)->isVolatile())
     return ModRef;
 
   // If the store address cannot alias the pointer in question, then the
   // specified memory cannot be modified by the store.
-  if (!aliasHypothetical(make_vc(const_cast<Value*>(S->getOperand(1)), SCtx),
-			 getTypeStoreSize(S->getOperand(0)->getType()), make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
+  if (!aliasHypothetical(getValOperand(S, 1), getTypeStoreSize(getValOperand(S, 0).getType()), P, Size, usePBKnowledge))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
   // modified by this store.
-  if (pointsToConstantMemory(P))
+  if (pointsToConstantMemory(P.getBareVal()))
     return NoModRef;
-
+  
   // Otherwise, a store just writes.
   return Mod;
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(const VAArgInst *V, const Value *P, unsigned Size, IntegrationAttempt* VCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
+AliasAnalysis::getVAModRefInfo(ShadowValue I, ShadowValue V, unsigned Size, bool usePBKnowledge) {
 
-  assert(!!VCtx == !!PCtx);
+  assert(!!V.getCtx() == !!P.getCtx());
 
   // If the va_arg address cannot alias the pointer in question, then the
   // specified memory cannot be accessed by the va_arg.
-  if (!aliasHypothetical(make_vc(const_cast<Value*>(V->getOperand(0)), VCtx), UnknownSize, make_vc(const_cast<Value*>(P), PCtx), Size, usePBKnowledge))
+  if (!aliasHypothetical(getValOperand(I, 0), UnknownSize, P, Size, usePBKnowledge))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
   // modified by this va_arg.
-  if (pointsToConstantMemory(P))
+  if (pointsToConstantMemory(V.getBareVal()))
     return NoModRef;
 
   // Otherwise, a va_arg reads and writes.

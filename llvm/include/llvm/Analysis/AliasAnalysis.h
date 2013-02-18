@@ -122,17 +122,12 @@ public:
 
   /// isNoAlias - A trivial helper function to check to see if the specified
   /// pointers are no-alias.
-  bool isNoAlias(const Value *V1, unsigned V1Size,
-                 const Value *V2, unsigned V2Size, IntegrationAttempt* Pa = 0, bool usePBKnowledge = true) {
-    if(Pa == 0)
-      return alias(V1, V1Size, V2, V2Size) == NoAlias;
-    else
-      return aliasHypothetical(V1, V1Size, V2, V2Size, Pa, usePBKnowledge) == NoAlias;
+  bool isNoAlias(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true) {
+    return aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge) == NoAlias;
   }
 
-  bool isNoAlias(const ValCtx V1, unsigned V1Size,
-		 const ValCtx V2, unsigned V2Size, bool usePBKnowledge = true) {
-    return aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge) == NoAlias;
+  bool isNoAlias(const Value* V1, unsigned V1Size, const Value* V2, unsigned V2Size) {
+    return isNoAlias(ShadowValue(V1), V1Size, ShadowValue(V2), V2Size);
   }
 
   /// pointsToConstantMemory - If the specified pointer is known to point into
@@ -248,41 +243,53 @@ public:
   /// a particular call site modifies or reads the memory specified by the
   /// pointer.
   ///
-  virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                     const Value *P, unsigned Size, 
-				     IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0,
-				     bool usePBKnowledge = true);
+  virtual ModRefResult getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+
+  ModRefResult getModRefInfo(ImmutableCallSite CS,
+			     const Value *P, unsigned Size, 
+			     bool usePBKnowledge = true) {
+
+    return getModRefInfo(ShadowValue(CS.getInstruction()), ShadowValue(P), Size, usePBKnowledge);
+
+  }
+
+  virtual ModRefResult getModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true);
 
   /// getModRefInfo - Return information about whether two call sites may refer
   /// to the same set of memory locations.  See 
   ///   http://llvm.org/docs/AliasAnalysis.html#ModRefInfo
   /// for details.
-  virtual ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
-				     IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0,
-				     bool usePBKnowledge = true);
+  ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
+			     bool usePBKnowledge = true) {
+
+    return getModRefInfo(ShadowValue(CS1.getInstruction()), ShadowValue(CS2.getInstruction()), usePBKnowledge);
+
+  }
 
 public:
   /// Convenience functions...
-  ModRefResult getModRefInfo(const LoadInst *L, const Value *P, unsigned Size, IntegrationAttempt* LCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
-  ModRefResult getModRefInfo(const StoreInst *S, const Value *P, unsigned Size, IntegrationAttempt* SCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
-  ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
-  ModRefResult getModRefInfo(const CallInst *C, const Value *P, unsigned Size, IntegrationAttempt* CCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true) {
-    return getModRefInfo(ImmutableCallSite(C), P, Size, CCtx, PCtx);
+  ModRefResult getLoadModRefInfo(ShadowValue L, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+  ModRefResult getStoreModRefInfo(ShadowValue S, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+  ModRefResult getVAModRefInfo(ShadowValue I, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+  ModRefResult getCallModRefInfo(ShadowValue C, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
+    return getModRefInfo(C, P, Size, usePBKnowledge);
   }
-  ModRefResult getModRefInfo(const InvokeInst *I,
-                             const Value *P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true) {
-    return getModRefInfo(ImmutableCallSite(I), P, Size, ICtx, PCtx, usePBKnowledge);
+  ModRefResult getInvokeModRefInfo(ShadowValue I, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
+    return getModRefInfo(I, P, Size, usePBKnowledge);
   }
-  ModRefResult getModRefInfo(const Instruction *I,
-                             const Value *P, unsigned Size, IntegrationAttempt* ICtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true) {
+  ModRefResult getModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
+    Instruction* I = IV.isInst() ? IV.getInst()->invar->I : cast<Instruction>(IV.getVal());
     switch (I->getOpcode()) {
-    case Instruction::VAArg:  return getModRefInfo((const VAArgInst*)I, P,Size, ICtx, PCtx, usePBKnowledge);
-    case Instruction::Load:   return getModRefInfo((const LoadInst*)I, P, Size, ICtx, PCtx, usePBKnowledge);
-    case Instruction::Store:  return getModRefInfo((const StoreInst*)I, P,Size, ICtx, PCtx, usePBKnowledge);
-    case Instruction::Call:   return getModRefInfo((const CallInst*)I, P, Size, ICtx, PCtx, usePBKnowledge);
-    case Instruction::Invoke: return getModRefInfo((const InvokeInst*)I,P,Size, ICtx, PCtx, usePBKnowledge);
+    case Instruction::VAArg:  return getVAModRefInfo(IV, P, Size, usePBKnowledge);
+    case Instruction::Load:   return getLoadModRefInfo(IV, P, Size, usePBKnowledge);
+    case Instruction::Store:  return getStoreModRefInfo(IV, P, Size, usePBKnowledge);
+    case Instruction::Call:   return getCallModRefInfo(IV, P, Size, usePBKnowledge);
+    case Instruction::Invoke: return getInvokeModRefInfo(IV, P, Size, usePBKnowledge);
     default:                  return NoModRef;
     }
+  }
+  ModRefResult getModRefInfo(Instruction* I, const Value* P, unsigned Size) {
+    return getModRefInfo(ShadowValue(I), ShadowValue(const_cast<Value*>(V)), Size, false);
   }
 
   //===--------------------------------------------------------------------===//
