@@ -49,8 +49,7 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    LocResult (*isLocation)(ImmutableCallSite CS,
-			    const Value *Ptr, unsigned Size, IntegrationAttempt*, IntegrationAttempt*, bool);
+    LocResult (*isLocation)(ShadowValue CS, ShadowValue P, unsigned Size, bool);
 
   };
   
@@ -121,7 +120,7 @@ namespace llvm {
     ///
     const LocationMRInfo *LocationDetails;
 
-    const LocationMRInfo* (*getLocationDetailsFor)(ImmutableCallSite, IntegrationAttempt*);
+    const LocationMRInfo* (*getLocationDetailsFor)(ShadowValue);
 
   };
   
