@@ -139,16 +139,16 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
-  PointerBase& insert(ValCtx VC) {
+  PointerBase& insert(ShadowValue V) {
     if(Overdef)
       return *this;
-    if(std::count(Values.begin(), Values.end(), VC))
+    if(std::count(Values.begin(), Values.end(), V))
       return *this;
     if(Values.size() + 1 > PBMAX) {
       setOverdef();
     }
     else {
-      Values.push_back(VC);
+      Values.push_back(V);
     }
     return *this;
   }
@@ -162,7 +162,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     }
     else {
       Type = OtherPB.Type;
-      for(SmallVector<ValCtx, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
+      for(SmallVector<ShadowValue, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
 	insert(*it);
     }
     return *this;
@@ -175,8 +175,8 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   }
 
-  static PointerBase get(ValCtx VC);
-  static PointerBase get(ValCtx VC, ValSetType t) { return PointerBase(t).insert(VC); }
+  static PointerBase get(ShadowValue V);
+  static PointerBase get(ShadowValue V, ValSetType t) { return PointerBase(t).insert(VC); }
   static PointerBase getOverdef() { return PointerBase(ValSetTypeUnknown, true); }
   
 };

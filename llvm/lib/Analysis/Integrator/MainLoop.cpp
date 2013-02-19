@@ -199,49 +199,14 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
     // Don't use isUnresolved here because the PB solver requires that we *do*
     // evaluate GEPs and casts with a known base. This will go away when its single-value
     // mode is merged with the ordinary constant folder.
-    if(!improvedValues.count(BI)) {
+    if(SI->replaceWith.isInval()) {
       // This works for either LF or ordinary const prop:
-      updateBasePointer(BI, true, 0, CacheThresholdBB, CacheThresholdIA);
-      tryPromoteSingleValuedPB(BI);
+      updateBasePointer(SI, true, 0, CacheThresholdBB, CacheThresholdIA);
+      tryPromoteSingleValuedPB(SI);
     }
 
   }
 
 }
 
-void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops) {
 
-  if(!Visited.insert(BB))
-    return;
-
-  const Loop* BBL = LI[&F]->getLoopFor(BB);
-  
-  // Drifted out of scope?
-  if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
-    return;
-
-  if(enterLoops && (MyL != BBL)) {
-
-    // Child loop. Use the loop successors rather than the block successors.
-    SmallVector<BasicBlock*, 4> ExitBlocks;
-    BBL->getExitBlocks(ExitBlocks);
-    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
-      
-      createTopOrderingFrom(*it, Result, Visited, MyL, enterLoops);
-      
-    }
-
-  }
-  else {
-
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-      createTopOrderingFrom(*SI, Result, Visited, MyL, enterLoops);
-
-    }
-
-  }
-
-  Result.push_back(BB);
-
-}

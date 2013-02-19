@@ -869,6 +869,22 @@ const Loop* PeelIteration::getLoopContext() {
 
 }
 
+void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
+
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    if(ShadowBB* BB = BBs[i]) {
+
+      ShadowInstruction* TI = BB->insts.back();
+      if(inst_is<ReturnInst>(TI))
+	Vals.push_back(TI->getOperand(0));
+
+    }
+
+  }
+
+}
+
 ShadowValue InlineAttempt::tryGetReturnValue(ShadowInstruction* CallerInst) {
 
   // Let's have a go at supplying a return value to our caller. Simple measure:
@@ -878,30 +894,24 @@ ShadowValue InlineAttempt::tryGetReturnValue(ShadowInstruction* CallerInst) {
   if(F.getReturnType()->isVoidTy())
     return ShadowValue();
 
+  SmallVector<ShadowValue, 4> retVals;
+  getLiveReturnVals(retVals);
+
   ShadowValue returnVal;
   ShadowInstruction* retValSource;
 
-  for(uint32_t i = 0; i < nBBs; ++i) {
+  for(unsigned i = 0; i < retVals.size(); ++i) {
 
-    if(ShadowBB* BB = BBs[i]) {
-
-      ShadowInstruction* TI = BB->insts.back();
-      if(inst_is<ReturnInst>(TI)) {
-
-	ShadowValue thisRet = getReplacement(TI->getOperand(0));
-	if(returnVal == thisRet)
-	  continue;
-	else if(returnVal.isInval()) {
-	  returnVal = thisRet;
-	  retValSource = TI->getOperand(0);
-	}
-	else if(returnVal != thisRet) {
-	  returnVal = ShadowValue();
-	  break;
-	}
-
-      }
-
+    ShadowValue thisRet = getReplacement(retVals[i]);
+    if(returnVal == thisRet)
+      continue;
+    else if(returnVal.isInval()) {
+      returnVal = thisRet;
+      retValSource = retVals[i];
+    }
+    else if(returnVal != thisRet) {
+      returnVal = ShadowValue();
+      break;
     }
 
   }

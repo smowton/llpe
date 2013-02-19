@@ -202,6 +202,28 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
 
   }
 
+  const Loop* getScope() {
+
+    switch(t) {
+    case SHADOWVAL_INST:
+      return u.I->invar->scope;
+    default:
+      return 0;
+    }
+
+  }
+
+  const Loop* getNaturalScope() {
+
+    switch(t) {
+    case SHADOWVAL_INST:
+      return u.I->invar->naturalScope;
+    default:
+      return 0;
+    }
+
+  }
+
   bool isIdentifiedObject() {
 
     return isIdentifiedObject(getBareVal());
@@ -285,8 +307,9 @@ struct InstArgImprovement {
   ShadowValue replaceWith;
   ShadowValue baseObject;
   int64_t baseOffset;
-  SmallVector<ShadowInstruction*, 4> indirectUsers;
+  SmallVector<ShadowInstruction*, 1> indirectUsers;
   SmallVector<ShadowInstruction*, 1> PBIndirectUsers; 
+  PointerBase PB;
   ShadowInstDIEStatus dieStatus;
 
 InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }

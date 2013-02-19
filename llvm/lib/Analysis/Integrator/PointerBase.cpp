@@ -33,27 +33,27 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 
 }
 
-PointerBase PointerBase::get(ValCtx VC) {
+PointerBase PointerBase::get(ShadowValue SV) {
 
-  ValCtx CEGlobal;
-  const PointerType* PTy = dyn_cast<PointerType>(VC.first->getType());
+  Constant* CEGlobal
+  const PointerType* PTy = dyn_cast<PointerType>(SV.getType());
   bool isFunctionTy = PTy && PTy->getElementType()->isFunctionTy();
 
   // Treat function pointers like scalars, since they're not indexable objects.
 
-  if(isa<Constant>(VC.first) && extractCEBase(cast<Constant>(VC.first), CEGlobal))
-    return get(CEGlobal, ValSetTypePB);
-  else if(isa<Constant>(VC.first) && (isFunctionTy || !PTy))
-    return get(VC, ValSetTypeScalar);
+  if(val_is<Constant>(SV) && extractCEBase(val_cast<Constant>(SV), CEGlobal))
+    return get(ShadowValue(CEGlobal), ValSetTypePB);
+  else if(val_is<Constant>(SV) && (isFunctionTy || !PTy))
+    return get(SV, ValSetTypeScalar);
   else
-    return get(VC, ValSetTypePB);
+    return get(SV, ValSetTypePB);
   
 }
 
-bool llvm::extractCEBase(Constant* C, ValCtx& VC) {
+bool llvm::extractCEBase(Constant* C, Constant*& Base) {
 
   if(isa<GlobalValue>(C)) {
-    VC = const_vc(C);
+    Base = C;
     return true;
   }
 
@@ -69,27 +69,27 @@ bool llvm::extractCEBase(Constant* C, ValCtx& VC) {
   case Instruction::ZExt:
   case Instruction::IntToPtr:
   case Instruction::PtrToInt:
-    return extractCEBase(CE->getOperand(0), VC);
+    return extractCEBase(CE->getOperand(0), Base);
   case Instruction::Add:
   case Instruction::Sub:
     {
-      ValCtx VC1, VC2;
-      bool VC1Valid, VC2Valid;
-      VC1Valid = extractCEBase(CE->getOperand(0), VC1);
-      VC2Valid = extractCEBase(CE->getOperand(1), VC2);
+      Constant *Base1, *Base2;
+      bool C1Valid, C2Valid;
+      C1Valid = extractCEBase(CE->getOperand(0), C1);
+      C2Valid = extractCEBase(CE->getOperand(1), C2);
       if(CE->getOpcode() == Instruction::Add) {
 
-	if(VC1Valid == VC2Valid)
+	if(C1Valid == C2Valid)
 	  return false;
-	VC = VC1Valid ? VC1 : VC2;
+	Base = C1Valid ? C1 : C2;
 	return true;
 
       }
       else {
 
-	if((!VC1Valid) || VC2Valid)
+	if((!C1Valid) || C2Valid)
 	  return false;
-	VC = VC1;
+	C = C1;
 	return true;
 
       }
@@ -103,152 +103,98 @@ bool llvm::extractCEBase(Constant* C, ValCtx& VC) {
 
 }
 
-bool IntegrationAttempt::hasResolvedPB(Value* V) {
+bool IntegrationAttempt::hasResolvedPB(ShadowValue V) {
 
   // A little different to isUnresolved: that would call GEP of X where X has a known replacement resolved. We explicitly eval that GEP.
   // This method will become the one true method once the two folders merge.
 
-  if(isa<AllocaInst>(V) || isNoAliasCall(V))
-    return true;
+  if(ShadowInstruction* SI = V.getInst()) {
 
-  if(getReplacement(V) != getDefaultVC(V))
-    return true;
-
-  return false;
-
-}
-
-bool IntegrationAttempt::getPointerBaseLocal(Value* V, PointerBase& OutPB) {
-
-  if(isa<AllocaInst>(V) || isNoAliasCall(V)) {
-
-    OutPB = PointerBase::get(make_vc(V, this));
-    return true;
+    if(inst_is<AllocaInst>(SI) || isNoAliasCall(SI->invar->I))
+      return true;  
+    
+    if(!SI->i.replaceWith.isInval())
+      return true;
 
   }
-  else if(isa<GlobalValue>(V)) {
+  else if(ShadowArg* SA = V.getArg()) {
 
-    OutPB = PointerBase::get(const_vc(cast<Constant>(V)));    
-    return true;
-
-  }
-  else if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V)) {
-
-    OutPB = PointerBase::get(const_vc(CE));
-    return true;
-
-  }
-
-  DenseMap<Value*, PointerBase>::iterator it = pointerBases.find(V);
-  if(it != pointerBases.end()) {
-    OutPB = it->second;
-    return true;
+    if(!SA->i.replaceWith.isInval())
+      return true;
+    
   }
 
   return false;
 
 }
 
-bool IntegrationAttempt::getPointerBaseRising(Value* V, PointerBase& OutPB, const Loop* VL) {
-  
-  if(VL == getLoopContext())
-    return getPointerBaseFalling(V, OutPB);
+bool llvm::getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
-  PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(getLoopContext(), VL));
-  if(!LPA)
-    return getPointerBaseFalling(V, OutPB);
+  if(ShadowInstruction* SI = V.getInst()) {
 
-  PeelIteration* LastIt = LPA->Iterations.back();
-  if(!LastIt->isOnlyExitingIteration())
-    return getPointerBaseFalling(V, OutPB);
+    if(inst_is<AllocaInst>(SI) || isNoAliasCall(SI->invar->I)) {
 
-  return LastIt->getPointerBaseRising(V, OutPB, VL);
+      OutPB = PointerBase::get(V);
+      return true;
+      
+    }
+    else {
 
-}
+      OutPB = SI->i.PB;
+      return OutPB.isInitialised();
 
-bool IntegrationAttempt::getPointerBaseFalling(Value* V, PointerBase& OutPB) {
-
-  if(getPointerBaseLocal(V, OutPB))
-    return true;
-  if(getLoopContext())
-    return parent->getPointerBaseFalling(V, OutPB);
-  return false;
-
-}
-
-// The loop-header-PHI case is already taken care of.
-// UserI is the instruction that uses V in whose context we're investigating V.
-bool IntegrationAttempt::getPointerBase(Value* V, PointerBase& OutPB, Instruction* UserI) {
-
-  if(isa<Constant>(V))
-    return getPointerBaseLocal(V, OutPB);
-
-  const Loop* MyL = getLoopContext();
-  const Loop* VL = getValueScope(V);
-  const Loop* UserL = getValueScope(UserI);
-
-  // Bear in mind here that this context's loop might be lower than either VL or UserL
-  // because we're trying to work out their base in a loop-invariant context.
-  // If MyL doesn't match UserL then we won't rise into loops.
-  
-  // Case 1: UserI is an exit PHI, V is a value within some nest of loops that it exits,
-  // AND we're asking about the exit PHI's natural scope. Try to use specific information
-  // if available.
-
-  if(UserL == MyL && VL != UserL && ((!UserL) || UserL->contains(VL))) {
-
-    return getPointerBaseRising(V, OutPB, VL);
+    }
 
   }
-  
-  // Case 2: UserI is within a loop and V is outside (e.g. is an argument).
-  // In this case if we're in invariant scope outside both there's no need to descend.
-  if(VL != UserL && ((!VL) || VL->contains(UserL)) && ((!VL) || VL->contains(MyL))) {
+  else if(ShadowArg* SA = V.getArg()) {
 
-    return getPointerBaseFalling(V, OutPB);
+    OutPB = SA->i.PB;
+    return OutPB.isInitialised();
+
+  }
+  else {
+    
+    Value* Val = V.getVal();
+    if(isa<GlobalValue>(Val)) {
+      
+      OutPB = PointerBase::get(V);    
+      return true;
+
+    }
+    else if(isa<ConstantExpr>(Val)) {
+
+      OutPB = PointerBase::get(V);
+      return true;
+
+    }
 
   }
 
-  // Case 3: Same loop.
-  return getPointerBaseLocal(V, OutPB);
-  
 }
 
 // If finalise is false, we're in the 'incremental upgrade' phase: PHIs and selects take on
 // the newest result of their operands.
 // If finalise is true, we're in the 'resolution' phase: they take on their true value.
-// e.g. in phase 1, PHI(def_1, overdef_0) = def_1, in phase 2 it is overdef_1.
-bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, PointerBase& NewPB) {
+// e.g. in phase 1, PHI(def, undef) = def, in phase 2 it is overdef.
+bool IntegrationAttempt::getMergeBasePointer(ShadowInstruction* I, bool finalise, PointerBase& NewPB) {
 
   bool verbose = false;
   
-  SmallVector<std::pair<ValCtx, Instruction*>, 4> Vals;
-  if(SelectInst* SI = dyn_cast<SelectInst>(I)) {
+  SmallVector<ShadowValue, 4> Vals;
+  if(inst_is<SelectInst>(I)) {
 
-    Vals.push_back(std::make_pair(make_vc(SI->getTrueValue(), this), SI));
-    Vals.push_back(std::make_pair(make_vc(SI->getFalseValue(), this), SI));
+    Vals.push_back(SI->getOperand(1));
+    Vals.push_back(SI->getOperand(2));
 
   }
-  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+  else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 
     if(CI->getType()->isVoidTy())
       return false;
 
     if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
-      Function* F = getCalledFunction(CI);
-      for(Function::iterator it = F->begin(), it2 = F->end(); it != it2; ++it) {
-
-	if(ReturnInst* RI = dyn_cast<ReturnInst>(it->getTerminator())) {
-
-	  if(IA->blockIsDead(RI->getParent()))
-	    continue;
-	  
-	  Vals.push_back(std::make_pair(make_vc(RI->getOperand(0), IA), RI));
-
-	}
-
-      }
+      IA->getLiveReturnVals(Vals);
 
     }
     else {
@@ -258,11 +204,20 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
   }
   else {
 
-    PHINode* PN = cast<PHINode>(I);
-    for(unsigned i = 0; i < PN->getNumIncomingValues(); ++i) {
-      if(edgeIsDead(PN->getIncomingBlock(i), PN->getParent()))
-	continue;
-      Vals.push_back(std::make_pair(make_vc(PN->getIncomingValue(i), this), PN));
+    // I is a PHI node, but not a header PHI.
+    ShadowInstructionInvar* SII = I->invar;
+
+    for(uint32_t i = 0, ilim = SII->preds.size(); i != ilim && !breaknow; i+=2) {
+
+      SmallVector<ShadowValue, 1> predValues;
+      ShadowValue PredV = getExitPHIOperands(SI, i, predValues);
+
+      for(SmallVector<ShadowValue, 1>::iterator it = predValues.begin(), it2 = predValues.end(); it != it2 && !breaknow; ++it) {
+
+	Vals.push_back(*it);
+
+      }
+
     }
 
   }
@@ -271,7 +226,7 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 
   if(verbose) {
 
-    errs() << "=== START PHI MERGE for " << itcache(*I) << " (finalise = " << finalise << ")\n";
+    errs() << "=== START MERGE for " << itcache(*I) << " (finalise = " << finalise << ")\n";
 
     IntegrationAttempt* PrintCtx = this;
     while(PrintCtx) {
@@ -282,15 +237,12 @@ bool IntegrationAttempt::getMergeBasePointer(Instruction* I, bool finalise, Poin
 
   }
 
-  for(SmallVector<std::pair<ValCtx, Instruction*>, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
+  for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
-    Value* V = it->first.first;
-    IntegrationAttempt* VCtx = it->first.second;
-    Instruction* VUser = it->second;
     PointerBase VPB;
-    if(!VCtx->getValSetOrReplacement(V, VPB, VUser)) {
+    if(!VCtx->getValSetOrReplacement(*it, VPB)) {
       if(verbose)
-	errs() << "Predecessor " << itcache(make_vc(V, VCtx)) << " undefined\n";
+	errs() << "Predecessor " << itcache(*it) << " undefined\n";
       if(finalise) {
 	NewPB = PointerBase::getOverdef();
 	if(verbose)
@@ -323,28 +275,48 @@ bool InlineAttempt::getArgBasePointer(Argument* A, PointerBase& OutPB) {
 
   if(!parent)
     return false;
-  return parent->getPointerBaseFalling(CI->getArgOperand(A->getArgNo()), OutPB);
+  ShadowValue Arg = CI->getCallArgOperand(SA->invar->A->getArgNo());
+  return getPointerBase(Arg, OutPB);
 
 }
 
-bool InlineAttempt::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) {
+bool InlineAttempt::updateHeaderPHIPB(ShadowInstruction* PN, bool& NewPBValid, PointerBase& NewPB) {
   
   return false;
 
 }
 
-bool PeelIteration::updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB) {
+bool PeelIteration::updateHeaderPHIPB(ShadowInstruction* I, bool& NewPBValid, PointerBase& NewPB) {
+
+  PHINode* PN = cast_inst<PHINode>(I);
   
   if(L && L->getHeader() == PN->getParent()) {
 
-    ValCtx Repl;
-    if(getIterCount() == 0)
-      Repl = make_vc(PN->getIncomingValueForBlock(L->getLoopPreheader()), parent);
-    else {
-      PeelIteration* PreviousIter = parentPA->getIteration(getIterCount() - 1);	      
-      Repl = make_vc(PN->getIncomingValueForBlock(L->getLoopLatch()), PreviousIter);
+    ShadowValue predValue;
+
+    if(getIterCount() == 0) {
+
+      int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
+      assert(predIdx >= 0 && "Failed to find preheader block");
+      predValue = SI->getOperand(((uint32_t)predIdx) * 2);
+
     }
-    NewPBValid = Repl.second->getPointerBaseFalling(Repl.first, NewPB);
+    else {
+
+      LPDEBUG("Pulling PHI value from previous iteration latch\n");
+      int predIdx = PN->getBasicBlockIndex(L->getLoopLatch());
+      assert(predIdx >= 0 && "Failed to find latch block");
+      // Find equivalent instruction in previous iteration:
+      IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
+      ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx * 2];
+      if(SII.blockIdx != INVALID_BLOCK_IDX)
+	predValue = ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
+      else
+	predValue = SI->getOperand(predIdx * 2);
+
+    }
+
+    NewPBValid = getPointerBase(predValue, NewPB);
 
     return true;
 
@@ -369,7 +341,7 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
     out << "Overdef";
   else {
     out << "{ ";
-    for(SmallVector<ValCtx, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
+    for(SmallVector<ShadowValue, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
 
       if(it != PB.Values.begin())
 	out << ", ";
@@ -381,11 +353,11 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
 
 }
 
-bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
+bool IntegrationAttempt::updateUnaryValSet(ShadowInstruction* I, PointerBase &PB) {
 
   PointerBase ArgPB;
 
-  if(!getValSetOrReplacement(I->getOperand(0), ArgPB, I))
+  if(!getValSetOrReplacement(I->getOperand(0), ArgPB))
     return false;
   if(ArgPB.Overdef) {
     PB = ArgPB;
@@ -412,14 +384,14 @@ bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
       PointerBase NewPB;
 
-      Constant* Expr = ConstantExpr::getCast(I->getOpcode(), cast<Constant>(ArgPB.Values[i].first), I->getType());
+      Constant* Expr = ConstantExpr::getCast(I->invar->I->getOpcode(), cast_val<Constant>(ArgPB.Values[i]), I->getType());
       if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
 	Expr = ConstantFoldConstantExpression(CE, TD);
 
       if((!Expr) || isa<ConstantExpr>(Expr))
 	NewPB = PointerBase::getOverdef();
       else
-	NewPB = PointerBase::get(const_vc(Expr));
+	NewPB = PointerBase::get(ShadowValue(Expr));
     
       PB.merge(NewPB);
 
@@ -437,33 +409,20 @@ bool IntegrationAttempt::updateUnaryValSet(Instruction* I, PointerBase &PB) {
 
 }
 
-bool IntegrationAttempt::getValSetOrReplacement(Value* V, PointerBase& PB, Instruction* UserI) {
+bool IntegrationAttempt::getValSetOrReplacement(ShadowValue V, PointerBase& PB) {
 
-  ValCtx Repl = getReplacement(V);
-  ValCtx ReplUO;
-  if(Repl.second)
-    ReplUO = Repl.second->getUltimateUnderlyingObject(Repl.first);
-  else
-    ReplUO = Repl;
-  if(isa<Constant>(ReplUO.first) || isGlobalIdentifiedObject(ReplUO)) {
-    PB = PointerBase::get(ReplUO);
+  if(getPointerBase(V, PB))
     return true;
-  }
+  else if(V.baseObject)
+    PB = PointerBase::get(V.baseObject);
+  else if(V.replaceWith)
+    PB = PointerBase::get(V.replaceWith);
 
-  bool found;
-  if(UserI)
-    found = getPointerBase(V, PB, UserI);
-  else
-    found = getPointerBaseFalling(V, PB);
-
-  if(found)
-    return true;
-
-  return false;
+  return PB.isInitialised();
 
 }
 
-bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
+bool IntegrationAttempt::updateBinopValSet(ShadowInstruction* I, PointerBase& PB) {
 
   PointerBase Op1PB;
   PointerBase Op2PB;
@@ -522,28 +481,19 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
     if(Op1PB.Type != ValSetTypeScalar || Op2PB.Type != ValSetTypeScalar)
       return false;
 
-    /*
-    if(Op1PB.Values.size() == 1 && Op2PB.Values.size() == 1) {
-
-      // Pointless, until the regular constant folder and this one are merged.
-      return false;
-
-    }
-    */
-    
     // Need this to establish value recurrences, e.g. a loop with store-to-load (or phi-to-phi) feeds which circulates a known value or value set.
 
     for(unsigned i = 0; i < Op1PB.Values.size() && !PB.Overdef; ++i) {
       for(unsigned j = 0; j < Op2PB.Values.size() && !PB.Overdef; ++j) {
     
-	Constant* Expr = ConstantExpr::get(I->getOpcode(), cast<Constant>(Op1PB.Values[i].first), cast<Constant>(Op2PB.Values[j].first));
+	Constant* Expr = ConstantExpr::get(I->getOpcode(), cast_val<Constant>(Op1PB.Values[i]), cast_val<Constant>(Op2PB.Values[j]));
 	if(ConstantExpr* CE = dyn_cast<ConstantExpr>(Expr))
 	  Expr = ConstantFoldConstantExpression(CE, TD);
 
 	PointerBase ThisPB;
 
 	if(Expr)
-	  ThisPB = PointerBase::get(const_vc(Expr));
+	  ThisPB = PointerBase::get(ShadowValue(Expr));
 	else
 	  ThisPB = PointerBase::getOverdef();
 
@@ -558,15 +508,15 @@ bool IntegrationAttempt::updateBinopValSet(Instruction* I, PointerBase& PB) {
 
 }
 
-bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+bool IntegrationAttempt::updateBasePointer(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   // Quick escape for values we can't handle:
 
   bool verbose = false;
 
-  if(Instruction* I = dyn_cast<Instruction>(V)) {
+  if(ShadowInstruction* I = V.getInst()) {
     
-    switch(I->getOpcode()) {
+    switch(I->invar->I->getOpcode()) {
 
     case Instruction::GetElementPtr:
     case Instruction::BitCast:
@@ -593,32 +543,31 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
   }
 
   // Don't duplicate the work of the pessimistic solver:
-  if(getLoopContext() == getValueScope(V) && hasResolvedPB(V))
+  if(hasResolvedPB(V))
     return false;
 
   if(verbose)
-    errs() << "Update pointer base " << itcache(*V) << "\n";
+    errs() << "Update pointer base " << itcache(V) << "\n";
   PointerBase NewPB;
 
   PointerBase OldPB;
-  bool OldPBValid = getPointerBaseFalling(V, OldPB);
+  bool OldPBValid = getPointerBase(V, OldPB);
 
   // Getting no worse:
   if(finalise && LPBA && ((!OldPBValid) || OldPB.Overdef))
     return false;
 
-  if(LoadInst* LI = dyn_cast<LoadInst>(V)) {
+  if(val_is<LoadInst>(V)) {
 
-    bool ret = tryForwardLoadPB(LI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
+    bool ret = tryForwardLoadPB(V.getInst(), finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
     if(!ret)
       return false;
 
   }
-  else if(Argument* A = dyn_cast<Argument>(V)) {
+  else if(ShadowArgument* SA = V.getArg()) {
 
-    PointerBase PB;
     InlineAttempt* IA = getFunctionRoot();
-    if(!IA->getArgBasePointer(A, NewPB)) {
+    if(!IA->getArgBasePointer(SA->invar->A, NewPB)) {
 
       // No information from our argument
       return false;
@@ -628,9 +577,9 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
   }
   else {
 
-    Instruction* I = cast<Instruction>(V);
+    ShadowInstruction* I = V.getInst();
 
-    switch(I->getOpcode()) {
+    switch(I->invar->I->getOpcode()) {
 
     case Instruction::GetElementPtr:
     case Instruction::BitCast:
@@ -658,7 +607,7 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
     case Instruction::PHI:
       {
 	bool NewPBValid;
-	if(updateHeaderPHIPB(cast<PHINode>(I), NewPBValid, NewPB)) {
+	if(updateHeaderPHIPB(I, NewPBValid, NewPB)) {
 	  if(!NewPBValid)
 	    return false;
 	  else
@@ -687,20 +636,26 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
 
   if((!OldPBValid) || OldPB != NewPB) {
 
-    if(Instruction* I = dyn_cast<Instruction>(V)) {
-      if(!isa<LoadInst>(V)) {
+    if(ShadowInstruction* I = V.getInst()) {
+      if(!inst_is<LoadInst>(I)) {
 	std::string RStr;
 	raw_string_ostream RSO(RStr);
 	printPB(RSO, NewPB, true);
 	RSO.flush();
 	if(!finalise)
-	  optimisticForwardStatus[I] = RStr;
+	  optimisticForwardStatus[I->invar->I] = RStr;
 	else
-	  pessimisticForwardStatus[I] = RStr;
+	  pessimisticForwardStatus[I->invar->I] = RStr;
       }
     }
 
-    pointerBases[V] = NewPB;
+    if(ShadowInstruction* SI = V.getInst()) {
+      SI->i.PB = NewPB;
+    }
+    else {
+      ShadowArg* SA = V.getArg();
+      SA->i.PB = NewPB;
+    }
 
     if(verbose) {
       errs() << "Updated dep to ";
@@ -722,21 +677,31 @@ bool IntegrationAttempt::updateBasePointer(Value* V, bool finalise, LoopPBAnalys
 void InlineAttempt::queueUpdateCall(LoopPBAnalyser* LPBA) {
 
   if(parent)
-    queueUpdatePB(parent, CI, LPBA);
+    queueUpdatePB(ShadowValue(CI), LPBA);
 
 }
 
-// This is different to HCF's investigateUsers code because it investigates different scopes.
 // We investigate: (1) the user's 'natural' scope (since this catches exit PHIs), and
 // (2) if the user is within our scope, all scopes between ours and its 
 // (since our new invariant information might be useful at many scopes).
-void IntegrationAttempt::queueUsersUpdatePB(Value* V, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
 
-  for(Value::use_iterator UI = V->use_begin(), UE = V->use_end(); UI != UE; ++UI) {
+  ImmutableArray<ShadowInstIdx>* Users;
+  if(ShadowInstruction* SI = V.getInst()) {
+    Users = &(SI->invar->userIdxs);
+  }
+  else {
+    ShadowArgument* SA = V.getArg();
+    Users = &(SI->invar->userIdxs);
+  }
 
-    if(Instruction* UserI = dyn_cast<Instruction>(*UI)) {
+  for(uint32_t i = 0; i < Users->size(); ++i) {
 
-      queueUserUpdatePB(V, UserI, LPBA);
+    ShadowInstIdx& SII = (*Users)[i];
+    if(SII.blockIdx != INVALID_BLOCK_IDX && SII.instIdx != INVALID_INST_IDX) {
+
+      ShadowInstructionInvar* UserI = getInstInvar(SII.blockIdx, SII.instIdx);
+      queueUserUpdatePB(UserI, LPBA);
 
     }
 
@@ -744,132 +709,125 @@ void IntegrationAttempt::queueUsersUpdatePB(Value* V, LoopPBAnalyser* LPBA) {
 
 }
 
-void IntegrationAttempt::queueUserUpdatePB(Value* V, Instruction* UserI, LoopPBAnalyser* LPBA) {
+ void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, LoopPBAnalyser* LPBA) {
 
-  const Loop* MyL = getLoopContext();
+  const Loop* MyL = L;
   
-  if(isa<ReturnInst>(UserI)) {
+  if(inst_is<ReturnInst>(UserI)) {
 	
     getFunctionRoot()->queueUpdateCall(LPBA);
 	
   }
 
-  const Loop* UserL = getValueScope(UserI);
+  const Loop* UserL = UserI->scope;
 
-  if((!MyL) || (UserL && MyL->contains(UserL))) {
+  if((!L) || (UserL && L->contains(UserL))) {
 	  
-    queueUsersUpdatePBRising(UserI, UserL, V, LPBA);
+    queueUsersUpdatePBRising(UserI, LPBA);
 	
   }
   else {
 	
-    queueUsersUpdatePBFalling(UserI, UserL, V, LPBA);
+    queueUsersUpdatePBFalling(UserI, LPBA);
 
   }
   
 }
 
-void IntegrationAttempt::queueUpdatePB(IntegrationAttempt* Ctx, Value* V, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
   
-  LPBA->queueIfConsidered(make_vc(V, Ctx));
+  LPBA->queueIfConsidered(V);
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBFalling(Instruction* I, const Loop* IL, Value* V, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
 
-  if(getLoopContext() == IL) {
+  if(I->scope == L) {
 
-    if(blockIsDead(I->getParent()))
+    ShadowInst* SI = getInst(I);
+    if(!SI)
       return;
 
-    if((!isa<CallInst>(I)) && getValueScope(I) == getLoopContext() && hasResolvedPB(I)) {
+    if((!inst_is<CallInst>(SI)) && hasResolvedPB(SI)) {
 
       // No point investigating instructions whose concrete values are already known.
       return;
 
     }
 
-    if(CallInst* CI = dyn_cast<CallInst>(I)) {
+    if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
-	if(Function* F = getCalledFunction(CI)) {
-
-	  unsigned i = 0;
-	  for(Function::arg_iterator AI = F->arg_begin(), AE = F->arg_end(); AI != AE; ++AI, ++i) {
+	unsigned i = 0;
+	Function* F = IA->getFunction();
+	for(uint32_t i = 0; i < F->arg_size(); ++i) {
 	  
-	    if(V == CI->getArgOperand(i)) {
-	      queueUpdatePB(IA, AI, LPBA);
-	    }
-
-	  }
+	  if(I->I == CI->getArgOperand(i))
+	    queueUpdatePB(IA->argShadows[i], LPBA);
 
 	}
 
       }
 
     }
-    else if(isa<StoreInst>(I)) {
+    else if(inst_is<StoreInst>(SI)) {
 
-      DenseMap<Instruction*, DenseSet<std::pair<LoadInst*, IntegrationAttempt*> > >::iterator it = 
-	memWriterEffects.find(I);
-      if(it != memWriterEffects.end()) {
+      for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->i.PBIndirectUsers.begin(), it2 = SI->i.PBIndirectUsers.end(); it != it2; ++it) {
 
-	for(DenseSet<std::pair<LoadInst*, IntegrationAttempt*> >::iterator SI = it->second.begin(), SE = it->second.end(); SI != SE; ++SI) {
-
-	  queueUpdatePB(SI->second, SI->first, LPBA);
-
-	}
+	queueUpdatePB(*it, LPBA);
 
       }
 
     }
     else {
-      queueUpdatePB(this, I, LPBA);
+
+      queueUpdatePB(SI, LPBA);
+
     }
 
   }
   else {
     if(parent)
-      parent->queueUsersUpdatePBFalling(I, IL, V, LPBA);
+      parent->queueUsersUpdatePBFalling(I, LPBA);
   }
 
 }
 
-void PeelAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser* LPBA) {
+void PeelAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->queueUsersUpdatePBRising(I, TargetL, V, LPBA);
+    Iterations[i]->queueUsersUpdatePBRising(I, LPBA);
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
 
-  const Loop* MyL = getLoopContext();
-  const Loop* NextL = TargetL == MyL ? TargetL : immediateChildLoop(MyL, TargetL);
+  const Loop* MyL = L;
+  const Loop* NextL = I->scope == MyL ? I->scope : immediateChildLoop(MyL, I->scope);
   bool investigateHere = true;
 
-  if(TargetL != MyL) {
+  if(TargetLI->scope != MyL) {
 
     if(PeelAttempt* PA = getPeelAttempt(NextL)) {
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
 	investigateHere = false;
-      PA->queueUsersUpdatePBRising(I, TargetL, V, LPBA);
+      PA->queueUsersUpdatePBRising(I, LPBA);
     }
 
   }
 
   if(investigateHere)
-    queueUsersUpdatePBFalling(I, MyL, V, LPBA);
+    queueUsersUpdatePBFalling(I, LPBA);
 
 }
 
-bool IntegrationAttempt::shouldCheckPB(Value* V) {
+bool IntegrationAttempt::shouldCheckPB(ShadowValue V) {
 
   bool verbose = false;
 
   if(verbose)
-    errs() << "shouldCheckPB " << itcache(make_vc(V, this)) << "\n";
+    errs() << "shouldCheckPB " << itcache(V) << "\n";
 
   if(contextIsDead) {
     if(verbose)
@@ -879,20 +837,12 @@ bool IntegrationAttempt::shouldCheckPB(Value* V) {
 
   if(hasResolvedPB(V)) {
     if(verbose)
-      errs() << "Resolved already: repl " << itcache(getReplacement(V)) << " vs default " << itcache(getDefaultVC(V)) << "\n";
+      errs() << "Resolved already: repl " << itcache(getReplacement(V)) << "\n";
     return false;
   }
 
-  if(Instruction* I = dyn_cast<Instruction>(V)) {
-    if(blockIsDead(I->getParent())) {
-      if(verbose)
-	errs() << "Block dead\n";
-      return false;
-    }
-  }
-
   const Loop* MyL = getLoopContext();
-  const Loop* VL = getValueScope(V);
+  const Loop* VL = V.getScope();
 				     
   if(MyL != VL) {
 
@@ -922,7 +872,7 @@ bool IntegrationAttempt::shouldCheckPB(Value* V) {
   }
 
   PointerBase PB;
-  bool PBValid = getPointerBaseFalling(V, PB);
+  bool PBValid = getPointerBase(V, PB);
   if(PBValid && PB.Values.size() == 1) {
     if(verbose)
       errs() << "Has optimal PB\n";
@@ -935,53 +885,60 @@ bool IntegrationAttempt::shouldCheckPB(Value* V) {
 
 }
 
-void IntegrationAttempt::queuePBUpdateIfUnresolved(Value *V, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queuePBUpdateIfUnresolved(ShadowValue V, LoopPBAnalyser* LPBA) {
 
   if(shouldCheckPB(V)) {
     
-    LPBA->addVC(make_vc(V, this));
+    LPBA->addVal(V);
     //errs() << "Queue " << itcache(make_vc(V, this)) << "\n";
-    pointerBases.erase(V);
+    if(ShadowInstruction* SI = V.getInst()) {
+      SI->i.PB = PointerBase();
+    }
+    else {
+      ShadowArg* SA = V.getArg();
+      SA->i.PB = PointerBase();
+    }
 
   }
   else {
 
-    LPDEBUG("Shouldn't check " << itcache(make_vc(V, this)) << "\n");
+    LPDEBUG("Shouldn't check " << itcache(V) << "\n");
 
   }
 
 }
 
-void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser* LPBA) {
+void InlineAttempt::queueCheckAllArgs(LoopPBAnalyser* LPBA) {
 
-  if((!getLoopContext()) && !L) {
+  for(uint32_t i = 0; i < F.arg_size(); ++i)
+    queuePBUpdateIfUnresolved(ShadowValue(argShadows[i]));
 
-    for(Function::arg_iterator AI = F.arg_begin(), AE = F.arg_end(); AI != AE; ++AI) {
+}
 
-      queuePBUpdateIfUnresolved(AI, LPBA);
+void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* CheckL, LoopPBAnalyser* LPBA) {
+
+  if((!L) && !CheckL) {
+
+    queueCheckAllArgs();
+
+  }
+
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    ShadowBB* BB = BBs[i];
+    if(!BB)
+      continue;
+
+    const Loop* BBL = BB->invar->naturalScope;
+
+    if((!CheckL) || (BBL && CheckL->contains(BBL))) {
+
+      for(uint32_t j = 0; j < BB->insts.size(); ++j)
+	queuePBUpdateIfUnresolved(ShadowValue(BB->insts[j]), LPBA);
 
     }
 
   }
-
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    if(blockIsDead(BI))
-      continue;
-
-    BasicBlock* BB = BI;
-    const Loop* BBL = LI[&F]->getLoopFor(BB);
-    if((!L) || (BBL && L->contains(BBL))) {
-
-      for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
-	
-	queuePBUpdateIfUnresolved(II, LPBA);
-
-      }
-
-    }
-
-  }  
 
 }
 
@@ -1026,22 +983,22 @@ static bool isBetterThanOrEqual(PointerBase& NewPB, PointerBase& OldPB) {
 }
 */
 
-void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* modifiedVCs) {
+void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue>* modifiedVals) {
 
-  DenseMap<ValCtx, int> considerCount;
+  //DenseMap<ShadowValue, int> considerCount;
 
-  SmallVector<ValCtx, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
+  SmallVector<ShadowValue, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
 
   while(PBQueue1.size() || PBQueue2.size()) {
 
     std::sort(ConsumeQ->begin(), ConsumeQ->end());
-    SmallVector<ValCtx, 64>::iterator endit = std::unique(ConsumeQ->begin(), ConsumeQ->end());
+    SmallVector<ShadowValue, 64>::iterator endit = std::unique(ConsumeQ->begin(), ConsumeQ->end());
 
-    for(SmallVector<ValCtx, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
+    for(SmallVector<ShadowValue, 64>::iterator it = ConsumeQ->begin(); it != endit; ++it) {
 
       assert(inLoopVCs.count(*it));
 
-      if(it->second->updateBasePointer(it->first, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
+      if(it->second->updateBasePointer(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
 	}
@@ -1078,33 +1035,33 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ValCtx>* mo
 
 void LoopPBAnalyser::run() {
 
-  std::vector<ValCtx> updatedVCs;
-  runPointerBaseSolver(false, &updatedVCs);
+  std::vector<ShadowValue> updatedVals;
+  runPointerBaseSolver(false, &updatedVals);
 
-  std::sort(updatedVCs.begin(), updatedVCs.end());
-  std::vector<ValCtx>::iterator startit, endit;
-  endit = std::unique(updatedVCs.begin(), updatedVCs.end());
+  std::sort(updatedVals.begin(), updatedVals.end());
+  std::vector<ShadowValue>::iterator startit, endit;
+  endit = std::unique(updatedVals.begin(), updatedVals.end());
 
-  for(startit = updatedVCs.begin(); startit != endit; ++startit) {
+  for(startit = updatedVals.begin(); startit != endit; ++startit) {
 	
-    queueUpdatePB(make_vc(startit->first, startit->second));
+    queueUpdatePB(*startit);
 
   }
 
   runPointerBaseSolver(true, 0);
 
-  for(startit = updatedVCs.begin(); startit != endit; ++startit) {
+  for(startit = updatedVals.begin(); startit != endit; ++startit) {
 
-    startit->second->tryPromoteSingleValuedPB(startit->first);
+    startit->second->tryPromoteSingleValuedPB(*startit);
     
   }
 
 }
 
-void IntegrationAttempt::tryPromoteSingleValuedPB(Value* V) {
+void IntegrationAttempt::tryPromoteSingleValuedPB(ShadowValue V) {
 
   PointerBase NewPB;
-  if(!getPointerBaseLocal(V, NewPB))
+  if(!getPointerBase(V, NewPB))
     return;
 
   if(NewPB.Overdef)
@@ -1114,10 +1071,17 @@ void IntegrationAttempt::tryPromoteSingleValuedPB(Value* V) {
 
     if(NewPB.Values.size() == 1) {
       
-      if(getValueScope(V) == getLoopContext()) {
+      if(V.getScope() == L) {
 	// Feed the result to the ordinary constant folder, until the two get merged.
-	setReplacement(V, NewPB.Values[0]);
-	pointerBases.erase(V);
+	if(ShadowInstruction* SI = V.getInst()) {
+	  SI->i.replaceWith = NewPB.Values[0];
+	  SI->i.PB = PointerBase();
+	}
+	else {
+	  ShadowArg* SA = V.getArg();
+	  SA->i.replaceWith = NewPB.Values[0];
+	  SA->i.PB = PointerBase();
+	}
       }
 
     }
@@ -1144,15 +1108,6 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L, BasicBlock* CacheThreshol
   // and undefined == overdefined.
 
   LPBA.run();
-
-}
-
-void IntegrationAttempt::resolvePointerBase(Value* V, PointerBase& PB) {
-
-  PointerBase ExistingPB;
-  if((!getPointerBaseLocal(V, ExistingPB)) || ExistingPB != PB) {
-    pointerBases[V] = PB;
-  }
 
 }
 

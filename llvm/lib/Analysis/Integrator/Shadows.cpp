@@ -1,7 +1,44 @@
 // Implement guts of instruction and block shadow structures, as well as utility routines for generating them
 // from a function or block.
 
-void getLoopHeaders(DenseMap<const Loop*, uint32_t>& LoopHeaderIndices, DenseMap<const Loop*, uint32_t>& LoopPreheaderIndices, DenseMap<const Loop*, uint32_t>& LoopLatchIndices, DenseMap<BasicBlock*, uint32_t>& BBIndices, const Loop* L) {
+void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops) {
+
+  if(!Visited.insert(BB))
+    return;
+
+  const Loop* BBL = LI[&F]->getLoopFor(BB);
+  
+  // Drifted out of scope?
+  if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
+    return;
+
+  if(enterLoops && (MyL != BBL)) {
+
+    // Child loop. Use the loop successors rather than the block successors.
+    SmallVector<BasicBlock*, 4> ExitBlocks;
+    BBL->getExitBlocks(ExitBlocks);
+    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
+      
+      createTopOrderingFrom(*it, Result, Visited, MyL, enterLoops);
+      
+    }
+
+  }
+  else {
+
+    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+
+      createTopOrderingFrom(*SI, Result, Visited, MyL, enterLoops);
+
+    }
+
+  }
+
+  Result.push_back(BB);
+
+}
+
+static void getLoopHeaders(DenseMap<const Loop*, uint32_t>& LoopHeaderIndices, DenseMap<const Loop*, uint32_t>& LoopPreheaderIndices, DenseMap<const Loop*, uint32_t>& LoopLatchIndices, DenseMap<BasicBlock*, uint32_t>& BBIndices, const Loop* L) {
   
   LoopHeaderIndices[L->getHeader()] = BBIndices[L->getHeader()];
   LoopPreheaderIndices[L->getLoopPreheader()] = BBIndices[L->getLoopPreheader()];
@@ -376,32 +413,10 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i); {
 
 }
 
-// This is just like the above, but admits the possibility that the
-// operand is a variant in a child loop, in which case we must fetch
-// the instruction
-ShadowValue ShadowInstruction::getExitPHIOperand(uint32_t i) {
-
-  ShadowInstructionInvar* SII = parent->invar->insts[i];
-
-
-      if(ShadowInstruction* PredI = PredV.getInst()) {
-
-	const Loop* predLoop = PredI->scope;
-	
-	// If the predecessor comes from a descendent of the PHI's loop
-	if(((!phiLoop) && predLoop) || (phiLoop && !predLoop->contains(phiLoop))) {
-
-	  PredRepl = getReplacementUsingScopeRising(cast<Instruction>(oldValue), *PI, PN->getParent(), predLoop);
-	}
-	else {
-      
-	  PredRepl = getReplacement(PredV);
-
-}
-
 ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
   ShadowInstIdx& SII = invar->userIdxs[i];
   return parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx];
 
 }
+

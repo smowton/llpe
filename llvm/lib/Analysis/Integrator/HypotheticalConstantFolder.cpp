@@ -1412,7 +1412,7 @@ ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
       InlineAttempt* IA = getInlineAttempt(CI);
       if(IA) {
 	 
-	Improved = IA->tryGetReturnValue(SI);
+	Improved = IA->tryGetReturnValue();
 
       }
 
