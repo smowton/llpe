@@ -18,56 +18,56 @@
 
 using namespace llvm;
 
-bool IntegrationAttempt::tryKillStore(StoreInst* SI) {
+bool llvm::tryKillStore(ShadowInstruction* SI) {
 
-  uint64_t Size = (TD->getTypeSizeInBits(SI->getValueOperand()->getType()) + 7) / 8;
-  return tryKillWriterTo(SI, SI->getPointerOperand(), Size);
+  uint64_t Size = (GlobalTD->getTypeSizeInBits(SI->invar->I->getOperand(0)->getType()) + 7) / 8;
+  return tryKillWriterTo(SI, SI->getOperand(1), Size);
   
 }
 
-bool IntegrationAttempt::tryKillMemset(MemIntrinsic* MI) {
+bool IntegrationAttempt::tryKillMemset(ShadowInstruction* MI) {
 
-  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
+  ConstantInt *SizeCst = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getCallArgOperand(2)));
   uint64_t MemSize;
   if(SizeCst)
     MemSize = SizeCst->getZExtValue();
   else
     MemSize = AliasAnalysis::UnknownSize;
-  return tryKillWriterTo(MI, MI->getDest(), MemSize);
+  return tryKillWriterTo(MI, MI->getCallArgOperand(0), MemSize);
 
 }
 
-bool IntegrationAttempt::tryKillRead(CallInst* CI, ReadFile& RF) {
+bool IntegrationAttempt::tryKillRead(ShadowInstruction* CI, ReadFile& RF) {
 
-  return tryKillWriterTo(CI, CI->getArgOperand(1), RF.readSize);
+  return tryKillWriterTo(CI, CI->getCallArgOperand(1), RF.readSize);
 
 }
 
-bool IntegrationAttempt::tryKillMTI(MemTransferInst* MTI) {
+bool IntegrationAttempt::tryKillMTI(ShadowInstruction* MTI) {
 
-  ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MTI->getLength()));
+  ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MTI->getCallArgOperand(2)));
   uint64_t MISize;
   if(SizeC)
     MISize = SizeC->getZExtValue();
   else
     MISize = AliasAnalysis::UnknownSize;  
 
-  return tryKillWriterTo(MTI, MTI->getDest(), MISize);
+  return tryKillWriterTo(MTI, MTI->getCallArgOperand(0), MISize);
 
 }
 
-bool IntegrationAttempt::tryKillAlloc(Instruction* Alloc) {
+bool IntegrationAttempt::tryKillAlloc(ShadowInstruction* Alloc) {
 
   // The 'unknown size' thing is a bit of a hack -- it just prevents TKWT from ever
   // concluding that enough bytes have been clobbered that the allocation is pointless.
   // Rather the only way it will die is if we make it all the way to end-of-life.
-  return tryKillWriterTo(Alloc, Alloc, AliasAnalysis::UnknownSize); 
+  return tryKillWriterTo(Alloc, ShadowValue(Alloc), AliasAnalysis::UnknownSize); 
 
 }
 
-void IntegrationAttempt::addTraversingInst(ValCtx VC) {
+void IntegrationAttempt::addTraversingInst(ShadowInstruction* SI) {
 
-  unusedWritersTraversingThisContext.insert(VC);
+  unusedWritersTraversingThisContext.insert(SI);
   
 }
 
@@ -75,9 +75,9 @@ void IntegrationAttempt::addTraversingInst(ValCtx VC) {
 
 class WriterUsedWalker : public ForwardIAWalker {
 
-  ValCtx StorePtr;
-  ValCtx StoreBase;
-  uint64_t StoreOffset;
+  ShadowValue StorePtr;
+  ShadowValue StoreBase;
+  int64_t StoreOffset;
   uint64_t StoreSize;
 
 public:
@@ -85,11 +85,11 @@ public:
   bool writeUsed;
   DenseSet<IntegrationAttempt*> WalkIAs;
 
-  WriterUsedWalker(Instruction* StartInst, IntegrationAttempt* StartIA, void* StartCtx, ValCtx SP, ValCtx SB, uint64_t SO, uint64_t SS) : ForwardIAWalker(StartInst, StartIA, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
+  WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, uint64_t SO, uint64_t SS) : ForwardIAWalker(StartInst, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
 
-  virtual WalkInstructionResult walkInstruction(Instruction*, IntegrationAttempt*, void* Context);
-  virtual bool shouldEnterCall(CallInst*, IntegrationAttempt*);
-  virtual bool blockedByUnexpandedCall(CallInst*, IntegrationAttempt*, void*);
+  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context);
+  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
   virtual void freeContext(void*);
   virtual void* copyContext(void*);
 
@@ -120,7 +120,7 @@ void* WriterUsedWalker::copyContext(void* V) {
 
 }
 
-WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(Instruction* I, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes) {
+WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes) {
 
   if(isLifetimeEnd(StoreBase, I)) {
 
@@ -384,22 +384,22 @@ InlineAttempt* InlineAttempt::getFunctionRoot() {
 
 }
 
-bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
+bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) {
 
-  if(isa<AllocaInst>(Alloc.first)) {
+  if(val_is<AllocaInst>(Alloc)) {
 
     // Are we about to return from the function that defines the alloca's lifetime?
-    if(TerminatorInst* TI = dyn_cast<TerminatorInst>(I)) {
-      return (TI->getNumSuccessors() == 0) && (Alloc.second->getFunctionRoot() == this);
+    if(TerminatorInst* TI = dyn_cast_inst<TerminatorInst>(I)) {
+      return (TI->getNumSuccessors() == 0) && (Alloc.getCtx()->getFunctionRoot() == this);
     }
 
   }
-  else if(isMalloc(Alloc.first)) {
+  else if(isMalloc(Alloc.getBareVal())) {
 
-    const CallInst* Free = isFreeCall(I);
+    const CallInst* Free = isFreeCall(I->invar->I);
     if(Free) {
 
-      ValCtx Pointer = getReplacement(Free->getArgOperand(0));
+      ShadowValue Pointer = getReplacement(I->getCallArgOperand(0));
       return Pointer == Alloc;
 
     }
@@ -412,80 +412,53 @@ bool IntegrationAttempt::isLifetimeEnd(ValCtx Alloc, Instruction* I) {
 
 void IntegrationAttempt::tryKillAllMTIs() {
 
-  SmallSet<BasicBlock*, 8> Visited;
+  // Must kill MTIs in reverse topological order. Our ShadowBBs are already in forwards toporder.
 
-  // Must kill MTIs in reverse topological order, i.e. postorder DFS.
-  tryKillAllMTIsFromBB(getEntryBlock(), Visited);
+  for(uint32_t i = BBs.size(); i > 0; --i) {
 
-}
-
-void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBlock*, 8>& Visited) {
-
-  const Loop* MyL = getLoopContext();
-
-  if(!Visited.insert(BB))
-    return;
-
-  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
-
-    BasicBlock* SuccBB = *SI;
-
-    if(edgeIsDead(BB, SuccBB))
-      continue;
-    
-    if(MyL && BB == MyL->getLoopLatch() && SuccBB == MyL->getHeader())
+    ShadowBB* BB = BBs[i-1];
+    if(!BB)
       continue;
 
-    const Loop* SuccBBL = LI[&F]->getLoopFor(SuccBB);
-    if(SuccBBL != MyL && ((!MyL) || MyL->contains(SuccBBL))) {
-      // Loop within this one:
-      if(PeelAttempt* LPA = getPeelAttempt(SuccBBL)) {
+    if(BB->invar->naturalScope != L) {
 
-	// Do loop successors first:
-	SmallVector<BasicBlock*, 4> ExitBlocks;
-	SuccBBL->getExitBlocks(ExitBlocks);
-	for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
+      const Loop* enterLoop = immediateChildLoop(L, BB->invar->naturalScope);
 
-	  tryKillAllMTIsFromBB(*it, Visited);
+      if(PeelAttempt* LPA = getPeelAttempt(enterLoop)) {
 
-	}
-
-	// Now process the loop body:
+	// Process loop iterations in reverse order:
 	for(int i = LPA->Iterations.size() - 1; i >= 0; --i) {
 
 	  LPA->Iterations[i]->tryKillAllMTIs();
 
 	}
 
+	// Skip loop blocks:
+	while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && enterLoop->contains(BBs[i-1]->invar->naturalScope))
+	  --i;
 	continue;
-	  
+
       }
-      // Else enter the BB as usual. The topo sort algorithm will process loop blocks in any old order.
-    }
-    else {
-      // Loop outside this one
-      continue;
-    }
-
-    tryKillAllMTIsFromBB(SuccBB, Visited);
-
-  }
-
-  // Now process this block, knowing for sure all blocks that may follow from it have been processed:
-  for(BasicBlock::iterator it = BB->end(), itend = BB->begin(); it != itend; --it) {
-
-    BasicBlock::iterator I = it;
-    --I;
-    if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(I)) {
-
-      tryKillMTI(MTI);
+      // Else enter the block as usual.
 
     }
-    else if(CallInst* CI = dyn_cast<CallInst>(I)) {
 
-      if(InlineAttempt* IA = getInlineAttempt(CI))
-	IA->tryKillAllMTIs();
+    for(uint32_t j = BB->insts.size(); j > 0; --j) {
 
+      ShadowInstruction* I = BB->insts[j-1];
+      
+      if(inst_is<MemTransferInst>(I)) {
+
+	tryKillMTI(I);
+
+      }
+      else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+
+	if(InlineAttempt* IA = getInlineAttempt(CI))
+	  IA->tryKillAllMTIs();
+
+      }
+      
     }
 
   }
@@ -494,31 +467,35 @@ void IntegrationAttempt::tryKillAllMTIsFromBB(BasicBlock* BB, SmallSet<BasicBloc
 
 void IntegrationAttempt::tryKillAllStores() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+  for(uint32_t i = 0; i < BBs.size(); ++i) {
+    
+    ShadowBB* BB = BBs[i];
 
-    if(blockIsDead(FI))
+    if(!BB)
       continue;
-    if(getBlockScopeVariant(FI) != getLoopContext())
+    if(BB->invar->scope != L)
       continue;
+    
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
+      ShadowInstruction* I = BB->insts[j];
 
-      if(StoreInst* SI = dyn_cast<StoreInst>(BI)) {
+      if(<StoreInst>(I)) {
 	
-	tryKillStore(SI);
+	tryKillStore(I);
 	
       }
-      else if(MemSetInst* MI = dyn_cast<MemSetInst>(BI)) {
+      else if(inst_is<MemSetInst>(I)) {
 	
-	tryKillMemset(MI);
+	tryKillMemset(I);
 	
       }
-      else if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+      else if(CallInst* CI = dyn_cast_inst<CallInst>(BI)) {
 	
 	DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
 	if(it != resolvedReadCalls.end()) {
 	  
-	  tryKillRead(CI, it->second);
+	  tryKillRead(I, it->second);
 	  
 	}
 
@@ -545,18 +522,22 @@ void IntegrationAttempt::tryKillAllStores() {
 
 void IntegrationAttempt::tryKillAllAllocs() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+  for(uint32_t i = 0; i < BBs.size(); ++i) {
+    
+    ShadowBB* BB = BBs[i];
 
-    if(blockIsDead(FI))
+    if(!BB)
       continue;
-    if(getBlockScopeVariant(FI) != getLoopContext())
+    if(BB->invar->scope != L)
       continue;
+    
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
+      ShadowInstruction* I = BB->insts[j];
 
-      if(isa<AllocaInst>(BI) || isMalloc(BI)) {
+      if(inst_is<AllocaInst>(I) || isMalloc(I->invar->I)) {
       
-	tryKillAlloc(cast<Instruction>(BI));
+	tryKillAlloc(I);
 
       }
 

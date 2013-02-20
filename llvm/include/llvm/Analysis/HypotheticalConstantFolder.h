@@ -754,7 +754,7 @@ protected:
 
   // A list of dead stores and allocations which in the course of being found dead traversed this context.
   // These should be discounted as unused writes if we are folded.
-  DenseSet<ValCtx> unusedWritersTraversingThisContext;
+  DenseSet<ShadowInstruction*> unusedWritersTraversingThisContext;
 
   int improvableInstructions;
   int improvableInstructionsIncludingLoops;
