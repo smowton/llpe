@@ -127,27 +127,27 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     return WIRStopThisPath;
 
   }
-  else if(MemIntrinsic* MI = dyn_cast<MemIntrinsic>(I)) {
+  else if(inst_is<MemIntrinsic>(I)) {
 
-    ConstantInt* SizeC = dyn_cast_or_null<ConstantInt>(getConstReplacement(MI->getLength()));
+    ConstantInt* SizeC = cast_or_null<ConstantInt>(getConstReplacement(I->getCallArgOperand(2)));
     uint64_t MISize;
     if(SizeC)
       MISize = SizeC->getZExtValue();
     else
       MISize = AliasAnalysis::UnknownSize;
 
-    if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(MI)) {
+    if(inst_is<MemTransferInst>(I)) {
 
-      if(!unusedWriters.count(MTI)) {
+      if(!(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
-	Value* Pointer = MTI->getSource();
-	AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), MISize, StorePtr, Size);
+	ShadowValue Pointer = I->getCallArgOperand(1);
+	AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, MISize, StorePtr, Size);
 
 	if(R != AliasAnalysis::NoAlias) {
 
 	  // If it's not dead it must be regarded as a big unresolved load.
 
-	  LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved MTI " << itcache(*MI) << "\n");
+	  LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved MTI " << itcache(*I) << "\n");
 	  return WIRStopWholeWalk;
 
 	}
@@ -158,7 +158,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     // If the size is unknown we must assume zero.
     if(MISize != AliasAnalysis::UnknownSize) {
 
-      if(DSEHandleWrite(make_vc(MI->getDest(), this), MISize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
+      if(DSEHandleWrite(I->getCallArgOperand(0), MISize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
 	return WIRStopThisPath;
       else
 	return WIRContinue;
@@ -166,12 +166,12 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     }
 
   }
-  else if(CallInst* CI = dyn_cast<CallInst>(I)) {
+  else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 
     DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
     if(RI != resolvedReadCalls.end()) {
 
-      if(DSEHandleWrite(make_vc(CI->getArgOperand(1), this), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
+      if(DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
 	return WIRStopThisPath;
       else
 	return WIRContinue;
@@ -179,32 +179,36 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     }
 
   }
-  else if(LoadInst* LI = dyn_cast<LoadInst>(I)) {
+  else if(inst_is<LoadInst>(I)) {
 
-    Value* Pointer = LI->getPointerOperand();
-    uint64_t LoadSize = AA->getTypeStoreSize(LI->getType());
+    ShadowValue Pointer = I->getOperand(0);
+    uint64_t LoadSize = AA->getTypeStoreSize(I->getType());
 
-    ValCtx Res = getReplacement(LI);
+    if(!I->i.replaceWith.isInval()) {
 
-    if(Res == getDefaultVC(LI) || (Res.second && ((!Res.second->isAvailableFromCtx(StorePtr.second)) || (Res.isVaArg())))) {
+      ShadowValue& Repl = I->i.replaceWith;
+      
+      if(Repl.getCtx() && (!Repl.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))) {
 	  
-      AliasAnalysis::AliasResult R = AA->aliasHypothetical(make_vc(Pointer, this), LoadSize, StorePtr, Size);
-      if(R != AliasAnalysis::NoAlias) {
+	AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
+	if(R != AliasAnalysis::NoAlias) {
 
-	LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(*Pointer) << "\n");
-	return WIRStopWholeWalk;
+	  LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(Pointer) << "\n");
+	  return WIRStopWholeWalk;
+	  
+	}
 
       }
 
     }
 
   }
-  else if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
+  else if(inst_is<StoreInst>(I)) {
 
-    Value* Pointer = SI->getPointerOperand();
-    uint64_t StoreSize = AA->getTypeStoreSize(SI->getValueOperand()->getType());
+    ShadowValue Pointer = I->getOperand(1);
+    uint64_t StoreSize = AA->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
 
-    if(DSEHandleWrite(make_vc(Pointer, this), StoreSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
+    if(DSEHandleWrite(Pointer, StoreSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
       return WIRStopThisPath;
     else
       return WIRContinue;
@@ -215,9 +219,9 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
 }
 
-WalkInstructionResult WriterUsedWalker::walkInstruction(Instruction* I, IntegrationAttempt* IA, void* Ctx) {
+WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, void* Ctx) {
 
-  WalkIAs.insert(IA);
+  WalkIAs.insert(I->parent->IA);
 
   std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
   WalkInstructionResult Res = IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
@@ -229,20 +233,20 @@ WalkInstructionResult WriterUsedWalker::walkInstruction(Instruction* I, Integrat
 
 }
 
-bool IntegrationAttempt::callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Size) {
+bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ValCtx StorePtr, uint64_t Size) {
 
-  AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr.first, Size, this, StorePtr.second);
+  AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr, Size);
   return !!(MR & AliasAnalysis::Ref);
 
 }
 
-bool WriterUsedWalker::shouldEnterCall(CallInst* CI, IntegrationAttempt* IA) {
+bool WriterUsedWalker::shouldEnterCall(ShadowInstruction* CI) {
 
-  return IA->callUsesPtr(CI, StorePtr, StoreSize);
+  return CI->parent->IA->callUsesPtr(CI, StorePtr, StoreSize);
 
 }
 
-bool WriterUsedWalker::blockedByUnexpandedCall(CallInst* CI, IntegrationAttempt* IA, void*) {
+bool WriterUsedWalker::blockedByUnexpandedCall(ShadowInstruction*, void*) {
 
   writeUsed = true;
   return true;
@@ -269,7 +273,7 @@ static void DSEProgress() {
 
 }
 
-bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size) {
+bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue StorePtr, uint64_t Size) {
 
   DSEProgress();
 
@@ -284,21 +288,20 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
 
   // Otherwise we pass a null pointer to indicate that the store size is unknown.
 
-  ValCtx StorePtr = make_vc(WritePtr, this);
-
   int64_t StoreOffset;
-  ValCtx StoreBase = GetBaseWithConstantOffset(WritePtr, this, StoreOffset);
+  ShadowValue StoreBase;
+  getBaseAndOffset(StorePtr, StoreBase, StoreOffset);
 
-  WriterUsedWalker Walk(Writer, this, initialCtx, StorePtr, StoreBase, StoreOffset, Size);
+  WriterUsedWalker Walk(Writer, initialCtx, StorePtr, StoreBase, StoreOffset, Size);
   // This will deallocate initialCtx.
   Walk.walk();
 
   if(!Walk.writeUsed) {
     
-    unusedWriters.insert(Writer);
+    Writer->i.dieStatus &= INSTSTATUS_UNUSED_WRITER;
     for(DenseSet<IntegrationAttempt*>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
 
-      (*it)->addTraversingInst(make_vc(Writer, this));
+      (*it)->addTraversingInst(Writer);
 
     }
 
@@ -308,7 +311,7 @@ bool IntegrationAttempt::tryKillWriterTo(Instruction* Writer, Value* WritePtr, u
 
 }
 
-bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes) {
+bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, ShadowValue StorePtr, uint64_t Size, ShadowValue StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes) {
 
   if(!deadBytes)
     return false;
@@ -316,8 +319,10 @@ bool IntegrationAttempt::DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCt
   AliasAnalysis::AliasResult R = AA->aliasHypothetical(Writer, WriteSize, StorePtr, Size);
 
   int64_t WriteOffset;
-  ValCtx WriteBase = GetBaseWithConstantOffset(Writer.first, Writer.second, WriteOffset);
-
+  ShadowValue WriteBase;
+  if(!getBaseAndOffset(Writer, WriteOffset, WriteBase))
+    return false;
+  
   uint64_t Offset, FirstDef, FirstNotDef;
 
   if(R == AliasAnalysis::MayAlias) {
