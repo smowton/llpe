@@ -203,11 +203,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    TargetData* TD;
    AliasAnalysis* AA;
 
-   SmallVector<ValCtx, 64> dieQueue1;
-   SmallVector<ValCtx, 64> dieQueue2;
-
-   SmallVector<ValCtx, 64>* produceDIEQueue;
-
    IntegrationAttempt* RootIA;
 
    DenseMap<const GlobalVariable*, std::string> GVCache;
@@ -752,10 +747,6 @@ protected:
   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
 
-  // A list of dead stores and allocations which in the course of being found dead traversed this context.
-  // These should be discounted as unused writes if we are folded.
-  DenseSet<ShadowInstruction*> unusedWritersTraversingThisContext;
-
   int improvableInstructions;
   int improvableInstructionsIncludingLoops;
   int improvedInstructions;
@@ -826,7 +817,6 @@ protected:
     improvedValues(4),
     deadValues(4),
     unusedWriters(4),
-    unusedWritersTraversingThisContext(2),
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
@@ -1046,7 +1036,6 @@ protected:
   bool tryKillWriterTo(Instruction* Writer, Value* WritePtr, uint64_t Size);
   bool DSEHandleWrite(ValCtx Writer, uint64_t WriteSize, ValCtx StorePtr, uint64_t Size, ValCtx StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes);
   bool isLifetimeEnd(ValCtx Alloc, Instruction* I);
-  void addTraversingInst(ValCtx);
   WalkInstructionResult noteBytesWrittenBy(Instruction* I, ValCtx StorePtr, ValCtx StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes);
   bool callUsesPtr(CallInst* CI, ValCtx StorePtr, uint64_t Size);
   void tryKillAllMTIs();
@@ -1363,8 +1352,6 @@ class PeelAttempt {
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
    DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
 
-   SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
-
    int64_t residualInstructions;
 
    int nesting_depth;
@@ -1463,7 +1450,6 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   ShadowInstruction* CI;
-  SmallVector<ValCtx, 4> deadVFSOpsTraversingHere;
 
  public:
 

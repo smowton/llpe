@@ -1887,11 +1887,6 @@ DenseMap<BasicBlock*, const Loop*>& IntegrationHeuristicsPass::getBlockScopes(Fu
 
 }
 
-void IntegrationHeuristicsPass::queueDIE(IntegrationAttempt* ctx, Value* val) {
-  assert(val && "Queued a null value");
-  produceDIEQueue->push_back(make_vc(val, ctx));
-}
-
 void IntegrationHeuristicsPass::print(raw_ostream &OS, const Module* M) const {
   RootIA->print(OS);
 }
@@ -1915,26 +1910,9 @@ static Value* getWrittenPointer(Instruction* I) {
 }
 */
 
-void IntegrationHeuristicsPass::runDIEQueue() {
-
-  SmallVector<ValCtx, 64>* consumeDIEQueue = (produceDIEQueue == &dieQueue1) ? &dieQueue2 : &dieQueue1;
-
-  while(dieQueue1.size() || dieQueue2.size()) {
-
-    for(SmallVector<ValCtx, 64>::iterator it = consumeDIEQueue->begin(), it2 = consumeDIEQueue->end(); it != it2; ++it) {
-
-      it->second->tryKillValue(it->first);
-
-    }
-
-    consumeDIEQueue->clear();
-    std::swap(produceDIEQueue, consumeDIEQueue);
-
-  }
-
-}
-
 void IntegrationHeuristicsPass::commit() {
+  if(mustRecomputeDIE)
+    rerunDSEAndDIE();
   RootIA->commit();
 }
 
@@ -2313,6 +2291,34 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
 TargetData* llvm::GlobalTD;
 
+void IntegrationHeuristicsPass::runDSEAndDIE() {
+
+  DEBUG(dbgs() << "Finding dead MTIs\n");
+  RootIA->tryKillAllMTIs();
+
+  DEBUG(dbgs() << "Finding dead stores\n");
+  RootIA->tryKillAllStores();
+
+  DEBUG(dbgs() << "Finding dead allocations\n");
+  RootIA->tryKillAllAllocs();
+
+  DEBUG(dbgs() << "Finding dead VFS operations\n");
+  RootIA->tryKillAllVFSOps();
+
+  DEBUG(dbgs() << "Finding remaining dead instructions\n");
+  
+  if(mainDIE) {
+    errs() << "\nKilling other instructions";
+  }
+  
+  RootIA->runDIE();
+  
+  if(mainDIE) {
+    errs() << "\n";
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<TargetData>();
@@ -2367,41 +2373,22 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "Killing memory instructions";
     mainDIE = true;
 
-    DEBUG(dbgs() << "Finding dead MTIs\n");
-    IA->tryKillAllMTIs();
-
-    DEBUG(dbgs() << "Finding dead stores\n");
-    IA->tryKillAllStores();
-
-    DEBUG(dbgs() << "Finding dead allocations\n");
-    IA->tryKillAllAllocs();
-
-    DEBUG(dbgs() << "Finding dead VFS operations\n");
-    IA->tryKillAllVFSOps();
-
-    DEBUG(dbgs() << "Finding remaining dead instructions\n");
-
-    errs() << "\n";
-    errs() << "Killing other instructions";
-
-    IA->queueAllLiveValues();
-
-    runDIEQueue();
-
-    errs() << "\n";
+    runDSEAndDIE();
 
     mainDIE = false;
 
   }
 
-  IA->collectStats();
-  
   if(!SkipBenefitAnalysis) {
     errs() << "Picking integration candidates";
     estimateIntegrationBenefit();
     errs() << "\n";
   }
 
+  rerunDSEAndDIE();
+
+  IA->collectStats();
+  
   IA->disableVarargsContexts();
 
   if(!GraphOutputDirectory.empty()) {

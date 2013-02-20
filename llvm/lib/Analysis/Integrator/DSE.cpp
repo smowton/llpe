@@ -65,12 +65,6 @@ bool IntegrationAttempt::tryKillAlloc(ShadowInstruction* Alloc) {
 
 }
 
-void IntegrationAttempt::addTraversingInst(ShadowInstruction* SI) {
-
-  unusedWritersTraversingThisContext.insert(SI);
-  
-}
-
 //// Implement a forward walker to determine if a store is redundant on all paths.
 
 class WriterUsedWalker : public ForwardIAWalker {
@@ -83,7 +77,6 @@ class WriterUsedWalker : public ForwardIAWalker {
 public:
 
   bool writeUsed;
-  DenseSet<IntegrationAttempt*> WalkIAs;
 
   WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, uint64_t SO, uint64_t SS) : ForwardIAWalker(StartInst, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
 
@@ -221,8 +214,6 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
 WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, void* Ctx) {
 
-  WalkIAs.insert(I->parent->IA);
-
   std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
   WalkInstructionResult Res = IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
 
@@ -299,11 +290,6 @@ bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue 
   if(!Walk.writeUsed) {
     
     Writer->i.dieStatus |= INSTSTATUS_UNUSED_WRITER;
-    for(DenseSet<IntegrationAttempt*>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
-
-      (*it)->addTraversingInst(Writer);
-
-    }
 
   }
 

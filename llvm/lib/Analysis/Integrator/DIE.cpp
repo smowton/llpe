@@ -473,7 +473,6 @@ void InlineAttempt::runDIE() {
   for(uint32 i = 0; i < F.arg_size(); ++i) {
     ShadowArg* SA = shadowArgs[i];
     if(valueIsDead(ShadowValue(SA))) {
-      SA->replaceWith = ShadowValue();
       SA->dieStatus |= INSTSTATUS_DEAD;
     }
   }
@@ -538,7 +537,6 @@ void IntegrationAttempt::runDIE() {
 
       if(valueIsDead(ShadowValue(SI))) {
 
-	SI->replaceWith = ShadowValue();
 	SI->dieStatus |= INSTSTATUS_DEAD;
 
       }

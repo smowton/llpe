@@ -782,50 +782,6 @@ WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(ShadowInstruc
 
 }
 
-void PeelIteration::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
-
-  parentPA->recordAllParentContexts(VC, seenIAs, seenPAs);
-
-}
-
-void PeelAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
-
-  if(seenPAs.insert(this)) {
-
-    deadVFSOpsTraversingHere.push_back(VC);
-    parent->recordAllParentContexts(VC, seenIAs, seenPAs);
-    
-  }
-
-}
-
-void InlineAttempt::recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs) {
-
-  if(seenIAs.insert(this)) {
-
-    deadVFSOpsTraversingHere.push_back(VC);
-    if(parent)
-      parent->recordAllParentContexts(VC, seenIAs, seenPAs);
-    
-  }
-
-}
-
-void IntegrationAttempt::recordDependentContexts(CallInst* CI, SmallVector<ValCtx, 4>& Deps) {
-
-  SmallSet<InlineAttempt*, 8> seenIAs;
-  SmallSet<PeelAttempt*, 8> seenPAs;
-
-  recordAllParentContexts(make_vc(CI, this), seenIAs, seenPAs);
-
-  for(SmallVector<ValCtx, 4>::iterator it = Deps.begin(), itend = Deps.end(); it != itend; ++it) {
-
-    recordAllParentContexts(make_vc(CI, this), seenIAs, seenPAs);
-
-  }
-
-}
-
 void IntegrationAttempt::tryKillAllVFSOps() {
 
   for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
@@ -846,7 +802,6 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	    SeekInstructionUnusedWalker Walk(FD, SI, this);
 	    Walk.walk();
 	    if(!Walk.seekNeeded) {
-	      recordDependentContexts(it->first, Walk.SuccessorInstructions);
 	      it->second.needsSeek = false;
 	    }	    
 	    continue;
@@ -859,7 +814,6 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	    SeekInstructionUnusedWalker Walk(FD, SI, this);
 	    Walk.walk();
 	    if(!Walk.seekNeeded) {
-	      recordDependentContexts(it->first, Walk.SuccessorInstructions);
 	      it->second.MayDelete = true;
 	    }
 	  }
@@ -891,8 +845,6 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	OpenInstructionUnusedWalker Walk(SI, this);
 	Walk.walk();
 	if(!Walk.residualUserFound) {
-
-	  recordDependentContexts(it->first, Walk.UserInstructions);
 
 	  it->second->MayDelete = true;
 	  for(unsigned i = 0; i < Walk.CloseInstructions.size(); ++i) {
