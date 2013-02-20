@@ -1532,3 +1532,11 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   return true;
 
 }
+
+void IntegrationAttempt::checkLoad(ShadowInstruction* LI) {
+
+  ShadowValue Result = tryForwardLoad(LI);
+  if(!Result.isInval())
+    LI->i.replaceWith = Result;
+
+}

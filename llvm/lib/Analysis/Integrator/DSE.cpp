@@ -298,7 +298,7 @@ bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue 
 
   if(!Walk.writeUsed) {
     
-    Writer->i.dieStatus &= INSTSTATUS_UNUSED_WRITER;
+    Writer->i.dieStatus |= INSTSTATUS_UNUSED_WRITER;
     for(DenseSet<IntegrationAttempt*>::iterator it = Walk.WalkIAs.begin(), it2 = Walk.WalkIAs.end(); it != it2; ++it) {
 
       (*it)->addTraversingInst(Writer);

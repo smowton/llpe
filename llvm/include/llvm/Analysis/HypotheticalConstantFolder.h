@@ -551,7 +551,7 @@ class OpCallback {
 class VisitorContext {
 public:
 
-  virtual void visit(IntegrationAttempt* Context, Instruction* UserI) = 0;
+  virtual void visit(ShadowInstruction* UserI) = 0;
   virtual void notifyUsersMissed() = 0;
   virtual bool shouldContinue() = 0;
 

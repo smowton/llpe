@@ -292,29 +292,7 @@ bool PeelIteration::updateHeaderPHIPB(ShadowInstruction* I, bool& NewPBValid, Po
   
   if(L && L->getHeader() == PN->getParent()) {
 
-    ShadowValue predValue;
-
-    if(getIterCount() == 0) {
-
-      int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
-      assert(predIdx >= 0 && "Failed to find preheader block");
-      predValue = SI->getOperand(((uint32_t)predIdx) * 2);
-
-    }
-    else {
-
-      LPDEBUG("Pulling PHI value from previous iteration latch\n");
-      int predIdx = PN->getBasicBlockIndex(L->getLoopLatch());
-      assert(predIdx >= 0 && "Failed to find latch block");
-      // Find equivalent instruction in previous iteration:
-      IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
-      ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx * 2];
-      if(SII.blockIdx != INVALID_BLOCK_IDX)
-	predValue = ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
-      else
-	predValue = SI->getOperand(predIdx * 2);
-
-    }
+    ShadowValue predValue = getLoopHeaderForwardedOperand(I);
 
     NewPBValid = getPointerBase(predValue, NewPB);
 
