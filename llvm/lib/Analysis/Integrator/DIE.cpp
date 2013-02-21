@@ -85,7 +85,7 @@ void PeelIteration::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Vis
   const Loop* immediateChild = immediateChildLoop(L, VI->scope);
 
   PeelAttempt* LPA = getPeelAttempt(immediateChild);
-  if(LPA)
+  if(LPA && LPA->isEnabled())
     LPA->visitVariant(VI, Visitor);
   else 
     Visitor.notifyUsersMissed();
@@ -162,13 +162,10 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
 
       PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
 
-      if(LPA)
+      if(LPA && LPA->isEnabled())
 	LPA->visitVariant(SII, Visitor);
-      else {
-
+      else 
 	Visitor.notifyUsersMissed();
-
-      }
 
     }
     else {
@@ -346,7 +343,7 @@ public:
       }
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(CI);
-      if(!IA) {
+      if((!IA) || !IA->isEnabled()) {
 	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(*CI) << "\n");
 	maybeLive = true;
 	return;

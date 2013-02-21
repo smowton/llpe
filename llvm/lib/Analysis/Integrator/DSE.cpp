@@ -131,6 +131,9 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(inst_is<MemTransferInst>(I)) {
 
+      if(!isEnabled())
+	return WIRStopWholeWalk;
+
       if(!(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
@@ -173,6 +176,9 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
   }
   else if(inst_is<LoadInst>(I)) {
+
+    if(!isEnabled())
+      return WIRStopWholeWalk;
 
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = AA->getTypeStoreSize(I->getType());
@@ -403,6 +409,9 @@ bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) 
 
 void IntegrationAttempt::tryKillAllMTIs() {
 
+  if(!isEnabled())
+    return;
+
   // Must kill MTIs in reverse topological order. Our ShadowBBs are already in forwards toporder.
 
   for(uint32_t i = BBs.size(); i > 0; --i) {
@@ -458,6 +467,9 @@ void IntegrationAttempt::tryKillAllMTIs() {
 
 void IntegrationAttempt::tryKillAllStores() {
 
+  if(!isEnabled())
+    return;
+
   for(uint32_t i = 0; i < BBs.size(); ++i) {
     
     ShadowBB* BB = BBs[i];
@@ -512,6 +524,9 @@ void IntegrationAttempt::tryKillAllStores() {
 }
 
 void IntegrationAttempt::tryKillAllAllocs() {
+
+  if(!isEnabled())
+    return;
 
   for(uint32_t i = 0; i < BBs.size(); ++i) {
     

@@ -588,9 +588,6 @@ bool IntegrationAttempt::blockAssumedToExecute(BasicBlock* BB) {
 
 InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 
-  if(ignoreIAs.count(CI))
-    return 0;
-
   DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(const_cast<CallInst*>(CI));
   if(it != inlineChildren.end())
     return it->second;
@@ -804,9 +801,6 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 }
 
 PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
-
-  if(ignorePAs.count(L))
-    return 0;
 
   DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(L);
   if(it != peelChildren.end())
