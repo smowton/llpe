@@ -230,6 +230,19 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
 
   }
 
+  InstArgImprovement* getIAI() {
+
+    switch(t) {
+    case SHADOWVAL_INST:
+      return &(u.I->i);
+    case SHADOWVAL_ARG:
+      return &(u.A->i);      
+    default:
+      return 0;
+    }
+
+  }
+
 };
 
 template<class X> inline bool val_is(ShadowValue& V) {

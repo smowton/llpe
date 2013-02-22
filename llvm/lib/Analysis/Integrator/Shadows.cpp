@@ -38,15 +38,41 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
 
 }
 
-static void getLoopHeaders(DenseMap<const Loop*, uint32_t>& LoopHeaderIndices, DenseMap<const Loop*, uint32_t>& LoopPreheaderIndices, DenseMap<const Loop*, uint32_t>& LoopLatchIndices, DenseMap<BasicBlock*, uint32_t>& BBIndices, const Loop* L) {
+static void getLoopInfo(DenseMap<const Loop*, uint32_t>& LoopHeaderIndices, DenseMap<const Loop*, uint32_t>& LoopPreheaderIndices, DenseMap<const Loop*, uint32_t>& LoopLatchIndices, DenseMap<const Loop*, std::vector<uint32_t> >& LoopExitingBlocks, std::vector<uint32_t> >& LoopExitBlocks, std::vector<std::pair<uint32_t, uint32_t> >& LoopExitEdges, DenseMap<BasicBlock*, uint32_t>& BBIndices, const Loop* L) {
   
-  LoopHeaderIndices[L->getHeader()] = BBIndices[L->getHeader()];
-  LoopPreheaderIndices[L->getLoopPreheader()] = BBIndices[L->getLoopPreheader()];
-  LoopLatchIndices[L->getLoopLatch()] = BBIndices[L->getLoopLatch()];
+  LoopHeaderIndices[L] = BBIndices[L->getHeader()];
+  LoopPreheaderIndices[L] = BBIndices[L->getLoopPreheader()];
+  LoopLatchIndices[L] = BBIndices[L->getLoopLatch()];
+
+  {
+    SmallVector<BasicBlock*, 4> temp;
+    L->getExitingBlocks(temp);
+    {
+      std::vector<uint32_t>* idxs = LoopExitingBlocks[L] = new std::vector<uint32_t>();
+      for(unsigned i = 0; i < temp.size(); ++i)
+	idxs->push_back(BBIndices[temp[i]]);
+    }
+
+    temp.clear();
+    L->getExitBlocks(temp);
+    {
+      std::vector<uint32_t>* idxs = LoopExitBlocks[L] = new std::vector<uint32_t>();
+      for(unsigned i = 0; i < temp.size(); ++i)
+	idxs->push_back(BBIndices[temp[i]]);
+    }
+  }
+
+  {
+    SmallVector<std::pair<BasicBlock*, BasicBlock>, 4> exitEdges;
+    L->getExitEdges(exitEdges);
+    std::vector<std::pair<uint32_t, uint32_t> >* idxs = LoopExitEdges[L] = new std::vector<std::pair<uint32_t, uint32_t> >();
+    for(unsigned i = 0; i < exitEdges.size(); ++i)
+      idxs->push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
+  }
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
 
-    getLoopHeaders(LoopHeaderIndices, BBIndices, *it);
+    getLoopInfo(LoopHeaderIndices, LoopPreheaderIndices, LoopLatchIndices, LoopExitingBlocks, LoopExitBlocks, LoopExitEdges, BBIndices, *it);
 
   }
 
@@ -234,7 +260,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
   // making is-in-loop easy to compute.
 
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
-    getLoopHeaders(RetInfo.LoopHeaderIndices, RetInfo.LoopPreheaderIndices, RetInfo.LoopLatchIndices, BBIndices, *it);
+    getLoopInfo(RetInfo.LoopHeaderIndices, RetInfo.LoopPreheaderIndices, RetInfo.LoopLatchIndices, BBIndices, *it);
 
   return RetInfo;
 
@@ -268,6 +294,9 @@ void PeelAttempt::getShadowInfo() {
   headerIdx = invarInfo->LoopHeaderIndices[L];
   preheaderIdx = invarInfo->LoopPreheaderIndices[L];
   latchIdx = invarInfo->LoopLatchIndices[L];
+  exitBlockIdxs = invarInfo->LoopExitBlocks[L];
+  exitingBlockIdxs = invarInfo->LoopExitingBlocks[L];
+  exitEdgeIdxs = invarInfo->LoopExitEdges[L];
 
 }
 

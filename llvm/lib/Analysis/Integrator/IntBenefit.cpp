@@ -99,24 +99,23 @@ void InlineAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunctions, De
 
 void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunctions, DenseMap<Function*, unsigned>& TotalResidualInsts) {
 
-  const Loop* MyL = getLoopContext();
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-  for(Function::iterator BI = F.begin(), BE = F.end(); BI != BE; ++BI) {
-
-    BasicBlock* BB = BI;
-
-    if(blockIsDead(BB))
+    ShadowBB* BB = BBs[i];
+    if(!BB)
       continue;
 
-    const Loop* BBL = getBlockScopeVariant(BB);
-    if(MyL != BBL)
+    const Loop* BBL = BB->invar->scope;
+    if(L != BBL)
       continue;
 
-    for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      if(CallInst* CI = dyn_cast<CallInst>(II)) {
+      ShadowInstruction* I = BB->insts[j];
 
-	Function* F = getCalledFunction(CI);
+      if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+
+	Function* F = getCalledFunction(I);
 	if(F) {
 
 	  if(!inlineChildren.count(CI))
@@ -129,12 +128,12 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
       }
       else {
 
-	for(Instruction::op_iterator opit = II->op_begin(), opend = II->op_end(); opit != opend; ++opit) {
+	for(Instruction::op_iterator opit = I->invar->I->op_begin(), opend = I->invar->I->op_end(); opit != opend; ++opit) {
 
 	  if(Constant* C = dyn_cast<Constant>(opit)) {
 
 	    findResidualFunctionsInConst(ElimFunctions, C);
-
+	    
 	  }
 
 	}
@@ -178,8 +177,8 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
   // One possible argument against now is that we might bring loads of outside
   // instructions to life by not unrolling:
   
-  int64_t daeBonus = extraInstructionPoints * parent->disablePeel(L, true);
-  daeBonus += (extraInstructionPoints * nDependentLoads);
+  //int64_t daeBonus = extraInstructionPoints * parent->disablePeel(L, true);
+  //daeBonus += (extraInstructionPoints * nDependentLoads);
 
   // Another possible argument: a non-terminated loop will necessarily retain a whole copy of the loop
   // (i.e. will definitely increase code size).
@@ -196,14 +195,14 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
 
   }
 
-  totalIntegrationGoodness = itersGoodness + daeBonus - nonTermPenalty;
+  totalIntegrationGoodness = itersGoodness - nonTermPenalty;
 
   //errs() << getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n";
 
   if(totalIntegrationGoodness < 0) {
 
     // Overall, not profitable to peel this loop.
-    parent->disablePeel(L, false);
+    parent->disablePeel(L);
 
     // Decided to fold this context: deduct the penalty from parent contexts.
     parent->reduceDependentLoads(nDependentLoads);
@@ -272,16 +271,15 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
   // This differs from the elimdInstructions value in that dead blocks are not counted
   // since they wouldn't get run at all.
 
-  const Loop* MyL = getLoopContext();
-
   int64_t timeBonus = 0;
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-    if(blockIsDead(FI))
+    ShadowBB* BB = BBs[i];
+    if(!BB)
       continue;
    
-    const Loop* BBL = getBlockScopeVariant(FI);
+    const Loop* BBL = BB->scope;
     
     if(MyL != BBL && ((!MyL) || MyL->contains(BBL))) {
 
@@ -295,9 +293,10 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
     if(MyL == BBL) {
 
-      for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
+      for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-	if(valueWillBeRAUWdOrDeleted(BI)) {
+	ShadowInstruction* I = BB->insts[j];
+	if(valueWillBeRAUWdOrDeleted(ShadowValue(I))) {
 	  totalIntegrationGoodness += eliminatedInstructionPoints;
 	  timeBonus += eliminatedInstructionPoints;
 	}
@@ -321,8 +320,8 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
   // Add goodness due to instructions that can be eliminated if we're inlined:
   int64_t daeBonus = 0;
   if(parent) {
-    daeBonus = (extraInstructionPoints * parent->disableInline(CI, true));
-    daeBonus += (extraInstructionPoints * nDependentLoads);
+    daeBonus = (extraInstructionPoints * nDependentLoads);
+  //daeBonus += (extraInstructionPoints * parent->disableInline(CI, true));
   }
   totalIntegrationGoodness += daeBonus;
 
@@ -359,7 +358,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   if(parent && (totalIntegrationGoodness < 0)) {
 
-    parent->disableInline(CI, false);
+    parent->disableInline(CI);
     parent->reduceDependentLoads(nDependentLoads);
 
   }
@@ -378,18 +377,28 @@ void PeelAttempt::countDependentLoads() {
 
 void IntegrationAttempt::countDependentLoads() {
 
-  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-    LoadInst* LI = dyn_cast<LoadInst>(it->first);
+    ShadowBB* BB = BBs[i];
+    if(!BB)
+      continue;
 
-    if(LI && isa<Instruction>(it->second.first)) {
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
+      
+      ShadowInstruction* I = BB->insts[j];
+      if(inst_is<LoadInst>(I)) {
 
-      it->second.second->nDependentLoads++;
+	if(ShadowInstruction* ReplI = I->i.replaceWith.getInst()) {
 
+	  ReplI->parent->IA->nDependentLoads++;
+
+	}
+
+      }
+      
     }
 
   }
-
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
@@ -491,9 +500,7 @@ void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
     
   }
 
-  // findProftiableIntegration uses disableInline / disablePeel, which in turn call revertLoadsFromFoldedContexts.
-  // This is inefficient when we know that we'll be querying a lot of contexts without changing the integration results!
-  // Therefore build an inverse map: this relates an integration context to how many loads which would otherwise would
+  // Build an inverse map: this relates an integration context to how many loads which would otherwise would
   // be eliminated must be executed for real if we fold this context.
   // Tricky bit: if we're already decided not to integration some descendent contexts we shouldn't pay the penalty twice.
   // To solve this, when we decide not to integrate some context we deduct its entry from each parent.
