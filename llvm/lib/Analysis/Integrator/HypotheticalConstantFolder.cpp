@@ -486,7 +486,7 @@ bool PeelIteration::getLoopHeaderPHIValue(ShadowInstruction* SI, ShadowValue& re
 
 }
 
-void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops) {
+void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
 
   // SI block dead at this scope?
   // I don't use edgeIsDead here because that recursively checks loop iterations
@@ -504,7 +504,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
       for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 
 	PeelIteration* Iter = PA->Iterations[i];
-	Iter->getOperandRising(SI, ExitedBB, ops);
+	Iter->getOperandRising(SI, ExitedBB, ops, BBs);
 
       }
 
@@ -515,12 +515,14 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
   }
 
   // Value is local, or in a child loop which is unterminated or entirely unexpanded.
-  if(!edgeIsDead(SI->parent, ExitedBB))
+  if(!edgeIsDead(SI->parent, ExitedBB)) {
     ops.push_back(getInst(SI));
+    BBs.push_back(getBB(ExitedBB));
+  }
 
 }
 
-void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops) {
+  void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
 
   ShadowInstructionInvar* SII = SI->invar;
   
@@ -530,13 +532,13 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
 
   // PHI arg is an instruction?
-  if(valOp.blockIdx != INVALID_BLOCK_IDX) {
+  if(valOp.blockIdx != INVALID_BLOCK_IDX && valOp.instIdx != INVALID_INST_IDX) {
 
     // PHI arg at child scope?
     ShadowInstructionInvar* PredSII = getInstInvar(valOp.blockIdx, valOp.instIdx);
     if(!((!PredSII->scope) || PredSII->scope->contains(L))) {
 
-      getOperandRising(PredSII, SII->parent, ops);
+      getOperandRising(PredSII, SII->parent, ops, BBs);
       return;
 
     }
@@ -545,8 +547,10 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   
   // Arg is local or a constant or argument, use normal getOperand.
   ShadowBBInvar* BB = getBBInvar(blockOp.blockIdx);
-  if(!edgeIsDead(BB, SI->parent->invar))
+  if(!edgeIsDead(BB, SI->parent->invar)) {
     ops.push_back(SI->getOperand(valOpIdx));
+    BBs.push_back(getBB(BB));
+  }
 
 }
 

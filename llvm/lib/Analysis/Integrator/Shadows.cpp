@@ -1,4 +1,4 @@
-// Implement guts of instruction and block shadow structures, as well as utility routines for generating them
+e// Implement guts of instruction and block shadow structures, as well as utility routines for generating them
 // from a function or block.
 
 void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops) {
@@ -176,6 +176,11 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 	if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k))) {
 
 	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+
+	}
+	else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k))) {
+
+	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], INVALID_INST_IDX);
 
 	}
 	else {

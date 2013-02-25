@@ -18,32 +18,6 @@
 
 using namespace llvm;
 
-// Root entry point for saving our results:
-void IntegrationAttempt::commit() {
-
-  ValueMap<const Value*, Value*> rootValMap;
-
-  // Assemble an identity map for the first integration:
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
-
-    rootValMap[FI] = FI;
-
-    for(BasicBlock::iterator BI = FI->begin(), BE = FI->end(); BI != BE; ++BI) {
-
-      rootValMap[BI] = BI;
-
-    }
-
-  }
-
-  prepareCommit();
-
-  commitInContext(LI[&F], rootValMap);
-
-  commitPointers();
-
-}
-
 // Prepare for the commit: remove instruction mappings that are (a) invalid to write to the final program
 // and (b) difficult to reason about once the loop structures start to be modified by unrolling and so on.
 
@@ -78,112 +52,20 @@ void IntegrationAttempt::prepareCommit() {
 
 }
 
-void IntegrationAttempt::removeBlockFromLoops(BasicBlock* BB, const Loop* BBL) {
-
-  const Loop* NextL = immediateChildLoop(getLoopContext(), BBL);
-
-  if(PeelAttempt* PA = getPeelAttempt(NextL)) {
-
-    PA->removeBlockFromLoops(BB, BBL);
-
-  }
-
-}
-
-void PeelAttempt::removeBlockFromLoops(BasicBlock* BB, const Loop* BBL) {
-
-  std::vector<BasicBlock*>::iterator removeit = std::find(LoopBlocks.begin(), LoopBlocks.end(), BB);
-  release_assert(removeit != LoopBlocks.end());
-
-  LoopBlocks.erase(removeit);
-
-  if(BBL == L)
-    return;
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
-
-    (*it)->removeBlockFromLoops(BB, BBL);
-
-  }
-
-}
-
-void IntegrationAttempt::replaceDeadValue(Value* V, ValCtx VC) {
-
-  deadValues.erase(V);
-  setReplacement(V, VC);
-
-}
-
-void InlineAttempt::localPrepareCommit() {
-
-  IntegrationAttempt::localPrepareCommit();
-
-}
-
-void PeelIteration::localPrepareCommit() {
-
-  // Remove loop header values, since these are removed by the loop unroller and are realised
-  // by RAUW'ing the PHI node with one of its arguments rather than by directly replacing it.
-    
-  LHeader = L->getHeader();
-  LLatch = L->getLoopLatch();
-
-  BasicBlock* H = L->getHeader();
-  for(BasicBlock::iterator it = H->begin(), it2 = H->end(); it != it2 && isa<PHINode>(it); ++it) {
-
-    PHINode* V = cast<PHINode>(it);
-
-    deadValues.erase(V);
-    improvedValues.erase(V);
-
-  }
-
-  IntegrationAttempt::localPrepareCommit();
-
-}
-
 void IntegrationAttempt::localPrepareCommit() {
 
-  // Remove any return instructions from consideration, since the inliner will take care of them for us
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-    TerminatorInst* TI = FI->getTerminator();
-    if(isa<ReturnInst>(TI)) {
-
-      deadValues.erase(TI);
-
-    }
-
-  }
-
-  // Remove loop blocks which are invariant dead from the list of blocks belonging to that loop
-  // This will stop the integration within that loop from considering it.
-
-  for(DenseSet<BasicBlock*>::iterator BI = deadBlocks.begin(), BE = deadBlocks.end(); BI != BE; ++BI) {
-
-    const Loop* BlockL = LI[&F]->getLoopFor(*BI);
-    const Loop* MyL = getLoopContext();
-
-    if(BlockL == MyL)
+    ShadowBB* BB = BBs[i];
+    if(!BB)
       continue;
 
-    release_assert((!MyL) || MyL->contains(BlockL));
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-    removeBlockFromLoops(*BI, BlockL);
+      if(ShadowInstruction* SI = BB->insts[j]->i.replaceWith.getInst()) {
 
-  }
-
-  SmallVector<Value*, 4> toRemove;
-
-  // Anywhere we would replace a value with a pointer that has been found dead, delete it instead.
-  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-
-    if(it->second.second) {
-
-      if(it->second.second->valueWillBeDeleted(it->second.first)) {
-
-	toRemove.push_back(it->first);
+	if(SI->getCtx() && !SI->getCtx()->isAvailableFromCtx(this))
+	  BB->insts[j]->i.replaceWith = ShadowValue();
 
       }
 
@@ -191,826 +73,640 @@ void IntegrationAttempt::localPrepareCommit() {
 
   }
 
-  for(SmallVector<Value*, 4>::iterator it = toRemove.begin(), it2 = toRemove.end(); it != it2; ++it) {
-    
-    improvedValues.erase(*it);
-    deadValues.insert(*it);
-
-  }
-  
 }
 
-void IntegrationAttempt::commitInContext(LoopInfo* MasterLI, ValueMap<const Value*, Value*>& valMap) {
+std::string InlineAttempt::getCommittedBlockPrefix() {
 
-  // First apply all local definitions and kills. Store the map from the Values we know to
-  // Values as integrated into the program for the second phase when we resolve pointers,
-  // and resolve constants / dead code now.
+  return getShortHeader();
 
-  errs() << "Commit phase 1: " << HeaderStr << "\n";
+}
 
-  this->MasterLI = MasterLI;
-  CommittedValues.insert(valMap.begin(), valMap.end());
+std::string PeelIteration::getCommittedBlockPrefix() {
 
-  // Step 1: perform local integration that doesn't use outside pointers.
-  // This includes establishing any loop invariants, which will be caught up
-  // in the loop peeling section below, as well as replacing users of calls
-  // with the values they return, if we know them.
+  std::string ret;
+  raw_string_ostream RSO(ret);
+  RSO << getFunctionRoot()->getShortHeader() << " loop " << parentPA->getShortHeader() << " iteration " << iterCount;
+  RSO.flush();
+  return ret;
 
-  commitLocalConstants(CommittedValues);
+}
 
-  // Delete dead blocks that fall lexically in inner loops, to avoid their getting duplicated
-  // by the loop unroller.
-  deleteDeadBlocks(true);
+void IntegrationAttempt::commitCFG() {
 
-  // Step 2: inline each child call
+  const Function* CF = getFunctionRoot()->CommitF;
+  const Loop* currentLoop;
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-    if(ignoreIAs.count(it->first))
+    ShadowBB* BB = BBs[i];
+    if(!BB)
       continue;
 
-    // Find the call instruction we're actually inlining:
+    if(currentLoop == L && BB->invar->naturalScope != L) {
 
-    CallInst* CI = cast<CallInst>(CommittedValues[it->first]);
-
-    ValueMap<const Value*, Value*> childMap;
-    // This both inputs argument values and returns a map from instructions
-    // as we know them to instructions in the inlined function body.
-
-    Function* Called = getCalledFunction(it->first);
-    assert(Called && "Unresolved call inlined?!");
-
-    if(!Called->isVarArg()) {
-
-      // As we have already RAUW'd constants, a constant argument will be picked up by the inliner
-      // if appropriate. Otherwise it will get caught up in the phase 2 pointer resolution.
-
-      InlineFunctionInfo IFI(0, TD);
-
-      // Get my loop context as it will be written:
-
-      const Loop* MyL = getLoopContext();
-      if(MyL) {
-
-	MyL = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[MyL->getHeader()]));
-
+      // Entering a loop. First write the blocks for each iteration that's being unrolled:
+      PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
+      if(PA && PA->isEnabled()) {
+	for(unsigned i = 0; i < Iterations.size(); ++i)
+	  Iterations[i]->commitCFG();
       }
-
-      if(!InlineFunction(CI, IFI, &childMap, MasterLI, const_cast<Loop*>(MyL), LI[Called], this))
-	assert(0 && "Inlining failed!\n");
-
-      CommittedValues.erase(it->first);
-
-      // childMap is now a map from the instructions' "real" names to those inlined.
-      // Use it to commit changes known about that context:
-      it->second->commitInContext(MasterLI, childMap);
-
-    }
-    else {
-
-      // For varargs functions we must keep the original function.
-      ValueMap<const Value*, Value*> NewFnMap;
-      Function* Clone = CloneFunction(Called, NewFnMap, true);
-      Clone->setLinkage(GlobalValue::InternalLinkage);
-      Called->getParent()->getFunctionList().push_back(Clone);
-
-      CI->setCalledFunction(Clone);
-
-      DominatorTree* CloneDT = new DominatorTree();
-      CloneDT->runOnFunction(*Clone);
-      LoopInfo* CloneLI = new LoopInfo();
-      CloneLI->runOnFunction(*Clone, CloneDT);      
-
-      it->second->commitInContext(CloneLI, NewFnMap);
-
-    }
-
-  }
-
-  // Step 3: peel each child loop
-  
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    if(ignorePAs.count(it->first))
-      continue;
-
-    // Get the loop we're actually dealing with, since we're probably dealing with a loop whose blocks have
-    // been renamed many times.
-
-    Loop* L = MasterLI->getLoopFor(cast<BasicBlock>(CommittedValues[it->first->getHeader()]));
-
-    bool completelyUnrollLoop = it->second->Iterations.back()->iterStatus == IterationStatusFinal;
-    unsigned unrollCount = it->second->Iterations.size();
-
-    // No change?
-    if((!completelyUnrollLoop) && unrollCount == 1)
-      continue;
-
-    // Take a copy of the block list before we clone them:
-    std::vector<BasicBlock*> LBlocks = L->getBlocks();
-
-    std::vector<ValueMap<const Value*, Value*>* > iterValues;
-
-    if(!UnrollLoop(L, unrollCount, MasterLI, 0, !completelyUnrollLoop, completelyUnrollLoop, true /* Allow unusual exit branches*/, true /* Assume all iterations might exit */, &iterValues)) {
-
-      assert(0 && "Unrolling failed");
-
-    }
-
-    // The vector now contains ValueMaps which map from the instructions we just cloned to those which represent
-    // each peeled iteration, starting from iteration 2 (iteration 1 retains the existing instructions).
-    // However, the instructions we're operating on right now aren't necessarily the originals as we have
-    // likely been inlined and peeled a few levels deep.
-
-    // For example, suppose this context is an inlined function -- then the instruction we called %2 is probably
-    // %__2 because we've been inlined into some context. Then we cloned %__2 to make %__2-1, %__2-2, etc.
-    // The loop iterations still expect the instruction to be named "%2", however.
-    // Therefore we must compose the two maps.
-
-    int iterLimit = completelyUnrollLoop ? unrollCount : unrollCount - 1;
-
-    // Process the loop iterations backwards to avoid altering the original blocks
-
-    for(int i = iterLimit - 1; i >= 0; --i) {
-
-      ValueMap<const Value*, Value*>* childValues;
-      ValueMap<const Value*, Value*> composedValues;
       
-      if(i == 0) {
-	childValues = &CommittedValues;
+      // If the loop has terminated, skip emitting the blocks in this context.
+      if(PA && PA->isTerminated()) {
+	const Loop* skipL = BB->invar->naturalScope;
+	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->naturalScope)))
+	  ++i;
       }
-      else {
 
-	ValueMap<const Value*, Value*>& thisIterValues = *(iterValues[i-1]);
+    }
+    
+    // Skip loop-entry processing unitl we're back in local scope.
+    // Can't go direct from one loop to another due to preheader.
+    currentLoop = BB->invar->naturalScope;
+    
+    std::string Name;
+    {
+      raw_string_ostream RSO(Name);
+      RSO << getCommittedBlockPrefix() << "." << BB->invar->BB->getName();
+    }
+    BB->committedTail = BB->committedHead = BasicBlock::Create(F.getContext(), Name, CF);
 
-	DenseSet<Value*> loopValues;
-	childValues = &composedValues;
+    // Determine if we need to create more BBs because of call inlining:
 
-	for(std::vector<BasicBlock*>::iterator BI = LBlocks.begin(), BE = LBlocks.end(); BI != BE; ++BI) {
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-	  loopValues.insert(*BI);
+      if(CallInst* CI = dyn_cast_inst<CallInst>(BB->insts[j])) {
 
-	  for(BasicBlock::iterator II = (*BI)->begin(), IE = (*BI)->end(); II != IE; ++II) {
+	if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
-	    loopValues.insert(II);
+	  if(IA->isEnabled()) {
+
+	    if(!IA->isVararg()) {
+
+	      std::string Name;
+	      {
+		raw_string_ostream RSO(Name);
+		Name << IA->getCommittedBlockPrefix() << ".callexit";
+	      }
+	      BB->committedTail = IA->returnBlock = BasicBlock::Create(F.getContext(), Name, CF);
+	      IA->CommitF = CF;
+
+	    }
+	    else {
+
+	      // Vararg function: commit as a seperate function.
+	      std::string Name;
+	      {
+		raw_string_ostream RSO(Name);
+		Name << IA->getCommittedBlockPrefix() << ".clone";
+	      }
+	      IA->CommitF = Function::Create(IA->F.getType(), GlobalValue::PrivateLinkage, Name, CF->getParent());
+	      IA->returnBlock = 0;
+
+	    }
+
+	    IA->commitCFG();
 
 	  }
 
 	}
 
-	// Now write the value side of the composed map:
+      }
 
-	for(ValueMap<const Value*, Value*>::iterator VI = CommittedValues.begin(), VE = CommittedValues.end(); VI != VE; ++VI) {
+    }
 
-	  if(loopValues.count(VI->second)) {
+  }
 
-	    composedValues[VI->first] = thisIterValues[VI->second];
+}
 
-	  }
+static Value* getCommittedValue(ShadowValue& SV) {
 
+  if(Value* V = SV.getVal())
+    return V;
+  else if(ShadowInstruction* SI = SV.getInst()) {
+    if(!SI->i.replaceWith.isInval())
+      return getCommittedValue(SI->replaceWith);
+    else
+      return SI->i.committedInst;
+  }
+  else {
+    ShadowArg* SA = SV.getArg();
+    if(!SA->i.replaceWith.isInval())
+      return getCommittedValue(SA->i.replaceWith);
+    else
+      return SA->parent->getArgCommittedValue(SA);
+  }
+  
+}
+
+void IntegrationAttempt::getArgCommittedValue(ShadowArg* SA) {
+
+  unsigned n = SA->invar->A->getArgNo();
+
+  if(isVarArg() || (!parent) || !isEnabled()) {
+
+    // Use corresponding argument:
+    Function::arg_iterator it = CommitF->arg_begin();
+    for(unsigned i = 0; i < n; ++i)
+      ++it;
+
+    return it;
+
+  }
+  else {
+
+    // Inlined in place -- use the corresponding value of our call instruction.
+    return getCommittedValue(CI->getCallArgOperand(n));
+
+  }
+
+}
+
+BasicBlock* InlineAttempt::getCommittedEntryBlock() {
+
+  return BBs[0]->committedHead;
+
+}
+
+ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
+
+  uint32_t succ = BB->invar->succs[succIdx];
+
+  if(BB->invar->idx == parentPA->latchIdx && succ == parentPA->headerIdx) {
+
+    if(PeelIteration* PI = getNextIteration())
+      return PI->getBB(succ);
+    else {
+      release_assert(iterStatus != IterationStatusFinal && "Branch to header in final iteration?");
+      return parent->getBB(succ);
+    }
+
+  }
+
+  return IntegrationAttempt::getSuccessorBB(BB, succIdx);
+
+}
+
+ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
+
+  uint32_t succ = BB->invar->succs[succIdx];
+  ShadowBBInvar* BBI = getBBInvar(succ);
+  return getBBFalling(BBI);
+  
+}
+
+ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
+
+  if(BBI->naturalScope == this)
+    return getBB(BBI);
+  else {
+    release_assert(parent && L && "Out of scope in getBBFalling");
+    return parent->getBBFalling(BBI);
+  }
+
+}
+
+static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) {
+
+  if(Ty == V->getType())
+    return V;
+
+  release_assert(isCastable(V->getType(), Ty) && "Bad cast in commit stage");
+  Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
+  return CastInst::Create(Op, V, Ty, "speccast", insertBefore);
+
+}
+
+void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+
+  // Special case: emitting own header PHI. Emit a unary PHI drawing on either the preheader
+  // argument or the latch one.
+
+  PHINode* PN = cast_inst<PHINode>(I);
+
+  if(BB->invar->idx == parentPA->headerIdx) {
+    
+    ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
+    PHINode* NewPN = I->committedInst = PHINode::Create(I->invar->I->getType(), "header", emitBB);
+    ShadowBB* SourceBB;
+
+    if(iterCount == 0) {
+
+      SourceBB = parent->getBB(parentPA->preheaderIdx);
+
+    }
+    else {
+
+      PeelIteration* prevIter = parentPA->Iterations[iterCount-1];
+      SourceBB = prevIter->getBB(parentPA->latchIdx);
+
+    }
+
+    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType());
+    NewPB->addIncoming(PHIOp, SourceBB->committedTail);
+    return;
+
+  }
+
+  IntegrationAttempt::emitPHINode(BB, I, emitBB);
+
+}
+
+void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB) {
+
+  // Emit a normal PHI; all arguments have already been prepared.
+  for(uint32_t i = 0, ilim = I->parent->invar->preds.size(); i != ilim && !breaknow; i+=2) {
+      
+    SmallVector<ShadowValue, 1> predValues;
+    SmallVector<ShadowBB*, 1> predBBs;
+    ShadowValue PredV = getExitPHIOperands(I, i, predValues, predBBs);
+
+    for(uint32_t j = 0; j < predValues.size(); ++j) {
+      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType());
+      NewPN->addIncoming(PHIOp, predBBs[j]->committedTail);
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+
+  PHINode* NewPN = I->committedInst = PHINode::Create(I->invar->I->getType(), "", emitBB);
+
+  // Special case: emitting the header PHI of a residualised loop.
+  // Make an empty node for the time being; this will be revisted once the loop body is emitted
+  if(BB->invar->naturalScope->getHeader() == BB->invar->BB)
+    return;
+
+  populatePHINode(BB, I, NewPN);
+
+}
+
+void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
+
+  uint32_t i;
+  for(i = 0; i < BB->insts.size() && inst_is<PHINode>(BB->insts[i]); ++i) {
+    if(!BB->insts[i]->committedInst)
+      continue;
+    populatePHINode(BB, BB->insts[i], cast<PHINode>(BB->insts[i]->committedInst));
+  }
+
+}
+
+void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+
+  if(inst_is<UnreachableInst>(I)) {
+
+    emitInst(BB, I, emitBB);
+    return;
+    
+  }
+
+  if(inst_is<ReturnInst>(I)) {
+
+    if(getFunctionRoot()->isVarArg()) {
+
+      // Normal return
+      emitInst(BB, I, emitBB);
+
+    }
+    else {
+
+      // Branch to the exit block
+      release_assert(exitBlock && "Exit block unset?");
+      BranchInst::Create(exitBlock, emitBB);
+
+      if(!F.getReturnTy()->isVoidTy()) {
+	Value* PHIVal = getValueAsType(getCommittedValue(I->getOperand(0)), F.getReturnTy());
+	getFunctionRoot()->returnPHI->addIncoming(PHIVal, BB->committedTail);
+      }
+
+    }
+
+    return;
+
+  }
+
+  // Do we know where this terminator will go?
+  uint32_t knownSucc = 0xffffffff;
+  for(uint32_t i = 0; i < BB->succIdxs.size(); ++i) {
+
+    if(BB->succsLive[i]) {
+
+      if(knownSucc == 0xffffffff)
+	knownSucc = i;
+      else if(knownSucc == i)
+	continue;
+      else {
+
+	knownSucc = 0xffffffff;
+	break;
+
+      }
+
+    }
+
+  }
+
+  if(knownSucc != 0xffffffff) {
+
+    // Emit uncond branch
+    ShadowBB* BB = getSuccessorBB(BB, knownSucc);
+    release_assert(BB && "Failed to get successor BB");
+    BranchInst::Create(BB->committedHead, emitBB);
+
+  }
+  else {
+
+    // Clone existing branch/switch
+    release_assert((isa<SwitchInst>(I) || isa<BranchInst>(I)) && "Unsupported terminator type");
+    Instruction* newTerm = I->invar->I->clone();
+    emitBB->getInstList().push_back(newTerm);
+    
+    // Like emitInst, but can emit BBs.
+    for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
+
+      if(I->invar->operandIdxs[i].instIdx == INVALID_INST_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
+
+	// Argument is a BB.
+	ShadowBB* BB = getSuccessorBB(BB, knownSucc);
+	release_assert(BB && "Failed to get successor BB (2)");
+	newTerm->setOperand(i, BB->committedHead);
+
+      }
+      else { 
+
+	ShadowValue op = I->getOperand(i);
+	Value* opV = getCommittedValue(op);
+	I->committedInst->setOperand(i, opV);
+
+      }
+
+    }
+    
+  }
+
+}
+
+void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+
+  CallInst* CI = cast_inst<CallInst>(I);
+
+  {
+    DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+    if(it != resolvedReadCalls.end()) {
+      
+      if(it->second.readSize > 0 && !(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
+
+	LLVMContext& Context = CI->getContext();
+
+	// Create a memcpy from a constant, since someone is still using the read data.
+	std::vector<Constant*> constBytes;
+	std::string errors;
+	assert(getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors));
+      
+	const ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
+	Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
+
+	// Create a const global for the array:
+
+	GlobalVariable *ArrayGlobal = new GlobalVariable(*(CI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::PrivateLinkage, ByteArray, "");
+
+	const Type* Int64Ty = IntegerType::get(Context, 64);
+	const Type *VoidPtrTy = Type::getInt8PtrTy(Context);
+
+	Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
+	Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
+	Constant* CopySource = ConstantExpr::getGetElementPtr(ArrayGlobal, Idxs, 2);
+      
+	Constant* MemcpySize = ConstantInt::get(Int64Ty, constBytes.size());
+
+	const Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
+	Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
+						       Intrinsic::memcpy, 
+						       Tys, 3);
+	Value *DestCast = new BitCastInst(getCommittedValue(I->getCallArgOperand(1)), VoidPtrTy, "readcast", emitBB);
+
+	Value *CallArgs[] = {
+	  DestCast, CopySource, MemcpySize,
+	  ConstantInt::get(Type::getInt32Ty(Context), 1),
+	  ConstantInt::get(Type::getInt1Ty(Context), 0)
+	};
+	
+	CallInst::Create(MemCpyFn, CallArgs, CallArgs+5, "", emitBB);
+
+	// Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
+	// used without an intervening SEEK_SET)
+	if(it->second.needsSeek) {
+
+	  const Type* Int64Ty = IntegerType::get(Context, 64);
+	  Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
+	  const Type* Int32Ty = IntegerType::get(Context, 32);
+	  Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
+
+	  Constant* SeekFn = F.getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
+
+	  Value* CallArgs[] = {getCommittedValue(I->getCallArgOperand(0)) /* The FD */, NewOffset, SeekSet};
+
+	  CallInst::Create(SeekFn, CallArgs, CallArgs+3, "", emitBB);
+	  
 	}
 	
       }
 
-      // Commit constant results to this iteration:
-
-      it->second->Iterations[i]->commitInContext(MasterLI, *childValues);
-
-    }
-
-    for(std::vector<ValueMap<const Value*, Value*>* >::iterator it = iterValues.begin(), it2 = iterValues.end(); it != it2; ++it) {
-
-      delete (*it);
-
-    }
-
-  }
-  
-  // Delete blocks dead at our scope.
-  // Do this last because the loop unroller will try to add edges towards them (and then, if they're
-  // dead, commitLocalConstants->replaceKnownBranches will remove them again)
-  deleteDeadBlocks(false);
-
-}
-
-void IntegrationAttempt::commitPointers() {
-
-  commitLocalPointers();
-
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
-    if(ignoreIAs.count(it->first))
-      continue;
-
-    it->second->commitPointers();
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    if(ignorePAs.count(it->first))
-      continue;
-
-    unsigned iterCount = it->second->Iterations.size();
-    unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
-
-    for(int i = (iterLimit - 1); i >= 0; --i) {
-
-      it->second->Iterations[i]->commitPointers();
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::deleteInstruction(Instruction* I) {
-
-  if(!I->use_empty())
-    I->replaceAllUsesWith(UndefValue::get(I->getType()));
-  I->getParent()->getInstList().erase(I);
-
-}
-
-void IntegrationAttempt::tryDeleteDeadBlock(BasicBlock* BB, bool innerScopesOnly) {
-
-  if(!deadBlocks.count(BB))
-    return;
-
-  bool blockIsInvar = false;
-
-  const Loop* BlockL = LI[&F]->getLoopFor(BB);
-  if(BlockL != getLoopContext()) {
-
-    // Blocks belonging to inner scopes must be removed before the loop unroller acts,
-    // otherwise it'll duplicate them and the child contexts won't know to kill it again.
-    blockIsInvar = true;
-
-  }
-
-  if(blockIsInvar != innerScopesOnly)
-    return;
-
-  ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(BB);
-
-  // Check if the BB was not cloned to begin with (indicating it's invariant dead)
-  if(it == CommittedValues.end())
-    return;
-
-  // Get the copy of the block we should actually operate on:
-  BB = cast<BasicBlock>(it->second);
-
-  MasterLI->removeBlock(BB);
-  
-  // Remove all instructions in the block first:
-  while(!(BB->begin() == BB->end())) {
-
-    deleteInstruction(--BasicBlock::iterator(BB->end()));
-
-  }
-
-  BB->eraseFromParent();
-
-}
-
-bool InlineAttempt::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) {
-  return false;
-}
-
-bool PeelIteration::getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target) {
-  
-  if(FromBB != LLatch)
-    return false;
-  
-  if(iterStatus != IterationStatusFinal)
-    return false;
-
-  Target = 0;
-
-  unsigned J = 0;
-  for (unsigned I = 0; I != TI->getNumSuccessors(); ++I, ++J) {
-
-    BasicBlock* thisTarget = TI->getSuccessor(I);
-    if(thisTarget == LHeader) {
-      // This target will have been deleted by the unroller.
-      --J;
-      continue;
-    }
-      
-    if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
-
-      // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
-      // which is fine!
-      BasicBlock* thisRealTarget = ReplaceTI->getSuccessor(J);
-      if(Target && (Target != thisRealTarget)) {
-	Target = 0;
-	break;
-      }
-      else
-	Target = thisRealTarget;
-
-    }
-
-  }
-
-  return true;
-
-}
-
-void IntegrationAttempt::replaceKnownBranch(BasicBlock* FromBB, TerminatorInst* TI) {
-
-  bool isDead = deadBlocks.count(FromBB);
-  BasicBlock* Target = 0;
-  
-  const Loop* TIScope = 0;
-  DenseMap<Instruction*, const Loop*>::iterator it = invariantInsts.find(TI);
-
-  if(it != invariantInsts.end())
-    TIScope = it->second;
-  else {
-    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-      if(std::find(it->second->LoopBlocks.begin(), it->second->LoopBlocks.end(), FromBB) != it->second->LoopBlocks.end()) {
-	TIScope = it->first;
-	break;
-      }
-    }
-    if(!TIScope)
-      TIScope = getLoopContext();
-  }
-
-  if((!isDead) && TIScope != getLoopContext())
-    return;
-
-  // Return instructions have been replaced already by the inliner!
-  if(isa<ReturnInst>(TI))
-    return;
-
-  TerminatorInst* ReplaceTI = cast<BasicBlock>(CommittedValues[FromBB])->getTerminator();
-  if(isa<UnreachableInst>(ReplaceTI)) {
-
-    // The loop unroller has already handled this branch!
-    return;
-
-  }
-
-  if(!isDead) {
-
-    // Careful: using ReplaceTI not TI because TI probably still belongs to a version of the blocks
-    // which is still rolled (e.g. loop 1 contains loop 2; loop 1 was unrolled to two iterations
-    // creating 2.1 and 2.2; we're now unrolling 2.2 but the original blocks reside in 2.1 and are
-    // rolled) I think all branches that aren't the loop latch will look the same as the rolled version.
-    const unsigned NumSucc = ReplaceTI->getNumSuccessors();
-
-    if(NumSucc <= 1)
       return;
 
-    // For loop latches this is a bit complicated: at this point their exit branches pointing at the
-    // loop header have been appropriately redirected, or removed if this is the final iteration.
-    // The redirected case is fine, as ReplaceTI->getSuccessor(...) picks it up. If it's been removed,
-    // we need the following special case:
-
-    if(!getLoopBranchTarget(FromBB, TI, ReplaceTI, Target)) {
-
-      for (unsigned I = 0; I != NumSucc; ++I) {
-
-	// Back to using the original blocks here since our results are calculated in their terms
-	BasicBlock* thisTarget = TI->getSuccessor(I);
-	if(!deadEdges.count(std::make_pair(FromBB, thisTarget))) {
-
-	  // Watch out -- switch blocks can have many outgoing edges aimed at the same target,
-	  // which is fine!
-	  BasicBlock* thisRealTarget = ReplaceTI->getSuccessor(I);
-	  if(Target && (Target != thisRealTarget))
-	    return;
-	  else
-	    Target = thisRealTarget;
-
-	}
-
-      }
-
     }
 
-    if(!Target)
+  }
+
+  {
+    
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end()) {
+
+      if(!it->second.MayDelete)
+	emitInst(BB, I, emitBB);
+
       return;
 
+    }
+
   }
 
-  if(!isDead)
-    LPDEBUG("Replace terminator " << *ReplaceTI << " with branch to " << Target->getName() << "\n");
-  else
-    LPDEBUG("Replace terminator " << *ReplaceTI << " with unreachable\n");
+  {
 
-  BasicBlock* ReplaceSource = ReplaceTI->getParent();
+    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+    if(it != forwardableOpenCalls.end()) {
+      if(it->second->success && I->i.dieStatus == INSTSTATUS_ALIVE) {
 
-  std::vector<BasicBlock*> Succs;
-  Succs.reserve(ReplaceTI->getNumSuccessors());
-	       
-  for(unsigned i = 0; i < ReplaceTI->getNumSuccessors(); ++i) {
+	emitInst(I, BB, emitBB);
+
+      }
+
+      return;
+    }
+
+  }
+
+  {
     
-    Succs.push_back(ReplaceTI->getSuccessor(i));
+    DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.find(CI);
+    if(it != resolvedCloseCalls.end()) {
+
+      if(it->second.MayDelete && it->second.openArg->MayDelete) {
+	if(it->second.openInst->i.dieStatus == INSTSTATUS_DEAD)
+	  return;
+      }
+
+      emitInst(I, BB, emitBB);
+
+    }
 
   }
 
-  std::sort(Succs.begin(), Succs.end());
-  std::vector<BasicBlock*>::iterator SuccEnd = std::unique(Succs.begin(), Succs.end());
+}
 
-  // Gah... BBs with multiple edges from a single block seem sometimes to have multiple
-  // PHI entries for that block, sometimes just one. Unique the successors first, then remove
-  // ourselves from their PHIs until we can't anymore.
+void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB) {
+
+  CallInst* CI = cast_inst<CallInst>(I);
   
-  for(std::vector<BasicBlock*>::iterator SuccIt = Succs.begin(); SuccIt != SuccEnd; ++SuccIt) {
+  if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
-    BasicBlock* Succ = *SuccIt;
-    if(Succ != Target) {
+    if(IA->isEnabled()) {
 
-      for(BasicBlock::iterator BI = Succ->begin(), BE = Succ->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+      if(!IA->isVarArg()) {
 
-	int idx;
-	PHINode* PN = cast<PHINode>(BI);
-	while((idx = PN->getBasicBlockIndex(ReplaceTI->getParent())) != -1) {
+	// Branch from the current write BB to the call's entry block:
+	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
 
-	  PN->removeIncomingValue(idx, false);
+	// Make a PHI node that will catch return values, and make it our committed
+	// value so that users get that instead of the call.
+	
+	if(I->i.instStatus == INSTSTATUS_ALIVE && I->i.replaceWith.isInval()) 
+	  I->i.committedInst = IA->returnPHI = PHINode::Create(IA->F.getReturnTy(), "retval", IA->returnBlock);
 
-	}
+	// Emit further instructions in this ShadowBB to the successor block:
+	emitBB = IA->returnBlock;
+	
+      }
+      
+      IA->commitInstructions();
+    
+      // TODO: what if the target function has no live return instructions?
+      // I think this ought to be worked out in the main solver, killing future code.
+      // The remaining instructions in the block should be skipped too.
 
+    }
+
+    return;
+    
+  }
+  
+  if(emitVFSCall(BB, I, emitBB))
+    return;
+
+  // Unexpanded call, emit it as a normal instruction.
+  emitInst(BB, I, emitBB);
+
+}
+
+void IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+
+  // Clone all attributes:
+  I->committedInst = I->invar->I->clone();
+  emitBB->getInstList().push_back(I->committedInst);
+
+  // Normal instruction: no BB arguments, and all args have been committed already.
+  for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
+
+    ShadowValue op = I->getOperand(i);
+    Value* opV = getCommittedValue(op);
+    const Type* needTy = I->committedInst->getOperand(i, opV)->getType();
+    I->committedInst->setOperand(i, getValAsType(opV, needTy));
+
+  }
+
+}
+
+void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
+
+  const Function* CF = getFunctionRoot()->CommitF;
+  uint32_t thisLoopHeaderIdx = i;
+
+  for(; i < nBBs; ++i) {
+
+    ShadowBB* BB = BBs[i];
+    if(!BB)
+      continue;
+
+    if(ScopeL && !ScopeL->contains(BB->invar->naturalScope))
+      break;
+
+    if(BB->invar->naturalScope != ScopeL) {
+
+      // Entering a loop. First write the blocks for each iteration that's being unrolled:
+      PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
+      if(PA && PA->isEnabled()) {
+	for(unsigned i = 0; i < Iterations.size(); ++i)
+	  Iterations[i]->commitInstructions();
+      }
+      
+      // If the loop has terminated, skip populating the blocks in this context.
+      if(PA && PA->isTerminated()) {
+	const Loop* skipL = BB->invar->naturalScope;
+	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->naturalScope)))
+	  ++i;
+	--i;
+	continue;
+      }
+      else {
+	// Emit blocks for the residualised loop
+	// (also has the side effect of winding us past the loop)
+	commitLoopInstructions(BB->invar->naturalScope, i);
       }
 
     }
 
-  }
+    BasicBlock* emitBB = BB->committedHead;
 
-  CommittedValues.erase(TI);
-  ReplaceTI->eraseFromParent();
+    // Emit instructions for this block:
+    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-  if(Target)
-    BranchInst::Create(Target, ReplaceSource);
-  else
-    new UnreachableInst(ReplaceSource->getParent()->getContext(), ReplaceSource);
+      ShadowInstruction* I = BB->insts[j];
 
-}
+      if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
+	emitCall(BB, I, emitBB);
+	continue;
+      }
 
-void InlineAttempt::replaceKnownBranches() {
-
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
-
-    replaceKnownBranch(FI, FI->getTerminator());
-
-  }
-
-}
-
-void PeelIteration::replaceKnownBranches() {
-
-  for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
-
-    replaceKnownBranch(*it, (*it)->getTerminator());
-
-  }
-
-}
-
-void InlineAttempt::deleteDeadBlocks(bool innerScopesOnly) {
-
-  // Avoid iterator invalidation
-  std::vector<BasicBlock*> FBlocks(F.size());
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI)
-    FBlocks.push_back(FI);
-
-  for(std::vector<BasicBlock*>::iterator FI = FBlocks.begin(), FE = FBlocks.end(); FI != FE; ++FI) {
-
-    tryDeleteDeadBlock(*FI, innerScopesOnly);
-
-  }
-
-}
-
-void PeelIteration::deleteDeadBlocks(bool innerScopesOnly) {
-
-  for(std::vector<BasicBlock*>::iterator it = parentPA->LoopBlocks.begin(), it2 = parentPA->LoopBlocks.end(); it != it2; ++it) {
-
-    tryDeleteDeadBlock(*it, innerScopesOnly);
-
-  }  
-
-}
-
-void IntegrationAttempt::foldVFSCalls() {
-
-  for(DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.begin(), it2 = resolvedReadCalls.end(); it != it2; ++it) {
-
-    CallInst* CI = it->first;
-    CallInst* ReplaceCI = cast<CallInst>(CommittedValues[CI]);
-    
-    LLVMContext& Context = ReplaceCI->getContext();
-
-    if(it->second.readSize > 0 && !unusedWriters.count(CI)) {
-
-      // Create a memcpy from a constant, since someone is still using the read data.
-      std::vector<Constant*> constBytes;
-      std::string errors;
-      assert(getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors));
-      
-      const ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
-      Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
-
-      // Create a const global for the array:
-
-      GlobalVariable *ArrayGlobal = new GlobalVariable(*(ReplaceCI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::PrivateLinkage, ByteArray, "");
-
-      const Type* Int64Ty = IntegerType::get(Context, 64);
-      const Type *VoidPtrTy = Type::getInt8PtrTy(Context);
-
-      Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
-      Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
-      Constant* CopySource = ConstantExpr::getGetElementPtr(ArrayGlobal, Idxs, 2);
-      
-      Constant* MemcpySize = ConstantInt::get(Int64Ty, constBytes.size());
-
-      const Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
-      Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
-						     Intrinsic::memcpy, 
-						     Tys, 3);
-      Value *DestCast = new BitCastInst(ReplaceCI->getArgOperand(1), VoidPtrTy, "tmp", ReplaceCI);
-
-      Value *CallArgs[] = {
-	DestCast, CopySource, MemcpySize,
-	ConstantInt::get(Type::getInt32Ty(Context), 1),
-	ConstantInt::get(Type::getInt1Ty(Context), 0)
-      };
-
-      CallInst::Create(MemCpyFn, CallArgs, CallArgs+5, "", ReplaceCI);
-
-    }
-
-    // Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
-    // used without an intervening SEEK_SET)
-    // No need for isAvailableFromCtx here and several more times in the VFS resolution
-    // code because we just want to know if the next user will be folded, we don't need to
-    // actually forward values there.
-    if(it->second.needsSeek) {
-
-      const Type* Int64Ty = IntegerType::get(Context, 64);
-      Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
-      const Type* Int32Ty = IntegerType::get(Context, 32);
-      Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
-
-      Constant* SeekFn = F.getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
-
-      Value* CallArgs[] = {ReplaceCI->getArgOperand(0) /* The FD */, NewOffset, SeekSet};
-
-      CallInst::Create(SeekFn, CallArgs, CallArgs+3, "", ReplaceCI);
-
-    }
-
-    // Uses of the read have been replaced already.
-    ReplaceCI->eraseFromParent();
-
-  }
-
-  for(DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.begin(), it2 = resolvedSeekCalls.end(); it != it2; ++it) {
-
-    if(it->second.MayDelete) {
-      cast<Instruction>(CommittedValues[it->first])->eraseFromParent();
-    }
-
-  }
-
-  for(DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.begin(), it2 = forwardableOpenCalls.end(); it != it2; ++it) {
-    
-    if(!it->second->success) {
-      // It's ok to delete the open in this case, as it will be replaced by -1.
-      deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
-    }
-    else {
-
-      // Can't delete open if it has direct users still!
-      // This could be done much better if we could retain the original open for later reference.
-      // Do this soon by cloning everything before manipulating it, meaning pointers to values will
-      // remain live throughout the commit process.
-      if(!deadValues.count(it->first))
+      if(I->dieStatus != INSTSTATUS_ALIVE)
+	continue;
+      if((!I->replaceWith.isInval()) && !I->replaceWith.isVaArg())
 	continue;
 
-      if(it->second->MayDelete)
-	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
+      // We'll emit an instruction. Is it special?
+      if(inst_is<PHINode>(I))
+	emitPHINode(BB, I, emitBB);
+      else if(inst_is<TerminatorInst>(I))
+	emitTerminator(BB, I, emitBB);
+      else
+	emitInst(BB, I, emitBB);
 
-    }
+    }    
 
   }
-
-  for(DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.begin(), it2 = resolvedCloseCalls.end(); it != it2; ++it) {
-
-    if(it->second.MayDelete && it->second.openArg->MayDelete) {
-      if(it->second.openVC.second->inDeadValues(it->second.openVC.first))
-	deleteInstruction(cast<Instruction>(CommittedValues[it->first]));
-    }
-    
-  }
+  
+  if(L)
+    fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
 
 }
 
-void IntegrationAttempt::commitLocalConstants(ValueMap<const Value*, Value*>& VM) {
+void IntegrationAttempt::commitInstructions() {
 
-  // Commit anything that's simple: commit simple constants, known jump targets.
-
-  // Delete instructions that are certainly no longer needed:
-  for(DenseSet<Value*>::iterator it = deadValues.begin(), it2 = deadValues.end(); it != it2; ++it) {
-
-    Instruction* I = dyn_cast<Instruction>(*it);
-    if(!I)
-      continue;
-
-    ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
-    if(VI == CommittedValues.end())
-      continue;
-
-    // Dead calls might have side-effects. Most side-effect-causing instructions are never tested
-    // for liveness, but (at the time of writing) open() calls are, since this informs whether
-    // foldVFSCalls() can eliminate them.
-    if(isa<CallInst>(I))
-      continue;
-
-    LPDEBUG("Delete instruction " << *(VI->second) << "\n");
-
-    deleteInstruction(cast<Instruction>(VI->second));
-
-  }
-
-  for(DenseSet<Value*>::iterator it = unusedWriters.begin(), it2 = unusedWriters.end(); it != it2; ++it) {
-
-    Instruction* I = cast<Instruction>(*it);
-    ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
-    if(VI == CommittedValues.end())
-      continue;
-
-    // Skip deleting VFS calls for now.
-    if(isa<CallInst>(I) && !isa<MemIntrinsic>(I))
-      continue;
-
-    LPDEBUG("Delete unused memop " << *(VI->second) << "\n");
-    
-    deleteInstruction(cast<Instruction>(VI->second));
-
-  }
-
-  // Replace instructions that are needed with their constant results:
-  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-
-    Instruction* I = dyn_cast<Instruction>(it->first);
-    if(!I)
-      continue;
-
-    if(!isa<Constant>(it->second.first))
-      continue;
-
-    if(it->second.isPtrAsInt())
-      continue;
-
-    if(it->second.isVaArg())
-      continue;
-
-    ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
-    if(VI == CommittedValues.end())
-      continue;
-
-    LPDEBUG("Original instruction " << *I << " -> " << *(VI->second) << "\n");
-    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first) << "\n");
-
-    I = cast<Instruction>(VI->second);
-
-    Value* oldMapping = 0;
-    if(isa<CallInst>(I))
-      oldMapping = VM[I];
-
-    Constant* TargetC = cast<Constant>(it->second.first);
-    if(I->getType() != it->second.first->getType()) {
-      assert(isa<CallInst>(I) && "Non-call instruction replaced with wrong type?");
-      if(I->getType()->isVoidTy()) {
-	TargetC = 0;
-      }
-      else if(I->getType()->isIntegerTy()) {
-	TargetC = ConstantExpr::getIntegerCast(TargetC, I->getType(), false);
-      }
-      else if(I->getType()->isPointerTy()) {
-	TargetC = ConstantExpr::getPointerCast(TargetC, I->getType());
-      }
-      else if(I->getType()->isFloatingPointTy()) {
-	TargetC = ConstantExpr::getFPCast(TargetC, I->getType());
-      }
-      else {
-	assert(0 && "Type mismatch not handled");
-      }
-    }
-
-    if(TargetC)
-      I->replaceAllUsesWith(TargetC);
-
-    // Keep call instructions since they might have useful side-effects.
-    if(!isa<CallInst>(I))
-      I->eraseFromParent();
-    else {
-      // Restore mapping for future use by the inliner:
-      VM[I] = oldMapping;
-    }
-
-  }
-
-  foldVFSCalls();
-
-  // Since we delete dead blocks here, we must ensure that improvedValues does not contain
-  // any keys which refer to instructions that will be deleted. This is handled in 
-  // the checkBlock function.
-  replaceKnownBranches();
-
-}
-
-Instruction* IntegrationAttempt::getCommittedValue(Value* V) {
-
-  ValueMap<const Value*, Value*>::iterator it = CommittedValues.find(V);
-  if(it == CommittedValues.end())
-    return 0;
-  else
-    return cast<Instruction>(it->second);
-
-}
-
-void IntegrationAttempt::commitLocalPointers() {
-
-  errs() << "Commit phase 2: " << HeaderStr <<  "\n";
-
-  for(DenseMap<Value*, ValCtx>::iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-
-    Instruction* I = dyn_cast<Instruction>(it->first);
-    if(!I)
-      continue;
-
-    if(isa<Constant>(it->second.first))
-      continue;
-
-    if(!it->second.second->isAvailableFromCtx(this))
-      continue;
-
-    if(it->second.isPtrAsInt())
-      continue;
-
-    if(it->second.isVaArg())
-      continue;
-
-    ValueMap<const Value*, Value*>::iterator VI = CommittedValues.find(I);
-    if(VI == CommittedValues.end())
-      continue;
-
-    LPDEBUG("Replace instruction " << *(VI->second) << " with " << *(it->second.first));
-
-    Instruction* replaceWith = it->second.second->getCommittedValue(it->second.first);
-    if(!replaceWith)
-      continue;
-    // This is occasionally legitimate: noalias results and parameters are id'd objects.
-    //assert(replaceWith && "Couldn't get a replacement for a resolved pointer!");
-
-    I = cast<Instruction>(VI->second);
-
-    if(I->getType() != replaceWith->getType()) {
-
-      assert(I->getType()->isPointerTy() && replaceWith->getType()->isPointerTy());
-      replaceWith = new BitCastInst(replaceWith, I->getType(), "speccast", I);
-
-    }
-
-    I->replaceAllUsesWith(replaceWith);
-    I->eraseFromParent();
-
-  }
-
-}
-
-namespace llvm {
-
-  void dumpValueMap(LLVMContext* Ctx, bool verbose);
-
-}
-
-void llvm::dumpValueMap(LLVMContext* Ctx, bool verbose) {
-
-  DenseMap<Value*, ValueHandleBase*>& Map = Ctx->pImpl->ValueHandles;
-  errs() << "Map contains " << Map.size() << " entries\n";
-  for(DenseMap<Value*, ValueHandleBase*>::iterator it = Map.begin(), it2 = Map.end(); it != it2; ++it) {
-
-    if(!verbose) {
-      errs() << it->first->getName() << "\n";
-    }
-    else {
-      if(isa<BasicBlock>(it->first)) {
-	errs() << "Block " << it->first->getName() << "\n";
-      }
-      else {
-	errs() << "Value " << *(it->first) << "\n";
-      }
-    }
-
-  }
-
-  errs() << "End dump\n";
+  const Function* CF = getFunctionRoot()->CommitF;
+  uint32_t i = 0;
+  commitLoopInstructions(0, i);
 
 }

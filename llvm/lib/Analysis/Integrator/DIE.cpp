@@ -222,36 +222,6 @@ bool llvm::valueWillBeDeleted(ShadowValue V) {
 
 }
 
-bool InlineAttempt::loopHeaderPhiWillCopy(ShadowValue V, ShadowValue OtherVC) {
-
-  return false;
-
-}
-
-bool PeelIteration::loopHeaderPhiWillCopy(ShadowInstruction* I, ShadowValue OtherVC) {
-
-  // The precise problem here: we might have some ptr %alloc and a string of PHIs each resolved to
-  // %alloc all of which are dead except the last which has users. This is fine because PHIs are
-  // replaced with the pointer, not their predecessor PHI... except when the loop unroller or inliner
-  // get involved, then they just forward an immediate argument, so we cheat and bring the immediate
-  // arg back to life. The same treatment applies to dead actual args which are used as proxies for
-  // formal arguments.
-  
-  if(inst_is<PHINode>(I)) {
-
-    if(I->parent->invar->BB == L->getHeader()) {
-
-      ShadowValue FwdVal = getLoopHeaderForwardedOperand(I);
-      return FwdVal == OtherVC;
-
-    }
-
-  }
-
-  return false;
-
-}
-
 // Return true if V will not use OtherVC.
 // V is an instruction or argument.
 bool llvm::valueWillNotUse(ShadowValue V, ShadowValue OtherVC, bool mustReplWithConstant) {
@@ -271,12 +241,6 @@ bool llvm::valueWillNotUse(ShadowValue V, ShadowValue OtherVC, bool mustReplWith
   if(VC.isInval())
     return false;
 
-  // The other value will be replaced with this V, so it will remain a user.
-  // This test might be redundant, because such a user is an indirect user so if it's alive
-  // we should be alive too.
-  if(VC == OtherVC)
-    return false;
-
   // Not replaced with constant?
   if(mustReplWithConstant && VC.getCtx())
     return false;
@@ -291,15 +255,6 @@ bool llvm::valueWillNotUse(ShadowValue V, ShadowValue OtherVC, bool mustReplWith
     if(!VC.getCtx()->isAvailableFromCtx(V.getCtx()))
       return false;
   
-    // Are we going to naively copy the OtherVC rather than get properly replaced
-    // by the pointer we're resolved to? (This happens if we're a header PHI or argument)
-    // Arguments analysed like this are already known to be direct users of OtherVC.
-    if(V.isArg())
-      return false;
-
-    if(loopHeaderPhiWillCopy(V.getInst(), OtherVC))
-      return false;
-
   }
 
   return true;

@@ -517,9 +517,9 @@ struct CloseFile {
 
   struct OpenStatus* openArg;
   bool MayDelete;
-  ValCtx openVC;
+  ShadowInstruction* openInst;
 
-CloseFile(struct OpenStatus* O, ValCtx VC) : openArg(O), MayDelete(false), openVC(VC) {}
+CloseFile(struct OpenStatus* O, ShadowInstruction* I) : openArg(O), MayDelete(false), openInst(I) {}
 CloseFile() : openArg(0), MayDelete(false), openVC(VCNull) {}
 
 };
@@ -775,8 +775,6 @@ protected:
 
   DenseMap<LFCacheKey, PointerBase> LFPBCache;
 
-  // A map from the Values used in all of the above to the clones of Instructions produced at commit time
-  ValueMap<const Value*, Value*> CommittedValues;
   bool commitStarted;
   // The LoopInfo belonging to the function which is being specialised
   LoopInfo* MasterLI;
@@ -1243,9 +1241,6 @@ class PeelIteration : public IntegrationAttempt {
   int iterationCount;
   PeelAttempt* parentPA;
 
-  BasicBlock* LHeader;
-  BasicBlock* LLatch;
-
 public:
 
   PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
@@ -1432,6 +1427,10 @@ class PeelAttempt {
 
    void disableVarargsContexts();
 
+   bool isTerminated() {
+     return Iterations.back()->iterationStatus == iterStatusTerminated;
+   }
+
    void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
 
    void revertDeadVFSOps();
@@ -1450,6 +1449,7 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   ShadowInstruction* CI;
+  Function* CommitF;
 
  public:
 

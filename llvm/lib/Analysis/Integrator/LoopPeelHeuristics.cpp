@@ -341,7 +341,7 @@ bool IntegrationAttempt::localEdgeIsDead(const ShadowBBInvar& BB1I, const Shadow
 
   bool BB1InScope;
 
-  if(ShadowBB* BB1 = getBB(BB1Idx, BB1InScope)) {
+  if(ShadowBB* BB1 = getBB(BB1I.idx, BB1InScope)) {
 
     bool foundLiveEdge = false;
 
@@ -374,7 +374,7 @@ bool IntegrationAttempt::localEdgeIsDead(const ShadowBBInvar& BB1I, const Shadow
 bool IntegrationAttempt::edgeIsDead(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
 
   if(BB1I.naturalScope != L && ((!L) || L->contains(BB1I.naturalScope))) {
-    if(edgeIsDeadWithScopeRising(BB1I, BB2I))
+    if(edgeIsDeadRising(BB1I, BB2I))
       return true;
   }
   else {

@@ -2,13 +2,13 @@
 
 template<typename T> class ImmutableArray {
 
-  const T* arr;
+  T* arr;
   size_t n;
 
  public:
 
  ImmutableArray() : arr(0), n(0) { }
- ImmutableArray(const T* _arr, size_t _n) : arr(_arr), n(_n) { }
+ ImmutableArray(T* _arr, size_t _n) : arr(_arr), n(_n) { }
 
   ImmutableArray(const ImmutableArray& other) {
     arr = other.arr;
@@ -21,7 +21,7 @@ template<typename T> class ImmutableArray {
     return *this;
   }
 
-  const T& operator[](size_t n) const {
+  T& operator[](size_t n) const {
     return arr[n];
   }
 
@@ -29,7 +29,7 @@ template<typename T> class ImmutableArray {
     return n;
   }
 
-  const T& back() {
+  T& back() {
     return arr[size()-1];
   }
 
