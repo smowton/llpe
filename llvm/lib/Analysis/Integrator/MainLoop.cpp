@@ -126,10 +126,13 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
-    if((!LPA) || (LPA->Iterations.back()->iterStatus != IterationStatusFinal)) {
+    if((!LPA) || (!LPA->isTerminated()) {
       analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
     }
     else {
+      // Copy edges found always dead to local scope, to accelerate edgeIsDead queries without
+      // checking every iteration every time.
+      copyLoopExitingDeadEdges(LPA);
       // Loop terminated, permit a within-loop-threshold (block certainty constraint implies
       // there is no path around the loop).
       CacheThresholdBB = LThresholdBB;
@@ -189,7 +192,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     }
 
-    tryEvaluate(BI);
+    tryEvaluate(SI);
 
     if(inst_is<LoadInst>(SI)) {
       if(isUnresolved(SI))

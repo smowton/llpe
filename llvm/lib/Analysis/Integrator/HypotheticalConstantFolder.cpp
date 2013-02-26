@@ -319,10 +319,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
   LPDEBUG("Checking status of block " << BB->getName() << "\n");
 
-  if(getBB(blockIdx)) {
-    DEBUG(dbgs() << "Status already known\n");
-    return;
-  }
+  release_assert((!getBB(blockIdx)) && "Block already created?");
 
   // Check whether this block has become dead or certain
   
@@ -341,41 +338,56 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
     for(unsigned i = 0, ilim = SBBI.predIdxs.size(); i < ilim; ++i) {
 
-      const ShadowBBInvar& PSBBI = invarInfo->BBs[SBBI.predIdxs[i]];
+      ShadowBBInvar* PSBBI = &(invarInfo->BBs[SBBI.predIdxs[i]]);
 
       if(!edgeIsDead(PSBBI, SBBI)) {
 
 	isDead = false;
 
-	bool PICertain = blockCertainlyExecutes(PSBBI);
-	if(!PICertain)
-	  isCertain = false;
+	// We know the BB exists somewhere because edgeIsDead returned false,
+	// so a failure here means the predecessor is not unique.
+	ShadowBB* PredBB = getUniqueBBRising(PSBBI);
 
-	bool PIAssumed = PICertain || blockAssumed(*PI);
+	if(PredBB) {
 
-	if(PIAssumed) {
+	  bool PICertain = PredBB->status == BBSTATUS_CERTAIN;
+	  if(!PICertain)
+	    isCertain = false;
 
-	  bool onlySuccessor = true;
+	  bool PIAssumed = PICertain || PredBB->status == BBSTATUS_ASSUMED;
 
-	  for(uint32_t j = 0, jlim = PSBBI.succIdxs.size(); j != jlim; ++j) {
+	  if(PIAssumed) {
 
-	    const ShadowBBInvar& SSBBI = invarInfo->BBs[PSBBI.succIdxs[j]];
+	    bool onlySuccessor = true;
 
-	    if(SBBI.BB != SSBBI.BB && !edgeIsDead(PSBBI, SSBBI)) {
-	      onlySuccessor = false;
-	      break;
+	    for(uint32_t j = 0, jlim = PSBBI.succIdxs.size(); j != jlim; ++j) {
+
+	      ShadowBBInvar* SSBBI = getBBInvar(PSBBI.succIdxs[j]);
+
+	      if(SBBI.BB != SSBBI.BB && !edgeIsDead(PredBB, SSBBI)) {
+		onlySuccessor = false;
+		break;
+	      }
+
 	    }
 
+	    if(!onlySuccessor) {
+	      isCertain = false;
+	      if(!shouldAssumeEdge(PSBBI.BB, SBBI.BB))
+		isAssumed = false;
+	    }
+	    
 	  }
+	  else {
 
-	  if(!onlySuccessor) {
-	    isCertain = false;
-	    if(!shouldAssumeEdge(PSBBI.BB, SBBI.BB))
-	      isAssumed = false;
+	    isAssumed = false;
+
 	  }
 
 	}
 	else {
+	  
+	  // Else there's more than once successor possible, i.e. more than one exiting loop iteration.
 
 	  isCertain = false;
 	  isAssumed = false;
@@ -1362,6 +1374,11 @@ ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
   if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
 
     // Unconditional branches are already eliminated.
+
+    // Easiest case: copy edge liveness from our parent.
+    if(tryCopyDeadEdges(parent->getBB(SI->parent->invar), SI->parent))
+      return ShadowValue();
+
     // Both switches and conditional branches use operand 0 for the condition.
     ShadowValue Condition = SI->getOperand(0);
       
@@ -1408,7 +1425,7 @@ ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
 
     }
 
-    return VCNull;
+    return ShadowValue();
 
   }
   else {

@@ -341,6 +341,25 @@ ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
 
 }
 
+bool IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
+
+  if(BBI->naturalScope == L)
+    return getBB(BBI);
+
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BB1I.naturalScope))) {
+
+    if(LPA->isTerminated() && LPA->Iterations.back()->isOnlyExitingIteration()) {
+
+      return LPA->Iterations.back()->getBBRising(BBI);
+
+    }
+
+  }
+
+  return 0;
+
+}
+
 void IntegrationAttempt::createBB(uint32_t blockIdx) {
 
   release_assert((!BBs[blockIdx]) && "Creating block for the second time");
@@ -451,6 +470,54 @@ ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
   ShadowInstIdx& SII = invar->userIdxs[i];
   return parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx];
+
+}
+
+bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB) {
+
+  bool foundDeadEdge = false;
+
+  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size(); ++i) {
+
+    ToBB->succsAlive[i] = FromBB->succsAlive[i];
+    foundDeadEdge |= (!FromBB->succsAlive[i]);
+
+  }
+
+  return foundDeadEdge;
+
+}
+
+void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
+
+  for(uint32_t i = 0; i < LPA->exitingEdges.size(); ++i) {
+
+    std::pair<uint32_t, uint32_t> E = LPA->exitingEdges[i];
+    if(ShadowBB* BB = getBB(E.first)) {
+
+      // Target already known at this scope?
+      bool targetKnown = false;
+      for(uint32_t j = 0; j < BB->invar->succIdxs.size() && !targetKnown; ++j) {
+	if(!BB->succsAlive[j])
+	  targetKnown = true;
+      }
+
+      if(targetKnown)
+	continue;
+
+      // OK, copy it if possible:
+      if(edgeIsDeadRising(BB, getBBInvar(E.second))) {
+
+	for(uint32_t j = 0; j < BB->invar.succIdxs.size(); ++j) {
+	  if(BB->invar.succIdxs[j] == E.second)
+	    BB->succIdxs[j] = false;
+	}
+	
+      }
+
+    }
+
+  }
 
 }
 

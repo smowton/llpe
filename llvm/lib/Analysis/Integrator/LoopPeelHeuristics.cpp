@@ -337,27 +337,33 @@ const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
 
 }
 
-bool IntegrationAttempt::localEdgeIsDead(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
+bool llvm::localEdgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
 
-  bool BB1InScope;
+  bool foundLiveEdge = false;
 
-  if(ShadowBB* BB1 = getBB(BB1I.idx, BB1InScope)) {
+  for(uint32_t i = 0; i < BB1I->succIdxs.size() && !foundLiveEdge; ++i) {
 
-    bool foundLiveEdge = false;
+    if(BB2I->idx == BB1I->succIdxs[i]) {
 
-    for(uint32_t i = 0; i < BB1I.succIdxs.size() && !foundLiveEdge; ++i) {
-
-      if(BB2I.idx == BB1I.succIdxs[i]) {
-
-	if(BB1.succsAlive[i])
-	  foundLiveEdge = true;
-
-      }
+      if(BB1->succsAlive[i])
+	foundLiveEdge = true;
 
     }
 
-    if(!foundLiveEdge)
-      return true;
+  }
+
+  if(!foundLiveEdge)
+    return true;
+
+}
+
+bool llvm::localEdgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
+
+  bool BB1InScope;
+
+  if(ShadowBB* BB1 = getBB(BB1I->idx, BB1InScope)) {
+
+    return localEdgeIsDead(BB1, BB2I);
 
   }
   else if(BB1InScope) {
@@ -507,82 +513,6 @@ const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
 const Loop* IntegrationAttempt::getBlockScopeVariant(BasicBlock* BB) {
 
   return applyIgnoreLoops(LI[&F]->getLoopFor(BB));
-
-}
-
-bool IntegrationAttempt::blockCertainlyExecutes(ShadowBBInvar& BBI) {
-
-  const Loop* BlockL = BBI.scope;
-  const Loop* MyL = L;
-
-  if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
-
-    if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyL, BlockL))) {
-
-      PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
-      if(FinalIter->isOnlyExitingIteration()) {
-
-	return FinalIter->blockCertainlyExecutes(BBI);
-
-      }
-      else {
-
-	return false;
-
-      }
-
-    }
-
-  }
-
-  bool BBInScope;
-  if(ShadowBB* BB = getBB(BBI, BBInScope)) {
-    assert(BBInScope);
-    return BBI->status == BBSTATUS_CERTAIN;
-  }
-
-  return false;
-
-}
-
-bool IntegrationAttempt::blockAssumed(ShadowBBInvar& BBI) {
-
-  const Loop* BlockL = BBI.scope;
-  const Loop* MyL = L;
-
-  if(((!MyL) && BlockL) || (MyL != BlockL && MyL->contains(BlockL))) {
-
-    if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(MyL, BlockL))) {
-
-      PeelIteration* FinalIter = LPA->Iterations[LPA->Iterations.size() - 1];
-      if(FinalIter->isOnlyExitingIteration()) {
-
-	return FinalIter->blockAssumed(BBI);
-
-      }
-      else {
-
-	return false;
-
-      }
-
-    }
-
-  }
-
-  bool BBInScope;
-  if(ShadowBB* BB = getBB(BBI, BBInScope)) {
-    assert(BBInScope);
-    return BBI->status == BBSTATUS_ASSUMED;
-  }
-
-  return false;
-
-}
-
-bool IntegrationAttempt::blockAssumedToExecute(BasicBlock* BB) {
-
-  return blockCertainlyExecutes(BB) || blockAssumed(BB);
 
 }
 
