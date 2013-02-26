@@ -535,22 +535,23 @@ void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
 
 }
 
-void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
+void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
   const Loop* MyL = getLoopContext();
 
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; BI++) {
+  uint32_t i = 0;
+  for(BasicBlock::iterator BI = BBI->BB->begin(), BE = BBI->BB->end(); BI != BE; ++BI, ++i) {
       
-    const Loop* L = getValueScope(BI);
-    if(MyL != L && ((!MyL) || MyL->contains(L))) {
+    const Loop* BBL = BBI->naturalScope;
+    if(L != BBL && ((!L) || L->contains(BBL))) {
 
       // Count unexplored loops as part of my own context.
-      if(!peelChildren.count(immediateChildLoop(MyL, L)))
-	L = MyL;
+      if(!peelChildren.count(immediateChildLoop(L, BBL)))
+	BBL = L;
 
     }
 
-    if(MyL != L) {
+    if(BBL != L) {
 
       if(instructionCounts(BI))
 	improvableInstructionsIncludingLoops++;
@@ -566,16 +567,12 @@ void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
 	improvableInstructions++;
 	improvableInstructionsIncludingLoops++;
 
-	if(blockIsDead(BB))
+	if(!BB)
 	  improvedInstructions++;
-	else if(improvedValues.find(BI) != improvedValues.end())
+	else if(!BB->insts[i].i.improvedValue.isInval())
 	  improvedInstructions++;
-	else if(deadValues.count(BI))
+	else if(BB->insts[i].i.dieStatus != INSTSTATUS_ALIVE)
 	  improvedInstructions++;
-	else if(BranchInst* BrI = dyn_cast<BranchInst>(BI)) {
-	  if(BrI->isConditional() && (improvedValues.find(BrI->getCondition()) != improvedValues.end()))
-	    improvedInstructions++;
-	}
 
       }
 
@@ -584,6 +581,25 @@ void IntegrationAttempt::collectBlockStats(BasicBlock* BB) {
 	if(it == inlineChildren.end())
 	  unexploredCalls.push_back(CI);
       }
+
+    }
+
+  }
+
+  if(BB) {
+
+    bool deadEdgeFound = false;
+    for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
+      
+      if(!BB->succsAlive[i])
+	deadEdgeFound = true;
+
+    }
+
+    if(deadEdgeFound) {
+
+      // Elim of branch:
+      improvedInstructions++;
 
     }
 
@@ -605,11 +621,8 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
 
 void IntegrationAttempt::collectAllBlockStats() {
 
-  for(Function::iterator FI = F.begin(), FE = F.end(); FI != FE; ++FI) {
-    const Loop* MyL = getLoopContext();
-    if((!MyL) || MyL->contains(FI)) {
-      collectBlockStats(FI);
-    }
+  for(uint32_t i = 0; i < nBBs; ++i) {
+    collectBlockStats(invarInfo->BBs[i + BBOffset], BBs[i]);
   }
 
 }
