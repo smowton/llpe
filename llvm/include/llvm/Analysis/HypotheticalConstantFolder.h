@@ -1341,7 +1341,7 @@ class PeelAttempt {
 
    const Loop* L;
 
-   uint32_t preheaderIndex, latchIndex;
+   ShadowLoopInvar* invarInfo;
 
    DenseMap<Instruction*, const Loop*>& invariantInsts;
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;

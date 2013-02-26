@@ -224,13 +224,6 @@ bool PeelIteration::isOptimisticPeel() {
 
 }
 
-void PeelAttempt::eraseBlockValues(BasicBlock* BB) {
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
-    (*it)->eraseBlockValues(BB);
-
-}
-
 void IntegrationAttempt::markContextDead() {
 
   contextIsDead = true;
@@ -251,49 +244,22 @@ void IntegrationAttempt::markContextDead() {
 
 }
 
-void IntegrationAttempt::eraseBlockValues(BasicBlock* BB) {
-
-  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
-    
-    improvedValues.erase(BI);
-    // This can happen when calls are always-inlined.
-    // Cowardly non-deletion here, TODO delete it and deal with the fallout.
-    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-      if(InlineAttempt* IA = getInlineAttempt(CI))
-	IA->markContextDead();
-      inlineChildren.erase(CI);
-    }
-    
-  }
-  
-  const Loop* L = getBlockScopeVariant(BB);
-  const Loop* MyL = getLoopContext();
-  if(L != MyL) {
-
-    const Loop* ChildL = immediateChildLoop(MyL, L);
-    if(PeelAttempt* PA = getPeelAttempt(ChildL))
-      PA->eraseBlockValues(BB);
-
-  }
-
-}
-
 bool InlineAttempt::entryBlockIsCertain() {
 
   if(!parent)
     return true;
-  return parent->blockCertainlyExecutes(CIBB);
+  return blockCertainlyExecutes(CI->parent);
 
 }
 
 bool PeelIteration::entryBlockIsCertain() {
 
   if(iterationCount == 0)
-    return parent->blockCertainlyExecutes(parentPA->preheaderBB);
+    return blockCertainlyExecutes(parent->getBB(parentPA->preheaderIdx));
 
   // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
   PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
-  return prevIter->blockCertainlyExecutes(parentPA->latchIdx) && prevIter->allExitEdgesDead();
+  return blockCertainlyExecutes(prevIter->getBB(parentPA->latchIdx)) && prevIter->allExitEdgesDead();
 
 }
 

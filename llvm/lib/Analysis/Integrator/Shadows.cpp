@@ -38,41 +38,45 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
 
 }
 
-static void getLoopInfo(DenseMap<const Loop*, uint32_t>& LoopHeaderIndices, DenseMap<const Loop*, uint32_t>& LoopPreheaderIndices, DenseMap<const Loop*, uint32_t>& LoopLatchIndices, DenseMap<const Loop*, std::vector<uint32_t> >& LoopExitingBlocks, std::vector<uint32_t> >& LoopExitBlocks, std::vector<std::pair<uint32_t, uint32_t> >& LoopExitEdges, DenseMap<BasicBlock*, uint32_t>& BBIndices, const Loop* L) {
-  
-  LoopHeaderIndices[L] = BBIndices[L->getHeader()];
-  LoopPreheaderIndices[L] = BBIndices[L->getLoopPreheader()];
-  LoopLatchIndices[L] = BBIndices[L->getLoopLatch()];
+static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
+			DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+			const Loop* L) {
+
+  ShadowLoopInvar* LInfo = new ShadowLoopInfo();
+  LoopInfo[L] = LInfo;
+  LInfo->headerIdx = BBIndices[L->getHeader()];
+  LInfo->preheaderIdx = BBIndices[L->getLoopPreheader()];
+  LInfo->latchIdx = BBIndices[L->getLoopLatch()];
 
   {
     SmallVector<BasicBlock*, 4> temp;
     L->getExitingBlocks(temp);
     {
-      std::vector<uint32_t>* idxs = LoopExitingBlocks[L] = new std::vector<uint32_t>();
+      LInfo->exitingBlocks.reserve(temp.size());
       for(unsigned i = 0; i < temp.size(); ++i)
-	idxs->push_back(BBIndices[temp[i]]);
+	LInfo->exitingBlocks->push_back(BBIndices[temp[i]]);
     }
 
     temp.clear();
     L->getExitBlocks(temp);
     {
-      std::vector<uint32_t>* idxs = LoopExitBlocks[L] = new std::vector<uint32_t>();
+      LInfo->exitBlocks.reserve(temp.size());
       for(unsigned i = 0; i < temp.size(); ++i)
-	idxs->push_back(BBIndices[temp[i]]);
+	LInfo->exitBlocks->push_back(BBIndices[temp[i]]);
     }
   }
 
   {
     SmallVector<std::pair<BasicBlock*, BasicBlock>, 4> exitEdges;
     L->getExitEdges(exitEdges);
-    std::vector<std::pair<uint32_t, uint32_t> >* idxs = LoopExitEdges[L] = new std::vector<std::pair<uint32_t, uint32_t> >();
+    LInfo->exitEdges.reserve(exitEdges.size());
     for(unsigned i = 0; i < exitEdges.size(); ++i)
-      idxs->push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
+      LInfo->exitEdges->push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
   }
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
 
-    getLoopInfo(LoopHeaderIndices, LoopPreheaderIndices, LoopLatchIndices, LoopExitingBlocks, LoopExitBlocks, LoopExitEdges, BBIndices, *it);
+    getLoopInfo(LoopInfo, BBIndices, *it);
 
   }
 
@@ -506,7 +510,7 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 	continue;
 
       // OK, copy it if possible:
-      if(edgeIsDeadRising(BB, getBBInvar(E.second))) {
+      if(edgeIsDeadRising(BB->invar, getBBInvar(E.second))) {
 
 	for(uint32_t j = 0; j < BB->invar.succIdxs.size(); ++j) {
 	  if(BB->invar.succIdxs[j] == E.second)
@@ -521,3 +525,8 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
 }
 
+bool llvm::blockAssumedToExecute(ShadowBB* BB) {
+
+  return BB->status != BBSTATUS_UNKNOWN;
+
+}

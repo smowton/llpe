@@ -54,7 +54,7 @@ public:
   ShadowValue FailureSV;
   std::string FailureCode;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, _AA, _TD, 0), inputPV(iPV), resultPV(PVNull), FailureVC(VCNull) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, _AA, _TD, 0), inputPV(iPV), resultPV(PVNull), FailureSV() { }
 
   virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
@@ -734,7 +734,7 @@ bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void*
 
     if(IA == SI->parent->IA) {
     
-      FailureVC = make_vc(IA->getEntryInstruction(), IA);
+      FailureSV = ShadowValue(IA->getEntryInstruction());
       FailureCode = "Scope";
       return false;
 
@@ -1296,11 +1296,11 @@ PartialVal llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValu
   NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, AA, TD, ResolvedSoFar);
   Walker.walk();
 
-  if(Walker.FailureVC != VCNull) {
+  if(!Walker.FailureSV.isInval()) {
 
     error = "";
     raw_string_ostream RSO(error);
-    RSO << "SQ1 (" << Walker.FailureCode << " " << StartInst->parent->IA->itcache(Walker.FailureVC) << ")";
+    RSO << "SQ1 (" << Walker.FailureCode << " " << StartInst->parent->IA->itcache(Walker.FailureSV) << ")";
     return PVNull;
 
   }
@@ -1321,8 +1321,8 @@ ValCtx llvm::tryForwardLoad(ShadowInstruction* StartInst, ShadowValue& LoadPtr, 
 
   Walker.walk();
 
-  if(Walker.FailureVC != VCNull) {
-    RSO << Walker.FailureCode << " " << itcache(Walker.FailureVC);
+  if(Walker.FailureSV != VCNull) {
+    RSO << Walker.FailureCode << " " << itcache(Walker.FailureSV);
     return VCNull;
   }
 
@@ -1352,11 +1352,11 @@ PartialVal llvm::tryForwardLoadTypeless(ShadowInstruction* StartInst, ValCtx Loa
 
   Walker.walk();
 
-  if(Walker.FailureVC != VCNull) {
+  if(!Walker.FailureSV.isInval()) {
 
     error = "";
     raw_string_ostream RSO(error);
-    RSO << "SQ2 (" << StartInst->parent->IA->itcache(Walker.FailureVC) << ")";
+    RSO << "SQ2 (" << StartInst->parent->IA->itcache(Walker.FailureSV) << ")";
     return PVNull;
 
   }

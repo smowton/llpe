@@ -426,14 +426,23 @@ struct ShadowBB {
 
 };
 
+struct ShadowLoopInvar {
+
+  uint32_t headerIdx;
+  uint32_t preheaderIdx;
+  uint32_t latchIdx;
+  std::vector<uint32_t> exitingBlocks;
+  std::vector<uint32_t> exitBlocks;
+  std::vector<std::pair<uint32_t, uint32_t> > exitEdges;
+  
+};
+
 struct ShadowFunctionInvar {
 
   ImmutableArray<ShadowBBInvar> BBs;
   ImmutableArray<ShadowArgInvar> Args;
-  DenseMap<const Loop*, uint32_t> LoopHeaderIndices;
-  DenseMap<const Loop*, uint32_t> LoopPreheaderIndices;
-  DenseMap<const Loop*, uint32_t> LoopLatchIndices;
-  
+  DenseMap<const Loop*, ShadowLoopInvar*> LoopInfo;
+
   // TODO: Remove this map once we never need to map raw BBs onto indices.
   DenseMap<BasicBlock*, ShadowBBInvar*> BBMap;
 

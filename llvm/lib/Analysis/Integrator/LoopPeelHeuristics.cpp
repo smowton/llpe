@@ -133,10 +133,9 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   SeqNumber = Pass->getSeq();
   OS << " / " << SeqNumber;
   
-  L->getExitEdges(ExitEdges);
-  LoopBlocks = L->getBlocks();
-
   OptimisticEdge = Pass->getOptimisticEdge(L);
+
+  invarInfo = parent->invarInfo->loopInfo[L];
 
   getOrCreateIteration(0);
 
@@ -186,39 +185,6 @@ Module& IntegrationAttempt::getModule() {
 
 }
 
-ValCtx IntegrationAttempt::getLocalReplacement(ShadowInstructionInvar* SII) {
-
-  if(ShadowBB* SBB = getBB(SII->parent)) {
-
-    ShadowInstruction* SI = SBB->insts[SII->idx];
-    if(SI->replaceWith != VCNull)
-      return SI->replaceWith;
-
-  }
-
-  return make_vc(SII->I, this);
-
-}
-
-ValCtx IntegrationAttempt::getNonLocalReplacement(ShadowInstructionInvar* SII) {
-
-  // SII is not local to this scope (that case is handled in HypotheticalConstantFolder.h::getReplacement)
-  // The proper replacement might be in a child scope (in which case we can't use it)
-  // or in a parent scope (in which case we used gRUS to find it).
-  // The case for reading an exit PHI is taken care of by the PHI resolution code.
-
-  const Loop* evalScope = SII->scope;
-
-  if(L != evalScope && ((!L) || L->contains(evalScope))) {
-    // The load-forwarding case mentioned above.
-    return make_vc(SII->I, this);
-  }
-  else {
-    return getReplacementUsingScope(SII, evalScope);
-  }
-
-}
-
 // Calls a given callback at the *parent* scope associated with loop LScope
 void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
@@ -229,35 +195,9 @@ void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
 }
 
-class GetReplacementCallback : public Callable {
-
-  ShadowInstructionInvar* SII;
-
-public:
-
-  ValCtx Result;
-
-  GetReplacementCallback(ShadowInstructionInvar* _SII) : SII(_SII) { }
-
-  virtual void callback(IntegrationAttempt* Ctx) {
-
-    Result = Ctx->getLocalReplacement(SII);
-
-  }
-
-};
-
-ValCtx IntegrationAttempt::getReplacementUsingScope(ShadowInstructionInvar* SII) {
-
-  GetReplacementCallback CB(SII);
-  callWithScope(CB, SII->scope);
-  return CB.Result;
-
-}
-
 static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
-  ShadowValue CalledV = const_cast<Value*>(CCalledV.stripPointerCasts());
+  ShadowValue CalledV = CCalledV.stripPointerCasts();
 
   Constant* C = getConstReplacement(CalledV);
 
@@ -337,7 +277,7 @@ const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
 
 }
 
-bool llvm::localEdgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
+bool llvm::edgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
 
   bool foundLiveEdge = false;
 
@@ -357,13 +297,13 @@ bool llvm::localEdgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
 
 }
 
-bool llvm::localEdgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
+bool llvm::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
   bool BB1InScope;
 
   if(ShadowBB* BB1 = getBB(BB1I->idx, BB1InScope)) {
 
-    return localEdgeIsDead(BB1, BB2I);
+    return edgeIsDead(BB1, BB2I);
 
   }
   else if(BB1InScope) {
@@ -377,29 +317,9 @@ bool llvm::localEdgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
 }
 
-bool IntegrationAttempt::edgeIsDead(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
-
-  if(BB1I.naturalScope != L && ((!L) || L->contains(BB1I.naturalScope))) {
-    if(edgeIsDeadRising(BB1I, BB2I))
-      return true;
-  }
-  else {
-    if(localEdgeIsDead(BB1I, BB2I))
-      return true;
-  }
-
-  // Check out to parent scopes because the edge might be killed as an invariant.
-
-  if(L)
-    return parent->edgeIsDeadFalling(BB1I, BB2I);
-  else
-    return false;
-
-}
-
 bool IntegrationAttempt::edgeIsDeadRising(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
 
-  if(localEdgeIsDead(BB1I, BB2I))
+  if(edgeIsDead(BB1I, BB2I))
     return true;
 
   if(BB1I.naturalScope == L)
@@ -410,80 +330,20 @@ bool IntegrationAttempt::edgeIsDeadRising(const ShadowBBInvar& BB1I, const Shado
     PeelIteration* FinalIter = LPA->Iterations.back();
     if(FinalIter->iterStatus == IterationStatusFinal) {
 
-      if(BB2I.scope == L || ((!BB2I.scope) || BB2I.scope->contains(L))) {
-
-	// This edge exits at least to the querying scope: check no iteration takes it.
-
-	for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
+      for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
 	  
-	  if(!LPA->Iterations[i]->edgeIsDeadRising(BB1I, BB2I))
-	    return false;
-
-	}
-
-	return true;
-
+	if(!LPA->Iterations[i]->edgeIsDeadRising(BB1I, BB2I))
+	  return false;
+	
       }
-      else if(FinalIter->isOnlyExitingIteration()) {
 
-	// The edge target is within a child loop; AFAIK we must be asking in the context
-	// of checkBlock checking the other successors of a block with an exiting edge.
-	// Call it dead if the final iteration says so.
-
-	return FinalIter->edgeIsDeadRising(BB1I, BB2I);
-
-      }
+      return true;
 
     }
 
   }
     
   return false;
-
-}
-
-bool IntegrationAttempt::edgeIsDeadFalling(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
-
-  if(localEdgeIsDead(BB1I, BB2I))
-    return true;
-
-  if(!L)
-    return false;
-
-  return parent->edgeIsDeadFalling(BB1I, BB2I);
-
-}
-
-void IntegrationAttempt::setEdgeDead(BasicBlock* B1, BasicBlock* B2) {
-
-  std::pair<BasicBlock*, BasicBlock*> Edge = std::make_pair(B1, B2);
-  deadEdges.insert(Edge);
-
-}
-
-bool IntegrationAttempt::blockIsDeadWithScope(BasicBlock* BB, const Loop* ScopeL) {
-
-  if(deadBlocks.count(BB))
-    return true;
-  if(ScopeL == getLoopContext())
-    return false;
-  else
-    return parent->blockIsDeadWithScope(BB, ScopeL);
-
-}
-
-bool IntegrationAttempt::blockIsDead(BasicBlock* BB) {
-
-  // Like with edges, check all the way out to function scope
-  // because we might be dominated by a variant edge.
-
-  return blockIsDeadWithScope(BB, 0);
-
-}
-
-void IntegrationAttempt::setBlockDead(BasicBlock* BB) {
-
-  deadBlocks.insert(BB);
 
 }
 
@@ -681,12 +541,12 @@ PeelIteration* PeelIteration::getNextIteration() {
 
 bool PeelIteration::allExitEdgesDead() {
 
-  for(SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+  for(SmallVector<std::pair<uint32_t, uint32_t>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
 
-    if(!edgeIsDead(EI->first, EI->second)) {
+    if(!edgeIsDead(getBBInvar(EI->first), getBBInvar(EI->second))) {
       return false;
     }
-
+  
   }
 
   return true;
@@ -705,7 +565,7 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
   std::pair<BasicBlock*, BasicBlock*>& OE = parentPA->OptimisticEdge;
 
-  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second) && !edgeIsDead(L->getLoopLatch(), L->getHeader())) || allExitEdgesDead();
+  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second) && !edgeIsDead(getBBInvar(parentPA->latchIdx), getBBInvar(parentPA->headerIdx))) || allExitEdgesDead();
 
   if(!willIterate) {
 
@@ -811,9 +671,7 @@ void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
 
 ShadowValue InlineAttempt::tryGetReturnValue(ShadowInstruction* CallerInst) {
 
-  // Let's have a go at supplying a return value to our caller. Simple measure:
-  // we know the value if all the 'ret' instructions except one are dead,
-  // and we know that instruction's operand.
+  // Try to find a unique return val. This is like a PHI of the returned values.
 
   if(F.getReturnType()->isVoidTy())
     return ShadowValue();
@@ -890,7 +748,7 @@ bool IntegrationAttempt::isRootMainCall() {
 bool llvm::isGlobalIdentifiedObject(ShadowValue& V) {
   
   if(ShadowInstruction* SI = V.getInst()) {
-    return isIdentifiedObject(SI->I.first);
+    return isIdentifiedObject(SI->invar->I);
   }
   else if(ShadowArg* SA = V.getArg()) {
     return SA->parent->isRootMainCall();
@@ -898,27 +756,6 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue& V) {
   else {
     return isIdentifiedObject(V.getVal());
   }
-
-}
-
-ValCtx IntegrationAttempt::getUltimateUnderlyingObject(Value* V) {
-
-  ValCtx Ultimate = getDefaultVC(V);
-  while(!isGlobalIdentifiedObject(Ultimate)) {
-
-    ValCtx New;
-    New = make_vc(Ultimate.first->getUnderlyingObject(), Ultimate.second, ValCtx::noOffset, Ultimate.va_arg);
-    if(New.second)
-      New = New.second->getReplacement(New.first);
- 
-    if(New == Ultimate)
-      break;
-
-    Ultimate = New;
-
-  }
-
-  return Ultimate;
 
 }
 
