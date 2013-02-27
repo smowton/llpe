@@ -584,21 +584,10 @@ bool IntegrationAttempt::updateBasePointer(ShadowValue V, bool finalise, LoopPBA
 
     case Instruction::PHI:
       {
-	bool NewPBValid;
-	if(updateHeaderPHIPB(I, NewPBValid, NewPB)) {
-	  if(!NewPBValid)
-	    return false;
-	  else
-	    break;
-	}
+
 	// Else fall through:
       }
-    case Instruction::Select:
-    case Instruction::Call:
-      {
-	bool mergeAnyInfo = getMergeBasePointer(I, finalise, NewPB);
-	if(!mergeAnyInfo)
-	  return false;
+
 	else
 	  break;
       }

@@ -67,12 +67,11 @@ struct ShadowValue {
     ShadowInstruction* I;
     Value* V;
   } u;
-  int64_t va_arg;
 
-ShadowValue() : t(SHADOWVAL_INVAL), offset(_o), va_arg(_v), offset(LLONG_MAX), va_arg(-1) { }
-ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG), u.A(_A), offset(LLONG_MAX), va_arg(-1) { }
-ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST), u.I(_I), va_arg(_v) { }
-ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(-1) { }
+ShadowValue() : t(SHADOWVAL_INVAL) { }
+ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG), u.A(_A) { }
+ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST), u.I(_I) { }
+ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V) { }
 
   bool isInval() {
     return t == SHADOWVAL_INVAL;
@@ -94,46 +93,6 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V), offset(LLONG_MAX), va_arg(
   }
   Value* getVal() {
     return t == SHADOWVAL_OTHER ? u.V : 0;
-  }
-
-  // Values of va_arg:
-  static const int64_t not_va_arg = -1;
-  static const int64_t va_baseptr = -2;
-  static const int64_t first_nonfp_arg = 0;
-  static const int64_t first_fp_arg = 0x00010000;
-  static const int64_t max_arg = 0x00020000;
-
-  bool isVaArg() {
-    return va_arg != not_va_arg;
-  }
-
-  int getVaArgType() {
-
-    if(va_arg == not_va_arg)
-      return va_arg_type_none;
-    else if(va_arg == va_baseptr)
-      return va_arg_type_baseptr;
-    else if(va_arg >= first_nonfp_arg && va_arg < first_fp_arg)
-      return va_arg_type_nonfp;
-    else if(va_arg >= first_fp_arg && va_arg < max_arg)
-      return va_arg_type_fp;
-    else
-      assert(0 && "Bad va_arg value\n");
-    return va_arg_type_none;
-
-  }
-
-  int64_t getVaArg() {
-
-    switch(getVaArgType()) {
-    case va_arg_type_fp:
-      return va_arg - first_fp_arg;
-    case va_arg_type_nonfp:
-      return va_arg;
-    default:
-      assert(0);
-    }
-
   }
 
   const Type* getType() {

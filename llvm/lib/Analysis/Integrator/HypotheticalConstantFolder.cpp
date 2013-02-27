@@ -500,7 +500,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
 
 }
 
-  void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
+void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
 
   ShadowInstructionInvar* SII = SI->invar;
   
@@ -532,57 +532,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
 
 }
 
-ShadowValue IntegrationAttempt::getPHINodeValue(ShadowInstruction* SI) {
-
-  PHINode* PN = cast_inst<PHINode>(SI);
-
-  ShadowValue onlyValue;
-  ShadowValue onlyValueSource;
-
-  if(!getLoopHeaderPHIValue(SI, onlyValue)) {
-
-    LPDEBUG("Trying to evaluate PHI " << itcache(*PN) << " by standard means\n");
-   
-    bool breaknow = false;
-    ShadowInstructionInvar* SII = SI->invar;
-
-    for(uint32_t i = 0, ilim = SII->preds.size(); i != ilim && !breaknow; i+=2) {
-      
-      SmallVector<ShadowValue, 1> predValues;
-      ShadowValue PredV = getExitPHIOperands(SI, i, predValues);
-
-      for(SmallVector<ShadowValue, 1>::iterator it = predValues.begin(), it2 = predValues.end(); it != it2 && !breaknow; ++it) {
-
-	ShadowValue PredRepl = getReplacement(*it);
-
-	if(onlyValue.isInval()) {
-	  onlyValue = PredRepl;
-	  onlyValueSource = *it;
-	}
-	else if(onlyValue != PredRepl) {
-	  onlyValue = ShadowValue();
-	  breakNow = true;
-	}
-      
-      }
-    
-    }
-
-  }
-
-  if(!onlyValue.isInval() && shouldForwardValue(onlyValue)) {
-    copyBaseAndOffset(predValue, SI);
-    LPDEBUG("Improved to " << itcache(onlyValue) << "\n");
-    return onlyValue;
-  }
-  else {
-    LPDEBUG("Not improved\n");
-    return ShadowValue();
-  }
-  
-}
-
-ShadowValue IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
+static ShadowValue getOpenCmpResult(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
 
   if(CmpInt->getBitWidth() > 64) {
     LPDEBUG("Using an int wider than int64 for an FD\n");
@@ -651,27 +601,30 @@ ShadowValue IntegrationAttempt::tryFoldOpenCmp(CmpInst* CmpI, ConstantInt* CmpIn
 
 // Return true if this turned out to be a compare against open
 // (and so false if there's any point trying normal const folding)
-bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, ShadowValue& Improved) {
+bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI->invar->I);
+
+  if(Ops[0].first != ValSetTypeFD && Ops[1].first != ValSetTypeFD)
+    return false;
 
   bool flip;
   bool exists;
   ConstantInt* CmpInt = 0;
-  ShadowValue op0 = getReplacement(SI->getOperand(0));
-  ShadowValue op1 = getReplacement(SI->getOperand(1));
-  ShadowInstruction* op0I = op0->getInst();
-  ShadowInstruction* op1I = op1->getInst();
+  ShadowValue& op0 = Ops[0].second.V;
+  ShadowValue& op1 = Ops[1].second.V;
+  ShadowInstruction* op0I = op0.getInst();
+  ShadowInstruction* op1I = op1.getInst();
 
-  if(op0I && op0I->parent->IA->isForwardableOpenCall(op0->invar->I)) {
+  if(op0I && Ops[0].first == ValSetTypeFD) {
     flip = false;
-    exists = op0I->parent->IA->openCallSucceeds(op0->invar->I);
-    CmpInt = dyn_cast<ConstantInt>(op1.getVal());
+    exists = op0I->parent->IA->openCallSucceeds(op0I->invar->I);
+    CmpInt = dyn_cast_or_null<ConstantInt>(op1.getVal());
   }
-  else if(op1I && op1I->parent->IA->isForwardableOpenCall(op1->invar->I)) {
+  else if(op1I && Ops[1].first == ValSetTypeFD) {
     flip = true;
-    exists = op1I->parent->IA->openCallSucceeds(op1->invar->I);
-    CmpInt = dyn_cast<ConstantInt>(op0.getVal());
+    exists = op1I->parent->IA->openCallSucceeds(op1I->invar->I);
+    CmpInt = dyn_cast_or_null<ConstantInt>(op0.getVal());
   }
   else {
     return false;
@@ -686,15 +639,16 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, ShadowValue& Impr
       Arg1 = CmpInt;
       if(flip)
 	std::swap(Arg0, Arg1);
-      Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
-      return true;
+      Improved.V = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
+      ImpType = ValSetTypeScalar;
 
     }
     else {
 
-      Improved = tryFoldOpenCmp(CmpI, CmpInt, flip);
+      Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
+      ImpType = ValSetTypeScalar;
       if(Improved.first) {
-	LPDEBUG("Comparison against file descriptor resolves to " << itcache(*Improved.first) << "\n");
+	LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
       }
       else {
 	LPDEBUG("Comparison against file descriptor inconclusive\n");
@@ -753,7 +707,7 @@ static unsigned getReversePred(unsigned Pred) {
 
 }
 
-bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, ShadowValue& Improved) {
+bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
@@ -771,8 +725,8 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, ShadowValue& Improve
     break;
   }
 
-  Constant* Op0C = getConstReplacement(SI->getOperand(0));
-  Constant* Op1C = getConstReplacement(SI->getOperand(1));
+  Constant* Op0C = dyn_cast_or_null<Constant>(Ops[0].second.V);
+  Constant* Op1C = dyn_cast_or_null<Constant>(Ops[1].second.V);
   ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
   ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
 
@@ -791,93 +745,90 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, ShadowValue& Improve
   // OK, we have a nonconst LHS against a const RHS.
   // Note that the operands to CmpInst must be of the same type.
 
+  ImpType = ValSetTypeScalar;
+
   switch(Pred) {
   default:
     break;
   case CmpInst::ICMP_UGT:
     // Never u> ~0
     if(Op1CI && Op1CI->isAllOnesValue()) {
-      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_UGE:
     // Always u>= 0
     if(Op1C->isNullValue()) {
-      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULT:
     // Never u< 0
     if(Op1C->isNullValue()) {
-      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULE:
     // Always u<= ~0
     if(Op1CI && Op1CI->isAllOnesValue()) {
-      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGT:
     // Never s> maxint
     if(Op1CI && Op1CI->isMaxValue(true)) {
-      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGE:
     // Always s>= minint
     if(Op1CI && Op1CI->isMinValue(true)) {
-      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLT:
     // Never s< minint
     if(Op1CI && Op1CI->isMinValue(true)) {
-      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLE:
     // Always s<= maxint
     if(Op1CI && Op1CI->isMaxValue(true)) {
-      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;     
     }
     break;
   }
 
+  ImpType = ValSetTypeUnknown;
   return false;
 
 }
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, ShadowValue& Improved) {
+bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
+  // Need scalars or pointers throughout:
+  if((Ops[0].first != valSetTypeScalar && Ops[0].first != valSetTypePB) || (Ops[1].first != valSetTypeScalar && Ops[1].first != valSetTypePB))
+    return false;
+
   // Check for special cases of pointer comparison that we can understand:
 
-  ShadowValue op0 = SI->getOperand(0);
-  ShadowValue op1 = SI->getOperand(1);
+  ShadowValue& op0 = Ops[0].second.V;
+  ShadowValue& op1 = Ops[1].second.V;
 
-  // Only integer and pointer types can possibly represent pointers:
-  if(!((op0.getType()->isIntegerTy() || op0.getType()->isPointerTy()) && 
-       (op1.getType()->isIntegerTy() || op1.getType()->isPointerTy())))
-    return false;
- 
-  Constant* op0C = getConstReplacement(op0);
-  Constant* op1C = getConstReplacement(op1);
-  int64_t op0Off = 0, op1Off = 0;
-  
-  ShadowValue op0O, op1O;
-  if((!getBaseAndOffset(op0, op0O, op0Off)) || (!getBaseAndOffset(op1, op1O, op1Off)))
-    return false;
+  Constant* op0C = dyn_cast_or_null<Constant>(op0.getVal());
+  Constant* op1C = dyn_cast_or_null<Constant>(op1.getVal());
 
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
   // against an integer null. The code for case 1 works for these; all other cases require that both
@@ -892,16 +843,17 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, ShadowValue& I
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0O.getType()->isPointerTy() && isGlobalIdentifiedObject(op0O))
+  else if(op0.getType()->isPointerTy() && isGlobalIdentifiedObject(op0))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1O.getType()->isPointerTy() && isGlobalIdentifiedObject(op1O))
+  else if(op1.getType()->isPointerTy() && isGlobalIdentifiedObject(op1))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
     
+    ImpType = ValSetTypeScalar;
     Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
     return true;   
 
@@ -909,19 +861,24 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, ShadowValue& I
 
   // Only instructions that ultimately refer to pointers from here on
 
-  if(!(op0O.first->getType()->isPointerTy() && op1O.first->getType()->isPointerTy()))
+  if(Ops[0].first != ValSetTypePB || Ops[1].first != ValSetTypePB)
     return false;
 
   // 2. Comparison of pointers with a common base:
 
-  if(op0O.first == op1O.first && op0O.second == op1O.second) {
+  if(op0 == op1) {
 
+    // Can't make progress if either pointer is vague:
+    if(Ops[0].second.Offset == LLONG_MAX || Ops[1].second.Offset == LLONG_MAX)
+      return false;
+    
     // Always do a signed test here, assuming that negative indexing off a pointer won't wrap the address
     // space and end up with something large and positive.
 
-    op0Arg = ConstantInt::get(I64, op0Off);
-    op1Arg = ConstantInt::get(I64, op1Off);
-    Improved = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
+    op0Arg = ConstantInt::get(I64, Ops[0].second.Offset);
+    op1Arg = ConstantInt::get(I64, Ops[1].second.Offset);
+    ImpType = ValSetTypeScalar;
+    Improved.V = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
     return true;
 
   }
@@ -929,55 +886,24 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, ShadowValue& I
   // 3. Restricted comparison of pointers with a differing base: we can compare for equality only
   // as we don't know memory layout at this stage.
 
-  if(isGlobalIdentifiedObject(op0O) && isGlobalIdentifiedObject(op1O) && op0O != op1O) {
+  if(isGlobalIdentifiedObject(op0) && isGlobalIdentifiedObject(op1) && op0 != op1) {
+
+    // This works regardless of the pointers' offset values.
 
     if(CmpI->getPredicate() == CmpInst::ICMP_EQ) {
-      Improved = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
+      ImpType = ValSetTypeScalar;
       return true;
     }
     else if(CmpI->getPredicate() == CmpInst::ICMP_NE) {
-      Improved = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
+      ImpType = ValSetTypeScalar;
       return true;
     }
 
   }
 
   return false;
-
-}
-
-ShadowValue IntegrationAttempt::tryFoldPtrToInt(ShadowInstruction* SPII) {
-
-  ShadowValue Arg = SPII->getOperand(0);
-  ShadowValue ArgRep = getReplacement(Arg);
-
-  // First try to knock out a trivial CE:
-  if(Value* V = ArgRep.getVal()) {
-
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V)) {
-
-      if(CE->getOpcode() == Instruction::IntToPtr) {
-
-	return ShadowValue(CE->getOperand(0));
-
-      }
-
-    }
-
-  }
-
-  copyBaseAndOffset(Arg, SPII);
-  return ShadowValue();
-
-}
-
-ShadowValue IntegrationAttempt::tryFoldIntToPtr(ShadowInstruction* IPI) {
-
-  ShadowValue Arg = IPI->getOperand(0);
-  ShadowValue ArgRep = getReplacement(Arg);
-  
-  copyBaseAndOffset(Arg, IPI);
-  return ShadowValue();
 
 }
 
@@ -1132,96 +1058,67 @@ void IntegrationAttempt::getPtrAsIntReplacement(ShadowValue& V, bool& isPtr, Sha
 
 }
 
-// These two methods are closely related: this one tries to establish a pointer base and offset,
-// whilst the one below tries to establish a mundane constant result, e.g. (ptrasint(x) + 1 - ptrasint(x)) = 1.
-bool IntegrationAttempt::tryGetPtrOpBase(ShadowInstruction* SI, ShadowValue& Base, int64_t& Offset) {
-
-  Instruction* BOp = SI->invar->I;
-  
-  if(BOp->getOpcode() != Instruction::Add && BOp->getOpcode() != Instruction::Sub && BOp->getOpcode())
-    return false;
-
-  ShadowValue Op0, Op1;
-  bool Op0Ptr, Op1Ptr;
-  int64_t Op0Offset, Op1Offset;
-
-  getPtrAsIntReplacement(SI->getOperand(0), Op0Ptr, Op0, Op0Offset);
-  getPtrAsIntReplacement(SI->getOperand(1), Op1Ptr, Op1, Op1Offset);
-
-  if(BOp->getOpcode() == Instruction::Add) {
-  
-    if(Op0Ptr && Op1Ptr)
-      return false;
-
-    ShadowValue PtrV = Op0Ptr ? Op0 : Op1;
-    int64_t PtrOff = Op0Ptr ? Op0Offset : Op1Offset;
-    ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Op1.getVal() : Op0.getVal());
-    
-    if(!NumC)
-      return false;
-
-    Base = PtrV;
-    Offset = NumC->getSExtValue() + PtrOff;
-
-    return true;
-
-  }
-  else if(BOp->getOpcode() == Instruction::Sub) {
-
-    if((!Op0Ptr) || Op1Ptr)
-      return false;
-
-    if(ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Op1.getVal())) {
-
-      // Subtract int from pointer:
-      Base = Op0;
-      Offset = Op0Offset - Op1I->getSExtValue();
-      return true;
-      
-    }
-    
-  }
-
-}
-
-bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& Improved) {
+bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   Instruction* BOp = SI->invar->I;
 
   if(!SI->getType()->isIntegerTy())
     return false;
 
-  tryGetPtrOpBase(SI, SI->i.baseObject, SI->i.baseOffset);
-  
-  if(BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And)
+  if(BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And && BOp->getOpcode() != Instruction::Add)
     return false;
 
-  ShadowValue Op0, Op1;
-  bool Op0Ptr, Op1Ptr;
-  int64_t Op0Offset, Op1Offset;
-
-  getPtrAsIntReplacement(SI->getOperand(0), Op0Ptr, Op0, Op0Offset);
-  getPtrAsIntReplacement(SI->getOperand(1), Op1Ptr, Op1, Op1Offset);
+  bool Op0Ptr = Ops[0].first == ValSetTypePB;
+  bool Op1Ptr = Ops[1].first == ValSetTypePB;
 
   if((!Op0Ptr) && (!Op1Ptr))
     return false;
+  
+  if(BOp->getOpcode() == Instruction::Sub) {
 
-  else if(BOp->getOpcode() == Instruction::Sub) {
+    if(Op0Ptr) {
 
-    if(!(Op0Ptr && Op1Ptr))
-      return false;
+      ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
 
-    if(Op1Ptr) {
+      ImpType = ValSetTypePB;
+      Improved.V = Ops[0].second.V;
+      if(Ops[0].second.Offset == LLONG_MAX || !Op1I)
+	Improved.Offset = LLONG_MAX;
+      else
+	Improved.Offset = Ops[0].second.Offset - Op1I->getSExtValue();
 
-      if(Op0 == Op1) {
+      return true;
 
-	// Subtracting pointers with a common base.
-	Improved = ShadowValue(ConstantInt::getSigned(BOp->getType(), Op0Offset - Op1Offset));
+    }
+
+    else if(Op0Ptr && Op1Ptr && Ops[0].second.V == Ops[1].second.V) {
+
+      // Subtracting pointers with a common base.
+      if(Ops[0].second.Offset != LLONG_MAX && Ops[1].second.Offset != LLONG_MAX) {
+	ImpType = ValSetTypeScalar;
+	Improved = ShadowValue(ConstantInt::getSigned(BOp->getType(), Ops[0].second.Offset - Ops[1].second.Offset));
 	return true;
-
       }
 
     }
+
+  }
+  else if(BOp->getOpcode() == Instruction::Add) {
+
+    if(Op0Ptr && Op1Ptr)
+      return false;
+    
+    std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0].second : Ops[1].second;
+    ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Ops[1].second.V.getVal() : Ops[0].second.V.getVal());
+
+    ImpType = ValSetTypePB;
+    Improved.V = PtrV.second.V;
+    if(PtrV.second.Offset == LLONG_MAX || !NumC)
+      Improved.Offset = LLONG_MAX;
+    else
+      Improved.Offset = PtrV.second.Offset + NumC->getSExtValue();
+    
+    return true;
 
   }
   else if(BOp->getOpcode() == Instruction::And) {
@@ -1232,22 +1129,22 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& I
     if((!Op0Ptr) || Op1Ptr)
       return false;
 
-    ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Op1.getVal());
+    ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
     if(!MaskC)
       return false;
 
-    if(Op0Offset < 0)
+    if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
       return false;
 
-    uint64_t UOff = (uint64_t)Offset;
+    uint64_t UOff = (uint64_t)Ops[0].second.Offset;
 
     // Try to get alignment:
 
     unsigned Align = 0;
-    if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Op0.getVal()))
+    if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Ops[0].second.V.getVal()))
       Align = GV->getAlignment();
-    else if(ShadowInstruction* SI = Op0.getInst()) {
-
+    else if(ShadowInstruction* SI = Ops[0].second.V.getInst()) {
+      
       if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
 	Align = AI->getAlignment();
       else if(CallInst* CI = dyn_cast<CallInst>(SI->invar->I)) {
@@ -1262,8 +1159,9 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& I
     uint64_t Mask = MaskC->getLimitedValue();
 	
     if(Align > Mask) {
-
-      Improved = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
+      
+      ImpType = ValSetTypeScalar;
+      Improved.V = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
       return true;
 
     }
@@ -1274,8 +1172,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, ShadowValue& I
 
 }
 
-bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, ShadowValue& Improved) {
-
+ bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+   
   Instruction* BOp = SI->invar->I;
 
   switch(BOp->getOpcode()) {
@@ -1286,16 +1184,20 @@ bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, ShadowValue& Im
     break;
   }
 
-  Constant* Op0C = getConstReplacement(SI->getOperand(0));
-  Constant* Op1C = getConstReplacement(SI->getOperand(1));
+  if(Ops[0].first != ValSetTypeScalar || Ops[1].first != ValSetTypeScalar)
+    return false;
+
+  Constant* Op0C = cast<Constant>(Ops[0].second.V.getVal());
+  Constant* Op1C = cast<Constant>(Ops[1].second.V.getVal());
 
   if(BOp->getOpcode() == Instruction::And) {
 
     if((Op0C && Op0C->isNullValue()) || (Op1C && Op1C->isNullValue())) {
 
-      Improved = ShadowValue(Constant::getNullValue(BOp->getType()));
+      ImpType = ValSetTypeScalar;
+      Improved.V = ShadowValue(Constant::getNullValue(BOp->getType()));
       return true;
-
+      
     }
 
   }
@@ -1321,7 +1223,8 @@ bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, ShadowValue& Im
 
     if(allOnes) {
 
-      Improved = ShadowValue(Constant::getAllOnesValue(BOp->getType()));
+      ImpType = ValSetTypeScalar;
+      Improved.V = ShadowValue(Constant::getAllOnesValue(BOp->getType()));
       return true;
 
     }
@@ -1393,239 +1296,230 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 
 }
 
- void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
+					   std::pair<ValSetType, ImprovedVal>* Ops, 
+					   ValSetType& ImpType, ImprovedVal& Improved, 
+					   bool finalise) {
   
   Instruction* I = SI->invar->I;
 
-  bool tryConstFold = false;
+  // Special case the merge instructions:
+  bool tryMerge = false;
 
-  if(CallInst* CI = dyn_cast<CallInst>(I)) {
-	
-    InlineAttempt* IA = getInlineAttempt(CI);
-    if(IA) {
-	 
-      Improved = IA->tryGetReturnValue();
+  switch(I->getOpcode()) {
 
+  case Instruction::PHI:
+    {
+      bool Valid;
+      if(tryEvaluateHeaderPHI(SI, Ops, Valid, ImpType, Improved))
+	return Valid;
+      tryMerge = true;
+      break;
     }
-
-  }
-  else if(PHINode* PN = dyn_cast<PHINode>(I)) {
-
-    // PHI nodes are special because of their BB arguments and the need to route values
-    // from child scopes.
-    Improved = getPHINodeValue(SI);
-
-  }
-
-  // Try to calculate a constant value resulting from this instruction. Only possible if
-  // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
-
-  else if(SelectInst* SelI = dyn_cast<SelectInst>(I)) {
-
-    Constant* Cond = getConstReplacement(SI->getOperand(0));
+  case Instruction::Select:
+    Constant* Cond = getConstReplacement(Ops[0].second);
     if(Cond) {
-      ShadowValue copy;
-      if(cast<ConstantInt>(Cond)->isZero())
-	copy = SI->getOperand(2);
-      else
-	copy = SI->getOperand(1);
-      Improved = getReplacement(copy);
-      copyBaseAndOffset(copy, SI);
+      if(cast<ConstantInt>(Cond)->isZero()) {
+	Improved = Ops[2].second;
+	ImpType = Ops[2].first;
+      }
+      else {
+	Improved = Ops[1].second;
+	ImpType = Ops[1].first;
+      }
+      return ImpType != ValSetTypeUnknown;
     }
+    else {
+      tryMerge = true;
+    }
+    break;
+  case Instruction::Call:
+    tryMerge = true;
+    break;
+  default:
+    break;
 
   }
 
-  // Special cases for forwarding file descriptors, which are not represented as constants but rather replacements pointing to open instructions and so don't fall into the else case:
-  // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
+  if(tryMerge) {
 
-  else if(CastInst* CI = dyn_cast<CastInst>(I)) {
+    return tryEvaluateMerge(SI, Ops, ImpType, Improved, finalise);
 
-    // All casts 
+  }
 
-    if(I->getOpcode() == Instruction::PtrToInt) {
+  // Try a special case for forwarding FDs: they can be passed through any cast preserving 32 bits.
+  // We optimistically pass vararg cookies through all casts.
+  if(inst_is<CastInst>(SI)) {
 
-      Improved = tryFoldPtrToInt(SI);
-      if(Improved.isInval())
-	tryConstFold = true;
-
-    }
-
-    else if(I->getOpcode() == Instruction::IntToPtr) {
-
-      Improved = tryFoldIntToPtr(SI);
-      if(Improved.isInval())
-	tryConstFold = true;
-	  
-    }
-
-    else {
-
-      const Type* SrcTy = CI->getSrcTy();
-      const Type* DestTy = CI->getDestTy();
+    CastInst* CI = cast_inst<CastInst>(SI);
+    const Type* SrcTy = CI->getSrcTy();
+    const Type* DestTy = CI->getDestTy();
 	
-      ShadowValue SrcVal = getReplacement(SI->getCallArgOperand(0));
+    if(Ops[0].first == ValSetTypeFD) {
+      if(!((SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) &&
+	   (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy()))) {
 
-      if(ShadowInstruction* SI = SrcVal.getInst()) {
+	return false;
 
-	if(SrcVal.isVaArg()) {
+      }
+    }
 
-	  Improved = SrcVal;
+    if(Ops[0].first != ValSetTypeScalar) {
 
-	}
-	else if(SI->parent->IA->isForwardableOpenCall(SI->invar->I)) || SrcVal.isPtrAsInt())
-	&& (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
-	  && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
-
-      Improved = SrcVal;
+      // Pass FDs, pointers, vararg cookies through. This includes ptrtoint and inttoptr.
+      ImpType = Ops[0].first;
+      Improved = Ops[0].second;
+      return ImpType != ValSetTypeUnknown;
 
     }
-    else {
 
-      tryConstFold = true;
-
-    }
+    // Otherwise pass scalars through the normal constant folder.
 
   }
 
-  // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
-  else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
+  if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
-    tryConstFold = !(tryFoldOpenCmp(SI, Improved) || tryFoldPointerCmp(SI, Improved) || tryFoldNonConstCmp(SI, Improved));
+    if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
+      return ImpType != ValSetTypeUnknown;
+    if(tryFoldPointerCmp(SI, Ops, ImpType, Improved))
+      return ImpType != ValSetTypeUnknown;
+    if(tryFoldNonConstCmp(SI, Improved))
+      return ImpType != ValSetTypeUnknown;
+
+    // Otherwise fall through to normal const folding.
 
   }
 
   else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
 
-    tryConstFold = true;
+    if(Ops[0].first == ValSetTypePB) {
 
-    // Inherit base object from GEP if known.
-    copyBaseAndObject(SI->getOperand(0), SI);
+      ImpType = ValSetTypePB;
+      Improved = Ops[0].second;
 
-    if(!SI->i.baseObject.isInval()) {
-      // Bump base by amount indexed by GEP:
-      gep_type_iterator GTI = gep_type_begin(GEP);
-      for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
-	   ++I, ++GTI) {
-	ConstantInt* OpC = cast_or_null<ConstantInst>(getConstReplacement(*I));
+      if(Improved.Offset != LLONG_MAX) {
 
-	if(!OpC) {
-	  // Uncertain -- there's no point tracking vague pointers here
-	  // as that work is currently done in the PB solver.
-	  SI->i.baseObject = ShadowValue();
-	  SI->i.baseOffset = 0;
+	// Bump base by amount indexed by GEP:
+	gep_type_iterator GTI = gep_type_begin(GEP);
+	for (uint32_t i = 1, ilim = SI->getNumOperands(); i != ilim; ++i, ++GTI) {
+      
+	  if(Ops[i].first != ValSetTypeScalar) {
+	    // Uncertain
+	    Improved.Offset = LLONG_MAX;
+	    break;
+	  }
+	  else {
+	    Constant* OpC = cast<Constant>(Ops[i].second.V);
+	    if (OpC->isZero()) continue;
+	    // Handle a struct and array indices which add their offset to the pointer.
+	    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	      Improved.Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+	    } else {
+	      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
+	      Improved.Offset += OpC->getSExtValue()*Size;
+	    }
+	  }
 	}
-	if (OpC->isZero()) continue;
-    
-	// Handle a struct and array indices which add their offset to the pointer.
-	if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
-	  SI->i.baseOffset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
-	} else {
-	  uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
-	  SI->i.baseOffset += OpC->getSExtValue()*Size;
-	}
+
       }
+
+      return true;
+
     }
+    else if(Ops[0].first == ValSetTypeVarArg) {
 	
-    ShadowValue Base = getReplacement(SI->getOperand(0));
-    if(Base.isVaArg()) {
+      if(SI->getNumOperands() == 2) {
 
-      if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
+	if(Ops[1].first != ValSetTypeScalar)
+	  return false;
+	ConstantInt* CI = cast_val<ConstantInt>(Ops[1].second.V);
 
-	if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getOperand(1)))) {
+	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->getFunctionRoot();
+	Function* calledF = calledIA->getFunction();
 
-	  Function* calledF = Base.getInst()->parent->getFunction();
+	uint64_t GEPOff = CI->getLimitedValue();
+	assert(GEPOff % 8 == 0);
+	GEPOff /= 8;
 
-	  uint64_t GEPOff = CI->getLimitedValue();
-	  assert(GEPOff % 8 == 0);
-	  GEPOff /= 8;
-
-	  int64_t newVaArg = -1;
-	  switch(Base.getVaArgType()) {
-	  case va_arg_type_baseptr:
-	    // This is indexing off the frame base pointer.
-	    // Determine which zone it's in:
-	    if(GEPOff < 6) {
-	      // Non-FP zone:
-	      newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
-	    }
-	    else if(GEPOff >= 6 && GEPOff < 22) {
-	      newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ShadowValue::first_fp_arg;
-	    }
-	    else {
-	      newVaArg = ShadowValue::not_va_arg;
-	    }
-	    break;
-	  case va_arg_type_fp:
-	  case va_arg_type_nonfp:
-	    assert(GEPOff == 1);
-	    // In the spilled zone. Find the next spilled argument:
-	    newVaArg = Base.getInst()->parent->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
-	    break;
-	  default:
-	    assert(0);
+	int64_t newVaArg = -1;
+	switch(Ops[0].second.getVaArgType()) {
+	case va_arg_type_baseptr:
+	  // This is indexing off the frame base pointer.
+	  // Determine which zone it's in:
+	  if(GEPOff < 6) {
+	    // Non-FP zone:
+	    newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
 	  }
-
-	  if(newVaArg != ValCtx::not_va_arg) {
-	    Improved = ShadowValue(Base, ShadowValue::noOffset, newVaArg);
+	  else if(GEPOff >= 6 && GEPOff < 22) {
+	    newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ImprovedVal::first_fp_arg;
 	  }
-	  tryConstFold = false;
+	  else {
+	    newVaArg = ShadowValue::not_va_arg;
+	  }
+	  break;
+	case va_arg_type_fp:
+	case va_arg_type_nonfp:
+	  assert(GEPOff == 1);
+	  // In the spilled zone. Find the next spilled argument:
+	  newVaArg = calledIA->getSpilledVarargAfter(Base.va_arg);
+	  break;
+	default:
+	  assert(0);
+	}
 
+	if(newVaArg != ValCtx::not_va_arg) {
+	  ImpType = ValSetTypeVarArg;
+	  Improved.V = Ops[0].second.V;
+	  Improved.Offset = newVaArg;
+	  return true;
 	}
 
       }
-	  
+
     }
 
+    // Else GEP off an unknown value, or off a constant of some sort, or a failure above...
+    return false;
+	  
   }
 
   else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
 
-    tryConstFold = (!tryFoldPtrAsIntOp(SI, Improved)) && (!tryFoldBitwiseOp(SI, Improved));
+    if(tryFoldPtrAsIntOp(SI, Ops, ImpType, Improved))
+      return true;
+    if(tryFoldBitwiseOp(SI, Ops, ImpType, Improved))
+      return true;
 	    
   }
 
-  else {
+  // Try ordinary constant folding?
 
-    tryConstFold = true;
+  SmallVector<Constant*, 4> instOperands;
 
-  }
+  for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
 
-  if(tryConstFold) {
-
-    SmallVector<Constant*, 4> instOperands;
-
-    for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
-      ShadowValue op = SI->getOperand(i);
-      if(Constant* C = getConstReplacement(op))
-	instOperands.push_back(C);
-      else {
-	LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(op) << "\n");
-	break;
-      }
-    }
-
-    if(instOperands.size() == I->getNumOperands()) {
-      Constant* newConst = 0;
-
-      if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
-      else if(isa<LoadInst>(I))
-	newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
-      else
-	newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
-
-      if(newConst) {
-	LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
-	Improved = ShadowValue(newConst);
-      }
-      else {
-	Improved = ShadowValue();
-      }
-    }
+    if(Ops[i].first != ValSetTypeScalar)
+      return false;
+    instOperands.push_back(cast<Constant>(Ops[i].second.V.getVal()));
 
   }
 
-  return Improved;
+  Constant* newConst = 0;
+
+  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+  else if(isa<LoadInst>(I))
+    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+  else
+    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
+
+  if(newConst) {
+    LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
+    ImpType = ValSetTypeScalar;
+    Improved.V = ShadowValue(newConst);
+  }
+  
+  return !!newConst;
 
 }
 
@@ -1651,10 +1545,7 @@ void IntegrationAttempt::tryEvaluate(ShadowInstruction* SI) {
 void InlineAttempt::tryEvaluateArg(ShadowArg* SA) {
 
   ShadowValue& copy = CI->getCallArgOperand(SA->invar->A->getArgNo());
-  ShadowValue Repl = getReplacement(copy);
-  if(shouldForwardValue(Repl))
-    SA->i.replaceWith = Repl;
-  copyBaseAndOffset(copy, SA);
+  SA->i.PB = copy.getPB();
 
 }
 

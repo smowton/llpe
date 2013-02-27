@@ -117,8 +117,10 @@ inline bool operator>=(ValCtx V1, ValCtx V2) {
 enum ValSetType {
 
   ValSetTypeUnknown,
-  ValSetTypePB,
-  ValSetTypeScalar
+  ValSetTypePB, // Pointers; the Offset member is set
+  ValSetTypeScalar, // Ordinary constants
+  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
+  ValSetTypeVarArg // Special tokens representing a vararg or VA-related cookie
 
 };
 
@@ -129,6 +131,42 @@ struct ImprovedVal {
 
   ShadowValue V;
   int64_t Offset;
+
+  // Values for Offset when this is a VarArg:
+  static const int64_t not_va_arg = -1;
+  static const int64_t va_baseptr = -2;
+  static const int64_t first_nonfp_arg = 0;
+  static const int64_t first_fp_arg = 0x00010000;
+  static const int64_t max_arg = 0x00020000;
+
+  int getVaArgType() {
+
+    if(Offset == not_va_arg)
+      return va_arg_type_none;
+    else if(Offset == va_baseptr)
+      return va_arg_type_baseptr;
+    else if(Offset >= first_nonfp_arg && Offset < first_fp_arg)
+      return va_arg_type_nonfp;
+    else if(Offset >= first_fp_arg && Offset < max_arg)
+      return va_arg_type_fp;
+    else
+      assert(0 && "Bad va_arg value\n");
+    return va_arg_type_none;
+
+  }
+
+  int64_t getVaArg() {
+
+    switch(getVaArgType()) {
+    case va_arg_type_fp:
+      return Offset - first_fp_arg;
+    case va_arg_type_nonfp:
+      return Offset;
+    default:
+      assert(0);
+    }
+
+  }
 
 };
 
