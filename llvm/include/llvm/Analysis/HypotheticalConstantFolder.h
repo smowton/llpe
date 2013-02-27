@@ -125,10 +125,17 @@ enum ValSetType {
 bool extractCEBase(Constant* C, ValCtx& VC);
 bool functionIsBlacklisted(Function*);
 
+struct ImprovedVal {
+
+  ShadowValue V;
+  int64_t Offset;
+
+};
+
 struct PointerBase {
 
   ValSetType Type;
-  SmallVector<ShadowValue, 4> Values;
+  SmallVector<ImprovedVal, 1> Values;
   bool Overdef;
 
 PointerBase() : Type(ValSetTypeUnknown), Overdef(false) { }

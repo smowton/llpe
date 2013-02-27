@@ -317,12 +317,8 @@ enum ShadowInstDIEStatus {
 
 struct InstArgImprovement {
 
-  ShadowValue replaceWith;
-  ShadowValue baseObject;
-  int64_t baseOffset;
-  SmallVector<ShadowInstruction*, 1> indirectUsers;
-  SmallVector<ShadowInstruction*, 1> PBIndirectUsers; 
   PointerBase PB;
+  SmallVector<ShadowInstruction*, 1> indirectUsers; 
   ShadowInstDIEStatus dieStatus;
 
 InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }

@@ -87,7 +87,7 @@ bool llvm::shouldForwardValue(ShadowValue& V) {
   
   if(ShadowInstruction* SI = V.getInst()) {
 
-    if(!SI->baseObject.isInval())
+    if((!SI->baseObject.isInval()) && isGlobalIdentifiedObject(SI->baseObject.getBareVal()))
       return true;
 
     if(SI->parent->IA->isForwardableOpenCall(SI))
@@ -1332,58 +1332,54 @@ bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, ShadowValue& Im
 
 }
 
-ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
-  
-  Instruction* I = SI->invar->I;
-  ShadowValue Improved;
+void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 
-  if (isa<BranchInst>(I) || isa<SwitchInst>(I)) {
+  if (!(isa<BranchInst>(I) || isa<SwitchInst>(I)))
+    return;
 
-    // Unconditional branches are already eliminated.
+  // Unconditional branches are already eliminated.
 
-    // Easiest case: copy edge liveness from our parent.
-    if(tryCopyDeadEdges(parent->getBB(SI->parent->invar), SI->parent))
-      return ShadowValue();
+  // Easiest case: copy edge liveness from our parent.
+  if(tryCopyDeadEdges(parent->getBB(SI->parent->invar), SI->parent))
+    return ShadowValue();
 
-    // Both switches and conditional branches use operand 0 for the condition.
-    ShadowValue Condition = SI->getOperand(0);
+  // Both switches and conditional branches use operand 0 for the condition.
+  ShadowValue Condition = SI->getOperand(0);
       
-    ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
+  ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
 
-    if(ConstCondition) {
+  if(ConstCondition) {
 
-      BasicBlock* takenTarget = 0;
+    BasicBlock* takenTarget = 0;
 
-      if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
-	// This ought to be a boolean.
-	if(ConstCondition->isZero())
-	  takenTarget = BI->getSuccessor(1);
-	else
-	  takenTarget = BI->getSuccessor(0);
-      }
-      else {
-	SwitchInst* SI = cast<SwitchInst>(I);
-	unsigned targetidx = SI->findCaseValue(ConstCondition);
-	takenTarget = SI->getSuccessor(targetidx);
-      }
-      if(takenTarget) {
-	// We know where the instruction is going -- remove this block as a predecessor for its other targets.
-	LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
+    if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
+      // This ought to be a boolean.
+      if(ConstCondition->isZero())
+	takenTarget = BI->getSuccessor(1);
+      else
+	takenTarget = BI->getSuccessor(0);
+    }
+    else {
+      SwitchInst* SI = cast<SwitchInst>(I);
+      unsigned targetidx = SI->findCaseValue(ConstCondition);
+      takenTarget = SI->getSuccessor(targetidx);
+    }
+    if(takenTarget) {
+      // We know where the instruction is going -- remove this block as a predecessor for its other targets.
+      LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
 
-	TerminatorInst* TI = cast<TerminatorInst>(I);
+      TerminatorInst* TI = cast<TerminatorInst>(I);
 
-	const unsigned NumSucc = TI->getNumSuccessors();
+      const unsigned NumSucc = TI->getNumSuccessors();
 
-	for (unsigned I = 0; I != NumSucc; ++I) {
+      for (unsigned I = 0; I != NumSucc; ++I) {
 
-	  BasicBlock* thisTarget = TI->getSuccessor(I);
+	BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	  if(thisTarget != takenTarget) {
+	if(thisTarget != takenTarget) {
 
-	    // Mark outgoing edge dead.
-	    SI->parent->succsAlive[I] = false;
-
-	  }
+	  // Mark outgoing edge dead.
+	  SI->parent->succsAlive[I] = false;
 
 	}
 
@@ -1391,241 +1387,240 @@ ShadowValue IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI) {
 
     }
 
-    return ShadowValue();
+  }
+
+  return ShadowValue();
+
+}
+
+ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+  
+  Instruction* I = SI->invar->I;
+
+  bool tryConstFold = false;
+
+  if(CallInst* CI = dyn_cast<CallInst>(I)) {
+	
+    InlineAttempt* IA = getInlineAttempt(CI);
+    if(IA) {
+	 
+      Improved = IA->tryGetReturnValue();
+
+    }
 
   }
-  else {
+  else if(PHINode* PN = dyn_cast<PHINode>(I)) {
 
-    // A non-branch instruction. First check for instructions with non-standard ways to evaluate / non-standard things to do with the result:
+    // PHI nodes are special because of their BB arguments and the need to route values
+    // from child scopes.
+    Improved = getPHINodeValue(SI);
 
-    bool tryConstFold = false;
+  }
 
-    if(CallInst* CI = dyn_cast<CallInst>(I)) {
-	
-      InlineAttempt* IA = getInlineAttempt(CI);
-      if(IA) {
-	 
-	Improved = IA->tryGetReturnValue();
+  // Try to calculate a constant value resulting from this instruction. Only possible if
+  // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
 
-      }
+  else if(SelectInst* SelI = dyn_cast<SelectInst>(I)) {
 
-    }
-    else if(PHINode* PN = dyn_cast<PHINode>(I)) {
-
-      // PHI nodes are special because of their BB arguments and the need to route values
-      // from child scopes.
-      Improved = getPHINodeValue(SI);
-
-    }
-
-    // Try to calculate a constant value resulting from this instruction. Only possible if
-    // this instruction is simple (e.g. arithmetic) and its arguments have known values, or don't matter.
-
-    else if(SelectInst* SelI = dyn_cast<SelectInst>(I)) {
-
-      Constant* Cond = getConstReplacement(SI->getOperand(0));
-      if(Cond) {
-	ShadowValue copy;
-	if(cast<ConstantInt>(Cond)->isZero())
-	  copy = SI->getOperand(2);
-	else
-	  copy = SI->getOperand(1);
-	Improved = getReplacement(copy);
-	copyBaseAndOffset(copy, SI);
-      }
-
+    Constant* Cond = getConstReplacement(SI->getOperand(0));
+    if(Cond) {
+      ShadowValue copy;
+      if(cast<ConstantInt>(Cond)->isZero())
+	copy = SI->getOperand(2);
+      else
+	copy = SI->getOperand(1);
+      Improved = getReplacement(copy);
+      copyBaseAndOffset(copy, SI);
     }
 
-    // Special cases for forwarding file descriptors, which are not represented as constants but rather replacements pointing to open instructions and so don't fall into the else case:
-    // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
+  }
 
-    else if(CastInst* CI = dyn_cast<CastInst>(I)) {
+  // Special cases for forwarding file descriptors, which are not represented as constants but rather replacements pointing to open instructions and so don't fall into the else case:
+  // Allow an FD to be no-op transferred when subject to any cast that preserves 32 bits.
 
-      // All casts 
+  else if(CastInst* CI = dyn_cast<CastInst>(I)) {
 
-      if(I->getOpcode() == Instruction::PtrToInt) {
+    // All casts 
 
-	Improved = tryFoldPtrToInt(SI);
-	if(Improved.isInval())
-	  tryConstFold = true;
+    if(I->getOpcode() == Instruction::PtrToInt) {
 
-      }
+      Improved = tryFoldPtrToInt(SI);
+      if(Improved.isInval())
+	tryConstFold = true;
 
-      else if(I->getOpcode() == Instruction::IntToPtr) {
+    }
 
-	Improved = tryFoldIntToPtr(SI);
-	if(Improved.isInval())
-	  tryConstFold = true;
+    else if(I->getOpcode() == Instruction::IntToPtr) {
+
+      Improved = tryFoldIntToPtr(SI);
+      if(Improved.isInval())
+	tryConstFold = true;
 	  
-      }
+    }
 
-      else {
+    else {
 
-	const Type* SrcTy = CI->getSrcTy();
-	const Type* DestTy = CI->getDestTy();
+      const Type* SrcTy = CI->getSrcTy();
+      const Type* DestTy = CI->getDestTy();
 	
-	ShadowValue SrcVal = getReplacement(SI->getCallArgOperand(0));
+      ShadowValue SrcVal = getReplacement(SI->getCallArgOperand(0));
 
-	if(ShadowInstruction* SI = SrcVal.getInst()) {
+      if(ShadowInstruction* SI = SrcVal.getInst()) {
 
-	  if(SrcVal.isVaArg()) {
-
-	    Improved = SrcVal;
-
-	  }
-	  else if(SI->parent->IA->isForwardableOpenCall(SI->invar->I)) || SrcVal.isPtrAsInt())
-		&& (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
-		&& (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
+	if(SrcVal.isVaArg()) {
 
 	  Improved = SrcVal;
 
 	}
-	else {
+	else if(SI->parent->IA->isForwardableOpenCall(SI->invar->I)) || SrcVal.isPtrAsInt())
+	&& (SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) 
+	  && (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy())) {
 
-	  tryConstFold = true;
-
-	}
-
-      }
+      Improved = SrcVal;
 
     }
-
-    // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
-    else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
-
-      tryConstFold = !(tryFoldOpenCmp(SI, Improved) || tryFoldPointerCmp(SI, Improved) || tryFoldNonConstCmp(SI, Improved));
-
-    }
-
-    else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
-
-      tryConstFold = true;
-
-      // Inherit base object from GEP if known.
-      copyBaseAndObject(SI->getOperand(0), SI);
-
-      if(!SI->i.baseObject.isInval()) {
-	// Bump base by amount indexed by GEP:
-	gep_type_iterator GTI = gep_type_begin(GEP);
-	for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
-	     ++I, ++GTI) {
-	  ConstantInt* OpC = cast_or_null<ConstantInst>(getConstReplacement(*I));
-
-	  if(!OpC) {
-	    // Uncertain -- there's no point tracking vague pointers here
-	    // as that work is currently done in the PB solver.
-	    SI->i.baseObject = ShadowValue();
-	    SI->i.baseOffset = 0;
-	  }
-	  if (OpC->isZero()) continue;
-    
-	  // Handle a struct and array indices which add their offset to the pointer.
-	  if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
-	    SI->i.baseOffset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
-	  } else {
-	    uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
-	    SI->i.baseOffset += OpC->getSExtValue()*Size;
-	  }
-	}
-      }
-	
-      ShadowValue Base = getReplacement(SI->getOperand(0));
-      if(Base.isVaArg()) {
-
-	if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
-
-	  if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getOperand(1)))) {
-
-	    Function* calledF = Base.getInst()->parent->getFunction();
-
-	    uint64_t GEPOff = CI->getLimitedValue();
-	    assert(GEPOff % 8 == 0);
-	    GEPOff /= 8;
-
-	    int64_t newVaArg = -1;
-	    switch(Base.getVaArgType()) {
-	    case va_arg_type_baseptr:
-	      // This is indexing off the frame base pointer.
-	      // Determine which zone it's in:
-	      if(GEPOff < 6) {
-		// Non-FP zone:
-		newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
-	      }
-	      else if(GEPOff >= 6 && GEPOff < 22) {
-		newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ShadowValue::first_fp_arg;
-	      }
-	      else {
-		newVaArg = ShadowValue::not_va_arg;
-	      }
-	      break;
-	    case va_arg_type_fp:
-	    case va_arg_type_nonfp:
-	      assert(GEPOff == 1);
-	      // In the spilled zone. Find the next spilled argument:
-	      newVaArg = Base.getInst()->parent->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
-	      break;
-	    default:
-	      assert(0);
-	    }
-
-	    if(newVaArg != ValCtx::not_va_arg) {
-	      Improved = ShadowValue(Base, ShadowValue::noOffset, newVaArg);
-	    }
-	    tryConstFold = false;
-
-	  }
-
-	}
-	  
-      }
-
-    }
-
-    else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
-
-      tryConstFold = (!tryFoldPtrAsIntOp(SI, Improved)) && (!tryFoldBitwiseOp(SI, Improved));
-	    
-    }
-
     else {
 
       tryConstFold = true;
 
     }
 
-    if(tryConstFold) {
+  }
 
-      SmallVector<Constant*, 4> instOperands;
+  // Check for a special case making comparisons against symbolic FDs, which we know to be >= 0.
+  else if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
 
-      for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
-	ShadowValue op = SI->getOperand(i);
-	if(Constant* C = getConstReplacement(op))
-	  instOperands.push_back(C);
-	else {
-	  LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(op) << "\n");
-	  break;
+    tryConstFold = !(tryFoldOpenCmp(SI, Improved) || tryFoldPointerCmp(SI, Improved) || tryFoldNonConstCmp(SI, Improved));
+
+  }
+
+  else if(GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(I)) {
+
+    tryConstFold = true;
+
+    // Inherit base object from GEP if known.
+    copyBaseAndObject(SI->getOperand(0), SI);
+
+    if(!SI->i.baseObject.isInval()) {
+      // Bump base by amount indexed by GEP:
+      gep_type_iterator GTI = gep_type_begin(GEP);
+      for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
+	   ++I, ++GTI) {
+	ConstantInt* OpC = cast_or_null<ConstantInst>(getConstReplacement(*I));
+
+	if(!OpC) {
+	  // Uncertain -- there's no point tracking vague pointers here
+	  // as that work is currently done in the PB solver.
+	  SI->i.baseObject = ShadowValue();
+	  SI->i.baseOffset = 0;
+	}
+	if (OpC->isZero()) continue;
+    
+	// Handle a struct and array indices which add their offset to the pointer.
+	if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	  SI->i.baseOffset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+	} else {
+	  uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
+	  SI->i.baseOffset += OpC->getSExtValue()*Size;
 	}
       }
+    }
+	
+    ShadowValue Base = getReplacement(SI->getOperand(0));
+    if(Base.isVaArg()) {
 
-      if(instOperands.size() == I->getNumOperands()) {
-	Constant* newConst = 0;
+      if(GEP->getNumIndices() == 1 && !GEP->hasAllZeroIndices()) {
 
-	if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-	  newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
-	else if(isa<LoadInst>(I))
-	  newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
-	else
-	  newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
+	if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getOperand(1)))) {
 
-	if(newConst) {
-	  LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
-	  Improved = ShadowValue(newConst);
+	  Function* calledF = Base.getInst()->parent->getFunction();
+
+	  uint64_t GEPOff = CI->getLimitedValue();
+	  assert(GEPOff % 8 == 0);
+	  GEPOff /= 8;
+
+	  int64_t newVaArg = -1;
+	  switch(Base.getVaArgType()) {
+	  case va_arg_type_baseptr:
+	    // This is indexing off the frame base pointer.
+	    // Determine which zone it's in:
+	    if(GEPOff < 6) {
+	      // Non-FP zone:
+	      newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
+	    }
+	    else if(GEPOff >= 6 && GEPOff < 22) {
+	      newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ShadowValue::first_fp_arg;
+	    }
+	    else {
+	      newVaArg = ShadowValue::not_va_arg;
+	    }
+	    break;
+	  case va_arg_type_fp:
+	  case va_arg_type_nonfp:
+	    assert(GEPOff == 1);
+	    // In the spilled zone. Find the next spilled argument:
+	    newVaArg = Base.getInst()->parent->getFunctionRoot()->getSpilledVarargAfter(Base.va_arg);
+	    break;
+	  default:
+	    assert(0);
+	  }
+
+	  if(newVaArg != ValCtx::not_va_arg) {
+	    Improved = ShadowValue(Base, ShadowValue::noOffset, newVaArg);
+	  }
+	  tryConstFold = false;
+
 	}
-	else {
-	  Improved = ShadowValue();
-	}
+
       }
+	  
+    }
 
+  }
+
+  else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
+
+    tryConstFold = (!tryFoldPtrAsIntOp(SI, Improved)) && (!tryFoldBitwiseOp(SI, Improved));
+	    
+  }
+
+  else {
+
+    tryConstFold = true;
+
+  }
+
+  if(tryConstFold) {
+
+    SmallVector<Constant*, 4> instOperands;
+
+    for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
+      ShadowValue op = SI->getOperand(i);
+      if(Constant* C = getConstReplacement(op))
+	instOperands.push_back(C);
+      else {
+	LPDEBUG("Not constant folding yet due to non-constant argument " << itcache(op) << "\n");
+	break;
+      }
+    }
+
+    if(instOperands.size() == I->getNumOperands()) {
+      Constant* newConst = 0;
+
+      if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+	newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+      else if(isa<LoadInst>(I))
+	newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+      else
+	newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
+
+      if(newConst) {
+	LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
+	Improved = ShadowValue(newConst);
+      }
+      else {
+	Improved = ShadowValue();
+      }
     }
 
   }
