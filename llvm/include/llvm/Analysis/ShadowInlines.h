@@ -421,19 +421,19 @@ uint32_t ShadowBBInvar::succs_size() {
 
 inline ShadowValue getReplacement(ShadowArg* SA, bool mustImprove = false) {
  
-  if(SA->i.replaceWith->isInval())
+  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0)
     return mustImprove ? ShadowValue() : ShadowValue(SA);
   else
-    return SA->replaceWith;
+    return SA->i.PB.Values[0].V;
 
 }
 
 inline ShadowValue getReplacement(ShadowInstruction* SI, bool mustImprove = false) {
 
-  if(SI->i.replaceWith->isInval())
+  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0)
     return mustImprove ? ShadowValue() : ShadowValue(SI);
   else
-    return SI->replaceWith;
+    return SI->i.PB.Values[0].V;
 
 }
 
@@ -453,24 +453,25 @@ inline ShadowValue getReplacement(ShadowValue& SV, bool mustImprov = false) {
 
 inline Constant* getConstReplacement(ShadowValue& SV) {
 
-  ValCtx VC = getReplacement(SV);
-  if(VC.isPtrAsInt())
-    return 0;
-  return dyn_cast_or_null<Constant>(VC.first);
+  ShadowValue V = getReplacement(SV);
+  return dyn_cast_or_null<Constant>(V.getVal());
 
 }
 
 inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
 
   if(ShadowInstruction* FromSI = SV.getInst()) {
-    Base = FromSI->i.baseObject;
-    Offset = FromSI->i.baseOffset;
-    return !FromSI->i.baseObject.isInval();
+    if(FromSI->i.PB.Overdef || FromSI->i.PB.Values.size() != 1 || FromSI->i.PB.Values[0].Offset == LLONG_MAX || FromSI->i.PB.type != ValSetTypePB)
+      return false;
+    Base = FromSI->i.PB.Values[0].V;
+    Offset = FromSI->i.PB.Values[0].Offset;
+
   }
   else if(ShadowArg* FromSA = SV.getArg()) {
-    Base = FromSA->i.baseObject;
-    Offset = FromSA->i.baseOffset;
-    return !FromSA->i.baseObject.isInval();
+    if(FromSA->i.PB.Overdef || FromSA->i.PB.type != ValSetTypePB || FromSA->i.PB.Values.size() != 1 || FromSA->i.PB.Values[0].Offset == LLONG_MAX)
+      return false;
+    Base = FromSA->i.PB.Values[0].V;
+    Offset = FromSA->i.PB.Values[0].Offset;
   }
   else if(Constant* C = dyn_cast<Constant>(SV.getVal())) {
     
@@ -480,45 +481,41 @@ inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset
 
   }
 
-    return false;
+  return false;
 
 }
 
-inline void copyBaseAndOffset(ShadowValue& From, ShadowInstIdx& To) {
+inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
-  if(ShadowInstruction* FromSI = From.getInst()) {
+  if(ShadowInstruction* SI = V.getInst()) {
 
-    To.baseObject = FromSI->i.baseObject;
-    To.baseOffset = FromSI->i.baseOffset;
-
-  }
-  else if(ShadowArgument* FromSA = From.getArg()) {
-
-    To.baseObject = FromSA->i.baseObject;
-    To.baseOffset = FromSA->i.baseOffset;
+    OutPB = SI->i.PB;
+    return OutPB.isInitialised();
 
   }
-  else if(Constant* C = dyn_cast<Constant>(From.getVal())) {
+  else if(ShadowArg* SA = V.getArg()) {
 
-    To.baseObject = ShadowValue(GetBaseWithConstantOffset(C, To.baseOffset));
-    if(!isGlobalIdentifiedObject(To.baseObject)) {
-      To.baseObject = ShadowValue();
-      To.baseOffset = 0;
+    OutPB = SA->i.PB;
+    return OutPB.isInitialised();
+
+  }
+  else {
+    
+    Value* Val = V.getVal();
+    if(isa<GlobalValue>(Val)) {
+      
+      OutPB = PointerBase::get(V);    
+      return true;
+
+    }
+    else if(isa<ConstantExpr>(Val)) {
+
+      OutPB = PointerBase::get(V);
+      return true;
+
     }
 
   }
-
-}
-
-inline void copyBaseAndOffset(ShadowValue& From, ShadowInstruction* To) {
-
-  copyBaseAndOffset(From, To->i);
-
-}
-
-inline void copyBaseAndOffset(ShadowValue& From, ShadowArgument* To) {
-
-  copyBaseAndOffset(From, To->i);
 
 }
 

@@ -132,6 +132,9 @@ struct ImprovedVal {
   ShadowValue V;
   int64_t Offset;
 
+ImprovedVal() : V(), Offset(LLONG_MAX) { }
+ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
+
   // Values for Offset when this is a VarArg:
   static const int64_t not_va_arg = -1;
   static const int64_t va_baseptr = -2;

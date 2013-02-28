@@ -409,9 +409,104 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 }
 
-bool IntegrationAttempt::getLoopHeaderPHIValue(ShadowInstruction* SI, ValCtx& result) {
+// If finalise is false, we're in the 'incremental upgrade' phase: PHIs and selects take on
+// the newest result of their operands.
+// If finalise is true, we're in the 'resolution' phase: they take on their true value.
+// e.g. in phase 1, PHI(def, undef) = def, in phase 2 it is overdef.
+bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, PointerBase& NewPB) {
 
-  return false;
+  // The case for a resolved select instruction is already resolved.
+
+  bool verbose = false;
+  
+  SmallVector<ShadowValue, 4> Vals;
+  if(inst_is<SelectInst>(I)) {
+
+    Vals.push_back(SI->getOperand(1));
+    Vals.push_back(SI->getOperand(2));
+
+  }
+  else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+
+    if(CI->getType()->isVoidTy())
+      return false;
+
+    if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+      IA->getLiveReturnVals(Vals);
+
+    }
+    else {
+      return false;
+    }
+
+  }
+  else {
+
+    // I is a PHI node, but not a header PHI.
+    ShadowInstructionInvar* SII = I->invar;
+
+    for(uint32_t i = 0, ilim = SII->preds.size(); i != ilim && !breaknow; i+=2) {
+
+      SmallVector<ShadowValue, 1> predValues;
+      ShadowValue PredV = getExitPHIOperands(SI, i, predValues);
+
+      for(SmallVector<ShadowValue, 1>::iterator it = predValues.begin(), it2 = predValues.end(); it != it2 && !breaknow; ++it) {
+
+	Vals.push_back(*it);
+
+      }
+
+    }
+
+  }
+
+  bool anyInfo = false;
+
+  if(verbose) {
+
+    errs() << "=== START MERGE for " << itcache(*I) << " (finalise = " << finalise << ")\n";
+
+    IntegrationAttempt* PrintCtx = this;
+    while(PrintCtx) {
+      errs() << PrintCtx->getShortHeader() << ", ";
+      PrintCtx = PrintCtx->parent;
+    }
+    errs() << "\n";
+
+  }
+
+  for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
+    
+    PointerBase VPB;
+    if(!getPB(*it, VPB)) {
+      if(verbose)
+	errs() << "Predecessor " << itcache(*it) << " undefined\n";
+      if(finalise) {
+	NewPB = PointerBase::getOverdef();
+	if(verbose)
+	  errs() << "=== END PHI MERGE\n";
+	return true;
+      }
+      else
+	continue;
+    }
+
+    if(verbose) {
+      errs() << "Predecessor " << itcache(make_vc(V, VCtx)) << " defined by ";
+      printPB(errs(), VPB, false);
+      errs() << "\n";
+    }
+
+    anyInfo = true;
+    NewPB.merge(VPB);
+
+  }
+
+  if(verbose)
+    errs() << "=== END PHI MERGE\n";
+
+  return anyInfo;
 
 }
 
@@ -446,7 +541,14 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
 
 }
 
-bool PeelIteration::getLoopHeaderPHIValue(ShadowInstruction* SI, ShadowValue& result) {
+
+bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result) {
+
+  return false;
+
+}
+
+bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result) {
 
   PHINode* PN = cast_inst<PHINode>(SI);
   bool isHeaderPHI = PN->getParent() == L->getHeader();
@@ -454,13 +556,12 @@ bool PeelIteration::getLoopHeaderPHIValue(ShadowInstruction* SI, ShadowValue& re
   if(isHeaderPHI) {
 
     ShadowValue predValue = getLoopHeaderForwardedOperand(SI, predValue);
-
-    result = getReplacement(predValue);
-    copyBaseAndOffset(predValue, SI);
+    resultValid = getPointerBase(predValue, result);
+    return true;
 
   }
-
-  return isHeaderPHI;
+  // Else, not a header PHI.
+  return false;
 
 }
 
@@ -907,157 +1008,6 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
-static bool containsPtrAsInt(ConstantExpr* CE) {
-
-  if(CE->getOpcode() == Instruction::PtrToInt)
-    return true;
-
-  for(unsigned i = 0; i < CE->getNumOperands(); ++i) {
-
-    if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CE->getOperand(i))) {      
-      if(containsPtrAsInt(SubCE))
-	return true;
-    }
-
-  }
-
-  return false;
-
-}
-
-struct constPtrAsInt {
-
-  Constant* BaseOrConst;
-  bool isPtrAsInt;
-  int64_t Offset;
-
-  constPtrAsInt(Constant* B, int64_t O) : BaseOrConst(B), isPtrAsInt(true), Offset(O) { }
-  constPtrAsInt(Constant* C) : BaseOrConst(C), isPtrAsInt(false);
-
-};
-
-static constPtrAsInt evaluatePtrAsIntCE(Constant* C) {
-
-  ConstantExpr* CE = dyn_cast<ConstantExpr>(C);
-  if(!CE)
-    return constPtrAsInt(C);
-
-  if(!containsPtrAsInt(CE))
-    return constPtrAsInt(C);
-
-  switch(CE->getOpcode()) {
-
-  case Instruction::PtrToInt:
-    {
-      int64_t Offset;
-      Constant* Base = GetBaseWithConstantOffset(CE->getOperand(0), Offset);
-      return constPtrAsInt(Base, Offset);
-    }
-  case Instruction::SExt:
-  case Instruction::ZExt:
-    return evaluatePtrAsIntCE(CE->getOperand(0));
-  case Instruction::Add:
-  case Instruction::Sub:
-    {
-
-      constPtrAsInt Op1 = evaluatePtrAsIntCE(CE->getOperand(0));
-      constPtrAsInt Op2 = evaluatePtrAsIntCE(CE->getOperand(1));
-
-      if(!(Op1.isPtrAsInt || Op2.isPtrAsInt)) {
-
-	if(CE->getOpcode() == Instruction::Add)
-	  return constPtrAsInt(ConstantExpr::getAdd(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
-	else
-	  return constPtrAsInt(ConstantExpr::getSub(cast<Constant>(Op1.first), cast<Constant>(Op2.first)));
-
-      }
-
-      if(CE->getOpcode() == Instruction::Add) {
-
-	if(Op2.isPtrAsInt)
-	  std::swap(Op1, Op2);
-
-	if(Op2.isPtrAsInt) // Can't add 2 pointers
-	  return constPtrAsInt(CE);
-
-	if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.BaseOrConst))
-	  return constPtrAsInt(Op1.BaseOrConst, Op1.Offset + Op2C->getLimitedValue());
-	else
-	  return constPtrAsInt(CE);
-
-      }
-      else {
-	
-	if(Op1.isPtrAsInt()) {
-	  
-	  if(Op2.isPtrAsInt()) {
-	    
-	    if(Op1.ConstOrBase == Op2.ConstOrBase) {
-
-	      return constPtrAsInt(ConstantInt::get(Type::getInt64Ty(CE->getContext()), Op1.offset - Op2.offset));
-	      
-	    }
-	    // Else can't subtract 2 pointers with unknown base
-
-	  }
-	  else {
-
-	    if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.BaseOrConst))
-	      return constPtrAsInt(Op1.BaseOrConst, Op1.Offset - Op2C->getLimitedValue());
-	    else
-	      return constPtrAsInt(CE);
-
-	  }
-	  
-	}
-	
-      }
-
-      // Fall through to default
-
-    }	
-
-  default:
-    return constPtrAsInt(CE);
-
-  }
-
-}
-
-void IntegrationAttempt::getPtrAsIntReplacement(ShadowValue& V, bool& isPtr, ShadowValue& Base, int64_t& Offset) {
-
-  ShadowValue VC = getReplacement(V);
-
-  if(Value* VCV = VC.getVal()) {
-
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(VCV)) {
-
-      constPtrAsInt CPI = evaluatePtrAsIntCE(CE);
-      isPtr = CPI.isPtrAsInt;
-      Base = ShadowValue(CPI.BaseOrConst);
-      Offset = CPI.Offset;
-      return;
-
-    }
-    else {
-
-      isPtr = false;
-      Base = ShadowValue(VCV);
-      return;
-
-    }
-
-  }
-  else {
-
-    isPtr = getBaseAndOffset(V, Base, Offset);
-    if(!isPtr)
-      Base = getReplacement(V);
-
-  }
-
-}
-
 bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   Instruction* BOp = SI->invar->I;
@@ -1298,58 +1248,23 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 
 bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
-					   ValSetType& ImpType, ImprovedVal& Improved, 
-					   bool finalise) {
+					   ValSetType& ImpType, ImprovedVal& Improved) {
   
   Instruction* I = SI->invar->I;
 
-  // Special case the merge instructions:
-  bool tryMerge = false;
 
-  switch(I->getOpcode()) {
+  if(inst_is<AllocaInst>(SI) || isNoAliasCall(SI->invar->I)) {
 
-  case Instruction::PHI:
-    {
-      bool Valid;
-      if(tryEvaluateHeaderPHI(SI, Ops, Valid, ImpType, Improved))
-	return Valid;
-      tryMerge = true;
-      break;
-    }
-  case Instruction::Select:
-    Constant* Cond = getConstReplacement(Ops[0].second);
-    if(Cond) {
-      if(cast<ConstantInt>(Cond)->isZero()) {
-	Improved = Ops[2].second;
-	ImpType = Ops[2].first;
-      }
-      else {
-	Improved = Ops[1].second;
-	ImpType = Ops[1].first;
-      }
-      return ImpType != ValSetTypeUnknown;
-    }
-    else {
-      tryMerge = true;
-    }
-    break;
-  case Instruction::Call:
-    tryMerge = true;
-    break;
-  default:
-    break;
-
-  }
-
-  if(tryMerge) {
-
-    return tryEvaluateMerge(SI, Ops, ImpType, Improved, finalise);
-
+    ImpType = ValSetTypePB;
+    Improved.V = ShadowValue(SI);
+    Improved.Offset = 0;
+    return true;
+      
   }
 
   // Try a special case for forwarding FDs: they can be passed through any cast preserving 32 bits.
   // We optimistically pass vararg cookies through all casts.
-  if(inst_is<CastInst>(SI)) {
+  else if(inst_is<CastInst>(SI)) {
 
     CastInst* CI = cast_inst<CastInst>(SI);
     const Type* SrcTy = CI->getSrcTy();
@@ -1523,18 +1438,215 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
 }
 
-void IntegrationAttempt::tryEvaluate(ShadowInstruction* SI) {
+static bool containsPtrAsInt(ConstantExpr* CE) {
 
-  ShadowValue Improved = tryEvaluateResult(SI);
- 
-  if((!Improved.isInval()) && shouldForwardValue(Improved)) {
+  if(CE->getOpcode() == Instruction::PtrToInt)
+    return true;
+
+  for(unsigned i = 0; i < CE->getNumOperands(); ++i) {
+
+    if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CE->getOperand(i))) {      
+      if(containsPtrAsInt(SubCE))
+	return true;
+    }
+
+  }
+
+  return false;
+
+}
+
+static std::pair<ValSetType, ImprovedVal> getValPB(Value* V) {
+
+  Constant* C = dyn_cast<Constant>(V);
+  if(C)
+    return std::make_pair(ValSetTypeUnknown, ImprovedVal());
+
+  if(ConstantExpr* CE = dyn_cast<ConstantExpr>(C)) {
+
+    switch(CE->getOpcode()) {
+
+    case Instruction::PtrToInt:
+    case Instruction::IntToPtr:
+    case Instruction::SExt:
+    case Instruction::ZExt:
+      return getValPB(CE->getOperand(0));
+    case Instruction::GetElementPtr:
+
+      {
+
+	std::pair<ValSetType, ImprovedVal> BasePB = getValPB(CE->getOperand(0));
+
+	if(BasePB.first != ValSetTypePB)
+	  return std::make_pair(ValSetTypeUnknown, ImprovedVal());
+	if(BasePB.second.Offset == LLONG_MAX)
+	  return BasePB;
+
+	int64_t Offset;
+
+	gep_type_iterator GTI = gep_type_begin(GEP);
+	for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
+	     ++I, ++GTI) {
+	  ConstantInt* OpC = cast<ConstantInt>(*I);
+	  if (OpC->isZero()) continue;
     
-    SI->i.replaceWith = Improved;
+	  // Handle a struct and array indices which add their offset to the pointer.
+	  if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	    Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+	  } else {
+	    uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
+	    Offset += OpC->getSExtValue()*Size;
+	  }
+	}
+  
+	return std::make_pair(ValSetTypePB, ImprovedVal(BasePB.second.V, BasePB.second.Offset + Offset);
 
-    if(ShadowInstruction* ImpSI = Improved.getInst()) {
+      }
+  
+    case Instruction::Add:
+    case Instruction::Sub:
+      {
 
-      if(std::find(ImpSI->indirectUsers.begin(), ImpSI->indirectUsers.end(), SI) == ImpSI->indirectUsers.end())
-	ImpSI->indirectUsers.push_back(SI);
+	std::pair<ValSetType, ImprovedVal> Op1 = getValPB(CE->getOperand(0));
+	std::pair<ValSetType, ImprovedVal> Op2 = getValPB(CE->getOperand(1));
+
+	if(Op1.first == ValSetTypeUnknown || Op2.first == ValSetTypeUnknown)
+	  return std::make_pair(ValSetTypeUnknown, ShadowValue());
+
+	if(Op1.first == ValSetTypeScalar && Op2.first == ValSetTypeScalar) {
+
+	  if(CE->getOpcode() == Instruction::Add)
+	    return constPtrAsInt(ConstantExpr::getAdd(cast<Constant>(Op1.second.V), cast<Constant>(Op2.second.V)));
+	  else
+	    return constPtrAsInt(ConstantExpr::getSub(cast<Constant>(Op1.second.V), cast<Constant>(Op2.second.V)));
+
+	}
+
+	if(CE->getOpcode() == Instruction::Add) {
+
+	  if(Op2.first == ValSetTypePB)
+	    std::swap(Op1, Op2);
+
+	  if(Op2.first == ValSetTypePB) // Can't add 2 pointers
+	    return std::make_pair(ValSetTypeUnknown, ImprovedVal());
+
+	  if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V))
+	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset + Op2C->getLimitedValue()));
+	  else
+	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, LLONG_MAX));
+
+	}
+	else {
+	
+	  if(Op1.first == ValSetTypePB) {
+	  
+	    if(Op2.first == ValSetTypePB) {
+	    
+	      if(Op1.second.V == Op2.second.V) {
+
+		if(Op1.second.Offset == LLONG_MAX || Op2.second.Offset == LLONG_MAX)
+		  return std::make_pair(ValSetTypeUnknown, ShadowValue());
+		else
+		  return std::make_pair(ValSetTypeScalar, 
+					ImprovedValue(ShadowValue(ConstantInt::get(Type::getInt64Ty(CE->getContext()))), 
+						      Op1.second.Offset - Op2.second.Offset));
+	      
+	      }
+	      // Else can't subtract 2 pointers with differing bases
+
+	    }
+	    else {
+
+	      if(Op1.second.Offset == LLONG_MAX)
+		return Op1;
+	      if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V))
+		return std::make_pair(ValSetTypePB, ShadowValue(Op1.second.V, Op1.second.Offset - Op2C->getLimitedValue()));
+	      else
+		return std::make_pair(ValSetTypePB, ShadowValue(Op1.second.V));
+
+	    }
+	  
+	  }
+	
+	}
+
+	// Fall through to default
+
+      }	
+
+    default:
+      return std::make_pair(ValSetTypeUnknown, ShadowValue());
+
+    }
+
+  }
+  else if(isa<GlobalVal>(C)) {
+    
+    return std::make_pair(ValSetTypePB, ShadowValue(C));
+
+  }
+  else {
+
+    return std::make_pair(ValSetTypeScalar, ShadowValue(C));
+
+  }
+
+}
+
+bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
+
+  if(OpIdx == SI->getNumOperands()) {
+
+    ValSetType ThisVST;
+    ShadowValue ThisV;
+    if(!tryEvaluateResult(SI, Ops, ThisVST, ThisV)) {
+
+      NewPB.setOverdef();
+      return true;
+
+    }
+    else {
+
+      PointerBase ThisPB(ThisVST);
+      ThisPB.insert(ThisV);
+      NewPB.merge(ThisPB);
+      return true;
+
+    }
+
+  }
+
+  // Else queue up the next operand:
+
+  ShadowValue OpV = SI->getOperand(OpIdx);
+  if(Value* V = OpV.getVal()) {
+
+    Ops[OpIdx] = getValPB(V);
+    return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+
+  }
+  else {
+
+    PointerBase ArgPB;
+    bool ArgPBValid = getPointerBase(OpV, ArgPB);
+    if((!ArgPBValid) || ArgPB.Overdef) {
+      Ops[OpIdx].first = ValSetTypeUnknown;
+      Ops[OpIdx].second.V = ShadowValue();
+      return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+    }
+    else {
+      
+      Ops[OpIdx].first = ArgPB.type;
+      for(uint32_t i = 0; i < ArgPB.Values.size(); ++i) {
+	
+	Ops[OpIdx].second = ArgPB.Values[i];
+	tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+	if(NewPB.Overdef)
+	  break;
+	
+      }
+
+      return true;
 
     }
 
@@ -1542,10 +1654,143 @@ void IntegrationAttempt::tryEvaluate(ShadowInstruction* SI) {
 
 }
 
-void InlineAttempt::tryEvaluateArg(ShadowArg* SA) {
+bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB) {
 
-  ShadowValue& copy = CI->getCallArgOperand(SA->invar->A->getArgNo());
-  SA->i.PB = copy.getPB();
+  std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
+  return tryEvaluateOrdinaryInst(SI, NewPB, 0);
+
+}
+
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+
+  // Special case the merge instructions:
+  bool tryMerge = false;
+ 
+  switch(I->getOpcode()) {
+    
+  case Instruction::Load:
+    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
+  case Instruction::PHI:
+    {
+      bool Valid;
+      if(tryEvaluateHeaderPHI(SI, Ops, Valid, ImpType, Improved))
+	return Valid;
+      tryMerge = true;
+      break;
+    }
+  case Instruction::Select:
+    Constant* Cond = getConstReplacement(Ops[0].second);
+    if(Cond) {
+      if(cast<ConstantInt>(Cond)->isZero()) {
+	Improved = Ops[2].second;
+	ImpType = Ops[2].first;
+      }
+      else {
+	Improved = Ops[1].second;
+	ImpType = Ops[1].first;
+      }
+      return ImpType != ValSetTypeUnknown;
+    }
+    else {
+      tryMerge = true;
+    }
+    break;
+  case Instruction::Call:
+    tryMerge = true;
+    break;
+  default:
+    break;
+
+  }
+
+  if(tryMerge) {
+
+    return tryEvaluateMerge(SI, finalise, NewPB);
+
+  }
+  else {
+
+    return tryEvaluateOrdinaryInst(SI, NewPB);
+
+  }
+
+}
+
+bool InlineAttempt::getArgBasePointer(Argument* A, PointerBase& OutPB) {
+
+  if(!parent)
+    return false;
+  ShadowValue Arg = CI->getCallArgOperand(SA->invar->A->getArgNo());
+  return getPointerBase(Arg, OutPB);
+
+}
+
+bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+
+  Instruction* I = SI->invar->I;
+
+  PointerBase OldPB;
+  bool OldPBValid = getPointerBase(SI, OldPB);
+
+  // Getting no worse:
+  if(finalise && LPBA && ((!OldPBValid) || OldPB.Overdef))
+    return false;
+
+  PointerBase NewPB;
+  bool NewPBValid;
+
+  if(ShadowArg* SA = V.getArg()) {
+
+    InlineAttempt* IA = getFunctionRoot();
+    NewPBValid = IA->getArgBasePointer(SA->invar->A, NewPB);
+
+  }
+  else {
+
+    NewPBValid = getNewPB(SI, NewPB);
+
+  }
+
+  if(!NewPBValid)
+    return false;
+
+  release_assert(NewPB.Overdef || (NewPB.Type != ValSetTypeUnknown));
+
+  if((!OldPBValid) || OldPB != NewPB) {
+
+    if(ShadowInstruction* I = V.getInst()) {
+      if(!inst_is<LoadInst>(I)) {
+	std::string RStr;
+	raw_string_ostream RSO(RStr);
+	printPB(RSO, NewPB, true);
+	RSO.flush();
+	if(!finalise)
+	  optimisticForwardStatus[I->invar->I] = RStr;
+	else
+	  pessimisticForwardStatus[I->invar->I] = RStr;
+      }
+    }
+
+    if(ShadowInstruction* SI = V.getInst()) {
+      SI->i.PB = NewPB;
+    }
+    else {
+      ShadowArg* SA = V.getArg();
+      SA->i.PB = NewPB;
+    }
+
+    if(verbose) {
+      errs() << "Updated dep to ";
+      printPB(errs(), NewPB);
+      errs() << "\n";
+    }
+  
+    if(LPBA)
+      queueUsersUpdatePB(V, LPBA);
+
+    return true;
+
+  }
 
 }
 
