@@ -474,8 +474,8 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
   }
   else {
     
-    Value* Val = V.getVal();
-    OutPB = PointerBase::get(V);
+    std::pair<ValSetType, ImprovedVal> V2PB = getValPB(V2);
+    OutPB = PointerBase::get(V2PB.second, V2PB.first);
     return true;
 
   }

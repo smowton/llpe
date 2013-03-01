@@ -556,7 +556,8 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
       return false;
     }
 
-    NewPB = PointerBase::get(NewSV);
+    if(!getPointerBase(NewSV, NewPB))
+      return false;
 
   }
 
@@ -1039,82 +1040,85 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ShadowValue& Result) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result) {
 
   // A special case: loading from a symbolic vararg:
 
-  ShadowValue LPtr = getReplacement(LoadI->getOperand(0));
-  ShadowValue LPtrStr = ShadowValue(LPtr.stripPointerCasts(), LPtr.va_arg);
+  PointerBase PtrPB;
+  if(!getPointerBase(LoadI->getOperand(0), PtrPB))
+    return false;
 
-  if(LPtrStr.isVaArg() && LPtrStr.getVaArgType() != ValCtx::va_baseptr) {
+  if(PtrPB.type == ValSetTypeVarArg && PtrPB.Values.size() == 1) {
+  
+    ImprovedVal& IV = PtrPB.Values[0];
+    if(IV.getVaArgType() != ValCtx::va_baseptr) {
     
-    ShadowInstruction* PtrI = LPtrStr.getInst();
-    PtrI->parent->IA->getVarArg(LPtrStr.va_arg, Result);
-    LPDEBUG("va_arg " << itcache(LPtrStr) << " " << LPtrStr.va_arg << " yielded " << itcache(Result) << "\n");
+      ShadowInstruction* PtrI = IV.V.getInst();
+      PtrI->parent->IA->getVarArg(IV.Offset, Result);
+      LPDEBUG("va_arg " << itcache(IV.V) << " " << IV.Offset << " yielded " << itcache(Result) << "\n");
     
-    if((!Result.isInval()) && Result.getType() != LoadI->getType()) {
-      if(!(Result.getType()->isPointerTy() && LoadI->getType()->isPointerTy()))
+      if((!Result.isInval()) && Result.getType() != LoadI->getType()) {
+	if(!(Result.getType()->isPointerTy() && LoadI->getType()->isPointerTy()))
+	  Result = ShadowValue();
+      }
+
+      // Is this va_arg read out of bounds or wrong type?
+      if(Result.isInval())
+	return true;
+    
+      if(!shouldForwardValue(Result))
 	Result = ShadowValue();
-    }
 
-    // Is this va_arg read out of bounds or wrong type?
-    if(Result.isInval())
       return true;
-    
-    if(!shouldForwardValue(Result))
-      Result = ShadowValue();
 
-    return true;
+    }
 
   }
 
-  if(Value* PtrVal = LPtr.getVal()) {
+  ShadowValue PtrBase;
+  int64_t PtrOffset;
 
-    if(Constant* PtrC = dyn_cast<Constant>(PtrVal)) {
+  if(getBaseAndConstantOffset(LoadI->getOperand(0), PtrBase, PtrOffset)) {
 
-      int64_t Offset = 0;
-      Constant* Base = GetBaseWithConstantOffset(PtrC, this, Offset);
+    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(Base.first)) {
 
-      if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(Base.first)) {
-	if(GV->isConstant()) {
+      if(GV->isConstant()) {
 
-	  uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
-	  const Type* FromType = GV->getInitializer()->getType();
-	  uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
+	uint64_t LoadSize = (TD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
+	const Type* FromType = GV->getInitializer()->getType();
+	uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
 
-	  if(Offset < 0 || Offset + LoadSize > FromSize) {
-	    Result = ShadowValue();
-	    return true;
-	  }
+	if(Offset < 0 || Offset + LoadSize > FromSize) {
+	  Result = ShadowValue();
+	  return true;
+	}
 
-	  Result = ShadowValue(extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD));
-	  if(!Result.isInval())
-	    return true;
+	Result = getPointerBase(ShadowValue(extractAggregateMemberAt(GV->getInitializer(), Offset, LoadI->getType(), LoadSize, TD)));
+	if(!Result.isInval())
+	  return true;
 
-	  int64_t CSize = TD->getTypeAllocSize(GV->getInitializer()->getType());
-	  if(CSize < Offset) {
-
-	    LPDEBUG("Can't forward from constant: read from global out of range\n");
-	    Result = ShadowValue();
-	    return true;
+	int64_t CSize = TD->getTypeAllocSize(GV->getInitializer()->getType());
+	if(CSize < Offset) {
+	  
+	  LPDEBUG("Can't forward from constant: read from global out of range\n");
+	  Result = PointerBase();
+	  return true;
 	    
-	  }
+	}
 
-	  unsigned char* buf = (unsigned char*)alloca(LoadSize);
-	  memset(buf, 0, LoadSize);
-	  if(ReadDataFromGlobal(GV->getInitializer(), Offset, buf, LoadSize, *TD)) {
+	unsigned char* buf = (unsigned char*)alloca(LoadSize);
+	memset(buf, 0, LoadSize);
+	if(ReadDataFromGlobal(GV->getInitializer(), Offset, buf, LoadSize, *TD)) {
 
-	    Result = ShadowValue(constFromBytes(buf, LoadI->getType(), TD));
-	    return true;
+	  Result = getPointerBase(ShadowValue(constFromBytes(buf, LoadI->getType(), TD)));
+	  return true;
 	    
-	  }
-	  else {
+	}
+	else {
 
-	    LPDEBUG("ReadDataFromGlobal failed\n");
-	    Result = VCNull;
-	    return true;
-
-	  }
+	  LPDEBUG("ReadDataFromGlobal failed\n");
+	  Result = VCNull;
+	  return true;
 
 	}
 
@@ -1127,7 +1131,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Sh
   // Check for loads which are pointless to pursue further because they're known to be rooted on
   // a constant global but we're uncertain what offset within that global we're looking for:
 
-  if(ShadowInstruction* SI = LPtr.getInst()) {
+  if(ShadowInstruction* SI = LoadI->getOperand(0).getInst()) {
 
     if(SI->PB.Values.size() > 0 && SI->PB.Type == ValSetTypePB) {
 
@@ -1271,9 +1275,9 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
-  ShadowValue ConstResult;
+  PointerBase ConstResult;
   if(tryResolveLoadFromConstant(LI, ConstResult)) {
-    NewPB = PointerBase::get(ConstResult);
+    NewPB = ConstResult;
     return true;
   }
 

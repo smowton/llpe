@@ -200,7 +200,7 @@ bool IntegrationAttempt::shouldCheckPB(ShadowValue V) {
   }
 
   PointerBase PB;
-  if(getPB(V, PB)) {
+  if(getPointerBase(V, PB)) {
 
     if((!PB.Overdef) && PB.Values.size() == 1) {
 

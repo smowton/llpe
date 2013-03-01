@@ -125,24 +125,6 @@ PointerBase& PointerBase::insert(ImprovedVal& V) {
 
 }
 
-PointerBase PointerBase::get(ShadowValue V) {
-
-  if(V.isInval())
-    return PointerBase();
-  else if(Value* V2 = V.getVal()) {
-    std::pair<ValSetType, ImprovedVal> V2PB = getValPB(V2);
-    return PointerBase::get(V2PB.second, V2PB.first);
-  }
-  else {
-    PointerBase PB;
-    if(!getPointerBase(V, PB))
-      return PointerBase();
-    else
-      return PB;
-  }
-
-}
-
 bool IntegrationAttempt::openCallSucceeds(Value* V) {
 
   return forwardableOpenCalls[cast<CallInst>(V)]->success;
@@ -276,7 +258,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
   for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
     PointerBase VPB;
-    if(!getPB(*it, VPB)) {
+    if(!getPointerBase(*it, VPB)) {
       if(verbose)
 	errs() << "Predecessor " << itcache(*it) << " undefined\n";
       if(finalise) {

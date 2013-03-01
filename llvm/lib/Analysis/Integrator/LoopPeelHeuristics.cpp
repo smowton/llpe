@@ -759,7 +759,7 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue& V) {
 
 }
 
-void InlineAttempt::getVarArg(int64_t idx, ShadowValue& Result) {
+void InlineAttempt::getVarArg(int64_t idx, PointerBase& Result) {
 
   unsigned numNonFPArgs = 0;
   unsigned numFPArgs = 0;
@@ -789,7 +789,7 @@ void InlineAttempt::getVarArg(int64_t idx, ShadowValue& Result) {
   }
 
   if(Found)
-    Result = CI->getCallArgOperand(i)->getReplacement();
+    getPointerBase(CI->getCallArgOperand(i), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
@@ -799,7 +799,7 @@ void InlineAttempt::getVarArg(int64_t idx, ShadowValue& Result) {
 
 }
 
-void PeelIteration::getVarArg(int64_t idx, ShadowValue& Result) {
+void PeelIteration::getVarArg(int64_t idx, PointerBase& Result) {
 
   parent->getVarArg(idx, Result);
 
