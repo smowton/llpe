@@ -1,4 +1,6 @@
 
+#define DEBUG_TYPE "hypotheticalconstantfolder"
+
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/Instructions.h"

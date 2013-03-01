@@ -92,47 +92,6 @@ bool llvm::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint6
 
 }  
 
-/// GetBaseWithConstantOffset - Analyze the specified pointer to see if it can
-/// be expressed as a base pointer plus a constant offset.  Return the base and
-/// offset to the caller.
-ShadowValue llvm::GetBaseWithConstantOffset(Constant* Ptr, int64_t &Offset) {
-
-  Operator *PtrOp = dyn_cast<Operator>(Ptr);
-  
-  // Just look through bitcasts.
-  if (PtrOp && PtrOp->getOpcode() == Instruction::BitCast)
-    return GetBaseWithConstantOffset(cast<Constant>(PtrOp->getOperand(0)), Offset);
-  
-  // If this is a GEP with constant indices, we can look through it.
-  GEPOperator *GEP = dyn_cast_or_null<GEPOperator>(PtrOp);
-  if(!GEP)
-    return ShadowValue(Ptr);
-  
-  gep_type_iterator GTI = gep_type_begin(GEP);
-  for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
-       ++I, ++GTI) {
-    ConstantInt* OpC = cast<ConstantInt>(*I);
-    if (OpC->isZero()) continue;
-    
-    // Handle a struct and array indices which add their offset to the pointer.
-    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
-      Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
-    } else {
-      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
-      Offset += OpC->getSExtValue()*Size;
-    }
-  }
-  
-  // Re-sign extend from the pointer size if needed to get overflow edge cases
-  // right.
-  unsigned PtrSize = GlobalTD->getPointerSizeInBits();
-  if (PtrSize < 64)
-    Offset = (Offset << (64-PtrSize)) >> (64-PtrSize);
-  
-  return GetBaseWithConstantOffset(cast<Constant>(GEP->getPointerOperand()), Offset);
-
-}
-
 Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigned data_bits, LLVMContext& Context) {
 
   APInt AP(data_bits, data_length, data);
@@ -334,47 +293,35 @@ void PeelAttempt::disableVarargsContexts() {
 
 }
 
-  // The GVN code I swiped this from contained the comment:
-  // "The address being loaded in this non-local block may not be the same as
-  // "the pointer operand of the load if PHI translation occurs.  Make sure
-  // "to consider the right address: use Address not LI->getPointerOperand()"
-
-  // I think I can ignore that because my replacement logic will root both stores on the same underlying
-  // object with constant integer offsets if we can analyse this at all.
-  // That condition is required for the trickier cases (e.g. crossing call boundaries) in any case.
-
-  // This is the original load instruction, but LI->getPointerOperand() is not necessarily
-  // the basis of this load forwarding attempt, e.g. because we're making a sub-attempt after
-  // passing through a memcpy.
-
-bool llvm::getPVFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
 
   ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
   const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
 
-  // Add 2 extra instructions calculating an offset from copyInst, which is the allocation
-  // being read from: cast to i8* and offset by the right number of bytes.
+  ShadowValue copyBase;
+  int64_t copyOffset;
+  if(!getBaseAndConstantOffset(copySource, copyBase, copyOffset))
+    return false;
 
-  LPDEBUG("Attempting to forward a load based on memcpy/va_copy source parameter\n");
+  // If this copy won't define the whole result, look for an integer type of appropriate size.
+  // We don't lose anything this way since it must be bitcastable to ever successfully integrate with
+  // the other partial values.
 
-  Value* castInst;
-  if(copySource->getType() == byteArrayType) {
-    castInst = copySource;
+  uint64_t DefSize = FirstNotDef - FirstDef;
+  const Type* subTargetType;
+
+  if(DefSize != ReadSize) {
+    // This memcpy/move is partially defining the load
+    subTargetType = Type::getIntNTy(copyInst->invar->I->getContext(), DefSize * 8);
   }
   else {
-    castInst = new BitCastInst(copySource, byteArrayType, "", copyInst);
+    subTargetType = originalType;
   }
 
-  Instruction* gepInst = GetElementPtrInst::Create(castInst, OffsetCI, "", copyInst);
-
   // Requery starting at copyInst (the memcpy or va_copy).
-  NewPV = tryForwardLoadTypeless(copyInst, make_vc(gepInst, this), FirstNotDef - FirstDef, validBytes ? &(validBytes[ReadOffset]): 0, error);
+  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[ReadOffset]): 0, error);
 
-  gepInst->eraseFromParent();
-  if(castInst != copySource)
-    cast<Instruction>(castInst)->eraseFromParent();
-
-  return (!NewPV.isEmpty());
+  return (NewPB.Values.size() > 0 && !NewPB.Overdef);
 
 }
 
@@ -408,7 +355,7 @@ bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std
 
 }
 
-bool llvm::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
@@ -417,11 +364,12 @@ bool llvm::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNo
   // Then we can just appropriately bracket the source constant and the outside
   // extract-element-from-aggregate code will pick it up.
 
-  if(Constant* CpySrc = getConstReplacement(I->getCallArgOperand(1))) {
+  ShadowValue CpyBase;
+  int64_t Offset;
+  bool CpyBaseValid = getBaseAndConstantOffset(I->getCallArgOperand(1), CpyBase, Offset);
+  if(CpyBaseValid) {
 
-    int64_t Offset;
-    Constant* CpyBase = GetBaseWithConstantOffset(CpySrc, Offset);
-    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase)) {
+    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(CpyBase.getVal())) {
 
       if(GV->isConstant()) {
       
@@ -434,7 +382,7 @@ bool llvm::getMemcpyPV(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNo
 
   }
 
-  return getPVFromCopy(I->getCallArgOperand(1), I, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPBFromCopy(I->getCallArgOperand(1), I, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
 
 }
 
@@ -482,17 +430,17 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
 
 }
 
-bool llvm::getReallocPV(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
 
   // Handling an alias against the result of a realloc, try investigating as an alias against the original
   // allocation, passed as arg0.
-  return getPVFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPVFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
 
 }
 
-bool llvm::getVaCopyPV(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, bool* validBytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
 
-  return getPVFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, validBytes, NewPV, error);
+  return getPVFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
 
 }
 

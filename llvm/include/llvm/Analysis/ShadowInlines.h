@@ -458,33 +458,6 @@ inline Constant* getConstReplacement(ShadowValue& SV) {
 
 }
 
-inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
-
-  if(ShadowInstruction* FromSI = SV.getInst()) {
-    if(FromSI->i.PB.Overdef || FromSI->i.PB.Values.size() != 1 || FromSI->i.PB.Values[0].Offset == LLONG_MAX || FromSI->i.PB.type != ValSetTypePB)
-      return false;
-    Base = FromSI->i.PB.Values[0].V;
-    Offset = FromSI->i.PB.Values[0].Offset;
-
-  }
-  else if(ShadowArg* FromSA = SV.getArg()) {
-    if(FromSA->i.PB.Overdef || FromSA->i.PB.type != ValSetTypePB || FromSA->i.PB.Values.size() != 1 || FromSA->i.PB.Values[0].Offset == LLONG_MAX)
-      return false;
-    Base = FromSA->i.PB.Values[0].V;
-    Offset = FromSA->i.PB.Values[0].Offset;
-  }
-  else if(Constant* C = dyn_cast<Constant>(SV.getVal())) {
-    
-    Offset = 0;
-    Base = ShadowValue(GetBaseWithConstantOffset(C, Offset));
-    return isGlobalIdentifiedObject(Base.getVal());
-
-  }
-
-  return false;
-
-}
-
 inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
   if(ShadowInstruction* SI = V.getInst()) {
@@ -502,20 +475,41 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
   else {
     
     Value* Val = V.getVal();
-    if(isa<GlobalValue>(Val)) {
-      
-      OutPB = PointerBase::get(V);    
-      return true;
-
-    }
-    else if(isa<ConstantExpr>(Val)) {
-
-      OutPB = PointerBase::get(V);
-      return true;
-
-    }
+    OutPB = PointerBase::get(V);
+    return true;
 
   }
+
+}
+
+inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
+
+  PointerBase SVPB;
+  if(!getPointerBase(SV, SVPB))
+    return false;
+
+  if(SVPB.type != ValSetTypePB || SVPB.Overdef || SVBP.Values.Size() != 1)
+    return false;
+
+  Base = SVPB.Values[0].V;
+  Offset = SVPB.Values[0].Offset;
+  return true;
+
+}
+
+inline bool getBaseObject(ShadowValue& SV, ShadowValue& Base) {
+
+  int64_t ign;
+  return getBaseAndOffset(SV, Base, ign);
+
+}
+
+inline bool getBaseAndConstantOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
+
+  bool ret = getBaseAndOffset(SV, Base, Offset);
+  if(Offset == LLONG_MAX)
+    return false;
+  return ret;
 
 }
 

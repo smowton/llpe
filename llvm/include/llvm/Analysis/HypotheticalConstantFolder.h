@@ -224,7 +224,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   }
 
   static PointerBase get(ShadowValue V);
-  static PointerBase get(ShadowValue V, ValSetType t) { return PointerBase(t).insert(VC); }
+  static PointerBase get(ImprovedVal V, ValSetType t) { return PointerBase(t).insert(V); }
   static PointerBase getOverdef() { return PointerBase(ValSetTypeUnknown, true); }
   
 };

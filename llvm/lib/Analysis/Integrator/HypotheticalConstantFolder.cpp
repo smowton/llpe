@@ -61,6 +61,7 @@ namespace llvm {
 }
 
 PointerBase& PointerBase::insert(ImprovedVal& V) {
+
   if(Overdef)
     return *this;
   if(std::count(Values.begin(), Values.end(), V))
@@ -119,7 +120,27 @@ PointerBase& PointerBase::insert(ImprovedVal& V) {
   else {
     Values.push_back(V);
   }
+
   return *this;
+
+}
+
+PointerBase PointerBase::get(ShadowValue V) {
+
+  if(V.isInval())
+    return PointerBase();
+  else if(Value* V2 = V.getVal()) {
+    std::pair<ValSetType, ImprovedVal> V2PB = getValPB(V2);
+    return PointerBase::get(V2PB.second, V2PB.first);
+  }
+  else {
+    PointerBase PB;
+    if(!getPointerBase(V, PB))
+      return PointerBase();
+    else
+      return PB;
+  }
+
 }
 
 bool IntegrationAttempt::openCallSucceeds(Value* V) {

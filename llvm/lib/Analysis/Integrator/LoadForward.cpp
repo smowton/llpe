@@ -33,12 +33,20 @@ public:
     : BackwardIAWalker(Start, true, InitialCtx), LoadedPtr(Ptr), LoadSize(Size), AA(_AA), TD(_TD) {
 
     LoadPtrOffset = 0;
-    if(!getBaseAndOffset(LoaddedPtr, LoadPtrBase, LoadPtrOffset)) {
+    if(!getBaseAndConstantOffset(LoaddedPtr, LoadPtrBase, LoadPtrOffset)) {
       LoadPtrBase = ShadowValue();
       LoadPtrOffset = 0;
     }
 
   }
+
+  LoadForwardWalker(ShadowInstruction* Start, ShadowValue Base, int64_t Offset, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, void* InitialCtx) 
+    : BackwardIAWalker(Start, true, InitialCtx), LoadedPtr(), LoadPtrBase(Base), LoadPtrOffset(Offset), LoadSize(Size), AA(_AA), TD(_TD) {
+
+
+
+  }
+
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
   virtual bool shouldEnterCall(ShadowInstruction*);
   virtual WalkInstructionResult handleAlias(ShadowInstruction*, AliasAnalysis::AliasResult R, ShadowValue& Ptr, uint64_t PtrSize, void* Ctx) = 0;
@@ -47,14 +55,25 @@ public:
 
 class NormalLoadForwardWalker : public LoadForwardWalker {
 
+  const Type* originalType;
+  bool OptimisticMode;
+  
+  BasicBlock* optimisticBB;
+  IntegrationAttempt* optimisticIA;
+
 public:
 
   PartialVal& inputPV;
-  PartialVal resultPV;
-  ShadowValue FailureSV;
-  std::string FailureCode;
+  PointerBase Result;
+  std::vector<std::string> OverdefReasons;
+  std::vector<ShadowInstruction*> UsedInstructions;
+  PointerBase* activeCacheEntry;
+  IntegrationAttempt* usedCacheEntryIA;
+  LFCacheKey usedCacheEntryKey;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, _AA, _TD, 0), inputPV(iPV), resultPV(PVNull), FailureSV() { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, _AA, _TD, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV) { }
+
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, _AA, _TD, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV) { }
 
   virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
@@ -64,35 +83,10 @@ public:
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
   bool* getValidBuf();
 
-};
-
-class PBLoadForwardWalker : public LoadForwardWalker {
-
-  bool OptimisticMode;
-  const Type* originalType;
-  
-  BasicBlock* optimisticBB;
-  IntegrationAttempt* optimisticIA;
-
-public:
-
-  PointerBase Result;
-  std::vector<std::string> OverdefReasons;
-  std::vector<ShadowInstruction*> PredStores;
-  PointerBase* activeCacheEntry;
-  IntegrationAttempt* usedCacheEntryIA;
-  LFCacheKey usedCacheEntryKey;
-
-  PBLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, bool OM, const Type* OT, AliasAnalysis* _AA, TargetData* _TD, BasicBlock* optBB, IntegrationAttempt* optIA, bool* initialCtx) : LoadForwardWalker(Start, Ptr, Size, _AA, _TD, initialCtx), OptimisticMode(OM), originalType(OT), optimisticBB(optBB), optimisticIA(optIA), activeCacheEntry(0), usedCacheEntryIA(0) { }
-
-  virtual WalkInstructionResult handleAlias(ShadowInstruction*, AliasAnalysis::AliasResult R, ShadowValue, uint64_t PtrSize, void* Ctx);
   void addPBDefn(PointerBase& NewPB, bool cacheAllowed);
   void _addPBDefn(PointerBase& MergeWith, PointerBase& NewPB);
   void setPBOverdef(std::string reason, bool cacheAllowed);
-  virtual bool reachedTop();
-  virtual bool mayAscendFromContext(IntegrationAttempt* IA, void*);
-  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
-  virtual WalkInstructionResult walkFromBlock(ShadowBB*, void* Ctx);
+
   void cancelCache();
 
   virtual void freeContext(void* ctx) {
@@ -107,21 +101,32 @@ public:
 
 };
 
-}
-
 //// Implement generic LF
 
 bool LoadForwardWalker::shouldEnterCall(ShadowInstruction* SI) {
 
   CallInst* CI = cast_inst<CallInst>(SI);
 
-  switch(AA->getModRefInfo(SI, LoadedPtr, LoadSize, true)) {
+  if(!LoadedPtr.isInval()) {
+    switch(AA->getModRefInfo(SI, LoadedPtr, LoadSize, true)) {
+      
+    case AliasAnalysis::NoModRef:
+    case AliasAnalysis::Ref:
+      return false;
+    default:
+      return true;
+    }
+  }
+  else {
 
-  case AliasAnalysis::NoModRef:
-  case AliasAnalysis::Ref:
-    return false;
-  default:
+    // Less ambitious check when we don't have a real instruction to hand to AA
+    ModRefBehavior MRB = getModRefBehavior(ImmutableCallSite(CS));
+    if (MRB == DoesNotAccessMemory)
+      return false;
+    else if (MRB == OnlyReadsMemory)
+      return false;
     return true;
+
   }
 
 }
@@ -198,7 +203,11 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(ShadowInstruction* I, v
 
   }
 
-  AliasAnalysis::AliasResult R = AA->aliasHypothetical(LoadedPtr, LoadSize, Ptr, PtrSize, true);
+  AliasAnalysis::AliasResult R;
+  if(!(LoadedPtr.isInval()))
+    R = AA->tryResolvePointerBases(LoadPtrBase, LoadSize, Ptr, PtrSize, true);
+  else
+    R = AA->aliasHypothetical(LoadedPtr, LoadSize, Ptr, PtrSize, true);
   if(R == AliasAnalysis::NoAlias)
     return WIRContinue;
 
@@ -484,7 +493,35 @@ bool llvm::containsPointerTypes(const Type* Ty) {
 
 }
 
-bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool maySubquery) {
+bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool cacheAllowed, bool maySubquery) {
+
+  if(PB.Overdef) {
+    addPBDefn(PB, cacheAllowed);
+    return false;
+  }
+
+  // For now, forbid using pursuing several different subqueries because a partial defn had multiple values.
+  if(PB.Values.size() >= 1) {
+
+    if(PB.FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty()) {
+
+      addPBDefn(PB, cacheAllowed);
+      return !PB.Overdef;
+
+    }
+    else if(PB.Values.size() == 1 && PB.type == ValSetTypeScalar) {
+
+      PV = PartialVal::getPartial(PB.Values[0].V, 0);
+      // Fall through to standard PV case
+      
+    }
+    else {
+
+      return false;
+
+    }
+    
+  }
 
   PartialVal valSoFar(inputPV);
   if(!valSoFar.combineWith(PV, FirstDef, FirstNotDef, LoadSize, TD, error))
@@ -492,14 +529,10 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, 
 
   if(!valSoFar.isComplete()) {
 
-    if(maySubquery) {
+    // Disallow complex queries when solving for loop invariants:
+    if(maySubquery && cacheAllowed) {
 
-      valSoFar = tryForwardLoadSubquery(I, LoadedPtr, LoadSize, valSoFar, error);
-      if(valSoFar.isEmpty()) {
-
-	return false;
-
-      }
+      NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error);
 
     }
     else {
@@ -510,23 +543,29 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, std::string& error, 
     }
 
   }
-
-  if((!resultPV.isEmpty()) && (resultPV != valSoFar)) {
-      
-    error = "Clash";
-    return false;
-
-  }
   else {
 
-    resultPV = valSoFar;
-    return true;
+    std::string synthError;
+    ShadowValue NewSV;
+    {
+      raw_string_ostream RSO(synthError);
+      NewSV = PVToSV(valSoFar, RSO);
+    }
+    if(NewSV.isInval()) {
+      error = synthError;
+      return false;
+    }
+
+    NewPB = PointerBase::get(NewSV);
 
   }
+
+  addPBDefn(NewPB, cacheAllowed);
+  return !Result.Overdef;
 
 }
 
-bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, std::string& error) {
+bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase& NewPB, PointerBase* NewPB, std::string& error) {
 
   if (inst_is<MemIntrinsic>(I)) {
 
@@ -534,7 +573,7 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
       return getMemsetPV(I, FirstNotDef - FirstDef, NewPV, error);
     else {
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getMemcpyPV(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
+      return getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
     }
 
   }
@@ -554,14 +593,14 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
     else if(F->getName() == "realloc") {
 
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getReallocPV(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
+      return getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
 
     }
     else {
 
       assert(F->getName() == "llvm.va_copy");
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getVaCopyPV(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, validBytes, NewPV, error);
+      return getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
 
     }
 
@@ -569,12 +608,43 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
 
 }
 
-#define NLFWFail(Code) do { FailureCode = Code; FailureSV = ShadowValue(I); return WIRStopWholeWalk; } while(0);
 
-WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void*) { 
+
+#define NLFWFail(Code) do { std::string failureText; { raw_string_ostream RSO(failureText); RSO << Code << " " << (*I); }  setPBOverdef(failureText, cacheAllowed); if(!cacheAllowed) { cancelCache(); } return WIRStopWholeWalk; } while(0);
+
+WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) { 
 
   PartialVal NewPV;
+  PointerBase NewPB;
   uint64_t FirstDef, FirstNotDef, ReadOffset;
+
+  // If we're in the optimistic phase, ignore anything but the following:
+  // * Defining stores with an associated PB
+  // * Defining alloca instructions
+  // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
+  // Don't behave optimistically if we're outside the loop subject to consideration.
+
+  bool cacheAllowed = *((bool*)Ctx);
+
+  if(OptimisticMode && !cacheAllowed) {
+
+    bool ignore = true;
+
+    if(R == AliasAnalysis::MustAlias) {
+      if(inst_is<AllocaInst>(I))
+	ignore = false;
+      else if(inst_is<StoreInst>(I)) {
+	PointerBase ResPB;
+	ShadowValue StoredVal = I->getOperand(0);
+	if(StoredVal.isVal() || getPointerBase(StoredVal))
+	  ignore = false;
+      }
+    }
+      
+    if(ignore)
+      return WIRContinue;
+
+  }
   
   if(R == AliasAnalysis::MustAlias) {
 
@@ -582,14 +652,9 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
     if(inst_is<StoreInst>(I)) {
 
-      ShadowValue NewV = getReplacement(I->getOperand(0), true);
-      if(!NewV.isInval())
-	NewPV = PartialVal::getTotal(NewV);
-      else {
-
+      if(!getPointerBase(I->getOperand(0), NewPB))
 	// Defined by store with no value
 	NLFWFail("DNS");
-
       }
 
     }
@@ -606,7 +671,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
     else {
 
       std::string error;
-      if(!getMIOrReadValue(I, 0, std::min(LoadSize, PtrSize), 0, LoadSize, NewPV, error)) {
+      if(!getMIOrReadValue(I, 0, std::min(LoadSize, PtrSize), 0, LoadSize, NewPV, NewPB, error)) {
 
 	// Memcpy, memset or read failed
 	NLFWFail(error);
@@ -623,7 +688,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
     int64_t WriteOffset = 0;
     ShadowValue WriteBase;
-    if(getBaseAndOffset(Ptr, WriteBase, WriteOffset)) {
+    if(getBaseAndConstantOffset(Ptr, WriteBase, WriteOffset)) {
 
       if(IA->GetDefinedRange(LoadPtrBase, LoadPtrOffset, LoadSize,
 			     WriteBase, WriteOffset, PtrSize,
@@ -648,7 +713,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	else {
 
 	  std::string error;
-	  if(!getMIOrReadValue(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, NewPV, error)) {
+	  if(!getMIOrReadValue(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, NewPV, NewPB, error)) {
 	
 	    // Memset, memcpy or read failed
 	    NLFWFail(error);
@@ -676,21 +741,15 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
   }
 
+  UsedInstructions.push_back(I);
+
   std::string error;
-  if(!addPartialVal(NewPV, error, I, IA, FirstDef, FirstNotDef, true)) {
+  if(!addPartialVal(NewPV, NewPB, error, I, IA, FirstDef, FirstNotDef, cacheAllowed, true)) {
     // Couldn't perform some implicit cast, or encountered a conflict
     NLFWFail(error);
   }
 
   return WIRStopThisPath;
-
-}
-
-bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void*) {
-
-  FailureCode = "UEC";
-  FailureSV = ShadowValue(I);
-  return true;
 
 }
 
@@ -711,38 +770,14 @@ bool NormalLoadForwardWalker::reachedTop() {
       PartialVal valSoFar = inputPV;
       std::string error;
 
-      bool ret = addPartialVal(GPV, error, 0, 0, 0, FirstNotDef, false);
-      if(!ret) {
-	FailureCode = error;
-	FailureSV = ShadowValue(GV);
-      }
-      return ret;
+      return addPartialVal(GPV, error, 0, 0, 0, FirstNotDef, true, false);
 
     }
 
   }
 
-  FailureCode = "UG";
-  FailureSV = ShadowValue(LoadPtrBase);
+  setPBOverdef("Reached top", true);
   return false;
-
-}
-
-bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void*) {
-
-  if(ShadowInst* SI = LoadPtrBase.getInst()) {
-
-    if(IA == SI->parent->IA) {
-    
-      FailureSV = ShadowValue(IA->getEntryInstruction());
-      FailureCode = "Scope";
-      return false;
-
-    }
-
-  }
-    
-  return true;
 
 }
 
@@ -752,9 +787,7 @@ bool* NormalLoadForwardWalker::getValidBuf() {
 
 }
 
-//// Implement PBLF:
-
-void PBLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB) {
+void NormalLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB) {
 
   bool WasOverdef = MergeWith.Overdef;
   MergeWith.merge(NewPB);
@@ -763,7 +796,7 @@ void PBLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB)
 
 }
 
-void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB, bool cacheAllowed) {
+void NormalLoadForwardWalker::addPBDefn(PointerBase& NewPB, bool cacheAllowed) {
 
   _addPBDefn(Result, NewPB);
   if(activeCacheEntry && cacheAllowed)
@@ -771,14 +804,14 @@ void PBLoadForwardWalker::addPBDefn(PointerBase& NewPB, bool cacheAllowed) {
 
 }
 
-void PBLoadForwardWalker::setPBOverdef(std::string reason, bool cacheAllowed) {
+void NormalLoadForwardWalker::setPBOverdef(std::string reason, bool cacheAllowed) {
   OverdefReasons.push_back(reason);
   Result = PointerBase::getOverdef();
   if(activeCacheEntry && cacheAllowed)
     *activeCacheEntry = PointerBase::getOverdef();
 }
 
-void PBLoadForwardWalker::cancelCache() {
+void NormalLoadForwardWalker::cancelCache() {
 
   if(activeCacheEntry) {
 
@@ -790,163 +823,7 @@ void PBLoadForwardWalker::cancelCache() {
 
 }
 
-WalkInstructionResult PBLoadForwardWalker::handleAlias(ShadowInstruction* I, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) {
-
-  // If we're in the optimistic phase, ignore anything but the following:
-  // * Defining stores with an associated PB
-  // * Defining alloca instructions
-  // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
-  // Don't behave optimistically if we're outside the loop subject to consideration.
-
-  bool cacheAllowed = *((bool*)Ctx);
-
-  if(inst_is<StoreInst>(I)) {
-
-    PredStores.push_back(I);
-
-  }
-
-  if(OptimisticMode && !cacheAllowed) {
-
-    bool ignore = true;
-
-    if(R == AliasAnalysis::MustAlias) {
-      if(inst_is<AllocaInst>(I))
-	ignore = false;
-      else if(inst_is<StoreInst>(I)) {
-	PointerBase ResPB;
-	ShadowValue StoredVal = I->getOperand(0);
-	if(getPointerBase(StoredVal, ResPB, I) || !isUnresolved(StoredVal))
-	  ignore = false;
-      }
-    }
-      
-    if(ignore)
-      return WIRContinue;
-
-  }
-  
-  raw_ostream& prout = nulls();
-
-  if(R == AliasAnalysis::MustAlias) {
-
-    if(inst_is<StoreInst>(I)) {
-      PointerBase NewPB;
-      if(getPointerBase(I->getOperand(0), NewPB, I)) {
-	prout << "Add PB ";
-	I->invar->IA->printPB(prout, NewPB);
-	prout << "\n";
-	// Actually addPBDefn will do the merge anyhow, but we annotate the LFA with a reason.
-	if(NewPB.Overdef) {
-	  std::string RStr;
-	  raw_string_ostream RSO(RStr);
-	  RSO << "DO " << I->invar->IA->itcache(I, true);
-	  RSO.flush();
-	  setPBOverdef(RStr, cacheAllowed);
-	}
-	else {
-	  addPBDefn(NewPB, cacheAllowed);
-	}
-      }
-      else {
-	// Try to find a concrete definition, since the concrete defns path is more advanced.
-	// Remember the PB sets only take constants or identified underlying objects.
-	ShadowValue Repl = getReplacement(SI->getOperand(0), true);
-	if(Repl.isInval()) {
-	  int64_t Offset;
-	  getBaseAndOffset(SI->getOperand(0), Repl, Offset);
-	}
-	
-	if(!Repl.isInval()) {
-	  PointerBase PB = PointerBase::get(Repl);
-	  prout << "Add PB ";
-	  IA->printPB(prout, PB);
-	  prout << "\n";
-	  addPBDefn(PB, cacheAllowed);
-	}
-	else {
-	  prout << "Overdef (1) on " << IA->itcache(Repl) << " / " << IA->itcache(ReplUO) << "\n";
-	  std::string RStr;
-	  raw_string_ostream RSO(RStr);
-	  RSO << "DN " << IA->itcache(make_vc(I, IA), true);
-	  RSO.flush();
-	  setPBOverdef(RStr, cacheAllowed);
-	}
-      }
-    }
-    else if(AllocaInst* AI = dyn_cast<AllocaInst>(I)) {
-
-      // Allocas have no defined initial value, so just assume null.
-      PointerBase NewPB = PointerBase::get(ShadowValue(Constant::getNullValue(AI->getType())));
-      addPBDefn(NewPB, cacheAllowed);
-
-    }
-    else {
-      prout << "Overdef (2) on " << IA->itcache(*(I)) << "\n";
-      std::string RStr;
-      raw_string_ostream RSO(RStr);
-      RSO << "DNS " << I->parent->IA->itcache(I, true);
-      RSO.flush();
-      setPBOverdef(RStr, cacheAllowed);
-    }
-
-  }
-  else {
-
-    // MayAlias
-
-    std::string RStr;
-    raw_string_ostream RSO(RStr);
-    RSO << "C " << I->parent->IA->itcache(I, true);
-    RSO.flush();
-    setPBOverdef(RStr, cacheAllowed);
-
-  }
-
-  if(Result.Overdef && !cacheAllowed) {
-    // If we abort within the loop, whatever results we gathered from without will be partial.
-    cancelCache();
-    return WIRStopWholeWalk;
-  }
-  else
-    return WIRStopThisPath;
-  
-}
-
-bool PBLoadForwardWalker::reachedTop() {
-
-  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(LoadPtrBase.getVal())) {
-	    
-    if(GV->hasDefinitiveInitializer()) {
-	
-      Constant* GVC = GV->getInitializer();
-      uint64_t GVCSize = (TD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
-      uint64_t FirstNotDef = std::min(GVCSize - LoadPtrOffset, LoadSize);
-      if(FirstNotDef == LoadSize) {
-
-	Constant* FieldVC = extractAggregateMemberAt(GVC, LoadPtrOffset, originalType, LoadSize, TD);
-	if(FieldVC != VCNull) {
-	  
-	  assert(isa<Constant>(FieldVC.first));
-	  PointerBase NewPB = PointerBase::get(ShadowValue(FieldVC));
-	  addPBDefn(NewPB, true);
-	  return true;
-	  
-	}
-
-      }
-
-    }
-    
-  }
-
-  setPBOverdef("Reached top", true);
-
-  return false;
-
-}
-
-bool PBLoadForwardWalker::blockedByUnexpandedCall(ShadowValue* I, void* Ctx) {
+bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowValue* I, void* Ctx) {
 
   bool cacheAllowed = *((bool*)Ctx);
 
@@ -982,7 +859,7 @@ bool PBLoadForwardWalker::blockedByUnexpandedCall(ShadowValue* I, void* Ctx) {
 
 }
 
-bool PBLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
+bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
 
   bool cacheAllowed = *((bool*)Ctx);
 
@@ -1025,7 +902,7 @@ PointerBase* IntegrationAttempt::createLFPBCacheEntry(LFCacheKey& Key) {
 
 }
 
-WalkInstructionResult PBLoadForwardWalker::walkFromBlock(ShadowBB* BB, void* Ctx) {
+WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void* Ctx) {
 
   bool cacheAllowed = *((bool*)Ctx);
 
@@ -1084,34 +961,22 @@ WalkInstructionResult PBLoadForwardWalker::walkFromBlock(ShadowBB* BB, void* Ctx
   }
 
 }
+ 
+ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& RSO) {
 
-//// Conventional LF interface:
-
-ShadowValue IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker, const Type* TargetType, raw_string_ostream& RSO) {
-
-  if(Walker.resultPV.isEmpty()) {
-    // Can happen for e.g. loads from unreachable code, that hit a call without reachable returns.
-    // We shouldn't ever be able to analyse from dead blocks on an intraprocedural level
-    // and possibly ought to spot this and stop analysing early rather than proceed out the 
-    // notional return edge when there is none.
-    RSO << "No result";
-    return ShadowValue();
-  }
-
-  uint64_t LoadSize = (TD->getTypeSizeInBits(TargetType) + 7) / 8;
-  PartialVal& PV = Walker.resultPV;
+  uint64_t LoadSize = (TD->getTypeSizeInBits(originalType) + 7) / 8;
 
   // Try to use an entire value:
   if(PV.isTotal()) {
 
     ShadowValue Res = PV.TotalSV;
     const Type* sourceType = Res.getType();
-    if(Res.isVaArg() || allowTotalDefnImplicitCast(sourceType, TargetType)) {
+    if(Res.isVaArg() || allowTotalDefnImplicitCast(sourceType, originalType)) {
       return Res;
     }
-    else if(allowTotalDefnImplicitPtrToInt(sourceType, TargetType, TD)) {
+    else if(allowTotalDefnImplicitPtrToInt(sourceType, originalType, TD)) {
       LPDEBUG("Accepting " << itcache(Res) << " implicit ptrtoint to " << *(sourceType) << "\n");
-      Res = getAsPtrAsInt(Res, TargetType);
+      Res = getAsPtrAsInt(Res, originalType);
       return Res;
     }
 
@@ -1132,7 +997,7 @@ ShadowValue IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker,
     if(SalvageC) {
 
       uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
-      Constant* extr = extractAggregateMemberAt(SalvageC, Offset, TargetType, LoadSize, TD);
+      Constant* extr = extractAggregateMemberAt(SalvageC, Offset, originalType, LoadSize, TD);
       if(extr)
 	return ShadowValue(extr);
 
@@ -1140,7 +1005,7 @@ ShadowValue IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker,
     else {
 
       RSO << "NonConstBOps";
-      return VCNull;
+      return ShadowValue();
 
     }
 
@@ -1155,7 +1020,7 @@ ShadowValue IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker,
 
   assert(PV.isByteArray());
 
-  if(containsPointerTypes(TargetType)) {
+  if(containsPointerTypes(originalType)) {
 
     // If we're trying to synthesise a pointer from raw bytes, only a null pointer is allowed.
     unsigned char* checkBuf = (unsigned char*)PV.partialBuf;
@@ -1170,7 +1035,7 @@ ShadowValue IntegrationAttempt::getWalkerResult(NormalLoadForwardWalker& Walker,
 
   }
 
-  return ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, TargetType, TD));
+  return ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, originalType, TD));
 
 }
 
@@ -1291,59 +1156,50 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Sh
 
 }
 
-PartialVal llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, uint64_t LoadSize, PartialVal& ResolvedSoFar, std::string& error) {
+PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error) {
 
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, AA, TD, ResolvedSoFar);
-  Walker.walk();
+  bool* disableCaching = new bool;
+  *disableCaching = false;
 
-  if(!Walker.FailureSV.isInval()) {
+  if(LoadPtr.isInval()) {
+    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, AA, TD, 0, 0, disableCaching, ResolvedSoFar);
+    Walker.walk();
+    
+    if(Walker.Result.Overdef) {
+      
+      error = "";
+      raw_string_ostream RSO(error);
+      RSO << "SQ3 (" describePBWalker(Walker) << ")";
+      
+    }
 
-    error = "";
-    raw_string_ostream RSO(error);
-    RSO << "SQ1 (" << Walker.FailureCode << " " << StartInst->parent->IA->itcache(Walker.FailureSV) << ")";
-    return PVNull;
-
+    return Walker.Result;
   }
+  else {
+    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, AA, TD, 0, 0, disableCaching, ResolvedSoFar);
+    Walker.walk();
+    
+    if(Walker.Result.Overdef) {
+      
+      error = "";
+      raw_string_ostream RSO(error);
+      RSO << "SQ1 (" describePBWalker(Walker) << ")";
+      
+    }
 
-  return Walker.resultPV;
+    return Walker.Result;
+  }
 
 }
 
-ValCtx llvm::tryForwardLoad(ShadowInstruction* StartInst, ShadowValue& LoadPtr, const Type* TargetType, uint64_t LoadSize, raw_string_ostream& RSO) {
+  // Like normal load forwarding, but using a base+offset instead of a pointer.
+  // This is used when forwarding through a copy instruction. 
+PointerBase llvm::tryForwardLoadArtifical(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error) {
 
   PartialVal emptyPV;
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, AA, TD, emptyPV);
-
-  if(TargetType->isStructTy() || TargetType->isArrayTy()) {
-    bool* validBytes = Walker.getValidBuf();
-    markPaddingBytes(validBytes, TargetType, TD);
-  }
-
-  Walker.walk();
-
-  if(Walker.FailureSV != VCNull) {
-    RSO << Walker.FailureCode << " " << itcache(Walker.FailureSV);
-    return VCNull;
-  }
-
-  ShadowValue Res = getWalkerResult(Walker, TargetType, RSO);
-
-  if(Res != VCNull && !shouldForwardValue(Res)) {
-    RSO << "Can't forward " << itcache(Res);
-    return VCNull;
-  }
-
-  if(Walker.resultPV.isVarargTainted)
-    contextTaintedByVarargs = true;
-
-  return Res;
-
-}
-
-PartialVal llvm::tryForwardLoadTypeless(ShadowInstruction* StartInst, ValCtx LoadPtr, uint64_t LoadSize, bool* alreadyValidBytes, std::string& error) {
-
-  PartialVal emptyPV;
-  NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, AA, TD, emptyPV);
+  bool* disableCaching = new bool;
+  *disableCaching = false;
+  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, false, AA, TD, 0, 0, disableCaching, emptyPV);
 
   if(alreadyValidBytes) {
     bool* validBytes = Walker.getValidBuf();
@@ -1352,64 +1208,21 @@ PartialVal llvm::tryForwardLoadTypeless(ShadowInstruction* StartInst, ValCtx Loa
 
   Walker.walk();
 
-  if(!Walker.FailureSV.isInval()) {
+  if(Walker.Result.Overdef) {
 
     error = "";
     raw_string_ostream RSO(error);
-    RSO << "SQ2 (" << StartInst->parent->IA->itcache(Walker.FailureSV) << ")";
-    return PVNull;
+    RSO << "SQ2 (" << describePBWalker(Walker) << ")";
 
   }
 
-  return Walker.resultPV;
-
-}
-
-void IntegrationAttempt::addForwardedInst(Instruction* I, ValCtx User) {
-
-  DenseMap<Instruction*, SmallVector<ValCtx, 4> >::iterator it = instIndirectUsers.find(I);
-  if(it != instIndirectUsers.end()) {
-
-    if(std::find(it->second.begin(), it->second.end(), User) == it->second.end())
-      it->second.push_back(User);
-
-  }
-  else {
-
-    instIndirectUsers[I].push_back(User);
-
-  }
-
-}
-
-ShadowValue IntegrationAttempt::tryForwardLoad(ShadowInstruction* LI) {
-
-  ShadowValue ConstResult;
-  if(tryResolveLoadFromConstant(LI, ConstResult))
-    return ConstResult;
-
-  std::string failure;
-  raw_string_ostream RSO(failure);
-
-  ShadowValue ret = tryForwardLoad(LI, LI->getOperand(0), LI->getType(), AA->getTypeStoreSize(LI->getType()), RSO);
-
-  if(ret.isInval()) {
-    RSO.flush();
-    normalLFFailures[LI] = failure;
-  }
-  else if(ShadowInstruction* ForwardedSI = ret.getInst()) {
-
-    ForwardedSI->i.indirectUsers.push_back(LI);
-      
-  }
-
-  return ret;
+  return Walker.Result;
 
 }
 
 //// PBLF Interface
 
-std::string IntegrationAttempt::describePBWalker(PBLoadForwardWalker& Walker) {
+std::string llvm::describePBWalker(PBLoadForwardWalker& Walker) {
   
   std::string out;
   raw_string_ostream RSO(out);
@@ -1458,6 +1271,12 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
+  ShadowValue ConstResult;
+  if(tryResolveLoadFromConstant(LI, ConstResult)) {
+    NewPB = PointerBase::get(ConstResult);
+    return true;
+  }
+
   // Freed by the walker:
   bool* initialCtx = new bool;
   // Per-block context records whether we've passed the cache threshold.
@@ -1466,10 +1285,19 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   // since everything before that point is a fixed certainty.
   *initialCtx = 0;
 
-  PBLoadForwardWalker Walker(LI, LI->getOperand(0), 
-			     AA->getTypeStoreSize(LI->getType()),
-			     !finalise, LI->getType(), AA, TD,
-			     CacheThresholdBB, CacheThresholdIA, initialCtx);
+  const Type* TargetType = LI->getType();
+
+  PartialVal emptyPV;
+  NormalLoadForwardWalker Walker(LI, LI->getOperand(0),
+				 AA->getTypeStoreSize(TargetType), TargetType,
+				 !finalise, AA, TD,
+				 CacheThresholdBB, CacheThresholdIA, initialCtx,
+				 emptyPV);
+
+  if(TargetType->isStructTy() || TargetType->isArrayTy()) {
+    bool* validBytes = Walker.getValidBuf();
+    markPaddingBytes(validBytes, TargetType, TD);
+  }
 
   bool verbose = false;
 
@@ -1509,11 +1337,16 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
   }
 
-  for(std::vector<ShadowInstruction*>::iterator it = Walker.PredStores.begin(), it2 = Walker.PredStores.end(); it != it2; ++it) {
+  if(!finalise) {
 
-    // Register our dependency on various instructions:
-    if(std::find(LI, (*it)->PBIndirectUsers.begin(), (*it)->PBIndirectUsers.end()) ==  (*it)->PBIndirectUsers.end())
-      (*it)->PBIndirectUsers.push_back(LI);
+    for(std::vector<ShadowInstruction*>::iterator it = Walker.UsedInstructions.begin(), it2 = Walker.UsedInstructions.end(); it != it2; ++it) {
+
+      // Register our dependency on various instructions:
+      // This is only useful during loop invariant analysis.
+      if(std::find(LI, (*it)->PBIndirectUsers.begin(), (*it)->PBIndirectUsers.end()) ==  (*it)->PBIndirectUsers.end())
+	(*it)->PBIndirectUsers.push_back(LI);
+
+    }
 
   }
 
@@ -1528,15 +1361,11 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   if(Walker.Result.Values.size() == 0 && !Walker.Result.Overdef)
     return false;
 
+  if(Walker.isVarargTainted)
+    contextTaintedByVarargs = true;
+
   NewPB = Walker.Result;
   return true;
 
 }
 
-void IntegrationAttempt::checkLoad(ShadowInstruction* LI) {
-
-  ShadowValue Result = tryForwardLoad(LI);
-  if(!Result.isInval())
-    LI->i.replaceWith = Result;
-
-}

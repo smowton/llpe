@@ -294,56 +294,64 @@ namespace {
 
     }
 
-    bool getPointerBase(ShadowValue V, SmallVector<ShadowValue, 4>& VCs, int64_t& Offset, bool usePBKnowledge) {
+    AliasAnalysis::AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
 
-      ShadowValue Base;
-      if(getBaseAndOffset(V, Base, Offset)) {
-	VCs.push_back(Base);
-	return true;
+      if(PB1.Values.size() == 1 && PB2.Values.size() == 1 && PB1.Values[0].Offset != LLONG_MAX && PB2.Values[0].Offset != LLONG_MAX && PB1.Values[0].V == PB2.Values[0].V)
+	return AliasAnalysis::MustAlias;
+
+      for(unsigned i = 0; i < PB1.Values.size(); ++i) {
+
+	for(unsigned j = 0; j < PB2.Values.size(); ++j) {
+
+	  if(!basesMayAlias(PB1.Values[i].V, PB2.Values[j].V))
+	    continue;
+
+	  if(PB1.Values[i].Offset == LLONG_MAX || PB2.Values[j].Offset == LLONG_MAX)
+	    return AliasAnalysis::MayAlias;
+	   
+	  if(!((PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || ((PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
+	    return AliasAnalysis::MayAlias;
+
+	}
+
       }
-
-      if(!usePBKnowledge)
-	return false;
-
-      Offset = LLONG_MAX;
-
-      PointerBase PB;
-      if((!getPointerBaseFalling(V, PB)) || (PB.Overdef))
-	return false;
-      else {
-	VCs = PB.Values;
-	return true;
-      }
+	
+      return AliasAnalysis::NoAlias;
 
     }
 
-    AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1, ShadowValue V2, bool usePBKnowledge) {
-
-      SmallVector<ShadowValue, 4> VCs1, VCs2;
-      int64_t V1Offset, V2Offset;
-      if(getPointerBase(V1, VCs1, V1Offset, usePBKnowledge) && getPointerBase(V2, VCs2, V2Offset, usePBKnowledge)) {
-
-	if(VCs1.size() == 1 && VCs2.size() == 1 && V1Offset != LLONG_MAX && V2Offset != LLONG_MAX && VCs1[0] == VCs2[0])
-	  return AliasAnalysis::MustAlias;
-
-	for(unsigned i = 0; i < VCs1.size(); ++i) {
-	  for(unsigned j = 0; j < VCs2.size(); ++j) {
-
-	    if(basesMayAlias(VCs1[i], VCs2[j]))
-	      return AliasAnalysis::MayAlias;
-
-	  }
-	}
-	
-	return AliasAnalysis::NoAlias;
-
-      }
-      else {
-
+    AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+      
+      PointerBase PB1(ValSetTypePB);
+      PB1.insert(ImprovedVal(V1Base, V1Offset));
+      PointerBase PB2;
+      if(!getPointerBase(V2, PB2))
+	return AliasAnalysis::MayAlias;
+      
+      if(PB2.Overdef || PB2.Values.size() == 0)
 	return AliasAnalysis::MayAlias;
 
-      }
+      if(PB2.type != ValSetTypePB)
+	return AliasAnalysis::MayAlias;
 
+      return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+
+    }
+
+    AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+      
+      PointerBase PB1, PB2;
+      if((!getPointerBase(V1, PB1)) || (!getPointerBase(V2, PB2)))
+	return AliasAnalysis::MayAlias;
+      
+      if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
+	return AliasAnalysis::MayAlias;
+
+      if(PB1.type != ValSetTypePB || PB2.type != ValSetTypePB)
+	return AliasAnalysis::MayAlias;
+
+      return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+       
     }
 
     virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size,
@@ -353,7 +361,7 @@ namespace {
       assert(Visited.empty() && "Visited must be cleared after use!");
       AliasResult Alias;
       if((!V1.isVal()) || (!V2.isVal())) {
-	Alias = tryResolvePointerBases(V1, V2, usePBKnowledge);
+	Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
 	if(Alias != AliasAnalysis::MayAlias)
 	  return Alias;
       }
