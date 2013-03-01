@@ -187,7 +187,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
-  PointerBase& insert(ShadowValue V) {
+  PointerBase& insert(ImprovedVal& V); {
     if(Overdef)
       return *this;
     if(std::count(Values.begin(), Values.end(), V))

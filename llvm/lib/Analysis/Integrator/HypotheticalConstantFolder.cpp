@@ -62,6 +62,68 @@ namespace llvm {
 
 }
 
+PointerBase& PointerBase::insert(ImprovedVal& V) {
+  if(Overdef)
+    return *this;
+  if(std::count(Values.begin(), Values.end(), V))
+    return *this;
+
+  // Pointer merge: if either the new val or any of our own are vague pointers
+  // to object X, any exact pointers to X should be merged in.
+  // Further, if we're about to become oversized and we contain more than one exact
+  // pointer to X, merge them into a vague one.
+
+  if(type == ValSetTypePB) {
+
+    bool doMerge = false;
+
+    if(Values.size() + 1 > PBMAX)
+      doMerge = true;
+    
+    if(V.Offset == LLONG_MAX)
+      doMerge = true;
+
+    if(!doMerge) {
+
+      for(unsigned i = 0; i < Values.size(); ++i) {
+
+	if(Values[i].V == V.V && Values[i].Offset == LLONG_MAX)
+	  doMerge = true;
+
+      }
+
+    }
+
+    if(doMerge) {
+
+      for(SmallVector<ImprovedVal, 1>::iterator it = Values.end(), endit = Values.begin(); it != endit; --it) {
+
+	ImprovedVal& ThisV = *(it - 1);
+	if(ThisV.V == V.V)
+	  Values.erase(it);
+
+      }
+
+      if(Values.size() + 1 > PBMAX)
+	setOverdef();
+      else
+	Values.push_back(ImprovedVal(V.V, LLONG_MAX));
+
+      return *this;
+
+    }
+
+  }
+
+  if(Values.size() + 1 > PBMAX) {
+    setOverdef();
+  }
+  else {
+    Values.push_back(V);
+  }
+  return *this;
+}
+
 bool IntegrationAttempt::openCallSucceeds(Value* V) {
 
   return forwardableOpenCalls[cast<CallInst>(V)]->success;
