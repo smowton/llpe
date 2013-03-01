@@ -1,3 +1,27 @@
+
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+
+#include "llvm/Instructions.h"
+#include "llvm/IntrinsicInst.h"
+#include "llvm/BasicBlock.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/Analysis/AliasAnalysis.h" // For isIdentifiedObject
+#include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/Analysis/PostDominators.h"
+// For elaboration of Calculate et al in Dominators.h:
+#include "llvm/Analysis/DominatorInternals.h"
+#include "llvm/Support/CFG.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include "PostDoms.h"
+
+using namespace llvm;
+
 // Implement instruction/block analysis concerning control flow, i.e. determining a block's
 // status and relatedly analysing terminator instructions.
 
