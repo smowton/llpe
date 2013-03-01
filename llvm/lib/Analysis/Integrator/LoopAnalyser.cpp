@@ -1,4 +1,7 @@
-// Implementation of an SCCP-like solver to discover the base object pointers refer to.
+// Implement a solver that finds fixed point solutions for instruction resolution when those instructions
+// have cycles in their def-use graph, i.e. are part of a loop.
+// The instruction evaluation logic is in HCF; this part concerns maintaining a queue of pending instructions
+// and determining which instructions to recheck when an instruction is updated.
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
