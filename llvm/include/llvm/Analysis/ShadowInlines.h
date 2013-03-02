@@ -520,3 +520,10 @@ inline bool mayBeReplaced(ShadowArg* SA) {
   return willBeReplaced(SA->i);
 }
 
+inline void setReplacement(ShadowInstruction* SI, Constant* C) {
+
+  SI->i.PB.Values.clear();
+  SI->i.PB.Values.push_back(ImprovedVal(ShadowValue(C)));
+  SI->i.PB.type = ValSetTypeScalar;
+
+}

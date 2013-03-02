@@ -211,7 +211,7 @@ static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
 	for(unsigned i = 0; i < PB.Values.size(); ++i) {
 
-	  Constant* ThisVal = dyn_cast<Constant>(PB.Values[i].V);
+	  Constant* ThisVal = dyn_cast_or_null<Constant>(PB.Values[i].V.getVal());
 	  if(!ThisVal) {
 	    OnlyVal = 0;
 	    break;
