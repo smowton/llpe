@@ -525,3 +525,4 @@ inline bool mayBeReplaced(ShadowInstruction* SI) {
 inline bool mayBeReplaced(ShadowArg* SA) {
   return willBeReplaced(SA->i);
 }
+

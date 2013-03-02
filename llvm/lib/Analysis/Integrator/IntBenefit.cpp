@@ -296,7 +296,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
       for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
 	ShadowInstruction* I = BB->insts[j];
-	if(valueWillBeRAUWdOrDeleted(ShadowValue(I))) {
+	if(willBeReplacedOrDeleted(ShadowValue(I))) {
 	  totalIntegrationGoodness += eliminatedInstructionPoints;
 	  timeBonus += eliminatedInstructionPoints;
 	}

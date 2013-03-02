@@ -1,4 +1,20 @@
 
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+
+#include "llvm/Instructions.h"
+#include "llvm/BasicBlock.h"
+#include "llvm/IntrinsicInst.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Target/TargetData.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/CFG.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <vector>
+
+using namespace llvm;
 
 static uint32_t DIEProgressN = 0;
 const uint32_t DIEProgressLimit = 1000;
@@ -196,19 +212,7 @@ void IntegrationAttempt::visitUsers(ShadowValue V, VisitorContext& Visitor) {
 
 }
 
-bool IntegrationAttempt::valueWillBeReplacedWithConstantOrDeleted(ShadowValue V) {
-
-  return valueWillNotUse(V, VCNull, true);
-
-}
-
-bool IntegrationAttempt::valueWillBeRAUWdOrDeleted(ShadowValue V) {
-  
-  return valueWillNotUse(V, VCNull);
-  
-}
-
-bool llvm::valueWillBeDeleted(ShadowValue V) {
+bool llvm::willBeDeleted(ShadowValue V) {
 
   if(ShadowInst* SI = V.getInst()) {
     return SI->dieStatus != INSTSTATUS_UNKNOWN;
@@ -222,48 +226,36 @@ bool llvm::valueWillBeDeleted(ShadowValue V) {
 
 }
 
-// Return true if V will not use OtherVC.
-// V is an instruction or argument.
-bool llvm::valueWillNotUse(ShadowValue V, ShadowValue OtherVC, bool mustReplWithConstant) {
+bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
-  if(ShadowInstruction* I = V.getInst()) {
-    if(I->i.dieStatus != INSTSTATUS_UNKNOWN)
-      return true;
+  if(willBeDeleted(V))
+    return true;
+  if(mayBeReplaced(V)) {
+
+    ShadowValue Base;
+    if(getBaseObject(V, Base)) {
+
+      if(Base.getCtx() && !Base.getCtx()->isAvailableFromCtx(V.getCtx()))
+	return false;
+
+    }
+
+    return true;
+
   }
-  else {
-    ShadowArg* A = V.getArg();
-    if(A->i.dieStatus != INSTSTATUS_UNKNOWN)
-      return true;
-  }
-
-  PointerBase PB;
-  getPointerBase(V, PB);
   
-  if(PB.Values.size() != 1)
-    return false;
-
-  if(PB.type == ValSetTypeVarArg)
-    return false;
-
-  // Not replaced with constant?
-  if(mustReplWithConstant && PB.type != ValSetTypeScalar)
-    return false;
-  
-  if(PB.type == ValSetTypeScalar) {
-
-    // Will we be able to fold the replacement?
-    if(!VC.getCtx()->isAvailableFromCtx(V.getCtx()))
-      return false;
-  
-  }
-
-  return true;
+  return false;
 
 }
 
-bool InlineAttempt::argWillNotUse(uint32_t argIdx, ShadowValue V) {
+bool llvm::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
-  return valueWillNotUse(ShadowValue(shadowArgs[argIdx]), V);
+  if(willBeDeleted(V))
+    return true;
+  if(getConstReplacement(V))
+    return true;
+
+  return false;
 
 }
 
@@ -349,7 +341,7 @@ public:
       }
 
     }
-    else if(valueWillNotUse(ShadowValue(UserI), V))
+    else if(willBeReplaced(UserI))
       return;
     else {
 
@@ -390,21 +382,6 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
   }
   else {
 
-    // Check indirect users if any:
-
-    if(ShadowInstruction* I = V.getInst()) {
-
-      for(SmallVector<ShadowInstruction*, 1>::iterator II = I->i.indirectUsers.begin(), IE = I->i.indirectUsers.end(); II != IE; ++II) {
-	
-	if(!(II->dieStatus & INSTSTATUS_DEAD))
-	  return false;
-
-      }
-
-    }
-
-    // Check direct users:
-
     DIVisitor DIV(V, this);
     visitUsers(V, DIV);
 
@@ -424,6 +401,8 @@ void InlineAttempt::runDIE() {
   // And then our formal arguments:
   for(uint32 i = 0; i < F.arg_size(); ++i) {
     ShadowArg* SA = shadowArgs[i];
+    if(willBeReplacedWithConstantOrDeleted(ShadowValue(SI)))
+      continue;
     if(valueIsDead(ShadowValue(SA))) {
       SA->dieStatus |= INSTSTATUS_DEAD;
     }
@@ -468,7 +447,7 @@ void IntegrationAttempt::runDIE() {
 
       if(!shouldDIE(SI))
 	continue;
-      if(valueWillBeReplacedWithConstantOrDeleted(SI))
+      if(willBeReplacedWithConstantOrDeleted(ShadowValue(SI)))
 	continue;
 
       CallInst* CI = dyn_cast_inst<CallInst>(SI);
