@@ -62,12 +62,9 @@ void IntegrationAttempt::localPrepareCommit() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      if(ShadowInstruction* SI = BB->insts[j]->i.replaceWith.getInst()) {
-
-	if(SI->getCtx() && !SI->getCtx()->isAvailableFromCtx(this))
-	  BB->insts[j]->i.replaceWith = ShadowValue();
-
-      }
+      ShadowInstruction* SI = BB->insts[j];
+      if(mayBeReplaced(SI) && !willBeReplacedOrDeleted(ShadowValue(SI)))
+	SI->i.PB = PointerBase();
 
     }
 
@@ -183,18 +180,15 @@ static Value* getCommittedValue(ShadowValue& SV) {
 
   if(Value* V = SV.getVal())
     return V;
-  else if(ShadowInstruction* SI = SV.getInst()) {
-    if(!SI->i.replaceWith.isInval())
-      return getCommittedValue(SI->replaceWith);
-    else
-      return SI->i.committedInst;
+
+  release_assert((!willBeDeleted(SV)) && "Instruction depends on deleted value");
+
+  if(ShadowInstruction* SI = SV.getInst())
+    return SI->i.committedVal;
   }
   else {
     ShadowArg* SA = SV.getArg();
-    if(!SA->i.replaceWith.isInval())
-      return getCommittedValue(SA->i.replaceWith);
-    else
-      return SA->parent->getArgCommittedValue(SA);
+    return SA->parent->getArgCommittedValue(SA);
   }
   
 }
@@ -287,7 +281,7 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
   if(BB->invar->idx == parentPA->headerIdx) {
     
     ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
-    PHINode* NewPN = I->committedInst = PHINode::Create(I->invar->I->getType(), "header", emitBB);
+    PHINode* NewPN = I->committedVal = PHINode::Create(I->invar->I->getType(), "header", emitBB);
     ShadowBB* SourceBB;
 
     if(iterCount == 0) {
@@ -332,7 +326,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 
 void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
-  PHINode* NewPN = I->committedInst = PHINode::Create(I->invar->I->getType(), "", emitBB);
+  PHINode* NewPN = I->committedVal = PHINode::Create(I->invar->I->getType(), "", emitBB);
 
   // Special case: emitting the header PHI of a residualised loop.
   // Make an empty node for the time being; this will be revisted once the loop body is emitted
@@ -347,9 +341,9 @@ void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
   uint32_t i;
   for(i = 0; i < BB->insts.size() && inst_is<PHINode>(BB->insts[i]); ++i) {
-    if(!BB->insts[i]->committedInst)
+    if(!BB->insts[i]->committedVal)
       continue;
-    populatePHINode(BB, BB->insts[i], cast<PHINode>(BB->insts[i]->committedInst));
+    populatePHINode(BB, BB->insts[i], cast<PHINode>(BB->insts[i]->committedVal));
   }
 
 }
@@ -377,9 +371,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       release_assert(exitBlock && "Exit block unset?");
       BranchInst::Create(exitBlock, emitBB);
 
-      if(!F.getReturnTy()->isVoidTy()) {
+      if(PHINode* retPHI = getFunctionRoot()->returnPHI) {
 	Value* PHIVal = getValueAsType(getCommittedValue(I->getOperand(0)), F.getReturnTy());
-	getFunctionRoot()->returnPHI->addIncoming(PHIVal, BB->committedTail);
+	retPHI->addIncoming(PHIVal, BB->committedTail);
       }
 
     }
@@ -439,7 +433,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 	ShadowValue op = I->getOperand(i);
 	Value* opV = getCommittedValue(op);
-	I->committedInst->setOperand(i, opV);
+	newTerm->setOperand(i, opV);
 
       }
 
@@ -583,9 +577,13 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
 	// Make a PHI node that will catch return values, and make it our committed
 	// value so that users get that instead of the call.
+
+	bool createRetPHI = !IA->F.getReturnTy()->isVoidTy();
+	if(createRetPHI && willBeReplacedOrDeleted(ShadowValue(I)))
+	  createRetPHI = false;
 	
-	if(I->i.instStatus == INSTSTATUS_ALIVE && I->i.replaceWith.isInval()) 
-	  I->i.committedInst = IA->returnPHI = PHINode::Create(IA->F.getReturnTy(), "retval", IA->returnBlock);
+	if(createRetPHI)
+	  I->i.committedVal = IA->returnPHI = PHINode::Create(IA->F.getReturnTy(), "retval", IA->returnBlock);
 
 	// Emit further instructions in this ShadowBB to the successor block:
 	emitBB = IA->returnBlock;
@@ -615,16 +613,85 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 void IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Clone all attributes:
-  I->committedInst = I->invar->I->clone();
-  emitBB->getInstList().push_back(I->committedInst);
+  Instruction* newI = I->invar->I->clone();
+  I->committedVal = newI;
+  emitBB->getInstList().push_back(cast<Instruction>(newI));
 
   // Normal instruction: no BB arguments, and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
     ShadowValue op = I->getOperand(i);
     Value* opV = getCommittedValue(op);
-    const Type* needTy = I->committedInst->getOperand(i, opV)->getType();
-    I->committedInst->setOperand(i, getValAsType(opV, needTy));
+    const Type* needTy = newI->getOperand(i, opV)->getType();
+    newI->setOperand(i, getValAsType(opV, needTy));
+
+  }
+
+}
+
+void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB) {
+
+  ShadowValue Base;
+  int64_t Offset;
+  getBaseAndConstantOffset(ShadowValue(I), Base, Offset);
+  const Type* Int8Ptr = Type::getInt8PtrTy(I->invar->I->getContext());
+
+  if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
+
+    // Rep as a constant expression:
+    Constant* CastGV;
+
+    if(GV->getType() != Int8Ptr)
+      CastGV = ConstantExpr::getBitCast(GV, Int8Ptr);
+    else
+      CastGV = GV;
+
+    Constant* OffsetGV;
+    if(Offset == 0)
+      OffsetGV = CastGV;
+    else {
+      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
+      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, Offset, 1);
+    }
+    
+    // Cast to proper type:
+    if(I->getType() != Int8Ptr) {
+      I->committedVal = ConstantExpr::getBitCast(OffsetGV, I->getType());
+    }
+    else {
+      I->committedVal = OffsetGV;
+    }
+
+  }
+  else {
+
+    ShadowInstruction* BaseSI = Base.getInst();
+    Instruction* BaseI = cast<Instruction>(BaseSI->committedVal);
+    release_assert(BaseI && "Synthing pointer atop uncommitted allocation");
+
+    // Get byte ptr:
+    Instruction* CastI;
+    if(BaseI->getType() != Int8Ptr)
+      CastI = new BitCastInst(BaseI, Int8Ptr, "synthcast", emitBB);
+    else
+      CastI = BaseI;
+
+    // Offset:
+    Instruction* OffsetI;
+    if(Offset == 0)
+      OffsetI = CastI;
+    else {
+      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
+      OffsetI = GetElementPtrInst::Create(OffsetI, Offset, "synthgep", emitBB);
+    }
+
+    // Cast back:
+    if(I->getType() == Int8Ptr) {
+      I->committedInst = OffsetI;
+    }
+    else {
+      I->committedInst = new BitCastInst(OffsetI, I->getType(), "synthcastback", emitBB);
+    }
 
   }
 
@@ -678,12 +745,31 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
       if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
 	emitCall(BB, I, emitBB);
-	continue;
+	if(I->i.committedVal)
+	  continue;
+	// Else fall through to fill in a committed value:
       }
 
       if(I->dieStatus != INSTSTATUS_ALIVE)
 	continue;
-      if((!I->replaceWith.isInval()) && !I->replaceWith.isVaArg())
+
+      if(Constant* C = getConstReplacement(ShadowValue(I))) {
+	I->committedVal = ShadowValue(C);
+	continue;
+      }
+
+      else if(I->i.PB.type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
+	I->committedVal = I->i.PB.Values[0].V;
+	continue;
+      }
+      
+      else if(I->i.PB.type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
+	synthCommittedPointer(I, emitBB);
+	continue;
+      }
+
+      // Already emitted calls above:
+      if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
 	continue;
 
       // We'll emit an instruction. Is it special?

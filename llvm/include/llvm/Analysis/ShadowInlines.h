@@ -290,6 +290,7 @@ struct ShadowInstruction {
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
   SmallVector<ShadowInstruction*, 1> indirectUsers;
+  Value* committedVal;
 
   uint32_t getNumOperands() {
     return invar->operandIdxs.size();
@@ -418,42 +419,35 @@ uint32_t ShadowBBInvar::succs_size() {
   return succIdxs.size();
 }
 
-inline ShadowValue getReplacement(ShadowArg* SA, bool mustImprove = false) {
+inline Constant* getConstReplacement(ShadowArg* SA) {
  
-  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0)
-    return mustImprove ? ShadowValue() : ShadowValue(SA);
+  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0 || SA->i.PB.type != ValSetTypeScalar)
+    return 0;
   else
-    return SA->i.PB.Values[0].V;
+    return cast<Constant>(SA->i.PB.Values[0].V);
 
 }
 
-inline ShadowValue getReplacement(ShadowInstruction* SI, bool mustImprove = false) {
+inline ShadowValue getConstReplacement(ShadowInstruction* SI) {
 
-  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0)
-    return mustImprove ? ShadowValue() : ShadowValue(SI);
+  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0 || SA->i.PB.type != ValSetTypeScalar)
+    return 0;
   else
-    return SI->i.PB.Values[0].V;
+    return cast<Constant>(SI->i.PB.Values[0].V);
 
 }
 
-inline ShadowValue getReplacement(ShadowValue& SV, bool mustImprov = false) {
+inline ShadowValue getConstReplacement(ShadowValue& SV) {
 
   if(ShadowInstruction* SI = SV.getInst()) {
-    return getReplacement(SI);
+    return getConstReplacement(SI);
   }
   else if(ShadowArg* SA = SV.getArg()) {
-    return getReplacement(SA);
+    return getConstReplacement(SA);
   
   else {
-    return SV;
+    return dyn_cast_or_null<Constant>(SV.getVal());
   }
-
-}
-
-inline Constant* getConstReplacement(ShadowValue& SV) {
-
-  ShadowValue V = getReplacement(SV);
-  return dyn_cast_or_null<Constant>(V.getVal());
 
 }
 

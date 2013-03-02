@@ -388,9 +388,15 @@ void IntegrationAttempt::countDependentLoads() {
       ShadowInstruction* I = BB->insts[j];
       if(inst_is<LoadInst>(I)) {
 
-	if(ShadowInstruction* ReplI = I->i.replaceWith.getInst()) {
+	ShadowValue Base;
+	int64_t IgnOffset;
+	if(getBaseAndConstantOffset(ShadowValue(I), Base, IgnOffset)) {
 
-	  ReplI->parent->IA->nDependentLoads++;
+	  if(ShadowInstruction* ReplI = Base.getInst()) {
+	    
+	    ReplI->parent->IA->nDependentLoads++;
+
+	  }
 
 	}
 
