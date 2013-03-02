@@ -277,7 +277,6 @@ enum ShadowInstDIEStatus {
 struct InstArgImprovement {
 
   PointerBase PB;
-  SmallVector<ShadowInstruction*, 1> indirectUsers; 
   ShadowInstDIEStatus dieStatus;
 
 InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }
@@ -513,14 +512,16 @@ inline bool getBaseAndConstantOffset(ShadowValue& SV, ShadowValue& Base, int64_t
 
 }
 
-inline bool isUnresolved(InstArgImprovement& IAI) {
-  return !IAI.replaceWith.isInval();
+inline bool mayBeReplaced(InstArgImprovement& IAI) {
+  return IAI.PB.Values.size() == 1 && (IAI.PB.type == ValSetTypeScalar ||
+				       (IAI.PB.type == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
+				       IAI.PB.type == ValSetTypeFD);
 }
 
-inline bool isUnresolved(ShadowInstruction* SI) {
-  return isUnresolved(SI->i);
+inline bool mayBeReplaced(ShadowInstruction* SI) {
+  return willBeReplaced(SI->i);
 }
 
-inline bool isUnresolved(ShadowArg* SA) {
-  return isUnresolved(SA->i);
+inline bool mayBeReplaced(ShadowArg* SA) {
+  return willBeReplaced(SA->i);
 }

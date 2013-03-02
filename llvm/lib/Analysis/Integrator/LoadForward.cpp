@@ -1347,8 +1347,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
       // Register our dependency on various instructions:
       // This is only useful during loop invariant analysis.
-      if(std::find(LI, (*it)->PBIndirectUsers.begin(), (*it)->PBIndirectUsers.end()) ==  (*it)->PBIndirectUsers.end())
-	(*it)->PBIndirectUsers.push_back(LI);
+      if(std::find(LI, (*it)->indirectUsers.begin(), (*it)->indirectUsers.end()) ==  (*it)->indirectUsers.end())
+	(*it)->indirectUsers.push_back(LI);
 
     }
 

@@ -137,7 +137,7 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(ShadowInstructionInvar* I, Lo
     }
     else if(inst_is<StoreInst>(SI)) {
 
-      for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->i.PBIndirectUsers.begin(), it2 = SI->i.PBIndirectUsers.end(); it != it2; ++it) {
+      for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->indirectUsers.begin(), it2 = SI->indirectUsers.end(); it != it2; ++it) {
 
 	queueUpdatePB(*it, LPBA);
 

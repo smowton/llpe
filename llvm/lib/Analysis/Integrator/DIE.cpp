@@ -236,20 +236,20 @@ bool llvm::valueWillNotUse(ShadowValue V, ShadowValue OtherVC, bool mustReplWith
       return true;
   }
 
-  ShadowValue VC = getReplacement(V, /* mustImprove = */ true);
+  PointerBase PB;
+  getPointerBase(V, PB);
   
-  if(VC.isInval())
+  if(PB.Values.size() != 1)
+    return false;
+
+  if(PB.type == ValSetTypeVarArg)
     return false;
 
   // Not replaced with constant?
-  if(mustReplWithConstant && VC.getCtx())
+  if(mustReplWithConstant && PB.type != ValSetTypeScalar)
     return false;
-
-  // Value types that don't get replaced on commit:
-  if(VC.isVaArg())
-    return false;
-
-  if(VC.getCtx()) {
+  
+  if(PB.type == ValSetTypeScalar) {
 
     // Will we be able to fold the replacement?
     if(!VC.getCtx()->isAvailableFromCtx(V.getCtx()))

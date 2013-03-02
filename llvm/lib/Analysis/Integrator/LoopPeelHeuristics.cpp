@@ -205,13 +205,13 @@ static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
     Constant* OnlyVal = 0;
     PointerBase PB;
-    if(IA->getPointerBaseFalling(CalledV, PB)) {
+    if(getPointerBase(CalledV, PB)) {
      
       if(!PB.Overdef) {
 
 	for(unsigned i = 0; i < PB.Values.size(); ++i) {
 
-	  Constant* ThisVal = dyn_cast<Constant>(PB.Values[i].first);
+	  Constant* ThisVal = dyn_cast<Constant>(PB.Values[i].V);
 	  if(!ThisVal) {
 	    OnlyVal = 0;
 	    break;

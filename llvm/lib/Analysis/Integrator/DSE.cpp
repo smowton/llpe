@@ -183,22 +183,32 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = AA->getTypeStoreSize(I->getType());
 
-    if(!I->i.replaceWith.isInval()) {
+    if(mayBeReplaced(I)) {
 
-      ShadowValue& Repl = I->i.replaceWith;
-      
-      if(Repl.getCtx() && (!Repl.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))) {
-	  
-	AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
-	if(R != AliasAnalysis::NoAlias) {
+      if(I->i.PB.type == ValSetTypePB) {
 
-	  LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(Pointer) << "\n");
-	  return WIRStopWholeWalk;
-	  
-	}
+	ShadowValue Base;
+	getBaseObject(Pointer, Base);
+	if((!Repl.getCtx()) || Repl.getCtx->isAvailableFromCtx(StorePtr.getCtx()))
+	  return WIRContinue;
+
+      }
+      else {
+
+	return WIRContinue;
 
       }
 
+    }
+    
+    // Otherwise the load will happen for real at runtime: check if it may alias:
+
+    AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
+    if(R != AliasAnalysis::NoAlias) {
+
+      LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(Pointer) << "\n");
+      return WIRStopWholeWalk;
+	  
     }
 
   }
@@ -230,7 +240,7 @@ WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, vo
 
 }
 
-bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ValCtx StorePtr, uint64_t Size) {
+bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ShadowValue StorePtr, uint64_t Size) {
 
   AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr, Size);
   return !!(MR & AliasAnalysis::Ref);
@@ -287,7 +297,8 @@ bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue 
 
   int64_t StoreOffset;
   ShadowValue StoreBase;
-  getBaseAndOffset(StorePtr, StoreBase, StoreOffset);
+  if(!getBaseAndConstantOffset(StorePtr, StoreBase, StoreOffset))
+    return false;
 
   WriterUsedWalker Walk(Writer, initialCtx, StorePtr, StoreBase, StoreOffset, Size);
   // This will deallocate initialCtx.
@@ -312,7 +323,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
 
   int64_t WriteOffset;
   ShadowValue WriteBase;
-  if(!getBaseAndOffset(Writer, WriteOffset, WriteBase))
+  if(!getBaseAndConstantOffset(Writer, WriteBase, WriteOffset))
     return false;
   
   uint64_t Offset, FirstDef, FirstNotDef;
@@ -396,8 +407,9 @@ bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) 
     const CallInst* Free = isFreeCall(I->invar->I);
     if(Free) {
 
-      ShadowValue Pointer = getReplacement(I->getCallArgOperand(0));
-      return Pointer == Alloc;
+      ShadowValue FreeBase;
+      if(getBaseObject(I->getCallArgOperand(0), FreeBase))
+	return FreeBase == Alloc;
 
     }
 
