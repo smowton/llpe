@@ -669,44 +669,6 @@ void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
 
 }
 
-ShadowValue InlineAttempt::tryGetReturnValue(ShadowInstruction* CallerInst) {
-
-  // Try to find a unique return val. This is like a PHI of the returned values.
-
-  if(F.getReturnType()->isVoidTy())
-    return ShadowValue();
-
-  SmallVector<ShadowValue, 4> retVals;
-  getLiveReturnVals(retVals);
-
-  ShadowValue returnVal;
-  ShadowInstruction* retValSource;
-
-  for(unsigned i = 0; i < retVals.size(); ++i) {
-
-    ShadowValue thisRet = getReplacement(retVals[i]);
-    if(returnVal == thisRet)
-      continue;
-    else if(returnVal.isInval()) {
-      returnVal = thisRet;
-      retValSource = retVals[i];
-    }
-    else if(returnVal != thisRet) {
-      returnVal = ShadowValue();
-      break;
-    }
-
-  }
-  
-  if(!returnVal.isInval()) {
-    LPDEBUG("Found return value: " << itcache(returnVal) << "\n");
-    copyBaseAndOffset(retValSource, CI);
-  }
-  
-  return returnVal;
-
-}
-
 // Store->Load forwarding helpers:
 
 BasicBlock* InlineAttempt::getEntryBlock() {
