@@ -302,7 +302,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const GlobalVariable*, std::string>& getGVCache(bool brief);
    void populateGVCaches(const Module*);
    void printValue(raw_ostream& ROS, const Value* V, bool brief);
-   void printValue(raw_ostream& ROS, ValCtx VC, bool brief);
+   void printValue(raw_ostream& ROS, ShadowValue V, bool brief);
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
@@ -380,21 +380,6 @@ template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T>
 }
 
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
-
-#define VCNull (make_vc(0, 0))
- 
-inline ValCtx make_vc(Value* V, IntegrationAttempt* H, int64_t Off = ValCtx::noOffset, int64_t VaArg = ValCtx::not_va_arg) {
-
-  ValCtx newCtx = {V, H, Off, VaArg};
-  return newCtx;
-
-}
-
-inline ValCtx const_vc(Constant* C) {
-
-  return make_vc(C, 0);
-
-}
 
 // Characteristics for using ValCtxs in hashsets (DenseSet, or as keys in DenseMaps)
 template<> struct DenseMapInfo<ValCtx> {
@@ -1209,16 +1194,22 @@ protected:
   PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) const {
     return PrintCacheWrapper<const Value*>(*pass, &V, brief);
   }
-  PrintCacheWrapper<ValCtx> itcache(ValCtx VC, bool brief = false) const {
-    return PrintCacheWrapper<ValCtx>(*pass, VC, brief);
+  PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) const {
+    return PrintCacheWrapper<ShadowValue>(*pass, V, brief);
+  }
+  PrintCacheWrapper<ShadowInstruction*> itcache(ShadowInstruction* SI, bool brief = false) const {
+    return itcache(ShadowValue(SI), brief);
+  }
+  PrintCacheWrapper<ShadowArg*> itcache(ShadowArg* SA, bool brief = false) const {
+    return itcache(ShadowValue(SA), brief);
   }
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
   }
 
-  void printWithCache(ValCtx VC, raw_ostream& ROS, bool brief = false) {
-    pass->printValue(ROS, VC, brief);
+  void printWithCache(ShadowValue V, raw_ostream& ROS, bool brief = false) {
+    pass->printValue(ROS, V, brief);
   }
 
   // Data export for the Integrator pass:
