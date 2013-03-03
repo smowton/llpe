@@ -309,7 +309,10 @@ namespace {
 	  if(PB1.Values[i].Offset == LLONG_MAX || PB2.Values[j].Offset == LLONG_MAX)
 	    return AliasAnalysis::MayAlias;
 	   
-	  if(!((PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || ((PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
+	  if(!((V2Size != AliasAnalysis::UnknownSize && 
+		PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || 
+	       (V1Size != AliasAnalysis::UnknownSize && 
+		(PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
 	    return AliasAnalysis::MayAlias;
 
 	}
