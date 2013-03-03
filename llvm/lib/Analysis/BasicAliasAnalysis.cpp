@@ -455,7 +455,7 @@ ImmutablePass *llvm::createBasicAliasAnalysisPass() {
 // Define these helpers here since only AA may use ShadowValues that might contain an Instruction
 // without a shadow structure.
 
-ShadowValue getValOperand(ShadowValue& V, uint32_t i) {
+static ShadowValue getValOperand(ShadowValue& V, uint32_t i) {
 
   if(ShadowInstruction* SI = V.getInst())
     return SI->getOperand(i);
@@ -466,14 +466,14 @@ ShadowValue getValOperand(ShadowValue& V, uint32_t i) {
 
 }
 
-ShadowValue getValArgOperand(ShadowValue& V, uint32_t i) {
+static ShadowValue getValArgOperand(ShadowValue& V, uint32_t i) {
   return getValOperand(V, i);
 }
 
 bool BasicAliasAnalysis::GEPHasAllZeroIndices(ShadowValue GEPOp) {
   const GEPOperator* GEP = cast_val<GEPOperator>(GEPOp);
   for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
-    ShadowValue V = getReplacement(getValOperand(GEPOp, i));
+    ShadowValue V = getConstReplacement(getValOperand(GEPOp, i));
     if (ConstantInt *CI = dyn_cast_val<ConstantInt>(V)) {
       if (!CI->isZero()) return false;
     } 
@@ -621,7 +621,7 @@ const ShadowValue BasicAliasAnalysis::DecomposeGEPExpression(ShadowValue FirstV,
     // Walk the indices of the GEP, accumulating them into BaseOff/VarIndices.
     gep_type_iterator GTI = gep_type_begin(GEPOp);
     for(unsigned i = 0; i < GEPOp->getNumOperands() - 1; ++i, ++GTI) {
-      ShadowValue Index = getReplacement(getValOperand(V, i+1));
+      ShadowValue Index = tryGetConstReplacement(getValOperand(V, i+1));
       
       // Compute the (potentially symbolic) offset in bytes for this index.
       if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {

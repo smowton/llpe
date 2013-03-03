@@ -428,7 +428,7 @@ inline Constant* getConstReplacement(ShadowArg* SA) {
 
 }
 
-inline ShadowValue getConstReplacement(ShadowInstruction* SI) {
+inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
   if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0 || SA->i.PB.type != ValSetTypeScalar)
     return 0;
@@ -437,7 +437,7 @@ inline ShadowValue getConstReplacement(ShadowInstruction* SI) {
 
 }
 
-inline ShadowValue getConstReplacement(ShadowValue& SV) {
+inline Constant* getConstReplacement(ShadowValue& SV) {
 
   if(ShadowInstruction* SI = SV.getInst()) {
     return getConstReplacement(SI);
@@ -448,6 +448,15 @@ inline ShadowValue getConstReplacement(ShadowValue& SV) {
   else {
     return dyn_cast_or_null<Constant>(SV.getVal());
   }
+
+}
+
+inline ShadowValue tryGetConstReplacement(ShadowValue& SV) {
+
+  if(Constant* C = getConstReplacement(SV))
+    return ShadowValue(C);
+  else
+    return SV;
 
 }
 
