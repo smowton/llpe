@@ -988,7 +988,7 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
     // Try to salvage a total definition from a partial if this is a load clobbered by a store
     // of a larger aggregate type. This is to permit pointers and other non-constant forwardable values
-    // to be moved about. In future ValCtx needs to get richer to become a recursive type like
+    // to be moved about. In future our value representation needs to get richer to become a recursive type like
     // ConstantStruct et al.
 
     // Note that because you can't write an LLVM struct literal featuring a non-constant,
@@ -1051,7 +1051,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
   if(PtrPB.type == ValSetTypeVarArg && PtrPB.Values.size() == 1) {
   
     ImprovedVal& IV = PtrPB.Values[0];
-    if(IV.getVaArgType() != ValCtx::va_baseptr) {
+    if(IV.getVaArgType() != ImprovedVal::va_baseptr) {
     
       ShadowInstruction* PtrI = IV.V.getInst();
       PtrI->parent->IA->getVarArg(IV.Offset, Result);

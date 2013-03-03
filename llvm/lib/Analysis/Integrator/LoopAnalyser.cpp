@@ -377,9 +377,9 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
   }
 
   /*
-  std::vector<std::pair<int, ValCtx> > sortCounts;
+  std::vector<std::pair<int, ShadowValue> > sortCounts;
 
-  for(DenseMap<ValCtx, int>::iterator it = considerCount.begin(), it2 = considerCount.end(); it != it2; ++it) {
+  for(DenseMap<ShadowValue, int>::iterator it = considerCount.begin(), it2 = considerCount.end(); it != it2; ++it) {
 
     sortCounts.push_back(std::make_pair(it->second, it->first));
 
@@ -387,7 +387,7 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
   std::sort(sortCounts.begin(), sortCounts.end());
 
-  for(std::vector<std::pair<int, ValCtx> >::iterator it = sortCounts.begin(), it2 = sortCounts.end(); it != it2; ++it) {
+  for(std::vector<std::pair<int, ShadowValue> >::iterator it = sortCounts.begin(), it2 = sortCounts.end(); it != it2; ++it) {
 
     errs() << it->first << ": " << sortCounts[0].second.second->itcache(it->second) << "\n";
 

@@ -1100,7 +1100,7 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	  assert(0);
 	}
 
-	if(newVaArg != ValCtx::not_va_arg) {
+	if(newVaArg != ImprovedVal::not_va_arg) {
 	  ImpType = ValSetTypeVarArg;
 	  Improved.V = Ops[0].second.V;
 	  Improved.Offset = newVaArg;

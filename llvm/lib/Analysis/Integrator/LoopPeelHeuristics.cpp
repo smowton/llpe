@@ -734,14 +734,14 @@ void InlineAttempt::getVarArg(int64_t idx, PointerBase& Result) {
 
     Value* Arg = RawCI->getArgOperand(i);
     if(Arg->getType()->isPointerTy() || Arg->getType()->isIntegerTy()) {
-      if(idx < ValCtx::first_fp_arg && idx == numNonFPArgs) {
+      if(idx < ImprovedVal::first_fp_arg && idx == numNonFPArgs) {
 	argIdx = i;
 	break;
       }
       numNonFPArgs++;
     }
     else if(Arg->getType()->isFloatingPointTy()) {
-      if(idx >= ValCtx::first_fp_arg && (idx - ValCtx::first_fp_arg) == numFPArgs) {
+      if(idx >= ImprovedVal::first_fp_arg && (idx - ImprovedVal::first_fp_arg) == numFPArgs) {
 	argIdx = i;
 	break;
       }
@@ -834,12 +834,6 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   OS << nestingIndent();
   printHeader(OS);
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
-  for(DenseMap<Value*, ValCtx>::const_iterator it = improvedValues.begin(), it2 = improvedValues.end(); it != it2; ++it) {
-    OS << nestingIndent() << itcache(*(it->first)) << " -> " << itcache(it->second) << "\n";
-  }
-  for(DenseSet<Value*>::const_iterator it = deadValues.begin(), it2 = deadValues.end(); it != it2; ++it) {
-    OS << nestingIndent() << itcache((**it)) << ": dead\n";
-  }
   if(unexploredLoops.size()) {
     OS << nestingIndent() << "Unexplored loops:\n";
     for(SmallVector<const Loop*, 4>::const_iterator it = unexploredLoops.begin(), it2 = unexploredLoops.end(); it != it2; ++it) {

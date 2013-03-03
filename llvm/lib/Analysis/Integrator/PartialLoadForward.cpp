@@ -168,7 +168,7 @@ int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
   nonFPBytesLeft -= getInitialBytesOnStack(*F);
   FPBytesLeft -= getInitialFPBytesOnStack(*F);
 
-  bool returnNext = (OldArg == ValCtx::not_va_arg);
+  bool returnNext = (OldArg == ImprovedVal::not_va_arg);
 
   // For each vararg:
   unsigned nonFPArgs = 0;
@@ -192,8 +192,8 @@ int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
       
       if(FPBytesLeft <= 0) {
 	if(returnNext)
-	  return (FPArgs + ValCtx::first_fp_arg);
-	else if(OldArg == FPArgs + ValCtx::first_fp_arg)
+	  return (FPArgs + ImprovedVal::first_fp_arg);
+	else if(OldArg == FPArgs + ImprovedVal::first_fp_arg)
 	  returnNext = true;
       }
       FPBytesLeft -= 16;
@@ -208,7 +208,7 @@ int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
 
   }
 
-  return ValCtx::not_va_arg;
+  return ImprovedVal::not_va_arg;
 
 }
 
@@ -221,7 +221,7 @@ int64_t InlineAttempt::getSpilledVarargAfter(int64_t arg) {
 static int64_t getFirstSpilledVararg(IntegrationAttempt* IA) {
 
   InlineAttempt* BaseIA = IA->getFunctionRoot();
-  return BaseIA->getSpilledVarargAfter(ValCtx::not_va_arg);
+  return BaseIA->getSpilledVarargAfter(ImprovedVal::not_va_arg);
 
 }
 
@@ -410,7 +410,7 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
     LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
     // Pointer to first vararg, or first vararg after 48 bytes of real args.
     int64_t initialVararg = getFirstSpilledVararg(this);
-    if(initialVararg == ValCtx::not_va_arg) {
+    if(initialVararg == ImprovedVal::not_va_arg) {
       error = "VaArgFail";
       return false;
     }
@@ -421,7 +421,7 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
   else if(ReadOffset == 16) {
 
     LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-    NewPV = PartialVal::getTotal(ShadowValue(CI, ValCtx::va_baseptr));
+    NewPV = PartialVal::getTotal(ShadowValue(CI, ImprovedVal::va_baseptr));
 
   }
 

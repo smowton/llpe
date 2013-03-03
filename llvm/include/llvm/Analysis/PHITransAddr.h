@@ -40,12 +40,10 @@ class PHITransAddr {
   /// TD - The target data we are playing with if known, otherwise null.
   const TargetData *TD;
 
-  IntegrationAttempt* parent;
-  
   /// InstInputs - The inputs for our symbolic address.
   SmallVector<Instruction*, 4> InstInputs;
 public:
-  PHITransAddr(Value *addr, const TargetData *td, IntegrationAttempt* P = 0) : Addr(addr), TD(td), parent(P) {
+  PHITransAddr(Value *addr, const TargetData *td) : Addr(addr), TD(td) {
     // If the address is an instruction, the whole thing is considered an input.
     if (Instruction *I = dyn_cast<Instruction>(Addr))
       InstInputs.push_back(I);
@@ -60,18 +58,6 @@ public:
     // this block.
     for (unsigned i = 0, e = InstInputs.size(); i != e; ++i) {
       if (InstInputs[i]->getParent() == BB) {
-	if(parent) {
-	  ValCtx Repl = parent->getReplacement(InstInputs[i]);
-	  if(Repl.second != parent)
-	    continue;
-	  if(Instruction* ReplI = dyn_cast<Instruction>(Repl.first)) {
-	    if(ReplI->getParent() != BB)
-	      continue;
-	  }
-	  else {
-	    continue;
-	  }
-	}
         return true;
       }
     }
@@ -132,19 +118,6 @@ private:
     return V;
   }
 
-  Constant* getConstReplacement(Value* V) const {
-
-    if(parent) {
-      ValCtx VC = parent->getReplacement(V);
-      return dyn_cast<Constant>(VC.first);
-    }
-    else {
-      return dyn_cast<Constant>(V);
-    }
-
-  }
-
-  
 };
 
 } // end namespace llvm

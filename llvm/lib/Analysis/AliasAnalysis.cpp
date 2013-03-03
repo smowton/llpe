@@ -63,8 +63,8 @@ AliasAnalysis::aliasHypothetical(const Value *V1, unsigned V1Size,
 }
 
 AliasAnalysis::AliasResult
-AliasAnalysis::aliasHypothetical(ValCtx V1, unsigned V1Size,
-				 ValCtx V2, unsigned V2Size, bool usePBKnowledge) {
+AliasAnalysis::aliasHypothetical(ShadowValue V1, unsigned V1Size,
+				 ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   return AA->aliasHypothetical(V1, V1Size, V2, V2Size);
 }

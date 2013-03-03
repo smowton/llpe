@@ -25,7 +25,7 @@ bool PHITransAddr::CanPHITrans(const Instruction *Inst) const {
     return true;
   
   if (Inst->getOpcode() == Instruction::Add &&
-      (isa<ConstantInt>(Inst->getOperand(1)) || getConstReplacement(Inst->getOperand(1))))
+      isa<ConstantInt>(Inst->getOperand(1)))
     return true;
   
   //   cerr << "MEMDEP: Could not PHI translate: " << *Pointer;
@@ -60,14 +60,6 @@ bool PHITransAddr::VerifySubExpr(const Value* Expr,
     return true;
   }
 
-  if(parent) {
-    ValCtx Replacement = parent->getReplacement(const_cast<Value*>(Expr));
-    if(Replacement.second != parent)
-      return true;
-    if(!(I = dyn_cast<Instruction>(Replacement.first)))
-      return true;
-  }
- 
   // If it isn't in the InstInputs list it is a subexpr incorporated into the
   // address.  Sanity check that it is phi translatable.
   if (!CanPHITrans(I)) {
@@ -121,12 +113,6 @@ bool PHITransAddr::IsPotentiallyPHITranslatable() const {
   // If the input value is not an instruction, or if it is not defined in CurBB,
   // then we don't need to phi translate it.
   Value* CheckAddr = Addr;
-  if(parent) {
-    ValCtx VC = parent->getReplacement(Addr);
-    if(VC.second != parent)
-      return true;
-    CheckAddr = VC.first;
-  }
 
   Instruction *Inst = dyn_cast<Instruction>(CheckAddr);
   return Inst == 0 || CanPHITrans(Inst);
@@ -165,17 +151,6 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
   
   // Determine whether 'Inst' is an input to our PHI translatable expression.
   bool isInput = std::count(InstInputs.begin(), InstInputs.end(), Inst);
-
-  if(parent) {
-    // Check if our parent can replace this for us:
-    ValCtx VC = parent->getReplacement(V);
-
-    if(VC.second != parent) // The value is defined by something from an outer scope relative to PredBB. Fine.
-      return V;
-
-    Inst = dyn_cast<Instruction>(VC.first); // Investigate the replacement, not the real expression.
-    if(!Inst) return V;
-  }
 
   // Handle inputs instructions if needed.
   if (isInput) {
@@ -285,25 +260,12 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
         }
     }
 
-    if(NewGEP) {
-      // If the new GEP has a replacement, disregard its arguments as they won't get used.
-      if(parent) {
-	ValCtx ReplacementVC = parent->getReplacement(NewGEP);
-	if(ReplacementVC.second != parent) {
-	  for (unsigned i = 0, e = GEPOps.size(); i != e; ++i)
-	    RemoveInstInputs(GEPOps[i], InstInputs);
-	  return AddAsInput(NewGEP);
-	}
-      }
-    }
-
     return NewGEP;
+
   }
   
   // Handle add with a constant RHS.
   Constant* RHS = dyn_cast<ConstantInt>(Inst->getOperand(1));
-  if(!RHS && parent)
-    RHS = getConstReplacement(Inst->getOperand(1));
   if (Inst->getOpcode() == Instruction::Add && RHS) {
 
     // PHI translate the LHS.
@@ -318,7 +280,7 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
       if (BOp->getOpcode() == Instruction::Add) {
 	ConstantInt* CI = dyn_cast<ConstantInt>(BOp->getOperand(1));
 	if(parent && !CI)
-	  CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(BOp->getOperand(1)));
+	  CI = dyn_cast<ConstantInt>(BOp->getOperand(1));
         if (CI) {
           LHS = BOp->getOperand(0);
           RHS = ConstantExpr::getAdd(RHS, CI);
