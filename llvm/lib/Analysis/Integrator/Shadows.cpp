@@ -82,11 +82,16 @@ static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo,
 
 }
 
+
+
 ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Function& F) {
 
   DenseMap<Function*, ShadowFunctionInvar>::iterator findit = functionInfo.find(&F);
   if(findit != functionIndices.end())
     return findit->second;
+
+  DenseMap<Instruction*, const Loop*>& instScopes = getInstScopes(&F);
+  DenseMap<BasicBlock*, const Loop*>& blockScopes = getBlockScopes(&F);
 
   LoopInfo* LI = LIs[&F];
 
@@ -132,9 +137,14 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
     SBB.F = &RetInfo;
     SBB.idx = i;
     SBB.BB = BB;
-    SBB.outerScope = getBlockScope(BB);
-    SBB.scope = getBlockScopeVariant(BB);
     SBB.naturalScope = LI->getLoopFor(BB);
+    SBB.outerScope = applyIgnoreLoops(BB.naturalScope);
+    DenseMap<BasicBlock*, const Loop*>::iterator it = blockScopes.find(BB);
+    const Loop* L;
+    if(it == invariantBlocks.end())
+      SBB.scope = SBB.outerScope;
+    else
+      SBB.scope = applyIgnoreLoops(it->second);
 
     // Find successor block indices:
 
@@ -170,7 +180,12 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
       SI.idx = j;
       SI.parent = &SBB;
       SI.I = I;
-      SI.scope = getInstructionScope(I);
+      DenseMap<Instruction*, const Loop*>::iterator it = instScopes.find(I);
+      if(it != instScopes.end())
+	SI.scope = it->second;
+      else
+	SI.scope = SBB.naturalScope;
+      SI.scope = applyIgnoreLoops(SI.scope);
       
       // Get operands indices:
       ShadowInstIdx* operandIdxs = new ShadowInstIdx[I->getNumOperands()];
@@ -530,3 +545,27 @@ bool llvm::blockAssumedToExecute(ShadowBB* BB) {
   return BB->status != BBSTATUS_UNKNOWN;
 
 }
+
+ShadowValue ShadowValue::stripPointerCasts() {
+
+  if(isArg())
+    return *this;
+  if(ShadowInstruction* SI = getInst()) {
+
+    if(inst_is<CastInst>()) {
+      ShadowValue Op = SI->getOperand(0);
+      return Op.stripPointerCasts();
+    }
+    else {
+      return *this;
+    }
+
+  }
+  else {
+
+    return getVal()->stripPointerCasts();
+
+  }
+
+}
+

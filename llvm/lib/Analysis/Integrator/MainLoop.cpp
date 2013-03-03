@@ -34,11 +34,7 @@ void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& Cache
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SArg = argShadows[i];
-    tryEvaluateArg(SArg);
-    if(isUnresolved(SArg)) {
-      updateBasePointer(SArg, true, 0, CacheThresholdBB, CacheThresholdIA);
-      tryPromoteSingleValuedPB(SArg);
-    }
+    tryEvaluate(ShadowValue(SArg), true, 0, CacheThresholdBB, CacheThresholdIA);
 
   }
   analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
@@ -192,7 +188,10 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     }
 
-    tryEvaluate(SI, true, 0, CacheThresholdBB, CacheThresholdIA);
+    if(inst_is<TerminatorInst>(SI))
+      tryEvaluateTerminator(SI);
+    else
+      tryEvaluate(ShadowValue(SI), true, 0, CacheThresholdBB, CacheThresholdIA);
 
   }
 

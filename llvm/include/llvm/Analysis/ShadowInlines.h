@@ -35,12 +35,7 @@ template<typename T> class ImmutableArray {
 
 };
 
-// Shadow data structures
-class ShadowArg;
-class ShadowInstruction;
-
-// Just a tagged union of the types of values that can come out of getReplacement or getOperand.
-// This basically replaces ValCtx.
+// Just a tagged union of the types of values that can come out of getOperand.
 enum ShadowValType {
 
   SHADOWVAL_ARG,
@@ -58,6 +53,9 @@ enum va_arg_type {
   va_arg_type_nonfp
 
 };
+
+class ShadowArg;
+class ShadowInstruction;
 
 struct ShadowValue {
 
@@ -95,141 +93,211 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V) { }
     return t == SHADOWVAL_OTHER ? u.V : 0;
   }
 
-  const Type* getType() {
+  const Type* getType();
+  ShadowValue stripPointerCasts();
+  IntegrationAttempt* getCtx();
+  Value* getBareVal();
+  const Loop* getScope();
+  const Loop* getNaturalScope();
+  bool isIdentifiedObject();
+  InstArgImprovement* getIAI();
 
-    switch(t) {
-    case SHADOWVAL_ARG:
-      return u.A->getType();
-    case SHADOWVAL_INST:
-      return u.I->invar->I->getType();
-    case SHADOWVAL_VAL:
-      return u.V->getType();
-    case SHADOWVAL_INVAL:
-      return 0;
-    }
+};
+
+inline bool operator==(ShadowValue V1, ShadowValue V2) {
+  if(V1.type != V2.type)
+    return false;
+  switch(V1.type) {
+  case SHADOWVAL_INVAL:
+    return true;
+  case SHADOWVAL_ARG:
+    return V1.u.A == V2.u.A;
+  case SHADOWVAL_INST:
+    return V1.u.I == V2.u.I;
+  case SHADOWVAL_OTHER:
+    return V1.u.V == V2.u.V;
+  }
+}
+
+inline bool operator!=(ShadowValue V1, ShadowValue V2) {
+   return !(V1 == V2);
+}
+
+inline bool operator<(ShadowValue V1, ShadowValue V2) {
+  if(V1.type != V2.type)
+    return V1.type < V2.type;
+  switch(V1.type) {
+  case SHADOWVAL_INVAL:
+    return false;
+  case SHADOWVAL_ARG:
+    return V1.u.A < V2.u.A;
+  case SHADOWVAL_INST:
+    return V1.u.I < V2.u.I;
+  case SHADOWVAL_OTHER:
+    return V1.u.V < V2.u.V;
+  }
+}
+
+inline bool operator<=(ShadowValue V1, ShadowValue V2) {
+  return V1 < V2 || V1 == V2;
+}
+
+inline bool operator>(ShadowValue V1, ShadowValue V2) {
+  return !(V1 <= V2);
+}
+
+inline bool operator>=(ShadowValue V1, ShadowValue V2) {
+  return !(V1 < V2);
+}
+
+// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
+// May be: 
+// overdefined (overflowed, or defined by an unknown)
+// defined (known set of possible values)
+// undefined (implied by absence from map)
+// Note Value members may be null (signifying a null pointer) without being Overdef.
+
+#define PBMAX 16
+
+enum ValSetType {
+
+  ValSetTypeUnknown,
+  ValSetTypePB, // Pointers; the Offset member is set
+  ValSetTypeScalar, // Ordinary constants
+  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
+  ValSetTypeVarArg // Special tokens representing a vararg or VA-related cookie
+
+};
+
+bool functionIsBlacklisted(Function*);
+
+struct ImprovedVal {
+
+  ShadowValue V;
+  int64_t Offset;
+
+ImprovedVal() : V(), Offset(LLONG_MAX) { }
+ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
+
+  // Values for Offset when this is a VarArg:
+  static const int64_t not_va_arg = -1;
+  static const int64_t va_baseptr = -2;
+  static const int64_t first_nonfp_arg = 0;
+  static const int64_t first_fp_arg = 0x00010000;
+  static const int64_t max_arg = 0x00020000;
+
+  int getVaArgType() {
+
+    if(Offset == not_va_arg)
+      return va_arg_type_none;
+    else if(Offset == va_baseptr)
+      return va_arg_type_baseptr;
+    else if(Offset >= first_nonfp_arg && Offset < first_fp_arg)
+      return va_arg_type_nonfp;
+    else if(Offset >= first_fp_arg && Offset < max_arg)
+      return va_arg_type_fp;
+    else
+      assert(0 && "Bad va_arg value\n");
+    return va_arg_type_none;
 
   }
 
-  ShadowValue stripPointerCasts() {
+  int64_t getVaArg() {
 
-    if(isArg())
-      return *this;
-    if(ShadowInstruction* SI = getInst()) {
-
-      if(inst_is<CastInst>()) {
-	ShadowValue Op = SI->getOperand(0);
-	return Op.stripPointerCasts();
-      }
-      else {
-	return *this;
-      }
-
-    }
-    else {
-
-      return getVal()->stripPointerCasts();
-
-    }
-
-  }
-
-  IntegrationAttempt* getCtx() {
-
-    switch(t) {
-    case SHADOWVAL_ARG:
-      return u.A->IA;
-    case SHADOWVAL_INST:
-      return u.I->parent->IA;
+    switch(getVaArgType()) {
+    case va_arg_type_fp:
+      return Offset - first_fp_arg;
+    case va_arg_type_nonfp:
+      return Offset;
     default:
-      return 0;
-    }
-
-  }
-
-  Value* getBareVal() {
-
-    switch(t) {
-    case SHADOWVAL_ARG:
-      return return u.A->invar->A;
-    case SHADOWVAL_INST:
-      return u.I->invar->I;
-    case SHADOWVAL_VAL:
-      return u.V;
-    default:
-      return 0;
-    }
-
-  }
-
-  const Loop* getScope() {
-
-    switch(t) {
-    case SHADOWVAL_INST:
-      return u.I->invar->scope;
-    default:
-      return 0;
-    }
-
-  }
-
-  const Loop* getNaturalScope() {
-
-    switch(t) {
-    case SHADOWVAL_INST:
-      return u.I->invar->naturalScope;
-    default:
-      return 0;
-    }
-
-  }
-
-  bool isIdentifiedObject() {
-
-    return isIdentifiedObject(getBareVal());
-
-  }
-
-  InstArgImprovement* getIAI() {
-
-    switch(t) {
-    case SHADOWVAL_INST:
-      return &(u.I->i);
-    case SHADOWVAL_ARG:
-      return &(u.A->i);      
-    default:
-      return 0;
+      assert(0);
     }
 
   }
 
 };
 
-template<class X> inline bool val_is(ShadowValue& V) {
-  if(Value* V2 = V.getVal())
-    return isa<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return isa<X>(A->invar->A);
-  else
-    return inst_is<X>(V.getInst());
+inline bool operator==(ImprovedVal V1, ImprovedVal V2) {
+  return (V1.V == V2.V && V1.Offset == V2.Offset)
 }
 
-template<class X> inline X* dyn_cast_val(ShadowValue& V) {
-  if(Value* V2 = V.getVal())
-    return dyn_cast<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return dyn_cast<X>(A->invar->A);
-  else
-    return dyn_cast_inst<X>(V.getInst());
+inline bool operator!=(ImprovedVal V1, ImprovedVal V2) {
+   return !(V1 == V2);
 }
 
-template<class X> inline X* cast_val(ShadowValue& V) {
-  if(Value* V2 = V.getVal())
-    return cast<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return cast<X>(A->invar->A);
-  else
-    return cast_inst<X>(V.getInst());
+inline bool operator<(ImprovedVal V1, ImprovedVal V2) {
+  if(V1.V != V2.V)
+    return V1.V < V2.V;
+  return V1.Offset < V2.Offset;
 }
+
+inline bool operator<=(ImprovedVal V1, ImprovedVal V2) {
+  return V1 < V2 || V1 == V2;
+}
+
+inline bool operator>(ImprovedVal V1, ImprovedVal V2) {
+  return !(V1 <= V2);
+}
+
+inline bool operator>=(ImprovedVal V1, ImprovedVal V2) {
+  return !(V1 < V2);
+}
+
+struct PointerBase {
+
+  ValSetType Type;
+  SmallVector<ImprovedVal, 1> Values;
+  bool Overdef;
+
+PointerBase() : Type(ValSetTypeUnknown), Overdef(false) { }
+PointerBase(ValSetType T) : Type(T), Overdef(false) { }
+PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
+
+  bool isInitialised() {
+    return Overdef || Values.size() > 0;
+  }
+  
+  PointerBase& insert(ImprovedVal& V); {
+    if(Overdef)
+      return *this;
+    if(std::count(Values.begin(), Values.end(), V))
+      return *this;
+    if(Values.size() + 1 > PBMAX) {
+      setOverdef();
+    }
+    else {
+      Values.push_back(V);
+    }
+    return *this;
+  }
+
+  PointerBase& merge(PointerBase& OtherPB) {
+    if(OtherPB.Overdef) {
+      setOverdef();
+    }
+    else if(isInitialised() && OtherPB.Type != Type) {
+      setOverdef();
+    }
+    else {
+      Type = OtherPB.Type;
+      for(SmallVector<ShadowValue, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
+	insert(*it);
+    }
+    return *this;
+  }
+
+  void setOverdef() {
+
+    Values.clear();
+    Overdef = true;
+
+  }
+
+  static PointerBase get(ShadowValue V);
+  static PointerBase get(ImprovedVal V, ValSetType t) { return PointerBase(t).insert(V); }
+  static PointerBase getOverdef() { return PointerBase(ValSetTypeUnknown, true); }
+  
+};
 
 #define INVALID_BLOCK_IDX 0xffffffff;
 #define INVALID_INSTRUCTION_IDX 0xffffffff;
@@ -246,6 +314,7 @@ ShadowInstIdx(uint32_t b, uint32_t i) : blockIdx(b), instIdx(i) { }
 
 struct ShadowInstructionInvar {
   
+  uint32_t idx;
   Instruction* I;
   ShadowBBInvar* parent;
   const Loop* scope;
@@ -279,13 +348,12 @@ struct InstArgImprovement {
   PointerBase PB;
   ShadowInstDIEStatus dieStatus;
 
-InstArgImprovement() : replaceWith(VCNull), baseObject(VCNull), baseOffset(0), dieStatus(INSTSTATUS_ALIVE) { }
+InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
 
 };
 
 struct ShadowInstruction {
 
-  uint32_t idx;
   ShadowBB* parent;
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
@@ -418,6 +486,118 @@ ShadowBBInvar* ShadowBBInvar::getSucc(uint32_t i) {
 uint32_t ShadowBBInvar::succs_size() {
   return succIdxs.size();
 }
+
+inline const Type* ShadowValue::getType() {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return u.A->invar->A->getType();
+  case SHADOWVAL_INST:
+    return u.I->invar->I->getType();
+  case SHADOWVAL_VAL:
+    return u.V->getType();
+  case SHADOWVAL_INVAL:
+    return 0;
+  }
+
+}
+
+inline IntegrationAttempt* ShadowValue::getCtx() {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return u.A->IA;
+  case SHADOWVAL_INST:
+    return u.I->parent->IA;
+  default:
+    return 0;
+  }
+
+}
+
+inline Value* ShadowValue::getBareVal() {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return return u.A->invar->A;
+  case SHADOWVAL_INST:
+    return u.I->invar->I;
+  case SHADOWVAL_VAL:
+    return u.V;
+  default:
+    return 0;
+  }
+
+}
+
+inline const Loop* ShadowValue::getScope() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    return u.I->invar->scope;
+  default:
+    return 0;
+  }
+  
+}
+
+inline const Loop* ShadowValue::getNaturalScope() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    return u.I->invar->naturalScope;
+  default:
+    return 0;
+  }
+
+}
+
+inline bool ShadowValue::isIdentifiedObject() {
+
+  return isIdentifiedObject(getBareVal());
+
+}
+
+inline InstArgImprovement* ShadowValue::getIAI() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    return &(u.I->i);
+  case SHADOWVAL_ARG:
+    return &(u.A->i);      
+  default:
+    return 0;
+  }
+
+}
+
+template<class X> inline bool val_is(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return isa<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return isa<X>(A->invar->A);
+  else
+    return inst_is<X>(V.getInst());
+}
+
+template<class X> inline X* dyn_cast_val(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return dyn_cast<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return dyn_cast<X>(A->invar->A);
+  else
+    return dyn_cast_inst<X>(V.getInst());
+}
+
+template<class X> inline X* cast_val(ShadowValue& V) {
+  if(Value* V2 = V.getVal())
+    return cast<X>(V2);
+  else if(ShadowArg* A = V.getArg())
+    return cast<X>(A->invar->A);
+  else
+    return cast_inst<X>(V.getInst());
+}
+
 
 inline Constant* getConstReplacement(ShadowArg* SA) {
  

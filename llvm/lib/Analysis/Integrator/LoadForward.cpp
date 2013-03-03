@@ -41,15 +41,12 @@ public:
   }
 
   LoadForwardWalker(ShadowInstruction* Start, ShadowValue Base, int64_t Offset, uint64_t Size, AliasAnalysis* _AA, TargetData* _TD, void* InitialCtx) 
-    : BackwardIAWalker(Start, true, InitialCtx), LoadedPtr(), LoadPtrBase(Base), LoadPtrOffset(Offset), LoadSize(Size), AA(_AA), TD(_TD) {
-
-
-
-  }
+    : BackwardIAWalker(Start, true, InitialCtx), LoadedPtr(), LoadPtrBase(Base), LoadPtrOffset(Offset), LoadSize(Size), AA(_AA), TD(_TD) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
   virtual bool shouldEnterCall(ShadowInstruction*);
   virtual WalkInstructionResult handleAlias(ShadowInstruction*, AliasAnalysis::AliasResult R, ShadowValue& Ptr, uint64_t PtrSize, void* Ctx) = 0;
+  PVToSV(PartialVal& PV, raw_string_ostream& RSO);
 
 };
 
@@ -1055,20 +1052,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
     
       ShadowInstruction* PtrI = IV.V.getInst();
       PtrI->parent->IA->getVarArg(IV.Offset, Result);
-      LPDEBUG("va_arg " << itcache(IV.V) << " " << IV.Offset << " yielded " << itcache(Result) << "\n");
+      //LPDEBUG("va_arg " << itcache(IV.V) << " " << IV.Offset << " yielded " << printPB(Result) << "\n");
     
-      if((!Result.isInval()) && Result.getType() != LoadI->getType()) {
-	if(!(Result.getType()->isPointerTy() && LoadI->getType()->isPointerTy()))
-	  Result = ShadowValue();
-      }
-
-      // Is this va_arg read out of bounds or wrong type?
-      if(Result.isInval())
-	return true;
-    
-      if(!shouldForwardValue(Result))
-	Result = ShadowValue();
-
       return true;
 
     }

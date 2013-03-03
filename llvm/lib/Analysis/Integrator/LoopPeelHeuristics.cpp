@@ -86,11 +86,8 @@ IntegrationAttempt::~IntegrationAttempt() {
 }
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
-			     DenseMap<Instruction*, const Loop*>& _invariantInsts, 
-			     DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
-			     DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth) : 
-  IntegrationAttempt(Pass, P, F, LI, TD, AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
+			     DenseMap<Function*, LoopInfo*>& LI, CallInst* _CI, int depth) : 
+  IntegrationAttempt(Pass, P, F, LI, depth),
   CI(_CI)
   { 
     raw_string_ostream OS(HeaderStr);
@@ -102,10 +99,9 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
     prepareShadows();
   }
 
-PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
-	      AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
-	      DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth) :
-  IntegrationAttempt(Pass, P, F, _LI, _TD, _AA, _invariantInsts, _invariantEdges, _invariantBlocks, depth),
+PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
+			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth) :
+  IntegrationAttempt(Pass, P, F, _LI, depth),
   iterationCount(iter),
   L(_L),
   parentPA(PP),
@@ -118,10 +114,9 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   prepareShadows();
 }
 
-PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
-			 DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
-			 DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth) 
-  : pass(Pass), parent(P), F(_F), LI(_LI), TD(_TD), AA(_AA), L(_L), invariantInsts(_invariantInsts), invariantEdges(_invariantEdges), invariantBlocks(_invariantBlocks), 
+PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
+			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth) 
+  : pass(Pass), parent(P), F(_F), LI(_LI), L(_L), 
     residualInstructions(-1), nesting_depth(depth), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
@@ -170,12 +165,6 @@ bool instructionCounts(Instruction* I) {
     if(BI->isUnconditional()) // Don't count unconditional branches as they're already as specified as they're getting
       return false;
   return true;
-
-}
-
-AliasAnalysis* IntegrationAttempt::getAA() {
-
-  return this->AA;
 
 }
 
@@ -297,7 +286,7 @@ bool llvm::edgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
 
 }
 
-bool llvm::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
+bool IntegrationAttempt::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
   bool BB1InScope;
 
@@ -344,35 +333,6 @@ bool IntegrationAttempt::edgeIsDeadRising(const ShadowBBInvar& BB1I, const Shado
   }
     
   return false;
-
-}
-
-const Loop* IntegrationHeuristicsPass::getBlockScope(BasicBlock* BB) {
-  
-  Function* F = BB->getParent();
-
-  DenseMap<BasicBlock*, const Loop*>& Map = getBlockScopes(F);
-
-  DenseMap<BasicBlock*, const Loop*>::iterator it = Map.find(BB);
-  const Loop* L;
-  if(it == Maps.end())
-    L = LIs[F]->getLoopFor(BB);
-  else
-    L = it->second;
-
-  return applyIgnoreLoops(L);
-
-}
-
-const Loop* IntegrationAttempt::getBlockScope(BasicBlock* BB) {
-
-  return pass->getBlockScope(BB);
-  
-}
-
-const Loop* IntegrationAttempt::getBlockScopeVariant(BasicBlock* BB) {
-
-  return applyIgnoreLoops(LI[&F]->getLoopFor(BB));
 
 }
 
@@ -481,7 +441,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   //errs() << "Inline new fn " << FCalled->getName() << "\n";
   mainPhaseProgress();
 
-  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->TD, this->AA, CI, pass->getInstScopes(FCalled), pass->getEdgeScopes(FCalled), pass->getBlockScopes(FCalled), this->nesting_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->nesting_depth + 1);
   inlineChildren[CI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -526,7 +486,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   assert(iter == Iterations.size());
 
-  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, TD, AA, L, invariantInsts, invariantEdges, invariantBlocks, iter, nesting_depth);
+  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, L, iter, nesting_depth);
   Iterations.push_back(NewIter);
     
   return NewIter;
@@ -625,7 +585,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
     LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
-    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, TD, AA, invariantInsts, invariantEdges, invariantBlocks, NewL, nesting_depth + 1);
+    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1);
     peelChildren[NewL] = LPA;
 
     return LPA;
@@ -945,11 +905,8 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
 
   errs() << ind(indent);
   describeBrief(errs());
-  errs() << ": ";
-  errs() << "imp " << improvedValues.size() << " db " << deadBlocks.size() << " de " << deadEdges.size()
-	 << " cb " << certainBlocks.size() << " dv " << deadValues.size() << " uw " << unusedWriters.size()
-	 << " uwttc " << unusedWritersTraversingThisContext.size()
-	 << " foc " << forwardableOpenCalls.size()
+  errs() << ": "
+	 << "foc " << forwardableOpenCalls.size()
 	 << " rrc " << resolvedReadCalls.size() << " rsc " << resolvedSeekCalls.size()
 	 << " rcc " << resolvedCloseCalls.size() << "\n";
 
@@ -1897,6 +1854,7 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 }
 
 TargetData* llvm::GlobalTD;
+AliasAnalysis* llvm::GlobalAA;
 
 void IntegrationHeuristicsPass::runDSEAndDIE() {
 
@@ -1931,6 +1889,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   TD = getAnalysisIfAvailable<TargetData>();
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
+  GlobalAA = AA;
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
@@ -1965,7 +1924,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
 
-  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, TD, AA, 0, getInstScopes(&F), getEdgeScopes(&F), getBlockScopes(&F), 0);
+  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 
   RootIA = IA;
 

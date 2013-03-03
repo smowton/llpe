@@ -53,7 +53,7 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowV
 
 static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size, bool usePBKnowledge) {
 
-  AliasAnalysis::AliasResult AR = Ptr1.getCtx()->getAA()->aliasHypothetical(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
+  AliasAnalysis::AliasResult AR = GlobalAA->aliasHypothetical(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
 
   switch(AR) {
   case AliasAnalysis::MustAlias:

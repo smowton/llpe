@@ -63,7 +63,7 @@ bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
 // Implement a visitor that gets called for every dynamic use of an instruction.
 
-bool IntegrationAttempt::visitNextIterationPHI(ShadowInstruction* I, VisitorContext& Visitor) {
+bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor) {
 
   return false;
 

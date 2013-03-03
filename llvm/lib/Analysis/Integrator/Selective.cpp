@@ -44,7 +44,7 @@ IntegrationAttempt::resetDeadInstructions() {
 
 }
 
-IntegrationHeuristicsPass::rerunDSEAndDIE() {
+void IntegrationHeuristicsPass::rerunDSEAndDIE() {
 
   RootIA->resetDeadInstructions();
 

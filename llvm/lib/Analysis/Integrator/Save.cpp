@@ -193,7 +193,7 @@ static Value* getCommittedValue(ShadowValue& SV) {
   
 }
 
-void IntegrationAttempt::getArgCommittedValue(ShadowArg* SA) {
+Value* IntegrationAttempt::getArgCommittedValue(ShadowArg* SA) {
 
   unsigned n = SA->invar->A->getArgNo();
 

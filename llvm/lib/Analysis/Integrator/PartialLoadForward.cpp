@@ -231,7 +231,7 @@ static int64_t getFirstSpilledVararg(IntegrationAttempt* IA) {
 // This can go away when we forward port to an LLVM version that uses the va_arg instruction
 // instead of having the frontend lower by itself!
 
-bool llvm::isVarargsTainted() {
+bool IntegrationAttempt::isVarargsTainted() {
 
   return contextTaintedByVarargs;
 
