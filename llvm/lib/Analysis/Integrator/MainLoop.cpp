@@ -192,21 +192,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     }
 
-    tryEvaluate(SI);
-
-    if(inst_is<LoadInst>(SI)) {
-      if(isUnresolved(SI))
-	checkLoad(SI);
-    }
-
-    // Don't use isUnresolved here because the PB solver requires that we *do*
-    // evaluate GEPs and casts with a known base. This will go away when its single-value
-    // mode is merged with the ordinary constant folder.
-    if(SI->replaceWith.isInval()) {
-      // This works for either LF or ordinary const prop:
-      updateBasePointer(SI, true, 0, CacheThresholdBB, CacheThresholdIA);
-      tryPromoteSingleValuedPB(SI);
-    }
+    tryEvaluate(SI, true, 0, CacheThresholdBB, CacheThresholdIA);
 
   }
 

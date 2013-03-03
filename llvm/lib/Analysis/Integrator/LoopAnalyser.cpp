@@ -361,7 +361,7 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
-      if(it->second->updateBasePointer(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
+      if(it->second->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVCs) {
 	  modifiedVCs->push_back(*it);
 	}
