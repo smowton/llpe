@@ -1511,7 +1511,16 @@ static Value* getWrittenPointer(Instruction* I) {
 void IntegrationHeuristicsPass::commit() {
   if(mustRecomputeDIE)
     rerunDSEAndDIE();
-  RootIA->commit();
+  std::string Name;
+  {
+    raw_string_ostream RSO(Name);
+    Name << RootIA->getCommittedBlockPrefix() << ".clone_root";
+  }
+  RootIA->CommitF = Function::Create(RootIA->F.getType(), RootIA->F.getLinkage(), Name, RootIA->F.getParent());
+  RootIA->returnBlock = 0;
+  RootIA->commitCFG();
+  RootIA->commitInstructions();
+  RootIA->F.replaceAllUsesWith(RootIA->commitF);
 }
 
 static void dieEnvUsage() {
