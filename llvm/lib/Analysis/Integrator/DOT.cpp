@@ -45,7 +45,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
       return "pink";
   }
 
-  if(!(IAI->replaceWith.isInval()))
+  if(getConstReplacement(SV))
     return "green";
   else if(ShadowInstruction* SI = SV.getInst()) {
 
@@ -54,7 +54,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
       
       ShadowInst* SI = getInstFalling(SI->parent->invar, SI->invar->idx);
 
-      if(!SI->replaceWith.isInval())
+      if(getConstReplacement(SI))
 	return "limegreen";
 
     }
@@ -145,16 +145,14 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
   else
     InvarSI = SI;
 
-  if(!IAI->i.replaceWith.isInval()) {
+  if(Constant* C = getConstReplacement(SV)) {
     ShadowValue& Repl = IAI->i.replaceWith;
     if(isInvariant)
       Out << "(invar) ";
-    if(isa<Function>(Repl.getBareVal()))
-      Out << "@" << Repl.getBareVal()->getName();
+    if(isa<Function>(C))
+      Out << "@" << C->getName();
     else
-      Out << itcache(Repl, true);
-    if(Repl.isVaArg())
-      Out << " vararg #" << Repl.va_arg;
+      Out << (*C);
     return;
   }
   if(IAI->i.dieStatus != INSTSTATUS_ALIVE) {
