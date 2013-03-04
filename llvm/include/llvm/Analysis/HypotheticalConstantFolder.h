@@ -838,7 +838,7 @@ protected:
   void markCloseCall(CallInst*);
 
   // Load forwarding extensions for varargs:
-  virtual void getVarArg(int64_t, ValCtx&) = 0;
+  virtual void getVarArg(int64_t, PointerBase&) = 0;
   int64_t getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg);
   void disableChildVarargsContexts();
   bool isVarargsTainted();
@@ -1021,9 +1021,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD,
-		AliasAnalysis* _AA, const Loop* _L, DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, 
-		DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int iter, int depth);
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int iter, int depth);
 
   IterationStatus iterStatus;
 
@@ -1038,10 +1036,10 @@ public:
 
   virtual InlineAttempt* getFunctionRoot(); 
 
-  void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor); 
-  virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor); 
+  void visitVariant(ShadowInstruction* VI, VisitorContext& Visitor); 
+  virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor); 
 
-  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out); 
+  virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out); 
 
   virtual void describe(raw_ostream& Stream) const;
   virtual void describeBrief(raw_ostream& Stream) const;
@@ -1057,7 +1055,7 @@ public:
 
   virtual bool isOptimisticPeel(); 
 
-  virtual void getVarArg(int64_t, ValCtx&); 
+  virtual void getVarArg(int64_t, PointerBase&); 
 
   virtual bool ctxContains(IntegrationAttempt*); 
 
@@ -1107,10 +1105,6 @@ class PeelAttempt {
 
    ShadowLoopInvar* invarInfo;
 
-   DenseMap<Instruction*, const Loop*>& invariantInsts;
-   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges;
-   DenseMap<BasicBlock*, const Loop*>& invariantBlocks;
-
    int64_t residualInstructions;
 
    int nesting_depth;
@@ -1123,90 +1117,66 @@ class PeelAttempt {
    int64_t totalIntegrationGoodness;
    int64_t nDependentLoads;
 
-   std::vector<BasicBlock*> LoopBlocks;
    std::vector<PeelIteration*> Iterations;
-
    std::pair<BasicBlock*, BasicBlock*> OptimisticEdge;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, TargetData* _TD, AliasAnalysis* _AA, 
-	       DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, const Loop* _L, int depth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
    ~PeelAttempt();
 
    void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
 
-   SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> ExitEdges;
+   PeelIteration* getIteration(unsigned iter); 
+   PeelIteration* getOrCreateIteration(unsigned iter); 
 
-   PeelIteration* getIteration(unsigned iter);
-   PeelIteration* getOrCreateIteration(unsigned iter);
-
-   ValCtx getReplacement(Value* V, int frameIndex, int sourceIteration);
-
-   void queueTryEvaluateVariant(Instruction* VI, const Loop* VILoop, Value* Used);
-
-   void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
-   void queueAllLiveValuesMatching(UnaryPred& P);
+   void visitVariant(ShadowInstruction* VI, VisitorContext& Visitor); 
    
-   uint64_t revertDSEandDAE(bool);
-   uint64_t revertExternalUsers(bool);
-   void callExternalUsers(ProcessExternalCallback& PEC);
-   void retryExternalUsers();
-   void getRetryStoresAndAllocs(std::vector<llvm::ValCtx>&);
-   uint64_t walkLoadsFromFoldedContexts(bool, bool);
-   
-   void describeTreeAsDOT(std::string path);
+   void describeTreeAsDOT(std::string path); 
 
-   bool allNonFinalIterationsDoNotExit();
+   bool allNonFinalIterationsDoNotExit(); 
 
-   void collectStats();
-   void printHeader(raw_ostream& OS) const;
+   void collectStats(); 
+   void printHeader(raw_ostream& OS) const; 
    void printDebugHeader(raw_ostream& OS) const {
      printHeader(OS);
    }
-   void print(raw_ostream& OS) const;
+   void print(raw_ostream& OS) const; 
 
-   std::string nestingIndent() const;
+   std::string nestingIndent() const; 
 
-   std::string getShortHeader();
-   IntegratorTag* getParentTag();
-   bool hasChildren();
-   unsigned getNumChildren();
-   IntegratorTag* getChildTag(unsigned);
-   bool isEnabled();
-   void setEnabled(bool);
-
-   void eraseBlockValues(BasicBlock*);
-
-   void removeBlockFromLoops(BasicBlock*, const Loop*);
+   std::string getShortHeader(); 
+   IntegratorTag* getParentTag(); 
+   bool hasChildren(); 
+   unsigned getNumChildren(); 
+   IntegratorTag* getChildTag(unsigned); 
+   bool isEnabled(); 
+   void setEnabled(bool); 
    
-   void queueUsersUpdatePBRising(Instruction* I, const Loop* TargetL, Value* V, LoopPBAnalyser*);
+   void queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser*); 
 
-   void reduceDependentLoads(int64_t);
+   void reduceDependentLoads(int64_t); 
 
-   void dumpMemoryUsage(int indent);
+   void dumpMemoryUsage(int indent); 
 
-   int64_t getResidualInstructions();
+   int64_t getResidualInstructions(); 
    void findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty);
-   void countDependentLoads();
-   void propagateDependentLoads();
+   void countDependentLoads(); 
+   void propagateDependentLoads(); 
 
-   void disableVarargsContexts();
+   void disableVarargsContexts(); 
 
    bool isTerminated() {
      return Iterations.back()->iterationStatus == iterStatusTerminated;
    }
 
-   void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
-
-   void revertDeadVFSOps();
-   void retryDeadVFSOps();
-
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
      return parent->itcache(V);
    }
-   PrintCacheWrapper<ValCtx> itcache(ValCtx VC) const {
-     return parent->itcache(VC);
+   PrintCacheWrapper<ValCtx> itcache(ShadowValue V) const {
+     return parent->itcache(V);
    }
+
+   void getShadowInfo();
 
  };
 
@@ -1217,91 +1187,70 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, TargetData* TD, AliasAnalysis* AA, CallInst* _CI, 
-		DenseMap<Instruction*, const Loop*>& _invariantInsts, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& _invariantEdges, DenseMap<BasicBlock*, const Loop*>& _invariantBlocks, int depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, CallInst* _CI, int depth);
 
   ShadowArg* argShadows;
 
-  virtual ValCtx tryEvaluateResult(Value*);
-  
   virtual BasicBlock* getEntryBlock(); 
 
-  ValCtx tryGetReturnValue();
-  
-  ValCtx getImprovedCallArgument(Argument* A);
+  virtual InlineAttempt* getFunctionRoot(); 
 
-  virtual InlineAttempt* getFunctionRoot();
+  bool isOwnCallUnused(); 
 
-  bool isOwnCallUnused();
-
-  virtual bool walkHeaderPHIOperands(PHINode* PN, OpCallback& CB);
-  virtual void walkOperands(Value* V, OpCallback& CB);
-  virtual void queueAllLiveValuesMatching(UnaryPred& P);
-
-  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
+  virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out); 
   
   virtual void describe(raw_ostream& Stream) const; 
   virtual void describeBrief(raw_ostream& Stream) const; 
   
-  virtual void collectAllLoopStats();
+  virtual void collectAllLoopStats(); 
 
-  virtual std::string getShortHeader();
-  virtual IntegratorTag* getParentTag();
+  virtual std::string getShortHeader(); 
+  virtual IntegratorTag* getParentTag(); 
 
-  virtual bool canDisable();
-  virtual bool isEnabled();
-  virtual void setEnabled(bool);
+  virtual bool canDisable(); 
+  virtual bool isEnabled(); 
+  virtual void setEnabled(bool); 
 
-  virtual void deleteDeadBlocks(bool);
-  virtual void replaceKnownBranches();
 
-  virtual bool isOptimisticPeel();
+  virtual bool isOptimisticPeel(); 
 
-  virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
+  virtual void getVarArg(int64_t, PointerBase&); 
 
-  virtual void getVarArg(int64_t, ValCtx&);
+  virtual bool ctxContains(IntegrationAttempt*); 
 
-  virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
+  bool getArgBasePointer(Argument*, PointerBase&); 
+  void queueUpdateCall(LoopPBAnalyser*); 
+  void queueCheckAllArgs(LoopPBAnalyser*); 
 
-  virtual bool ctxContains(IntegrationAttempt*);
+  int64_t getSpilledVarargAfter(int64_t arg); 
 
-  bool getArgBasePointer(Argument*, PointerBase&);
-  void queueUpdateCall(LoopPBAnalyser*);
-
-  virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
-
-  int64_t getSpilledVarargAfter(int64_t arg);
-
-  virtual void reduceDependentLoads(int64_t);
+  virtual void reduceDependentLoads(int64_t); 
 
   virtual int getIterCount() {
     return -1;
   }
 
-  virtual bool stackIncludesCallTo(Function*);
+  virtual bool stackIncludesCallTo(Function*); 
 
-  virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
-  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
+  virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&); 
+  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&); 
 
-  virtual bool queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
-  virtual void queueSuccessorsFW(BasicBlock* BB, ForwardIAWalker* Walker, void* ctx);
-  virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+  virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
+  virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
-  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
+  virtual bool entryBlockIsCertain(); 
+  virtual bool entryBlockAssumed(); 
 
-  virtual void localPrepareCommit();
+  void disableVarargsContexts(); 
 
-  virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
+  void analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA); 
 
-  virtual bool entryBlockIsCertain();
-  virtual bool entryBlockAssumed();
-
-  void revertDeadVFSOps();
-  void retryDeadVFSOps();
-
-  void disableVarargsContexts();
-
-  void analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+  void prepareShadows();
+  void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
+  std::string getCommittedBlockPrefix();
+  BasicBlock* getCommittedEntryBlock();
+  void runDIE();
 
 };
 
