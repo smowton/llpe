@@ -471,9 +471,6 @@ struct ShadowFunctionInvar {
   ImmutableArray<ShadowArgInvar> Args;
   DenseMap<const Loop*, ShadowLoopInvar*> LoopInfo;
 
-  // TODO: Remove this map once we never need to map raw BBs onto indices.
-  DenseMap<BasicBlock*, ShadowBBInvar*> BBMap;
-
 };
 
 ShadowBBInvar* ShadowBBInvar::getPred(uint32_t i) {

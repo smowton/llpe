@@ -132,7 +132,6 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 
     BasicBlock* BB = TopOrderedBlocks[i];
     ShadowBBInvar& SBB = FShadowBlocks[i];
-    RetInfo.BBMap[BB] = &SBB;
     
     SBB.F = &RetInfo;
     SBB.idx = i;
@@ -297,7 +296,7 @@ void InlineAttempt::prepareShadows() {
 
   invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = F.size();
-  BBs = new ShadowBB[nBBs];
+  BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;
   BBsOffset = 0;
@@ -344,11 +343,13 @@ ShadowBB* IntegrationAttempt::getBB(ShadowBBInvar& BBI, bool* inScope) {
 ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool* inScope) {
 
   if(!(idx >= BBsOffset && idx < (BBsOffset + nBBs))) {
-    inScope = false;
+    if(inScope)
+      *inScope = false;
     return 0;
   }
   else {
-    inScope = true;
+    if(inScope)
+      *inScope = true;
     return BBs[idx - BBsOffset];
   }
 
@@ -360,7 +361,7 @@ ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
 
 }
 
-bool IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
+ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
 
   if(BBI->naturalScope == L)
     return getBB(BBI);

@@ -129,7 +129,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
    DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
 
-   DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, BasicBlock*);
+   DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, ShadowBBInvar*, ShadowFunctionInvar&);
 
    // Caching text representations of instructions:
 
@@ -601,7 +601,7 @@ protected:
 
   IntegrationHeuristicsPass* pass;
   ShadowFunctionInvar* invarInfo;
-  ShadowBB* BBs;
+  ShadowBB** BBs;
   uint32_t nBBs;
   // BBsOffset: offset from indices in the BBs array to invarInfo.BBs.
   // For inlineAttempts this is 0; for loop iterations it is the index of the loop's header
@@ -701,7 +701,6 @@ protected:
   Module& getModule();
 
   void markContextDead();
-  void createBB(uint32_t idx);
 
   Function& getFunction() { return F; }
   
@@ -713,9 +712,8 @@ protected:
 
   virtual bool entryBlockIsCertain() = 0;
   virtual bool entryBlockAssumed() = 0;
-  bool blockCertainlyExecutes(BasicBlock*);
-  bool blockAssumed(BasicBlock*);
-  bool blockAssumedToExecute(BasicBlock*);
+  bool blockCertainlyExecutes(ShadowBB*);
+  bool blockAssumed(ShadowBB*);
 
   virtual BasicBlock* getEntryBlock() = 0;
   virtual bool hasParent();
@@ -730,8 +728,16 @@ protected:
   // Simple state-tracking helpers:
 
   virtual Function* getCalledFunction(const ShadowInstruction*);
-
   virtual InlineAttempt* getFunctionRoot() = 0;
+  ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0);
+  ShadowBB* getBB(uint32_t idx, bool* inScope = 0);
+  ShadowBBInvar* getBBInvar(uint32_t idx);
+  ShadowBB* getUniqueBBRising(ShadowBBInvar* BBI);
+  void createBB(uint32_t blockIdx);
+  ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
+  ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
+  ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
+  ShadowInstruction* getInst(ShadowInstructionInvar* SII);
 
   // The toplevel loop:
   void analyse();
@@ -1080,8 +1086,6 @@ class PeelAttempt {
 
    const Loop* L;
 
-   ShadowLoopInvar* invarInfo;
-
    int64_t residualInstructions;
 
    int nesting_depth;
@@ -1093,6 +1097,8 @@ class PeelAttempt {
 
    int64_t totalIntegrationGoodness;
    int64_t nDependentLoads;
+
+   ShadowLoopInvar* invarInfo;
 
    std::vector<PeelIteration*> Iterations;
    std::pair<BasicBlock*, BasicBlock*> OptimisticEdge;

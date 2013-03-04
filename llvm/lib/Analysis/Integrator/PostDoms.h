@@ -21,14 +21,14 @@ struct LoopWrapper;
 
 struct BBWrapper {
 
-  const ShadowBBInvar* BB;
+  ShadowBBInvar* BB;
   const LoopWrapper* L;
   bool hideSuccessors;
 
-BBWrapper(): BB(0), L(0), Map(0) { }
-BBWrapper(const BasicBlock* _BB, bool hide, const LoopWrapper* _L) : BB(_BB), hideSuccessors(hide), L(_L) { }
-
-  const BBWrapper* get(const ShadowBBInvar* BB) const;
+BBWrapper(): BB(0), L(0) { }
+BBWrapper(ShadowBBInvar* _BB, bool hide, const LoopWrapper* _L) : BB(_BB), L(_L), hideSuccessors(hide) { }
+  
+  BBWrapper* get(ShadowBBInvar* BB) const;
 
 };
 
@@ -38,86 +38,70 @@ BBWrapper(const BasicBlock* _BB, bool hide, const LoopWrapper* _L) : BB(_BB), hi
 struct LoopWrapper {
 
   ShadowFunctionInvar& F;
+  ShadowLoopInvar* LInfo;
   const Loop* L;
   std::vector<BBWrapper*> BBs;
-  BBWrapper* latchBB;
-  uint32_t BBIdxOffset;
 
-LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : L(_L), F(_F) {
+LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : F(_F), L(_L) {
 
   if(L) {
 
-    // Step 1: find lowest numbered BB we need to care about.
-    uint32_t LowestIdx = (uint32_t)-1;
-    uint32_t HighestIdx = 0;
+    LInfo = F.LoopInfo[L];
+    // Lowest BB index we need is the loop's header:
+    
+    uint32_t LowestIdx = LInfo->headerIdx;
+    uint32_t HighestIdx = LInfo->latchIdx;
   
-    for(Loop::block_iterator LI = L->block_begin(), LE = L->block_end(); LI != LE; ++LI) {
-      uint32_t ThisIdx = F.BBMap[*LI].idx;
-      if(ThisIdx < LowestIdx)
-	LowestIdx = ThisIdx;
-      if(ThisIdx > HighestIdx)
-	HighestIdx = ThisIdx;
-    }  
+    // These exit blocks must be topo > all blocks in the loop, so only consider them.
+    for(std::vector<uint32_t>::iterator it = LInfo->exitBlocks.begin(), it2 = LInfo->exitBlocks.end(); it != it2; ++it) {  
 
-    SmallVector<BasicBlock*, 4> ExitBlocks;
-    L->getExitBlocks(ExitBlocks);
-
-    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {  
-      uint32_t ThisIdx = F.BBMap[*LI].idx;
-      if(ThisIdx < LowestIdx)
-	LowestIdx = ThisIdx;
-      if(ThisIdx > HighestIdx)
-	HighestIdx = ThisIdx;
+      if(*it > HighestIdx)
+	HighestIdx = *it;
 
     }
 
-    release_assert(LowestIdx != (uint32_t)-1);
-
-    BBIdxOffset = LowestIdx;
+    release_assert(HighestIdx != (uint32_t)0);
 
     // One extra space for the dummy next iter node.
     BBs.resize((HighestIdx - LowestIdx) + 2);
 
-    for(Loop::block_iterator LI = L->block_begin(), LE = L->block_end(); LI != LE; ++LI) {
-      ShadowBBInvar* SBB = F.BBMap[*LI];
-      BBs[SBB->idx - BBIdxOffset] = new BBWrapper(SBB, /* hide successors = */ false, this);
-      if(*LI == L->getLoopLatch())
-	latchBB = BBs[SBB->idx - BBIdxOffset];
+    for(uint32_t i = LowestIdx; (i < HighestIdx) && (L->contains(F.BBs[i].naturalScope)); ++i) {
+      ShadowBBInvar* SBB = &(F.BBs[i]);
+      BBs[SBB->idx - LowestIdx] = new BBWrapper(SBB, /* hide successors = */ false, this);
     }
   
-    for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
-      ShadowBBInvar* SBB = F.BBMap[*it];
-      BBs[SBB->idx - BBIdxOffset] = new BBWrapper(SBB, /* hide successors = */ true, this);
+    for(std::vector<uint32_t>::iterator it = LInfo->exitBlocks.begin(), it2 = LInfo->exitBlocks.end(); it != it2; ++it) {
+      ShadowBBInvar* SBB = &(F.BBs[*it]);
+      BBs[SBB->idx - LowestIdx] = new BBWrapper(SBB, /* hide successors = */ true, this);
     }
   
-    release_assert(L->getHeader() == BBs[0]->BB->BB);
-
     BBs[BBs.size() - 1] = new BBWrapper(0, true, this);
 
   }
   else {
 
     // Not in a loop, no trickery required.
-
-    BBIdxOffset = 0;
+    LInfo = 0;
 
     BBs.resize(F.BBs.size());
-    for(uint32_t i = 0, ilim = F.BBs.size(); ++i)
-      BBs[i] = new BBWrapper(F.BBs[i], false, this);
+    for(uint32_t i = 0, ilim = F.BBs.size(); i < ilim; ++i)
+      BBs[i] = new BBWrapper(&(F.BBs[i]), false, this);
 
   }
 
 }
 
-  const BBWrapper* get(const ShadowBBInvar* BB) const {
+  BBWrapper* get(const ShadowBBInvar* BB) const {
 
     // First case symbolises the dummy next iteration node, only applies to loops.
     if(!BB)
       return BBs[BBs.size() - 1];
-    else if(BB->idx < BBIdxOffset || (BB->idx - BBIdxOffset) >= BBs.size())
+    
+    uint32_t Offset = LInfo ? LInfo->headerIdx : 0;
+    if(BB->idx < Offset || (BB->idx - Offset) >= BBs.size())
       return 0;
     else
-      return BBs[BB->idx];
+      return BBs[BB->idx - Offset];
     
   }
 
@@ -158,14 +142,14 @@ LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : L(_L), F(_F) {
 
   };
   
-  iterator begin() const { return iterator(BBs.begin()); }
-  iterator end() const { return iterator(BBs.end()); }
+  iterator begin() const { return iterator(BBs.begin(), BBs.end()); }
+  iterator end() const { return iterator(BBs.end(), BBs.end()); }
 
 };
 
-const BBWrapper* BBWrapper::get(const ShadowBBInvar* BB) {
+ BBWrapper* BBWrapper::get(ShadowBBInvar* BB) const {
 
-  return LW->get(BB);
+  return L->get(BB);
 
 }
 
@@ -182,8 +166,8 @@ class LoopPredIterator : public std::iterator<std::forward_iterator_tag,
 public:
   typedef typename super::pointer pointer;
 
-  explicit inline LoopPredIterator(Ptr *bb) : ThisBB(bb), It() {
-    if(bb->BB && ((!bb->BB->L->L) ZZ bb->BB->BB != bb->BB->L->L->getHeader())) {
+  explicit inline LoopPredIterator(Ptr *bb) : ThisBB(bb) {
+    if(bb->BB && ((!bb->BB->L->L) || bb->BB->BB != bb->BB->L->L->getHeader())) {
       isNextIter = false;
       nextPred = 0;
     }
@@ -193,7 +177,7 @@ public:
       isEnd = false;
     }
   }
-  inline LoopPredIterator(Ptr *bb, bool) : ThisBB(bb), It() {
+  inline LoopPredIterator(Ptr *bb, bool) : ThisBB(bb) {
     if(bb->BB && ((!bb->BB->L->L) || bb->BB->BB != bb->BB->L->L->getHeader())) {
       isNextIter = false;
       nextPred = bb->BB->preds_size();
@@ -272,7 +256,7 @@ public:
   typedef typename super::pointer pointer;
   // TODO: This can be random access iterator, only operator[] missing.
 
-  explicit inline LoopSuccIterator(BB_* B) : Block(B), idx(0) {// begin iterator}
+  explicit inline LoopSuccIterator(BB_* B) : Block(B), idx(0) {} // begin iterator
 
   inline LoopSuccIterator(BB_* B, bool) : Block(B) {
 
@@ -298,9 +282,9 @@ public:
   inline bool operator!=(const Self& x) const { return !operator==(x); }
 
   inline pointer operator*() const { 
-    const ShadowBBWrapper* NextBB = Block->BB->getSucc(idx);
+    const ShadowBB* NextBB = Block->BB->getSucc(idx);
     // Loop latch's successor is not the loop header but the dummy next-iteration node.
-    if(Block->L->L && NextBB->BB == Block->L->L->getHeader() && Block->BB->BB == Block->L->L->getLoopLatch())
+    if(Block->L->L && NextBB->invar->BB == Block->L->L->getHeader() && Block->BB->BB == Block->L->L->getLoopLatch())
       return Block->get(0);
     else
       return Block->get(NextBB);
@@ -376,10 +360,7 @@ public:
 
   /// Get the source BB of this iterator.
   inline BB_ *getSource() {
-    if(!Term)
-      return 0;
-    else
-      return Block;
+    return Block;
   }
 };
 
@@ -429,11 +410,11 @@ template <> struct GraphTraits<Inverse<const BBWrapper*> > {
 template <> struct GraphTraits<const LoopWrapper*> :
   public GraphTraits<const BBWrapper*> {
   static NodeType *getEntryNode(const LoopWrapper *LW) { 
-    return LW->get(LW->L->getHeader());
+    return LW->BBs.front();
   }
 
   // nodes_iterator/begin/end - Allow iteration over all nodes in the graph
-  typedef std::vector<const BBWrapper*>::const_iterator nodes_iterator;
+  typedef std::vector<BBWrapper*>::const_iterator nodes_iterator;
   static nodes_iterator nodes_begin(const LoopWrapper *LW) { return LW->BBs.begin(); }
   static nodes_iterator nodes_end  (const LoopWrapper *LW) { return LW->BBs.end(); }
 };
@@ -447,7 +428,7 @@ template <> struct GraphTraits<const LoopWrapper*> :
 template <> struct GraphTraits<Inverse<const LoopWrapper*> > :
   public GraphTraits<Inverse<const BBWrapper*> > {
   static NodeType *getEntryNode(Inverse<const LoopWrapper*> G) {
-    return G.Graph->get(G.Graph->L->getHeader());
+    return G.Graph->BBs.front();
   }
 };
 

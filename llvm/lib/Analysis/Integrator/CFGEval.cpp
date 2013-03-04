@@ -32,7 +32,7 @@ void IntegrationAttempt::markBlockCertain(ShadowBBInvar* BB) {
   LPDEBUG("Block " << BB->getName() << " is certain to execute\n");
   if(!BBs[BB->idx])
     createBB(BB->idx);
-  BB->status = BBSTATUS_CERTAIN;
+  BBs[BB->idx]->status = BBSTATUS_CERTAIN;
     
 }
 
@@ -40,29 +40,7 @@ void IntegrationAttempt::markBlockAssumed(ShadowBBInvar* BB) {
 
   if(!BBs[BB->idx])
     createBB(BB->idx);
-  BB->status = BBSTATUS_ASSUMED;
-
-}
-
-PostDominatorTree* IntegrationHeuristicsPass::getPostDomTree(Function* F) {
-
-  DenseMap<Function*, PostDominatorTree*>::iterator it = PDTs.find(F);
-  if(it != PDTs.end())
-    return it->second;
-  else {
-
-    PostDominatorTree* PDT = new PostDominatorTree();
-    PDT->runOnFunction(*F);
-    PDTs[F] = PDT;
-    return PDT;
-
-  }
-
-}
-
-PostDominatorTree* IntegrationAttempt::getPostDomTree() {
-
-  return pass->getPostDomTree(&F);
+  BBs[BB->idx]->status = BBSTATUS_ASSUMED;
 
 }
 
@@ -72,7 +50,7 @@ namespace llvm {
   void WriteAsOperand(raw_ostream& os, const BBWrapper* BBW, bool ign) {
 
     if(BBW->BB) {
-      WriteAsOperand(os, BBW->BB, ign);
+      WriteAsOperand(os, BBW->BB->BB, ign);
     }
     else {
       os << "<<next iteration>>";
@@ -82,7 +60,7 @@ namespace llvm {
 
 }
 
-DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, BasicBlock* BB) {
+DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, ShadowBBInvar* BB, ShadowFunctionInvar& invarInfo) {
 
   std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> P;
 
@@ -94,7 +72,7 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
   }
   else {
     
-    const LoopWrapper* LW = new LoopWrapper(L);
+    const LoopWrapper* LW = new LoopWrapper(L, invarInfo);
     DominatorTreeBase <const BBWrapper>* LPDT = new DominatorTreeBase<const BBWrapper>(true);
     LPDT->recalculate(*LW);
 
@@ -107,11 +85,11 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
 
   }
 
-  DenseMap<const BasicBlock*, BBWrapper>::const_iterator it2 = P.first->Map.find(BB);
-  if(it2 == P.first->Map.end())
+  BBWrapper* BBW = P.first->get(BB);
+  if(!BBW)
     return 0;
-  else  
-    return P.second->getNode(&it2->second);
+  else
+    return P.second->getNode(BBW);
 
 }
 
@@ -126,11 +104,11 @@ bool InlineAttempt::entryBlockIsCertain() {
 bool PeelIteration::entryBlockIsCertain() {
 
   if(iterationCount == 0)
-    return blockCertainlyExecutes(parent->getBB(parentPA->preheaderIdx));
+    return blockCertainlyExecutes(parent->getBB(parentPA->invarInfo->preheaderIdx));
 
   // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
   PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
-  return blockCertainlyExecutes(prevIter->getBB(parentPA->latchIdx)) && prevIter->allExitEdgesDead();
+  return blockCertainlyExecutes(prevIter->getBB(parentPA->invarInfo->latchIdx)) && prevIter->allExitEdgesDead();
 
 }
 
@@ -138,7 +116,7 @@ bool InlineAttempt::entryBlockAssumed() {
 
   if(!parent)
     return true;
-  return parent->blockAssumed(CI->getParent());
+  return parent->blockAssumed(CI->parent);
 
 }
 
@@ -152,7 +130,7 @@ bool PeelIteration::entryBlockAssumed() {
 
 void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
-  const ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
+  ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
   BasicBlock* BB = SBBI.BB;
 
   LPDEBUG("Checking status of block " << BB->getName() << "\n");
@@ -178,7 +156,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
       ShadowBBInvar* PSBBI = &(invarInfo->BBs[SBBI.predIdxs[i]]);
 
-      if(!edgeIsDead(PSBBI, SBBI)) {
+      if(!edgeIsDead(PSBBI, &SBBI)) {
 
 	isDead = false;
 
@@ -198,9 +176,9 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 	    bool onlySuccessor = true;
 
-	    for(uint32_t j = 0, jlim = PSBBI.succIdxs.size(); j != jlim; ++j) {
+	    for(uint32_t j = 0, jlim = PSBBI->succIdxs.size(); j != jlim; ++j) {
 
-	      ShadowBBInvar* SSBBI = getBBInvar(PSBBI.succIdxs[j]);
+	      ShadowBBInvar* SSBBI = getBBInvar(PSBBI->succIdxs[j]);
 
 	      if(SBBI.BB != SSBBI.BB && !edgeIsDead(PredBB, SSBBI)) {
 		onlySuccessor = false;
@@ -211,7 +189,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 	    if(!onlySuccessor) {
 	      isCertain = false;
-	      if(!shouldAssumeEdge(PSBBI.BB, SBBI.BB))
+	      if(!shouldAssumeEdge(PSBBI->BB, SBBI.BB))
 		isAssumed = false;
 	    }
 	    
@@ -253,7 +231,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
     const Loop* MyL = L;
 
-    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, BB); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, &SBBI, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 	
       const BBWrapper* BW = DTN->getBlock();
       if(BW->BB) {
