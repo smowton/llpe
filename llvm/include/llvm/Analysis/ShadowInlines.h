@@ -41,7 +41,7 @@ enum ShadowValType {
   SHADOWVAL_ARG,
   SHADOWVAL_INST,
   SHADOWVAL_OTHER,
-  SHADOWVAL_INVAL;
+  SHADOWVAL_INVAL
 
 };
 
@@ -56,6 +56,7 @@ enum va_arg_type {
 
 class ShadowArg;
 class ShadowInstruction;
+class InstArgImprovement;
 
 struct ShadowValue {
 
@@ -67,9 +68,9 @@ struct ShadowValue {
   } u;
 
 ShadowValue() : t(SHADOWVAL_INVAL) { }
-ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG), u.A(_A) { }
-ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST), u.I(_I) { }
-ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V) { }
+ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
+ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST) { u.I = _I; }
+ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
 
   bool isInval() {
     return t == SHADOWVAL_INVAL;
@@ -99,15 +100,15 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER), u.V(_V) { }
   Value* getBareVal();
   const Loop* getScope();
   const Loop* getNaturalScope();
-  bool isIdentifiedObject();
+  bool isIDObject();
   InstArgImprovement* getIAI();
 
 };
 
 inline bool operator==(ShadowValue V1, ShadowValue V2) {
-  if(V1.type != V2.type)
+  if(V1.t != V2.t)
     return false;
-  switch(V1.type) {
+  switch(V1.t) {
   case SHADOWVAL_INVAL:
     return true;
   case SHADOWVAL_ARG:
@@ -124,9 +125,9 @@ inline bool operator!=(ShadowValue V1, ShadowValue V2) {
 }
 
 inline bool operator<(ShadowValue V1, ShadowValue V2) {
-  if(V1.type != V2.type)
-    return V1.type < V2.type;
-  switch(V1.type) {
+  if(V1.t != V2.t)
+    return V1.t < V2.t;
+  switch(V1.t) {
   case SHADOWVAL_INVAL:
     return false;
   case SHADOWVAL_ARG:
@@ -218,7 +219,7 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
 };
 
 inline bool operator==(ImprovedVal V1, ImprovedVal V2) {
-  return (V1.V == V2.V && V1.Offset == V2.Offset)
+  return (V1.V == V2.V && V1.Offset == V2.Offset);
 }
 
 inline bool operator!=(ImprovedVal V1, ImprovedVal V2) {
@@ -257,7 +258,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
-  PointerBase& insert(ImprovedVal& V); {
+  PointerBase& insert(ImprovedVal& V) {
     if(Overdef)
       return *this;
     if(std::count(Values.begin(), Values.end(), V))
@@ -280,7 +281,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     }
     else {
       Type = OtherPB.Type;
-      for(SmallVector<ShadowValue, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
+      for(SmallVector<ImprovedVal, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
 	insert(*it);
     }
     return *this;
@@ -299,8 +300,8 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   
 };
 
-#define INVALID_BLOCK_IDX 0xffffffff;
-#define INVALID_INSTRUCTION_IDX 0xffffffff;
+#define INVALID_BLOCK_IDX 0xffffffff
+#define INVALID_INSTRUCTION_IDX 0xffffffff
 
 struct ShadowInstIdx {
 
@@ -311,6 +312,8 @@ ShadowInstIdx() : blockIdx(INVALID_BLOCK_IDX), instIdx(INVALID_INSTRUCTION_IDX) 
 ShadowInstIdx(uint32_t b, uint32_t i) : blockIdx(b), instIdx(i) { }
 
 };
+
+class ShadowBBInvar;
 
 struct ShadowInstructionInvar {
   
@@ -351,6 +354,8 @@ struct InstArgImprovement {
 InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
 
 };
+
+class ShadowBB;
 
 struct ShadowInstruction {
 
@@ -472,7 +477,7 @@ struct ShadowFunctionInvar {
 };
 
 ShadowBBInvar* ShadowBBInvar::getPred(uint32_t i) {
-  return F->BBs[predIdxs[i]];
+  return &(F->BBs[predIdxs[i]]);
 }
 
 uint32_t ShadowBBInvar::preds_size() { 
@@ -480,7 +485,7 @@ uint32_t ShadowBBInvar::preds_size() {
 }
 
 ShadowBBInvar* ShadowBBInvar::getSucc(uint32_t i) {
-  return F->BBs[succIdxs[i]];
+  return &(F->BBs[succIdxs[i]]);
 }
   
 uint32_t ShadowBBInvar::succs_size() {
@@ -494,7 +499,7 @@ inline const Type* ShadowValue::getType() {
     return u.A->invar->A->getType();
   case SHADOWVAL_INST:
     return u.I->invar->I->getType();
-  case SHADOWVAL_VAL:
+  case SHADOWVAL_OTHER:
     return u.V->getType();
   case SHADOWVAL_INVAL:
     return 0;
@@ -519,10 +524,10 @@ inline Value* ShadowValue::getBareVal() {
 
   switch(t) {
   case SHADOWVAL_ARG:
-    return return u.A->invar->A;
+    return u.A->invar->A;
   case SHADOWVAL_INST:
     return u.I->invar->I;
-  case SHADOWVAL_VAL:
+  case SHADOWVAL_OTHER:
     return u.V;
   default:
     return 0;
@@ -545,14 +550,16 @@ inline const Loop* ShadowValue::getNaturalScope() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    return u.I->invar->naturalScope;
+    return u.I->invar->parent->naturalScope;
   default:
     return 0;
   }
 
 }
 
-inline bool ShadowValue::isIdentifiedObject() {
+extern bool isIdentifiedObject(const Value*);
+
+inline bool ShadowValue::isIDObject() {
 
   return isIdentifiedObject(getBareVal());
 
@@ -601,19 +608,19 @@ template<class X> inline X* cast_val(ShadowValue& V) {
 
 inline Constant* getConstReplacement(ShadowArg* SA) {
  
-  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0 || SA->i.PB.type != ValSetTypeScalar)
+  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0 || SA->i.PB.Type != ValSetTypeScalar)
     return 0;
   else
-    return cast<Constant>(SA->i.PB.Values[0].V);
+    return cast<Constant*>(SA->i.PB.Values[0].V);
 
 }
 
 inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
-  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0 || SA->i.PB.type != ValSetTypeScalar)
+  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0 || SI->i.PB.Type != ValSetTypeScalar)
     return 0;
   else
-    return cast<Constant>(SI->i.PB.Values[0].V);
+    return cast<Constant*>(SI->i.PB.Values[0].V);
 
 }
 
@@ -624,7 +631,7 @@ inline Constant* getConstReplacement(ShadowValue& SV) {
   }
   else if(ShadowArg* SA = SV.getArg()) {
     return getConstReplacement(SA);
-  
+  }
   else {
     return dyn_cast_or_null<Constant>(SV.getVal());
   }
@@ -639,6 +646,8 @@ inline ShadowValue tryGetConstReplacement(ShadowValue& SV) {
     return SV;
 
 }
+
+std::pair<ValSetType, ImprovedVal> getValPB(Value* V);
 
 inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
@@ -656,8 +665,8 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
   }
   else {
     
-    std::pair<ValSetType, ImprovedVal> V2PB = getValPB(V2);
-    OutPB = PointerBase::get(V2PB.second, V2PB.first);
+    std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
+    OutPB = PointerBase::get(VPB.second, VPB.first);
     return true;
 
   }
@@ -670,7 +679,7 @@ inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset
   if(!getPointerBase(SV, SVPB))
     return false;
 
-  if(SVPB.type != ValSetTypePB || SVPB.Overdef || SVBP.Values.Size() != 1)
+  if(SVPB.Type != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() != 1)
     return false;
 
   Base = SVPB.Values[0].V;
@@ -696,23 +705,33 @@ inline bool getBaseAndConstantOffset(ShadowValue& SV, ShadowValue& Base, int64_t
 }
 
 inline bool mayBeReplaced(InstArgImprovement& IAI) {
-  return IAI.PB.Values.size() == 1 && (IAI.PB.type == ValSetTypeScalar ||
-				       (IAI.PB.type == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
-				       IAI.PB.type == ValSetTypeFD);
+  return IAI.PB.Values.size() == 1 && (IAI.PB.Type == ValSetTypeScalar ||
+				       (IAI.PB.Type == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
+				       IAI.PB.Type == ValSetTypeFD);
 }
 
 inline bool mayBeReplaced(ShadowInstruction* SI) {
-  return willBeReplaced(SI->i);
+  return mayBeReplaced(SI->i);
 }
 
 inline bool mayBeReplaced(ShadowArg* SA) {
-  return willBeReplaced(SA->i);
+  return mayBeReplaced(SA->i);
 }
 
 inline void setReplacement(ShadowInstruction* SI, Constant* C) {
 
   SI->i.PB.Values.clear();
-  SI->i.PB.Values.push_back(ImprovedVal(ShadowValue(C)));
-  SI->i.PB.type = ValSetTypeScalar;
+  std::pair<ValSetType, ImprovedVal> P = getValPB(C);
+  SI->i.PB.Values.push_back(P.second);
+  SI->i.PB.Type = P.first;
+
+}
+
+inline void setReplacement(ShadowArg* SA, Constant* C) {
+
+  SA->i.PB.Values.clear();
+  std::pair<ValSetType, ImprovedVal> P = getValPB(C);
+  SA->i.PB.Values.push_back(P.second);
+  SA->i.PB.Type = P.first;
 
 }

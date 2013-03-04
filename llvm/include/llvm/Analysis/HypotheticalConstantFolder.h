@@ -10,6 +10,8 @@
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
 #include "llvm/Constant.h"
+#include "llvm/Argument.h"
+#include "llvm/Instruction.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 
 #include <limits.h>
@@ -65,25 +67,6 @@ class PBLoadForwardWalker;
 class MemSetInst;
 class MemTransferInst;
 
-// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
-// May be: 
-// overdefined (overflowed, or defined by an unknown)
-// defined (known set of possible values)
-// undefined (implied by absence from map)
-// Note Value members may be null (signifying a null pointer) without being Overdef.
-
-#define PBMAX 16
-
-enum ValSetType {
-
-  ValSetTypeUnknown,
-  ValSetTypePB, // Pointers; the Offset member is set
-  ValSetTypeScalar, // Ordinary constants
-  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
-  ValSetTypeVarArg // Special tokens representing a vararg or VA-related cookie
-
-};
-
 bool functionIsBlacklisted(Function*);
 
 // Include structures and functions for working with instruction and argument shadows.
@@ -110,15 +93,13 @@ class IntegrationHeuristicsPass : public ModulePass {
    TargetData* TD;
    AliasAnalysis* AA;
 
-   IntegrationAttempt* RootIA;
+   InlineAttempt* RootIA;
 
    DenseMap<const GlobalVariable*, std::string> GVCache;
    DenseMap<const GlobalVariable*, std::string> GVCacheBrief;
 
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
-
-   DenseMap<Function*, ShadowFunctionInvar>::iterator findit = functionInfo.find(&F);
 
    bool cacheDisabled;
 
@@ -132,7 +113,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
-     produceDIEQueue = &dieQueue2;
      mallocAlignment = 0;
      SeqNumber = 0;
 
@@ -206,7 +186,7 @@ class IntegrationHeuristicsPass : public ModulePass {
      return SeqNumber++;
    }
 
-   IntegrationAttempt* getRoot() { return RootIA; }
+   InlineAttempt* getRoot() { return RootIA; }
    void commit();
   
  };
@@ -239,9 +219,9 @@ raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 // Characteristics for using ShadowValues in hashsets (DenseSet, or as keys in DenseMaps)
 template<> struct DenseMapInfo<ShadowValue> {
   
-  typedef DenseMapInfo<ShadowValType> TypeInfo;
+  typedef DenseMapInfo<int> TypeInfo;
   typedef DenseMapInfo<void*> VoidInfo;
-  typedef DenseMapInfo<std::pair<ShadowValType, void*> > PairInfo;
+  typedef DenseMapInfo<std::pair<int, void*> > PairInfo;
 
   static inline ShadowValue getEmptyKey() {
     return ShadowValue((Value*)VoidInfo::getEmptyKey());
@@ -263,7 +243,7 @@ template<> struct DenseMapInfo<ShadowValue> {
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
     }
-    return PairInfo::getHashValue(std::make_pair(V.t, hashPtr));
+    return PairInfo::getHashValue(std::make_pair((int)V.t, hashPtr));
   }
 
   static bool isEqual(const ShadowValue& V1, const ShadowValue& V2) {
@@ -272,7 +252,7 @@ template<> struct DenseMapInfo<ShadowValue> {
 
  };
 
-// Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a ValCtx
+// Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a value
 // or partially with a Constant plus a byte extent and offset from which that Constant should be read.
 
 enum PartialValType {
@@ -419,7 +399,7 @@ struct CloseFile {
   ShadowInstruction* openInst;
 
 CloseFile(struct OpenStatus* O, ShadowInstruction* I) : openArg(O), MayDelete(false), openInst(I) {}
-CloseFile() : openArg(0), MayDelete(false), openVC(VCNull) {}
+CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
 
 };
 
@@ -749,8 +729,6 @@ protected:
 
   // Simple state-tracking helpers:
 
-  virtual void setReplacement(Value*, ValCtx);
-
   virtual Function* getCalledFunction(const ShadowInstruction*);
 
   virtual InlineAttempt* getFunctionRoot() = 0;
@@ -765,7 +743,6 @@ protected:
   // Constant propagation:
 
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
-  virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
   bool tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB);
@@ -777,10 +754,10 @@ protected:
   bool tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  bool tryFoldNonConstCmp(ShadowInst* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
+  bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs);
-  void getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs);
+  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>& BBs);
+  void getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>& BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, bool finalise, PointerBase& NewPB);
 
   // CFG analysis:
@@ -810,7 +787,7 @@ protected:
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
-  void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
+  void queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
   virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
   void queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx);
   void queueReturnBlocks(BackwardIAWalker* Walker);
@@ -936,10 +913,10 @@ protected:
   PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) const {
     return PrintCacheWrapper<ShadowValue>(*pass, V, brief);
   }
-  PrintCacheWrapper<ShadowInstruction*> itcache(ShadowInstruction* SI, bool brief = false) const {
+  PrintCacheWrapper<ShadowValue> itcache(ShadowInstruction* SI, bool brief = false) const {
     return itcache(ShadowValue(SI), brief);
   }
-  PrintCacheWrapper<ShadowArg*> itcache(ShadowArg* SA, bool brief = false) const {
+  PrintCacheWrapper<ShadowValue> itcache(ShadowArg* SA, bool brief = false) const {
     return itcache(ShadowValue(SA), brief);
   }
 
@@ -968,7 +945,7 @@ protected:
 
   void prepareCommit();
   void localPrepareCommit();
-  virtual void getCommittedBlockPrefix() = 0;
+  virtual std::string getCommittedBlockPrefix() = 0;
   void commitCFG();
   Value* getArgCommittedValue(ShadowArg* SA);
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
@@ -1165,14 +1142,14 @@ class PeelAttempt {
    void disableVarargsContexts(); 
 
    bool isTerminated() {
-     return Iterations.back()->iterationStatus == iterStatusTerminated;
+     return Iterations.back()->iterStatus == IterationStatusFinal;
    }
 
    // Caching instruction text for debug and DOT export:
    PrintCacheWrapper<const Value*> itcache(const Value& V) const {
      return parent->itcache(V);
    }
-   PrintCacheWrapper<ValCtx> itcache(ShadowValue V) const {
+   PrintCacheWrapper<ShadowValue> itcache(ShadowValue V) const {
      return parent->itcache(V);
    }
 
@@ -1254,7 +1231,7 @@ class InlineAttempt : public IntegrationAttempt {
 
 };
 
- ValCtx extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
+ Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
  Constant* constFromBytes(unsigned char*, const Type*, TargetData*);
  bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
  bool allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData*);
@@ -1271,15 +1248,13 @@ class InlineAttempt : public IntegrationAttempt {
  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
  void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
 
- bool isGlobalIdentifiedObject(ValCtx VC);
+ bool isGlobalIdentifiedObject(ShadowValue VC);
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
- ValCtx getAsPtrAsInt(ValCtx VC, const Type* Target);
- ValCtx GetBaseWithConstantOffset(Value *Ptr, IntegrationAttempt* PtrCtx, int64_t &Offset);
 
  PartialVal tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
- PointerBase llvm::tryForwardLoadArtifical(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
+ PointerBase tryForwardLoadArtifical(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
  std::string describePBWalker(PBLoadForwardWalker& Walker);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
@@ -1294,8 +1269,7 @@ class InlineAttempt : public IntegrationAttempt {
  bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
  bool getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
- bool basesAlias(ValCtx VC1, ValCtx VC2);
-
+ bool basesAlias(ShadowValue, ShadowValue);
 
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
  void release_assert_fail(const char*);

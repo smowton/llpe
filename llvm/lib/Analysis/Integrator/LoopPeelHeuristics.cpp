@@ -1634,13 +1634,8 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
 
   }
 
-  Function::arg_iterator Arg = F.arg_begin();
-  for(long i = 0; i < Idx && Arg != F.arg_end(); ++i)
-    ++Arg;
-
-  if(Arg != F.arg_end()) {
-    IA->setReplacement(Arg, const_vc(Val));
-  }
+  if(Idx < F.arg_size())
+    setReplacement(RootIA->shadowArgs[
   // Else it's varargs, which are discovered through LF rather than direct propagation
 
 }

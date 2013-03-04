@@ -1174,7 +1174,7 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
-static std::pair<ValSetType, ImprovedVal> getValPB(Value* V) {
+std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
   Constant* C = dyn_cast<Constant>(V);
   if(C)
