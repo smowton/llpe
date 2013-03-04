@@ -177,7 +177,7 @@ Module& IntegrationAttempt::getModule() {
 // Calls a given callback at the *parent* scope associated with loop LScope
 void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
-  if(LScope == getLoopContext())
+  if(LScope == L)
     C.callback(this);
   else
     parent->callWithScope(C, LScope);
@@ -600,19 +600,6 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
 }
 
-
-const Loop* InlineAttempt::getLoopContext() {
-
-  return 0;
-
-}
-
-const Loop* PeelIteration::getLoopContext() {
-
-  return L;
-
-}
-
 void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
 
   for(uint32_t i = 0; i < nBBs; ++i) {
@@ -640,18 +627,6 @@ BasicBlock* InlineAttempt::getEntryBlock() {
 BasicBlock* PeelIteration::getEntryBlock() {
   
   return L->getHeader();
-
-}
-
-Instruction* InlineAttempt::getEntryInstruction() {
-
-  return CI;
-
-}
-
-Instruction* PeelIteration::getEntryInstruction() {
-
-  return L->getLoopPreheader()->getTerminator();
 
 }
 

@@ -743,7 +743,6 @@ protected:
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
-  virtual Instruction* getEntryInstruction() = 0;
   virtual void collectAllLoopStats() = 0;
   void printHeader(raw_ostream& OS) const;
   virtual bool isOptimisticPeel() = 0;
@@ -771,6 +770,7 @@ protected:
   bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
+  virtual bool getLoopHeaderForwardedOperand(ShadowInstruction* SI) = 0;
   bool tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
 			 ValSetType& ImpType, ImprovedVal& Improved);
@@ -971,10 +971,10 @@ protected:
   virtual void getCommittedBlockPrefix() = 0;
   void commitCFG();
   Value* getArgCommittedValue(ShadowArg* SA);
-  ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
+  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
-  void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
+  virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void fixupHeaderPHIs(ShadowBB* BB);
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
@@ -1028,75 +1028,61 @@ public:
   IterationStatus iterStatus;
 
   PeelIteration* getNextIteration();
-  PeelIteration* getOrCreateNextIteration();
+  PeelIteration* getOrCreateNextIteration(); 
 
-  virtual Instruction* getEntryInstruction();
-  virtual BasicBlock* getEntryBlock();
+  virtual BasicBlock* getEntryBlock(); 
 
-  virtual bool getLoopHeaderPHIValue(PHINode* PN, ValCtx& result);
+  virtual bool getLoopHeaderForwardedOperand(ShadowInstruction* SI); 
 
-  void checkExitEdge(BasicBlock*, BasicBlock*);
-  void checkFinalIteration();
+  void checkFinalIteration(); 
 
-  virtual InlineAttempt* getFunctionRoot();
+  virtual InlineAttempt* getFunctionRoot(); 
 
-  virtual void visitExitPHI(Instruction* UserI, VisitorContext& Visitor);
-  void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor);
-  virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor);
+  void visitVariant(Instruction* VI, const Loop* VILoop, VisitorContext& Visitor); 
+  virtual bool visitNextIterationPHI(Instruction* I, VisitorContext& Visitor); 
 
-  virtual bool walkHeaderPHIOperands(PHINode* PN, OpCallback& CB);
-
-  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
+  virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out); 
 
   virtual void describe(raw_ostream& Stream) const;
   virtual void describeBrief(raw_ostream& Stream) const;
 
-  virtual void collectAllLoopStats();
+  virtual void collectAllLoopStats(); 
 
-  virtual std::string getShortHeader();
-  virtual IntegratorTag* getParentTag();
+  virtual std::string getShortHeader(); 
+  virtual IntegratorTag* getParentTag(); 
 
-  virtual bool canDisable();
-  virtual bool isEnabled();
-  virtual void setEnabled(bool);
+  virtual bool canDisable(); 
+  virtual bool isEnabled(); 
+  virtual void setEnabled(bool); 
 
-  virtual void deleteDeadBlocks(bool);
-  virtual void replaceKnownBranches();
+  virtual bool isOptimisticPeel(); 
 
-  virtual bool isOptimisticPeel();
+  virtual void getVarArg(int64_t, ValCtx&); 
 
-  virtual bool getLoopBranchTarget(BasicBlock* FromBB, TerminatorInst* TI, TerminatorInst* ReplaceTI, BasicBlock*& Target);
-  virtual void localPrepareCommit();
+  virtual bool ctxContains(IntegrationAttempt*); 
 
-  virtual void getVarArg(int64_t, ValCtx&);
+  virtual bool stackIncludesCallTo(Function*); 
 
-  virtual bool updateHeaderPHIPB(PHINode* PN, bool& NewPBValid, PointerBase& NewPB);
+  virtual void reduceDependentLoads(int64_t); 
 
-  virtual bool ctxContains(IntegrationAttempt*);
+  virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx); 
+  virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc); 
 
-  virtual void describeLoopsAsDOT(raw_ostream& Out, bool brief, SmallSet<BasicBlock*, 32>& blocksPrinted);
+  virtual bool entryBlockIsCertain(); 
+  virtual bool entryBlockAssumed(); 
 
-  virtual bool stackIncludesCallTo(Function*);
-
-  virtual void reduceDependentLoads(int64_t);
-
-  virtual bool queuePredecessorsBW(BasicBlock* FromBB, BackwardIAWalker* Walker, void* ctx);
-  virtual bool queueNextLoopIterationFW(BasicBlock* PresentBlock, BasicBlock* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
-
-  virtual void recordAllParentContexts(ValCtx VC, SmallSet<InlineAttempt*, 8>& seenIAs, SmallSet<PeelAttempt*, 8>& seenPAs);
-
-  virtual bool loopHeaderPhiWillCopy(Value* V, ValCtx OtherVC);
-
-  virtual bool entryBlockIsCertain();
-  virtual bool entryBlockAssumed();
-
-  bool isOnlyExitingIteration();
-  bool allExitEdgesDead();
-  void getLoadForwardStartBlocks(SmallVector<BasicBlock*, 4>& Blocks, bool includeExitingBlocks);
+  bool isOnlyExitingIteration(); 
+  bool allExitEdgesDead(); 
 
   virtual int getIterCount() {
     return iterationCount;
   }
+
+  void prepareShadows();
+  virtual std::string getCommittedBlockPrefix();
+  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
+  virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
+  virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
 
 };
 
@@ -1238,8 +1224,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual ValCtx tryEvaluateResult(Value*);
   
-  virtual Instruction* getEntryInstruction();
-  virtual BasicBlock* getEntryBlock();
+  virtual BasicBlock* getEntryBlock(); 
 
   ValCtx tryGetReturnValue();
   
@@ -1255,8 +1240,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool getSpecialEdgeDescription(BasicBlock* FromBB, BasicBlock* ToBB, raw_ostream& Out);
   
-  virtual void describe(raw_ostream& Stream) const;
-  virtual void describeBrief(raw_ostream& Stream) const;
+  virtual void describe(raw_ostream& Stream) const; 
+  virtual void describeBrief(raw_ostream& Stream) const; 
   
   virtual void collectAllLoopStats();
 
