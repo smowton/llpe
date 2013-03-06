@@ -170,10 +170,10 @@ namespace {
     }
 
     virtual bool pointsToConstantMemory(const Value *P) { return false; }
-    virtual ModRefResult getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
       return ModRef;
     }
-    virtual ModRefResult getModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
+    virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       return ModRef;
     }
 
@@ -374,10 +374,10 @@ namespace {
 
     }
 
-    virtual ModRefResult getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, 
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, 
 				       bool usePBKnowledge = true);
 
-    virtual ModRefResult getModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
+    virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       // The AliasAnalysis base class has some smarts, lets use them.
       return AliasAnalysis::getModRefInfo(CS1, CS2, usePBKnowledge);
     }

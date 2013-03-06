@@ -313,7 +313,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
       
     SmallVector<ShadowValue, 1> predValues;
     SmallVector<ShadowBB*, 1> predBBs;
-    ShadowValue PredV = getExitPHIOperands(I, i, predValues, predBBs);
+    ShadowValue PredV = getExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
       Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType());

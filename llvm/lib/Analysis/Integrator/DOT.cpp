@@ -52,9 +52,9 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
     const Loop* SVScope = SV.getScope();
     if(L && SVScope != L && ((!SVScope) || SVScope->contains(L))) {
       
-      ShadowInst* SI = getInstFalling(SI->parent->invar, SI->invar->idx);
+      ShadowInstruction* SI2 = getInstFalling(SI->parent->invar, SI->invar->idx);
 
-      if(getConstReplacement(SI))
+      if(getConstReplacement(SI2))
 	return "limegreen";
 
     }
@@ -146,7 +146,6 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
     InvarSI = SI;
 
   if(Constant* C = getConstReplacement(SV)) {
-    ShadowValue& Repl = IAI->i.replaceWith;
     if(isInvariant)
       Out << "(invar) ";
     if(isa<Function>(C))
@@ -155,7 +154,7 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
       Out << (*C);
     return;
   }
-  if(IAI->i.dieStatus != INSTSTATUS_ALIVE) {
+  if(IAI->dieStatus != INSTSTATUS_ALIVE) {
     if(isInvariant)
       Out << "(invar) ";
     Out << "DEAD";
@@ -232,8 +231,6 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
   if(brief && !SB)
     return;
 
-  const Loop* MyLoop = L;
-
   std::string edgeString;
   raw_string_ostream rso(edgeString);
 
@@ -308,7 +305,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   if(isFunctionHeader) {
     InlineAttempt* self = getFunctionRoot();
     for(uint32_t i = 0; i < F.arg_size(); ++i)
-      Vals.push_back(ShadowValue(argShadows[i]));
+      Vals.push_back(ShadowValue(&(self->argShadows[i])));
   }
 
   BasicBlock::iterator BI, BE;
@@ -317,7 +314,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     if(!BB)
       Vals.push_back(ShadowValue(BI));
     else
-      Vals.push_back(BB->insts[i]);
+      Vals.push_back(ShadowValue(&(BB->insts[i])));
   }
 
   for(std::vector<ShadowValue>::iterator VI = Vals.begin(), VE = Vals.end(); VI != VE; ++VI) {
@@ -342,7 +339,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     Out << "<tr>\n";
     unsigned i = 0;
     for(succ_const_iterator SI = succ_begin((const BasicBlock*)BB), SE = succ_end((const BasicBlock*)BB); SI != SE; ++SI, ++i) {
-      Out << "<td port=\"s" << i << "\" border=\"1\">" << DOTGraphTraits<const Function*>::getEdgeSourceLabel(BB, SI) << "</td>\n";
+      Out << "<td port=\"s" << i << "\" border=\"1\">" << DOTGraphTraits<const Function*>::getEdgeSourceLabel(BB->invar->BB, SI) << "</td>\n";
     }
     Out << "</tr>\n";
 
@@ -354,7 +351,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
     for(SmallVector<ShadowBB*, 4>::const_iterator it = forceSuccessors->begin(), it2 = forceSuccessors->end(); it != it2; ++it) {
 
-      printOutgoingEdge(BBI, BB, it->invar, (*it), 0, false, deferEdgesOutside, deferredEdges, Out, brief);
+      printOutgoingEdge(BBI, BB, (*it)->invar, (*it), 0, false, deferEdgesOutside, deferredEdges, Out, brief);
 
     }
 
@@ -365,7 +362,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
 
       ShadowBBInvar* SuccBBI = getBBInvar(BBI->succIdxs[i]);
-      ShadowBB* SuccBB = getBB(SuccBBI);
+      ShadowBB* SuccBB = getBB(*SuccBBI);
 
       printOutgoingEdge(BBI, BB, SuccBBI, SuccBB, i, useLabels, deferEdgesOutside, deferredEdges, Out, brief);
 
@@ -377,7 +374,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
 bool IntegrationAttempt::blockLiveInAnyScope(ShadowBBInvar* BB) {
 
-  if(!getBB(BB))
+  if(!getBB(*BB))
     return false;
 
   if(BB->naturalScope != L) {
@@ -414,33 +411,35 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
   if(brief && !BBs[headerIdx])
     return;
 
+  ShadowLoopInvar& LInfo = *(invarInfo->LoopInfo[DescribeL]);
+
   Out << "subgraph \"cluster_" << DOT::EscapeString(DescribeL->getHeader()->getName()) << "\" {";
 
   if(brief) {
 
     // Draw the header branching to all exiting blocks, to each exit block.
-    std::vector<uint32_t>* exitingIdxs = invarInfo->LoopExitingBlocks[DescribeL];
+    std::vector<uint32_t>& exitingIdxs = LInfo.exitingBlocks;
 
     SmallVector<ShadowBB*, 4> liveExitingBlocks;
 
     for(unsigned i = 0; i < exitingIdxs.size(); ++i) {
 
       ShadowBBInvar* BBI = getBBInvar(exitingIdxs[i]);
-      if(blockAliveInAnyScope(BB)) {
+      if(blockLiveInAnyScope(BBI)) {
 
-	liveExitingBlocks.push_back(getBB(BBI));
+	liveExitingBlocks.push_back(getBB(*BBI));
 
       }
 
     }
 
-    describeBlockAsDOT(getBBInvar(headerIdx + BBOffset), getBB(headerIdx + BBOffset), 0, Out, &liveExitingBlocks, brief);
+    describeBlockAsDOT(getBBInvar(headerIdx + BBsOffset), getBB(headerIdx + BBsOffset), 0, 0, Out, &liveExitingBlocks, brief);
 
-    std::vector<std::pair<uint32_t, uint32_t> >* exitEdges = invarInfo->LoopExitEdges[DescribeL];
+    std::vector<std::pair<uint32_t, uint32_t> >& exitEdges = LInfo.exitEdges;
 
     for(SmallVector<ShadowBB*, 4>::iterator it = liveExitingBlocks.begin(), it2 = liveExitingBlocks.end(); it != it2; ++it) {
       
-      ShadowBB* BB = it;
+      ShadowBB* BB = *it;
       SmallVector<ShadowBB*, 4> Targets;
 
       for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it3 = exitEdges.begin(), it4 = exitEdges.end(); it3 != it4; ++it3) {
@@ -466,7 +465,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
     for(idx = headerIdx, BBInvar = getBBInvar(headerIdx); DescribeL->contains(BBInvar->naturalScope); ++idx, BBInvar = getBBInvar(idx)) {
 
-      ShadowBB* BB = getBB(BBInvar);
+      ShadowBB* BB = getBB(*BBInvar);
       describeBlockAsDOT(BBInvar, BB, L, &deferredEdges, Out, 0, brief);
 
     }
@@ -514,18 +513,18 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
   for(uint32_t i = 0; i < nBBs; ++i) {
 
-    ShadowBBInvar* BBI = getBBInvar(i + BBOffset);
+    ShadowBBInvar* BBI = getBBInvar(i + BBsOffset);
     ShadowBB* BB = BBs[i];
     
     if(BBI->naturalScope != L) {
 
       const Loop* enterL = immediateChildLoop(L, BBI->naturalScope);
-      if(!pass->shouldIgnoreLoop(enterL)) {
+      if(!pass->shouldIgnoreLoop(enterL->getHeader()->getParent(), enterL->getHeader())) {
 
 	describeLoopAsDOT(enterL, i, Out, brief);
 	
 	// Advance past the loop:
-	while(i < nBBs && enterL->contains(getBBInvar(i + BBOffset)->naturalScope))
+	while(i < nBBs && enterL->contains(getBBInvar(i + BBsOffset)->naturalScope))
 	  ++i;
 	continue;
 

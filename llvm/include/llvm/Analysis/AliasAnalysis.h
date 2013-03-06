@@ -243,17 +243,17 @@ public:
   /// a particular call site modifies or reads the memory specified by the
   /// pointer.
   ///
-  virtual ModRefResult getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+  virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
 
   ModRefResult getModRefInfo(ImmutableCallSite CS,
 			     const Value *P, unsigned Size, 
 			     bool usePBKnowledge = true) {
 
-    return getModRefInfo(ShadowValue(const_cast<Instruction*>(CS.getInstruction())), ShadowValue(const_cast<Value*>(P)), Size, usePBKnowledge);
+    return getCSModRefInfo(ShadowValue(const_cast<Instruction*>(CS.getInstruction())), ShadowValue(const_cast<Value*>(P)), Size, usePBKnowledge);
 
   }
 
-  virtual ModRefResult getModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true);
+  virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true);
 
   /// getModRefInfo - Return information about whether two call sites may refer
   /// to the same set of memory locations.  See 
@@ -262,7 +262,7 @@ public:
   ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2, 
 			     bool usePBKnowledge = true) {
 
-    return getModRefInfo(ShadowValue(const_cast<Instruction*>(CS1.getInstruction())), ShadowValue(const_cast<Instruction*>(CS2.getInstruction())), usePBKnowledge);
+    return get2CSModRefInfo(ShadowValue(const_cast<Instruction*>(CS1.getInstruction())), ShadowValue(const_cast<Instruction*>(CS2.getInstruction())), usePBKnowledge);
 
   }
 
@@ -272,10 +272,10 @@ public:
   ModRefResult getStoreModRefInfo(ShadowValue S, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
   ModRefResult getVAModRefInfo(ShadowValue I, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
   ModRefResult getCallModRefInfo(ShadowValue C, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
-    return getModRefInfo(C, P, Size, usePBKnowledge);
+    return getCSModRefInfo(C, P, Size, usePBKnowledge);
   }
   ModRefResult getInvokeModRefInfo(ShadowValue I, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
-    return getModRefInfo(I, P, Size, usePBKnowledge);
+    return getCSModRefInfo(I, P, Size, usePBKnowledge);
   }
   ModRefResult getSVModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, bool usePBKnowledge = true) {
     Instruction* I = IV.isInst() ? IV.getInst()->invar->I : cast<Instruction>(IV.getVal());

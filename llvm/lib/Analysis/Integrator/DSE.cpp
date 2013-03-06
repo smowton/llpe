@@ -18,7 +18,7 @@
 
 using namespace llvm;
 
-bool llvm::tryKillStore(ShadowInstruction* SI) {
+bool IntegrationAttempt::tryKillStore(ShadowInstruction* SI) {
 
   uint64_t Size = (GlobalTD->getTypeSizeInBits(SI->invar->I->getOperand(0)->getType()) + 7) / 8;
   return tryKillWriterTo(SI, SI->getOperand(1), Size);
@@ -78,7 +78,7 @@ public:
 
   bool writeUsed;
 
-  WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, uint64_t SO, uint64_t SS) : ForwardIAWalker(StartInst, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
+  WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, int64_t SO, uint64_t SS) : ForwardIAWalker(StartInst->invar->idx, StartInst->parent, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context);
   virtual bool shouldEnterCall(ShadowInstruction*);
@@ -134,7 +134,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
       if(!isEnabled())
 	return WIRStopWholeWalk;
 
-      if(!(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
+      if(!(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
 	AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, MISize, StorePtr, Size);
@@ -185,11 +185,11 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(mayBeReplaced(I)) {
 
-      if(I->i.PB.type == ValSetTypePB) {
+      if(I->i.PB.Type == ValSetTypePB) {
 
 	ShadowValue Base;
 	getBaseObject(Pointer, Base);
-	if((!Repl.getCtx()) || Repl.getCtx->isAvailableFromCtx(StorePtr.getCtx()))
+	if((!Base.getCtx()) || Base.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))
 	  return WIRContinue;
 
       }
@@ -231,7 +231,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, void* Ctx) {
 
   std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
-  WalkInstructionResult Res = IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
+  WalkInstructionResult Res = I->parent->IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
 
   if(Res == WIRStopWholeWalk)
     writeUsed = true;
@@ -242,7 +242,7 @@ WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, vo
 
 bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ShadowValue StorePtr, uint64_t Size) {
 
-  AliasAnalysis::ModRefResult MR = AA->getModRefInfo(CI, StorePtr, Size);
+  AliasAnalysis::ModRefResult MR = AA->getCSModRefInfo(ShadowValue(CI), StorePtr, Size);
   return !!(MR & AliasAnalysis::Ref);
 
 }
@@ -295,7 +295,7 @@ bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue 
 
   // Otherwise we pass a null pointer to indicate that the store size is unknown.
 
-  int64_t StoreOffset;
+  int64_t StoreOffset = 0;
   ShadowValue StoreBase;
   if(!getBaseAndConstantOffset(StorePtr, StoreBase, StoreOffset))
     return false;
@@ -321,7 +321,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
 
   AliasAnalysis::AliasResult R = AA->aliasHypothetical(Writer, WriteSize, StorePtr, Size);
 
-  int64_t WriteOffset;
+  int64_t WriteOffset = 0;
   ShadowValue WriteBase;
   if(!getBaseAndConstantOffset(Writer, WriteBase, WriteOffset))
     return false;
@@ -408,7 +408,8 @@ bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) 
     if(Free) {
 
       ShadowValue FreeBase;
-      if(getBaseObject(I->getCallArgOperand(0), FreeBase))
+      ShadowValue FirstArg = I->getCallArgOperand(0);
+      if(getBaseObject(FirstArg, FreeBase))
 	return FreeBase == Alloc;
 
     }
@@ -426,7 +427,7 @@ void IntegrationAttempt::tryKillAllMTIs() {
 
   // Must kill MTIs in reverse topological order. Our ShadowBBs are already in forwards toporder.
 
-  for(uint32_t i = BBs.size(); i > 0; --i) {
+  for(uint32_t i = nBBs; i > 0; --i) {
 
     ShadowBB* BB = BBs[i-1];
     if(!BB)
@@ -439,9 +440,9 @@ void IntegrationAttempt::tryKillAllMTIs() {
       if(PeelAttempt* LPA = getPeelAttempt(enterLoop)) {
 
 	// Process loop iterations in reverse order:
-	for(int i = LPA->Iterations.size() - 1; i >= 0; --i) {
+	for(int j = LPA->Iterations.size() - 1; j >= 0; --j) {
 
-	  LPA->Iterations[i]->tryKillAllMTIs();
+	  LPA->Iterations[j]->tryKillAllMTIs();
 
 	}
 
@@ -457,7 +458,7 @@ void IntegrationAttempt::tryKillAllMTIs() {
 
     for(uint32_t j = BB->insts.size(); j > 0; --j) {
 
-      ShadowInstruction* I = BB->insts[j-1];
+      ShadowInstruction* I = &(BB->insts[j-1]);
       
       if(inst_is<MemTransferInst>(I)) {
 
@@ -482,7 +483,7 @@ void IntegrationAttempt::tryKillAllStores() {
   if(!isEnabled())
     return;
 
-  for(uint32_t i = 0; i < BBs.size(); ++i) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
     
     ShadowBB* BB = BBs[i];
 
@@ -493,9 +494,9 @@ void IntegrationAttempt::tryKillAllStores() {
     
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* I = BB->insts[j];
+      ShadowInstruction* I = &(BB->insts[j]);
 
-      if(<StoreInst>(I)) {
+      if(inst_is<StoreInst>(I)) {
 	
 	tryKillStore(I);
 	
@@ -505,7 +506,7 @@ void IntegrationAttempt::tryKillAllStores() {
 	tryKillMemset(I);
 	
       }
-      else if(CallInst* CI = dyn_cast_inst<CallInst>(BI)) {
+      else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 	
 	DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
 	if(it != resolvedReadCalls.end()) {
@@ -540,7 +541,7 @@ void IntegrationAttempt::tryKillAllAllocs() {
   if(!isEnabled())
     return;
 
-  for(uint32_t i = 0; i < BBs.size(); ++i) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
     
     ShadowBB* BB = BBs[i];
 
@@ -551,7 +552,7 @@ void IntegrationAttempt::tryKillAllAllocs() {
     
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* I = BB->insts[j];
+      ShadowInstruction* I = &(BB->insts[j]);
 
       if(inst_is<AllocaInst>(I) || isMalloc(I->invar->I)) {
       

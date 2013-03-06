@@ -67,7 +67,7 @@ struct ShadowValue {
     Value* V;
   } u;
 
-ShadowValue() : t(SHADOWVAL_INVAL) { }
+ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
 ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
 ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST) { u.I = _I; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
@@ -117,6 +117,9 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
     return V1.u.I == V2.u.I;
   case SHADOWVAL_OTHER:
     return V1.u.V == V2.u.V;
+  default:
+    release_assert(0 && "Bad SV type");
+    return false;
   }
 }
 
@@ -258,19 +261,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
-  PointerBase& insert(ImprovedVal& V) {
-    if(Overdef)
-      return *this;
-    if(std::count(Values.begin(), Values.end(), V))
-      return *this;
-    if(Values.size() + 1 > PBMAX) {
-      setOverdef();
-    }
-    else {
-      Values.push_back(V);
-    }
-    return *this;
-  }
+  PointerBase& insert(ImprovedVal& V);
 
   PointerBase& merge(PointerBase& OtherPB) {
     if(OtherPB.Overdef) {
@@ -338,18 +329,14 @@ template<class X> inline X* cast_inst(ShadowInstructionInvar* SII) {
   return cast<X>(SII->I);
 }
 
-enum ShadowInstDIEStatus {
-
-  INSTSTATUS_ALIVE = 0,
-  INSTSTATUS_DEAD = 1,
-  INSTSTATUS_UNUSED_WRITER = 2
-
-};
+#define INSTSTATUS_ALIVE 0
+#define INSTSTATUS_DEAD 1
+#define INSTSTATUS_UNUSED_WRITER 2
 
 struct InstArgImprovement {
 
   PointerBase PB;
-  ShadowInstDIEStatus dieStatus;
+  uint32_t dieStatus;
 
 InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
 
@@ -385,6 +372,10 @@ struct ShadowInstruction {
 
   ShadowInstruction* getUser(uint32_t i);
 
+  const Type* getType() {
+    return invar->I->getType();
+  }
+
 };
 
 template<class X> inline bool inst_is(ShadowInstruction* SI) {
@@ -411,6 +402,10 @@ struct ShadowArg {
   ShadowArgInvar* invar;
   IntegrationAttempt* IA;
   InstArgImprovement i;  
+
+  const Type* getType() {
+    return invar->A->getType();
+  }
 
 };
 
@@ -451,6 +446,25 @@ struct ShadowBB {
   bool* succsAlive;
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
+
+  bool edgeIsDead(ShadowBBInvar* BB2I) {
+
+    bool foundLiveEdge = false;
+
+    for(uint32_t i = 0; i < invar->succIdxs.size() && !foundLiveEdge; ++i) {
+
+      if(BB2I->idx == invar->succIdxs[i]) {
+
+	if(succsAlive[i])
+	  foundLiveEdge = true;
+	
+      }
+
+    }
+
+    return !foundLiveEdge;
+
+  }
 
 };
 
@@ -493,9 +507,9 @@ inline const Type* ShadowValue::getType() {
 
   switch(t) {
   case SHADOWVAL_ARG:
-    return u.A->invar->A->getType();
+    return u.A->getType();
   case SHADOWVAL_INST:
-    return u.I->invar->I->getType();
+    return u.I->getType();
   case SHADOWVAL_OTHER:
     return u.V->getType();
   case SHADOWVAL_INVAL:
@@ -621,7 +635,7 @@ inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
 }
 
-inline Constant* getConstReplacement(ShadowValue& SV) {
+inline Constant* getConstReplacement(ShadowValue SV) {
 
   if(ShadowInstruction* SI = SV.getInst()) {
     return getConstReplacement(SI);
@@ -635,7 +649,7 @@ inline Constant* getConstReplacement(ShadowValue& SV) {
 
 }
 
-inline ShadowValue tryGetConstReplacement(ShadowValue& SV) {
+inline ShadowValue tryGetConstReplacement(ShadowValue SV) {
 
   if(Constant* C = getConstReplacement(SV))
     return ShadowValue(C);
@@ -715,6 +729,19 @@ inline bool mayBeReplaced(ShadowArg* SA) {
   return mayBeReplaced(SA->i);
 }
 
+inline bool mayBeReplaced(ShadowValue SV) {
+
+  switch(SV.t) {
+  case SHADOWVAL_INST:
+    return mayBeReplaced(SV.u.I);
+  case SHADOWVAL_ARG:
+    return mayBeReplaced(SV.u.A);
+  default:
+    return false;
+  }
+
+}
+
 inline void setReplacement(ShadowInstruction* SI, Constant* C) {
 
   SI->i.PB.Values.clear();
@@ -732,3 +759,4 @@ inline void setReplacement(ShadowArg* SA, Constant* C) {
   SA->i.PB.Type = P.first;
 
 }
+

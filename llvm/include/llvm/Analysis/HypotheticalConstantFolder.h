@@ -69,6 +69,9 @@ class MemTransferInst;
 
 bool functionIsBlacklisted(Function*);
 
+#define release_assert(x) if(!(x)) { release_assert_fail(#x); }
+ void release_assert_fail(const char*);
+
 // Include structures and functions for working with instruction and argument shadows.
 #include "ShadowInlines.h"
 
@@ -753,7 +756,6 @@ protected:
   bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
-  virtual bool getLoopHeaderForwardedOperand(ShadowInstruction* SI) = 0;
   bool tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
 			 ValSetType& ImpType, ImprovedVal& Improved);
@@ -762,8 +764,8 @@ protected:
   bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>& BBs);
-  void getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>& BBs);
+  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
+  void getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, bool finalise, PointerBase& NewPB);
 
   // CFG analysis:
@@ -845,7 +847,7 @@ protected:
   // User visitors:
   
   virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor);
-  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) = 0;
   void visitUsers(ShadowValue, VisitorContext& Visitor);
   void visitUser(ShadowInstIdx&, VisitorContext& Visitor);
 
@@ -853,9 +855,7 @@ protected:
 
   bool valueIsDead(ShadowValue);
   bool shouldDIE(ShadowInstruction* V);
-  bool willBeDeleted(ShadowValue);
-  bool willBeReplacedOrDeleted(ShadowValue);
-  bool willBeReplacedWithConstantOrDeleted(ShadowValue);
+  virtual void runDIE();
 
   // Pointer base analysis
   void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
@@ -911,6 +911,7 @@ protected:
   std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
+  bool blockLiveInAnyScope(ShadowBBInvar* BB);
 
   // Caching instruction text for debug and DOT export:
   PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) const {
@@ -1013,13 +1014,13 @@ public:
 
   virtual BasicBlock* getEntryBlock(); 
 
-  virtual bool getLoopHeaderForwardedOperand(ShadowInstruction* SI); 
+  ShadowValue getLoopHeaderForwardedOperand(ShadowInstruction* SI); 
 
   void checkFinalIteration(); 
 
   virtual InlineAttempt* getFunctionRoot(); 
 
-  void visitVariant(ShadowInstruction* VI, VisitorContext& Visitor); 
+  void visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor); 
   virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor); 
 
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out); 
@@ -1064,6 +1065,7 @@ public:
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
 };
 
@@ -1111,7 +1113,7 @@ class PeelAttempt {
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 
 
-   void visitVariant(ShadowInstruction* VI, VisitorContext& Visitor); 
+   void visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor); 
    
    void describeTreeAsDOT(std::string path); 
 
@@ -1233,7 +1235,8 @@ class InlineAttempt : public IntegrationAttempt {
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
   std::string getCommittedBlockPrefix();
   BasicBlock* getCommittedEntryBlock();
-  void runDIE();
+  virtual void runDIE();
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
 };
 
@@ -1277,8 +1280,11 @@ class InlineAttempt : public IntegrationAttempt {
 
  bool basesAlias(ShadowValue, ShadowValue);
 
-#define release_assert(x) if(!(x)) { release_assert_fail(#x); }
- void release_assert_fail(const char*);
+ bool tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB);
+
+ bool willBeDeleted(ShadowValue);
+ bool willBeReplacedOrDeleted(ShadowValue);
+ bool willBeReplacedWithConstantOrDeleted(ShadowValue);
 
  extern bool mainDIE;
 

@@ -31,6 +31,8 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/Target/TargetData.h"
 
 #include <string>
 
@@ -72,7 +74,7 @@ PointerBase& PointerBase::insert(ImprovedVal& V) {
   // Further, if we're about to become oversized and we contain more than one exact
   // pointer to X, merge them into a vague one.
 
-  if(type == ValSetTypePB) {
+  if(Type == ValSetTypePB) {
 
     bool doMerge = false;
 
@@ -201,8 +203,8 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
   SmallVector<ShadowValue, 4> Vals;
   if(inst_is<SelectInst>(I)) {
 
-    Vals.push_back(SI->getOperand(1));
-    Vals.push_back(SI->getOperand(2));
+    Vals.push_back(I->getOperand(1));
+    Vals.push_back(I->getOperand(2));
 
   }
   else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
@@ -225,16 +227,11 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
     // I is a PHI node, but not a header PHI.
     ShadowInstructionInvar* SII = I->invar;
 
-    for(uint32_t i = 0, ilim = SII->preds.size(); i != ilim && !breaknow; i+=2) {
+    for(uint32_t i = 0, ilim = SII->operandIdxs.size(); i != ilim; i+=2) {
 
       SmallVector<ShadowValue, 1> predValues;
-      ShadowValue PredV = getExitPHIOperands(SI, i, predValues);
-
-      for(SmallVector<ShadowValue, 1>::iterator it = predValues.begin(), it2 = predValues.end(); it != it2 && !breaknow; ++it) {
-
-	Vals.push_back(*it);
-
-      }
+      getExitPHIOperands(I, i, predValues);
+      Vals.append(predValues.begin(), predValues.end());
 
     }
 
@@ -244,7 +241,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
 
   if(verbose) {
 
-    errs() << "=== START MERGE for " << itcache(*I) << " (finalise = " << finalise << ")\n";
+    errs() << "=== START MERGE for " << itcache(I) << " (finalise = " << finalise << ")\n";
 
     IntegrationAttempt* PrintCtx = this;
     while(PrintCtx) {
@@ -272,7 +269,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
     }
 
     if(verbose) {
-      errs() << "Predecessor " << itcache(make_vc(V, VCtx)) << " defined by ";
+      errs() << "Predecessor " << itcache(I) << " defined by ";
       printPB(errs(), VPB, false);
       errs() << "\n";
     }
@@ -300,7 +297,7 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
     // Can just use normal getOperand/replacement here.
     int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
     assert(predIdx >= 0 && "Failed to find preheader block");
-    op = SI->getOperand(predIdx * 2);
+    return SI->getOperand(predIdx * 2);
 
   }
   else {
@@ -312,9 +309,9 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
     IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
     ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx * 2];
     if(SII.blockIdx != INVALID_BLOCK_IDX)
-      op = ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
+      return ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
     else
-      op = SI->getOperand(predIdx * 2);
+      return SI->getOperand(predIdx * 2);
 
   }
 
@@ -334,7 +331,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 
   if(isHeaderPHI) {
 
-    ShadowValue predValue = getLoopHeaderForwardedOperand(SI, predValue);
+    ShadowValue predValue = getLoopHeaderForwardedOperand(SI);
     resultValid = getPointerBase(predValue, result);
     return true;
 
@@ -344,7 +341,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 
 }
 
-void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
+void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   // SI block dead at this scope?
   // I don't use edgeIsDead here because that recursively checks loop iterations
@@ -354,19 +351,21 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
 
   if(SI->scope != L) {
     
-  // Read from child loop if appropriate:
-  if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, SI->scope))) {
+    // Read from child loop if appropriate:
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, SI->scope))) {
 
-    if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
+      if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
-      for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
+	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 
-	PeelIteration* Iter = PA->Iterations[i];
-	Iter->getOperandRising(SI, ExitedBB, ops, BBs);
+	  PeelIteration* Iter = PA->Iterations[i];
+	  Iter->getOperandRising(SI, ExitedBB, ops, BBs);
+
+	}
+
+	return;
 
       }
-
-      return;
 
     }
 
@@ -375,22 +374,23 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
   // Value is local, or in a child loop which is unterminated or entirely unexpanded.
   if(!edgeIsDead(SI->parent, ExitedBB)) {
     ops.push_back(getInst(SI));
-    BBs.push_back(getBB(ExitedBB));
+    if(BBs)
+      BBs->push_back(getBB(*ExitedBB));
   }
 
 }
 
-void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB* 1>& BBs) {
+void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   ShadowInstructionInvar* SII = SI->invar;
   
-  ShadowInstIdx valOp = SII->preds[i];
-  ShadowInstIdx blockOp = SII->preds[i+1];
+  ShadowInstIdx valOp = SII->operandIdxs[valOpIdx];
+  ShadowInstIdx blockOp = SII->operandIdxs[valOpIdx+1];
 
   assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
 
   // PHI arg is an instruction?
-  if(valOp.blockIdx != INVALID_BLOCK_IDX && valOp.instIdx != INVALID_INST_IDX) {
+  if(valOp.blockIdx != INVALID_BLOCK_IDX && valOp.instIdx != INVALID_INSTRUCTION_IDX) {
 
     // PHI arg at child scope?
     ShadowInstructionInvar* PredSII = getInstInvar(valOp.blockIdx, valOp.instIdx);
@@ -407,7 +407,8 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   ShadowBBInvar* BB = getBBInvar(blockOp.blockIdx);
   if(!edgeIsDead(BB, SI->parent->invar)) {
     ops.push_back(SI->getOperand(valOpIdx));
-    BBs.push_back(getBB(BB));
+    if(BBs)
+      BBs->push_back(getBB(*BB));
   }
 
 }
@@ -483,7 +484,7 @@ static ShadowValue getOpenCmpResult(CmpInst* CmpI, ConstantInt* CmpInt, bool fli
 // (and so false if there's any point trying normal const folding)
 bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
-  CmpInst* CmpI = cast_inst<CmpInst>(SI->invar->I);
+  CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
   if(Ops[0].first != ValSetTypeFD && Ops[1].first != ValSetTypeFD)
     return false;
@@ -527,7 +528,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
       Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
       ImpType = ValSetTypeScalar;
-      if(Improved.first) {
+      if(!Improved.V.isInval()) {
 	LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
       }
       else {
@@ -587,7 +588,7 @@ static unsigned getReversePred(unsigned Pred) {
 
 }
 
-bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
@@ -605,8 +606,8 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInst* SI, std::pair<ValSetType
     break;
   }
 
-  Constant* Op0C = dyn_cast_or_null<Constant>(Ops[0].second.V);
-  Constant* Op1C = dyn_cast_or_null<Constant>(Ops[1].second.V);
+  Constant* Op0C = dyn_cast_or_null<Constant*>(Ops[0].second.V);
+  Constant* Op1C = dyn_cast_or_null<Constant*>(Ops[1].second.V);
   ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
   ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
 
@@ -699,7 +700,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
   // Need scalars or pointers throughout:
-  if((Ops[0].first != valSetTypeScalar && Ops[0].first != valSetTypePB) || (Ops[1].first != valSetTypeScalar && Ops[1].first != valSetTypePB))
+  if((Ops[0].first != ValSetTypeScalar && Ops[0].first != ValSetTypePB) || (Ops[1].first != ValSetTypeScalar && Ops[1].first != ValSetTypePB))
     return false;
 
   // Check for special cases of pointer comparison that we can understand:
@@ -837,7 +838,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
     if(Op0Ptr && Op1Ptr)
       return false;
     
-    std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0].second : Ops[1].second;
+    std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0] : Ops[1];
     ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Ops[1].second.V.getVal() : Ops[0].second.V.getVal());
 
     ImpType = ValSetTypePB;
@@ -876,7 +877,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       
       if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
 	Align = AI->getAlignment();
-      else if(CallInst* CI = dyn_cast<CallInst>(SI->invar->I)) {
+      else if(isa<CallInst>(SI->invar->I)) {
 	Function* F = getCalledFunction(SI);
 	if(F && F->getName() == "malloc") {
 	  Align = pass->getMallocAlignment();
@@ -1010,13 +1011,13 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   }
 
-  if(CmpInst* CmpI = dyn_cast<CmpInst>(I)) {
+  if(inst_is<CmpInst>(SI)) {
 
     if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
       return ImpType != ValSetTypeUnknown;
     if(tryFoldPointerCmp(SI, Ops, ImpType, Improved))
       return ImpType != ValSetTypeUnknown;
-    if(tryFoldNonConstCmp(SI, Improved))
+    if(tryFoldNonConstCmp(SI, Ops, ImpType, Improved))
       return ImpType != ValSetTypeUnknown;
 
     // Otherwise fall through to normal const folding.
@@ -1042,7 +1043,7 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	    break;
 	  }
 	  else {
-	    Constant* OpC = cast<Constant>(Ops[i].second.V);
+	    ConstantInt* OpC = cast<ConstantInt>(Ops[i].second.V.getVal());
 	    if (OpC->isZero()) continue;
 	    // Handle a struct and array indices which add their offset to the pointer.
 	    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
@@ -1067,8 +1068,8 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	  return false;
 	ConstantInt* CI = cast_val<ConstantInt>(Ops[1].second.V);
 
-	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->getFunctionRoot();
-	Function* calledF = calledIA->getFunction();
+	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->IA->getFunctionRoot();
+	Function& calledF = calledIA->getFunction();
 
 	uint64_t GEPOff = CI->getLimitedValue();
 	assert(GEPOff % 8 == 0);
@@ -1087,14 +1088,14 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	    newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ImprovedVal::first_fp_arg;
 	  }
 	  else {
-	    newVaArg = ShadowValue::not_va_arg;
+	    newVaArg = ImprovedVal::not_va_arg;
 	  }
 	  break;
 	case va_arg_type_fp:
 	case va_arg_type_nonfp:
 	  assert(GEPOff == 1);
 	  // In the spilled zone. Find the next spilled argument:
-	  newVaArg = calledIA->getSpilledVarargAfter(Base.va_arg);
+	  newVaArg = calledIA->getSpilledVarargAfter(Ops[0].second.getVaArg());
 	  break;
 	default:
 	  assert(0);
@@ -1202,6 +1203,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
 	int64_t Offset;
 
+	GEPOperator* GEP = cast<GEPOperator>(CE);
 	gep_type_iterator GTI = gep_type_begin(GEP);
 	for (User::op_iterator I = GEP->idx_begin(), E = GEP->idx_end(); I != E;
 	     ++I, ++GTI) {
@@ -1217,7 +1219,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	  }
 	}
   
-	return std::make_pair(ValSetTypePB, ImprovedVal(BasePB.second.V, BasePB.second.Offset + Offset);
+	return std::make_pair(ValSetTypePB, ImprovedVal(BasePB.second.V, BasePB.second.Offset + Offset));
 
       }
   
@@ -1234,9 +1236,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(Op1.first == ValSetTypeScalar && Op2.first == ValSetTypeScalar) {
 
 	  if(CE->getOpcode() == Instruction::Add)
-	    return constPtrAsInt(ConstantExpr::getAdd(cast<Constant>(Op1.second.V), cast<Constant>(Op2.second.V)));
+	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getAdd(cast<Constant>(Op1.second.V.getVal()), cast<Constant>(Op2.second.V.getVal()))));
 	  else
-	    return constPtrAsInt(ConstantExpr::getSub(cast<Constant>(Op1.second.V), cast<Constant>(Op2.second.V)));
+	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getSub(cast<Constant>(Op1.second.V.getVal()), cast<Constant>(Op2.second.V.getVal()))));
 
 	}
 
@@ -1248,7 +1250,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	  if(Op2.first == ValSetTypePB) // Can't add 2 pointers
 	    return std::make_pair(ValSetTypeUnknown, ImprovedVal());
 
-	  if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V))
+	  if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V.getVal()))
 	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset + Op2C->getLimitedValue()));
 	  else
 	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, LLONG_MAX));
@@ -1266,8 +1268,8 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 		  return std::make_pair(ValSetTypeUnknown, ShadowValue());
 		else
 		  return std::make_pair(ValSetTypeScalar, 
-					ImprovedValue(ShadowValue(ConstantInt::get(Type::getInt64Ty(CE->getContext()))), 
-						      Op1.second.Offset - Op2.second.Offset));
+					ImprovedVal(ShadowValue(ConstantInt::get(Type::getInt64Ty(CE->getContext()),
+										 Op1.second.Offset - Op2.second.Offset))));
 	      
 	      }
 	      // Else can't subtract 2 pointers with differing bases
@@ -1277,10 +1279,10 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
 	      if(Op1.second.Offset == LLONG_MAX)
 		return Op1;
-	      if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V))
-		return std::make_pair(ValSetTypePB, ShadowValue(Op1.second.V, Op1.second.Offset - Op2C->getLimitedValue()));
+	      if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V.getVal()))
+		return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset - Op2C->getLimitedValue()));
 	      else
-		return std::make_pair(ValSetTypePB, ShadowValue(Op1.second.V));
+		return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, LLONG_MAX));
 
 	    }
 	  
@@ -1298,7 +1300,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
     }
 
   }
-  else if(isa<GlobalVal>(C)) {
+  else if(isa<GlobalValue>(C)) {
     
     return std::make_pair(ValSetTypePB, ShadowValue(C));
 

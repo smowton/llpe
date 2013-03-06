@@ -167,7 +167,7 @@ public:
   typedef typename super::pointer pointer;
 
   explicit inline LoopPredIterator(Ptr *bb) : ThisBB(bb) {
-    if(bb->BB && ((!bb->BB->L->L) || bb->BB->BB != bb->BB->L->L->getHeader())) {
+    if(bb->BB && ((!bb->L->L) || bb->BB->BB != bb->L->L->getHeader())) {
       isNextIter = false;
       nextPred = 0;
     }
@@ -178,7 +178,7 @@ public:
     }
   }
   inline LoopPredIterator(Ptr *bb, bool) : ThisBB(bb) {
-    if(bb->BB && ((!bb->BB->L->L) || bb->BB->BB != bb->BB->L->L->getHeader())) {
+    if(bb->BB && ((!bb->L->L) || bb->BB->BB != bb->L->L->getHeader())) {
       isNextIter = false;
       nextPred = bb->BB->preds_size();
     }
@@ -208,7 +208,7 @@ public:
     }
     else {
       assert(!isEnd);
-      return ThisBB->L->latchBB;
+      return ThisBB->L->BBs[ThisBB->L->LInfo->latchIdx - ThisBB->L->LInfo->headerIdx];
     }
 
   }
@@ -282,9 +282,9 @@ public:
   inline bool operator!=(const Self& x) const { return !operator==(x); }
 
   inline pointer operator*() const { 
-    const ShadowBB* NextBB = Block->BB->getSucc(idx);
+    ShadowBBInvar* NextBB = Block->BB->getSucc(idx);
     // Loop latch's successor is not the loop header but the dummy next-iteration node.
-    if(Block->L->L && NextBB->invar->BB == Block->L->L->getHeader() && Block->BB->BB == Block->L->L->getLoopLatch())
+    if(Block->L->L && NextBB->BB == Block->L->L->getHeader() && Block->BB->BB == Block->L->L->getLoopLatch())
       return Block->get(0);
     else
       return Block->get(NextBB);

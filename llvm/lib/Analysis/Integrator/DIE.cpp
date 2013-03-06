@@ -123,7 +123,7 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
 
-    if(VILoop == L)
+    if(VI->scope == L)
       Visitor.visit((*it)->getInst(VI));
     else
       (*it)->visitVariant(VI, Visitor);
@@ -132,11 +132,17 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
 
 }
   
-void IntegrationAttempt::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
+void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
+
+  assert(0 && "Tried to visit exit PHI in non-loop context");
+
+}
+
+void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
 
   if(parentPA->Iterations.back()->iterStatus == IterationStatusFinal) {
     assert(isa<PHINode>(UserI));
-    if(UserI->naturalScope != L)
+    if(UserI->parent->naturalScope != L)
       parent->visitExitPHI(UserI, Visitor);
     else
       Visitor.visit(getInst(UserI));
@@ -153,7 +159,7 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
   // a child loop (defer to it to decide what to do), or a parent loop (again defer).
   // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
 
-  if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INST_IDX)
+  if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INSTRUCTION_IDX)
     return;
 
   ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
@@ -164,7 +170,7 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
     if(!visitNextIterationPHI(SII, Visitor)) {
 
       // Just an ordinary user in the same iteration (or out of any loop!).
-      Visitor.visit(this, UserI);
+      Visitor.visit(getInst(User.blockIdx, User.instIdx));
 
     }
 
@@ -214,11 +220,11 @@ void IntegrationAttempt::visitUsers(ShadowValue V, VisitorContext& Visitor) {
 
 bool llvm::willBeDeleted(ShadowValue V) {
 
-  if(ShadowInst* SI = V.getInst()) {
-    return SI->dieStatus != INSTSTATUS_UNKNOWN;
+  if(ShadowInstruction* SI = V.getInst()) {
+    return SI->i.dieStatus != INSTSTATUS_ALIVE;
   }
   else if(ShadowArg* SA = V.getArg()) {
-    return SA->dieStatus != INSTSTATUS_UNKNOWN;
+    return SA->i.dieStatus != INSTSTATUS_ALIVE;
   }
   else {
     return false;
@@ -303,7 +309,7 @@ public:
       }
       else {
 
-	Function* CalledF = getCalledFunction(UserI);
+	Function* CalledF = UserI->parent->IA->getCalledFunction(UserI);
 
 	if(CalledF) {
 
@@ -319,7 +325,7 @@ public:
 		return;
 
 	      }
-	      else if(!IA->argWillNotUse(i, V)) {
+	      else if(willBeReplacedOrDeleted(ShadowValue(&(IA->argShadows[i])))) {
 
 		maybeLive = true;
 		return;
@@ -341,7 +347,7 @@ public:
       }
 
     }
-    else if(willBeReplaced(UserI))
+    else if(willBeReplacedOrDeleted(ShadowValue(UserI)))
       return;
     else {
 
@@ -372,7 +378,7 @@ bool InlineAttempt::isOwnCallUnused() {
 
 bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 
-  if(isa<ReturnInst>(V)) {
+  if(val_is<ReturnInst>(V)) {
     
     if(F.getType()->isVoidTy())
       return false;
@@ -382,7 +388,7 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
   }
   else {
 
-    DIVisitor DIV(V, this);
+    DIVisitor DIV(V);
     visitUsers(V, DIV);
 
     return !DIV.maybeLive;
@@ -399,12 +405,12 @@ void InlineAttempt::runDIE() {
   IntegrationAttempt::runDIE();
 
   // And then our formal arguments:
-  for(uint32 i = 0; i < F.arg_size(); ++i) {
-    ShadowArg* SA = shadowArgs[i];
-    if(willBeReplacedWithConstantOrDeleted(ShadowValue(SI)))
+  for(uint32_t i = 0; i < F.arg_size(); ++i) {
+    ShadowArg* SA = &(argShadows[i]);
+    if(willBeReplacedWithConstantOrDeleted(ShadowValue(SA)))
       continue;
     if(valueIsDead(ShadowValue(SA))) {
-      SA->dieStatus |= INSTSTATUS_DEAD;
+      SA->i.dieStatus |= INSTSTATUS_DEAD;
     }
   }
 
@@ -413,7 +419,7 @@ void InlineAttempt::runDIE() {
 void IntegrationAttempt::runDIE() {
 
   // BBs are already in topological order:
-  for(uint32_t i = BBs.size(); i > 0; --i) {
+  for(uint32_t i = nBBs; i > 0; --i) {
 
     ShadowBB* BB = BBs[i-1];
     if(!BB)
@@ -433,7 +439,7 @@ void IntegrationAttempt::runDIE() {
       }
 
       // Skip loop blocks regardless of whether we entered the loop:
-      while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && enterLoop->contains(BBs[i-1]->invar->naturalScope))
+      while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && EnterL->contains(BBs[i-1]->invar->naturalScope))
 	--i;
       continue;
 
@@ -443,7 +449,7 @@ void IntegrationAttempt::runDIE() {
 
       DIEProgress();
 
-      ShadowInstruction* SI = BB->insts[j-1];
+      ShadowInstruction* SI = &(BB->insts[j-1]);
 
       if(!shouldDIE(SI))
 	continue;
@@ -468,7 +474,7 @@ void IntegrationAttempt::runDIE() {
 
       if(valueIsDead(ShadowValue(SI))) {
 
-	SI->dieStatus |= INSTSTATUS_DEAD;
+	SI->i.dieStatus |= INSTSTATUS_DEAD;
 
       }
 

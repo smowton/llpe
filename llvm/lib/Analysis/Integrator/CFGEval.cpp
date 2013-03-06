@@ -180,7 +180,7 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 	      ShadowBBInvar* SSBBI = getBBInvar(PSBBI->succIdxs[j]);
 
-	      if(SBBI.BB != SSBBI.BB && !edgeIsDead(PredBB, SSBBI)) {
+	      if(SBBI.BB != SSBBI->BB && !PredBB->edgeIsDead(SSBBI)) {
 		onlySuccessor = false;
 		break;
 	      }
@@ -262,14 +262,14 @@ void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
 
 void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 
-  if (!(isa<BranchInst>(I) || isa<SwitchInst>(I)))
+  if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI)))
     return;
 
   // Unconditional branches are already eliminated.
 
   // Easiest case: copy edge liveness from our parent.
-  if(tryCopyDeadEdges(parent->getBB(SI->parent->invar), SI->parent))
-    return ShadowValue();
+  if(tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
+    return;
 
   // Both switches and conditional branches use operand 0 for the condition.
   ShadowValue Condition = SI->getOperand(0);
@@ -280,7 +280,7 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 
     BasicBlock* takenTarget = 0;
 
-    if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
+    if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
       // This ought to be a boolean.
       if(ConstCondition->isZero())
 	takenTarget = BI->getSuccessor(1);
@@ -288,15 +288,15 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 	takenTarget = BI->getSuccessor(0);
     }
     else {
-      SwitchInst* SI = cast<SwitchInst>(I);
-      unsigned targetidx = SI->findCaseValue(ConstCondition);
-      takenTarget = SI->getSuccessor(targetidx);
+      SwitchInst* SwI = cast_inst<SwitchInst>(SI);
+      unsigned targetidx = SwI->findCaseValue(ConstCondition);
+      takenTarget = SwI->getSuccessor(targetidx);
     }
     if(takenTarget) {
       // We know where the instruction is going -- remove this block as a predecessor for its other targets.
       LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
 
-      TerminatorInst* TI = cast<TerminatorInst>(I);
+      TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
 
       const unsigned NumSucc = TI->getNumSuccessors();
 
@@ -316,7 +316,5 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
     }
 
   }
-
-  return ShadowValue();
 
 }
