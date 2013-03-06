@@ -520,7 +520,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
       Arg1 = CmpInt;
       if(flip)
 	std::swap(Arg0, Arg1);
-      Improved.V = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, TD));
+      Improved.V = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, GlobalTD));
       ImpType = ValSetTypeScalar;
 
     }
@@ -606,8 +606,8 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
     break;
   }
 
-  Constant* Op0C = dyn_cast_or_null<Constant*>(Ops[0].second.V);
-  Constant* Op1C = dyn_cast_or_null<Constant*>(Ops[1].second.V);
+  Constant* Op0C = dyn_cast_or_null<Constant>(Ops[0].second.V.getVal());
+  Constant* Op1C = dyn_cast_or_null<Constant>(Ops[1].second.V.getVal());
   ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
   ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
 
@@ -735,7 +735,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
     
     ImpType = ValSetTypeScalar;
-    Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, this->TD));
+    Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
     return true;   
 
   }
@@ -759,7 +759,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
     op0Arg = ConstantInt::get(I64, Ops[0].second.Offset);
     op1Arg = ConstantInt::get(I64, Ops[1].second.Offset);
     ImpType = ValSetTypeScalar;
-    Improved.V = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, this->TD));
+    Improved.V = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, GlobalTD));
     return true;
 
   }
@@ -1141,11 +1141,11 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   Constant* newConst = 0;
 
   if (const CmpInst *CI = dyn_cast<CmpInst>(I))
-    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], this->TD);
+    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], GlobalTD);
   else if(isa<LoadInst>(I))
-    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], this->TD);
+    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], GlobalTD);
   else
-    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), this->TD, /* preserveGEPSign = */ true);
+    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), GlobalTD, /* preserveGEPSign = */ true);
 
   if(newConst) {
     LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
@@ -1318,7 +1318,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
   if(OpIdx == SI->getNumOperands()) {
 
     ValSetType ThisVST;
-    ShadowValue ThisV;
+    ImprovedVal ThisV;
     if(!tryEvaluateResult(SI, Ops, ThisVST, ThisV)) {
 
       NewPB.setOverdef();
@@ -1356,7 +1356,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
     }
     else {
       
-      Ops[OpIdx].first = ArgPB.type;
+      Ops[OpIdx].first = ArgPB.Type;
       for(uint32_t i = 0; i < ArgPB.Values.size(); ++i) {
 	
 	Ops[OpIdx].second = ArgPB.Values[i];
@@ -1377,7 +1377,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
 bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB) {
 
   std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
-  return tryEvaluateOrdinaryInst(SI, NewPB, 0);
+  return tryEvaluateOrdinaryInst(SI, NewPB, Ops, 0);
 
 }
 
@@ -1386,33 +1386,30 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   // Special case the merge instructions:
   bool tryMerge = false;
  
-  switch(I->getOpcode()) {
+  switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
     return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
   case Instruction::PHI:
     {
       bool Valid;
-      if(tryEvaluateHeaderPHI(SI, Ops, Valid, ImpType, Improved))
+      if(tryEvaluateHeaderPHI(SI, Valid, NewPB))
 	return Valid;
       tryMerge = true;
       break;
     }
   case Instruction::Select:
-    Constant* Cond = getConstReplacement(Ops[0].second);
-    if(Cond) {
-      if(cast<ConstantInt>(Cond)->isZero()) {
-	Improved = Ops[2].second;
-	ImpType = Ops[2].first;
+    {
+      Constant* Cond = getConstReplacement(SI->getOperand(0));
+      if(Cond) {
+	if(cast<ConstantInt>(Cond)->isZero())
+	  return getPointerBase(SI->getOperand(2), NewPB);
+	else
+	  return getPointerBase(SI->getOperand(1), NewPB);
       }
       else {
-	Improved = Ops[1].second;
-	ImpType = Ops[1].first;
+	tryMerge = true;
       }
-      return ImpType != ValSetTypeUnknown;
-    }
-    else {
-      tryMerge = true;
     }
     break;
   case Instruction::Call:
@@ -1440,17 +1437,15 @@ bool InlineAttempt::getArgBasePointer(Argument* A, PointerBase& OutPB) {
 
   if(!parent)
     return false;
-  ShadowValue Arg = CI->getCallArgOperand(SA->invar->A->getArgNo());
+  ShadowValue Arg = CI->getCallArgOperand(A->getArgNo());
   return getPointerBase(Arg, OutPB);
 
 }
 
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
-  Instruction* I = SI->invar->I;
-
   PointerBase OldPB;
-  bool OldPBValid = getPointerBase(SI, OldPB);
+  bool OldPBValid = getPointerBase(V, OldPB);
 
   // Getting no worse:
   if(finalise && LPBA && ((!OldPBValid) || OldPB.Overdef))
@@ -1467,7 +1462,8 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
   }
   else {
 
-    NewPBValid = getNewPB(SI, NewPB);
+    ShadowInstruction* SI = V.getInst();
+    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
 
   }
 
@@ -1499,6 +1495,8 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
       SA->i.PB = NewPB;
     }
 
+    bool verbose = false;
+
     if(verbose) {
       errs() << "Updated dep to ";
       printPB(errs(), NewPB);
@@ -1511,6 +1509,8 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
     return true;
 
   }
+
+  return false;
 
 }
 

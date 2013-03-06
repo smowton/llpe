@@ -309,7 +309,7 @@ public:
       }
       else {
 
-	Function* CalledF = UserI->parent->IA->getCalledFunction(UserI);
+	Function* CalledF = getCalledFunction(UserI);
 
 	if(CalledF) {
 

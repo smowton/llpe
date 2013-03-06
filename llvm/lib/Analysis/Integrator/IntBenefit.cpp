@@ -111,7 +111,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* I = BB->insts[j];
+      ShadowInstruction* I = &(BB->insts[j]);
 
       if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 
@@ -187,7 +187,7 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
 
   if(Iterations.back()->iterStatus != IterationStatusFinal) {
 
-    for(std::vector<BasicBlock*>::iterator it = LoopBlocks.begin(), it2 = LoopBlocks.end(); it != it2; ++it) {
+    for(Loop::block_iterator it = L->block_begin(), it2 = L->block_end(); it != it2; ++it) {
 
       nonTermPenalty += (extraInstructionPoints * (*it)->size());
 
@@ -279,23 +279,23 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
     if(!BB)
       continue;
    
-    const Loop* BBL = BB->scope;
+    const Loop* BBL = BB->invar->scope;
     
-    if(MyL != BBL && ((!MyL) || MyL->contains(BBL))) {
+    if(L != BBL && ((!L) || L->contains(BBL))) {
 
       // Count unexpanded loops as ours:
-      if(!peelChildren.count(immediateChildLoop(MyL, BBL)))
-	BBL = MyL;
-      else if(!peelChildren[immediateChildLoop(MyL, BBL)]->isEnabled())
-	BBL = MyL;
+      if(!peelChildren.count(immediateChildLoop(L, BBL)))
+	BBL = L;
+      else if(!peelChildren[immediateChildLoop(L, BBL)]->isEnabled())
+	BBL = L;
 
     }
 
-    if(MyL == BBL) {
+    if(L == BBL) {
 
       for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-	ShadowInstruction* I = BB->insts[j];
+	ShadowInstruction* I = &(BB->insts[j]);
 	if(willBeReplacedOrDeleted(ShadowValue(I))) {
 	  totalIntegrationGoodness += eliminatedInstructionPoints;
 	  timeBonus += eliminatedInstructionPoints;
@@ -335,7 +335,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
 	// Deduct from the penalty to symbolise that inlining has had some cost.
 	// The second pass will see other callers moved back out-of-line in this case.
-	usedNIPenalty = -totalIntegrationGoodness;
+	usedNIPenalty += -totalIntegrationGoodness;
 	// For now express our own goodness assuming we're the only obstacle
 	// to deleting the function entirely. If that doesn't turn out to be so,
 	// other uses will exhaust the credit for that function and we'll opt not to
@@ -358,7 +358,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   if(parent && (totalIntegrationGoodness < 0)) {
 
-    parent->disableInline(CI);
+    parent->disableInline(cast<CallInst>(CI->invar->I));
     parent->reduceDependentLoads(nDependentLoads);
 
   }
@@ -385,7 +385,7 @@ void IntegrationAttempt::countDependentLoads() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
       
-      ShadowInstruction* I = BB->insts[j];
+      ShadowInstruction* I = &(BB->insts[j]);
       if(inst_is<LoadInst>(I)) {
 
 	ShadowValue Base;
@@ -543,8 +543,6 @@ void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
 
 void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
-  const Loop* MyL = getLoopContext();
-
   uint32_t i = 0;
   for(BasicBlock::iterator BI = BBI->BB->begin(), BE = BBI->BB->end(); BI != BE; ++BI, ++i) {
       
@@ -575,7 +573,7 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
 	if(!BB)
 	  improvedInstructions++;
-	else if(!BB->insts[i].i.improvedValue.isInval())
+	else if(getConstReplacement(&(BB->insts[i])))
 	  improvedInstructions++;
 	else if(BB->insts[i].i.dieStatus != INSTSTATUS_ALIVE)
 	  improvedInstructions++;
@@ -618,9 +616,17 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
   DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(LoopI);
 
   if(it == peelChildren.end()) {
+
     unexploredLoops.push_back(LoopI);
-    for(Loop::block_iterator BI = LoopI->block_begin(), BE = LoopI->block_end(); BI != BE; ++BI)
-      collectBlockStats(*BI);
+
+    for(uint32_t i = invarInfo->LoopInfo[LoopI]->headerIdx; i < invarInfo->BBs.size(); ++i) {
+      ShadowBBInvar* BBI = getBBInvar(i);
+      if(!LoopI->contains(BBI->naturalScope))
+	break;
+      ShadowBB* BB = getBB(*BBI);
+      collectBlockStats(BBI, BB);
+    }
+
   }
 
 }
@@ -628,7 +634,7 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
 void IntegrationAttempt::collectAllBlockStats() {
 
   for(uint32_t i = 0; i < nBBs; ++i) {
-    collectBlockStats(invarInfo->BBs[i + BBOffset], BBs[i]);
+    collectBlockStats(&(invarInfo->BBs[i + BBsOffset]), BBs[i]);
   }
 
 }

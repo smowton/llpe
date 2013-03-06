@@ -139,6 +139,9 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
     return V1.u.I < V2.u.I;
   case SHADOWVAL_OTHER:
     return V1.u.V < V2.u.V;
+  default:
+    release_assert(0 && "Bad SV type");
+    return false;
   }
 }
 
@@ -214,7 +217,8 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
     case va_arg_type_nonfp:
       return Offset;
     default:
-      assert(0);
+      release_assert(0 && "Bad vaarg type");
+      return 0;
     }
 
   }
@@ -514,6 +518,9 @@ inline const Type* ShadowValue::getType() {
     return u.V->getType();
   case SHADOWVAL_INVAL:
     return 0;
+  default:
+    release_assert(0 && "Bad SV type");
+    return 0;
   }
 
 }
@@ -684,7 +691,7 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
 }
 
-inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
+inline bool getBaseAndOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset) {
 
   PointerBase SVPB;
   if(!getPointerBase(SV, SVPB))
@@ -699,15 +706,16 @@ inline bool getBaseAndOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset
 
 }
 
-inline bool getBaseObject(ShadowValue& SV, ShadowValue& Base) {
+inline bool getBaseObject(ShadowValue SV, ShadowValue& Base) {
 
   int64_t ign;
   return getBaseAndOffset(SV, Base, ign);
 
 }
 
-inline bool getBaseAndConstantOffset(ShadowValue& SV, ShadowValue& Base, int64_t& Offset) {
+inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset) {
 
+  Offset = 0;
   bool ret = getBaseAndOffset(SV, Base, Offset);
   if(Offset == LLONG_MAX)
     return false;

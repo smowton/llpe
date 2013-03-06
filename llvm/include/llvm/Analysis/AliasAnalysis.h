@@ -107,6 +107,14 @@ public:
   virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size,
 					ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true);
 
+  virtual AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+    return AliasAnalysis::MayAlias;
+  }
+
+  virtual AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
+    return AliasAnalysis::MayAlias;
+  }
+
   /// alias - The main low level interface to the alias analysis implementation.
   /// Returns a Result indicating whether the two pointers are aliased to each
   /// other.  This is the interface that must be implemented by specific alias

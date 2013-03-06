@@ -245,6 +245,9 @@ template<> struct DenseMapInfo<ShadowValue> {
       hashPtr = V.u.I; break;
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
+    default:
+      release_assert(0 && "Bad value type");
+      hashPtr = 0;
     }
     return PairInfo::getHashValue(std::make_pair((int)V.t, hashPtr));
   }
@@ -355,7 +358,7 @@ inline bool operator!=(PartialVal V1, PartialVal V2) {
    return !(V1 == V2);
 }
 
-typedef std::pair<std::pair<std::pair<ShadowBB*, ShadowValue>, uint64_t>, uint64_t> LFCacheKey;
+typedef std::pair<std::pair<std::pair<BasicBlock*, ShadowValue>, uint64_t>, uint64_t> LFCacheKey;
 
 #define LFCK(x,y,z,w) std::make_pair(std::make_pair(std::make_pair(x, y), z), w)
 
@@ -569,13 +572,13 @@ class IAWalker {
  }
 
   void walk();
-  void queueWalkFrom(ShadowValue, void* context, bool copyContext);
+  void queueWalkFrom(uint32_t idx, ShadowBB*, void* context, bool copyContext);
 
 };
 
 class BackwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, void* Ctx, ShadowInstruction*& StoppedCI);
   virtual void walkInternal();
 
  public:
@@ -589,7 +592,7 @@ class BackwardIAWalker : public IAWalker {
 
 class ForwardIAWalker : public IAWalker {
   
-  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, void* Ctx, CallInst*& StoppedCI);
+  WalkInstructionResult walkFromInst(uint32_t, ShadowBB*, void* Ctx, ShadowInstruction*& StoppedCI);
   virtual void walkInternal();
   
  public:
@@ -613,8 +616,6 @@ protected:
 
   // Analyses created by the Pass.
   DenseMap<Function*, LoopInfo*>& LI;
-  TargetData* TD;
-  AliasAnalysis* AA;
 
   std::string HeaderStr;
 
@@ -730,7 +731,6 @@ protected:
 
   // Simple state-tracking helpers:
 
-  virtual Function* getCalledFunction(const ShadowInstruction*);
   virtual InlineAttempt* getFunctionRoot() = 0;
   ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0);
   ShadowBB* getBB(uint32_t idx, bool* inScope = 0);
@@ -798,8 +798,8 @@ protected:
   void queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
   virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
   void queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx);
-  void queueReturnBlocks(BackwardIAWalker* Walker);
-  void queueSuccessorsFWFalling(ShadowBB* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+  void queueReturnBlocks(BackwardIAWalker* Walker, void*);
+  void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
 
@@ -880,10 +880,10 @@ protected:
   // Enabling / disabling exploration:
 
   void enablePeel(const Loop*);
-  uint64_t disablePeel(const Loop*, bool simulateOnly);
+  uint64_t disablePeel(const Loop*);
   bool loopIsEnabled(const Loop*);
   void enableInline(CallInst*);
-  uint64_t disableInline(CallInst*, bool simulateOnly);
+  uint64_t disableInline(CallInst*);
   bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
@@ -1083,8 +1083,6 @@ class PeelAttempt {
    std::string HeaderStr;
 
    DenseMap<Function*, LoopInfo*>& LI;
-   TargetData* TD;
-   AliasAnalysis* AA;
 
    const Loop* L;
 
@@ -1248,7 +1246,6 @@ class InlineAttempt : public IntegrationAttempt {
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
- bool containsPointerTypes(const Type*);
  
  // Implemented in Transforms/Integrator/SimpleVFSEval.cpp, so only usable with -integrator
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
@@ -1262,9 +1259,9 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
 
- PartialVal tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
+ PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
  PointerBase tryForwardLoadArtifical(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
- std::string describePBWalker(PBLoadForwardWalker& Walker);
+ std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
 		      ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
@@ -1285,6 +1282,10 @@ class InlineAttempt : public IntegrationAttempt {
  bool willBeDeleted(ShadowValue);
  bool willBeReplacedOrDeleted(ShadowValue);
  bool willBeReplacedWithConstantOrDeleted(ShadowValue);
+
+ bool instructionCounts(Instruction* I);
+
+ Function* getCalledFunction(const ShadowInstruction*);
 
  extern bool mainDIE;
 

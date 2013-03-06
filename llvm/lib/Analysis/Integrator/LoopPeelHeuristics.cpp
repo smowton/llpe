@@ -47,8 +47,6 @@
 
 using namespace llvm;
 
-bool instructionCounts(Instruction* I);
-
 char IntegrationHeuristicsPass::ID = 0;
 
 static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
@@ -157,7 +155,7 @@ static void mainPhaseProgress() {
 }
 
 // Does this instruction count for accounting / performance measurement? Essentially: can this possibly be improved?
-bool instructionCounts(Instruction* I) {
+bool llvm::instructionCounts(Instruction* I) {
 
   if (isa<DbgInfoIntrinsic>(I))
     return false;
@@ -232,7 +230,7 @@ static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
 }
 
-Function* IntegrationAttempt::getCalledFunction(const ShadowInstruction* SI) {
+Function* llvm::getCalledFunction(const ShadowInstruction* SI) {
 
   if(inst_is<CallInst>(SI))
     return getReplacementFunction(SI, SI->getOperandFromEnd(1));

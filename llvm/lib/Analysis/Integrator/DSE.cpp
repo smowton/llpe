@@ -137,7 +137,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
       if(!(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
-	AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, MISize, StorePtr, Size);
+	AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Pointer, MISize, StorePtr, Size);
 
 	if(R != AliasAnalysis::NoAlias) {
 
@@ -181,7 +181,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
       return WIRStopWholeWalk;
 
     ShadowValue Pointer = I->getOperand(0);
-    uint64_t LoadSize = AA->getTypeStoreSize(I->getType());
+    uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());
 
     if(mayBeReplaced(I)) {
 
@@ -203,7 +203,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     
     // Otherwise the load will happen for real at runtime: check if it may alias:
 
-    AliasAnalysis::AliasResult R = AA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
+    AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
     if(R != AliasAnalysis::NoAlias) {
 
       LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(Pointer) << "\n");
@@ -215,7 +215,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
   else if(inst_is<StoreInst>(I)) {
 
     ShadowValue Pointer = I->getOperand(1);
-    uint64_t StoreSize = AA->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
+    uint64_t StoreSize = GlobalAA->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
 
     if(DSEHandleWrite(Pointer, StoreSize, StorePtr, Size, StoreBase, StoreOffset, writtenBytes))
       return WIRStopThisPath;
@@ -242,7 +242,7 @@ WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, vo
 
 bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ShadowValue StorePtr, uint64_t Size) {
 
-  AliasAnalysis::ModRefResult MR = AA->getCSModRefInfo(ShadowValue(CI), StorePtr, Size);
+  AliasAnalysis::ModRefResult MR = GlobalAA->getCSModRefInfo(ShadowValue(CI), StorePtr, Size);
   return !!(MR & AliasAnalysis::Ref);
 
 }
@@ -319,7 +319,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
   if(!deadBytes)
     return false;
 
-  AliasAnalysis::AliasResult R = AA->aliasHypothetical(Writer, WriteSize, StorePtr, Size);
+  AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Writer, WriteSize, StorePtr, Size);
 
   int64_t WriteOffset = 0;
   ShadowValue WriteBase;

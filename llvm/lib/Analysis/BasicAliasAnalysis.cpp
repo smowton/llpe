@@ -294,7 +294,7 @@ namespace {
 
     }
 
-    AliasAnalysis::AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
+    virtual AliasAnalysis::AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
 
       if(PB1.Values.size() == 1 && PB2.Values.size() == 1 && PB1.Values[0].Offset != LLONG_MAX && PB2.Values[0].Offset != LLONG_MAX && PB1.Values[0].V == PB2.Values[0].V)
 	return AliasAnalysis::MustAlias;
@@ -323,7 +323,7 @@ namespace {
 
     }
 
-    AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+    virtual AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
       
       PointerBase PB1(ValSetTypePB);
       PB1.insert(ImprovedVal(V1Base, V1Offset));
