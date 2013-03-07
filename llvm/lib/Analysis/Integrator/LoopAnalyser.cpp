@@ -55,14 +55,14 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
     Users = &(SI->invar->userIdxs);
   }
   else {
-    ShadowArgument* SA = V.getArg();
-    Users = &(SI->invar->userIdxs);
+    ShadowArg* SA = V.getArg();
+    Users = &(SA->invar->userIdxs);
   }
 
   for(uint32_t i = 0; i < Users->size(); ++i) {
 
     ShadowInstIdx& SII = (*Users)[i];
-    if(SII.blockIdx != INVALID_BLOCK_IDX && SII.instIdx != INVALID_INST_IDX) {
+    if(SII.blockIdx != INVALID_BLOCK_IDX && SII.instIdx != INVALID_INSTRUCTION_IDX) {
 
       ShadowInstructionInvar* UserI = getInstInvar(SII.blockIdx, SII.instIdx);
       queueUserUpdatePB(UserI, LPBA);
@@ -75,8 +75,6 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
 
  void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, LoopPBAnalyser* LPBA) {
 
-  const Loop* MyL = L;
-  
   if(inst_is<ReturnInst>(UserI)) {
 	
     getFunctionRoot()->queueUpdateCall(LPBA);
@@ -108,27 +106,19 @@ void IntegrationAttempt::queueUsersUpdatePBFalling(ShadowInstructionInvar* I, Lo
 
   if(I->scope == L) {
 
-    ShadowInst* SI = getInst(I);
+    ShadowInstruction* SI = getInst(I);
     if(!SI)
       return;
-
-    if((!inst_is<CallInst>(SI)) && hasResolvedPB(SI)) {
-
-      // No point investigating instructions whose concrete values are already known.
-      return;
-
-    }
 
     if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
       if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
-	unsigned i = 0;
-	Function* F = IA->getFunction();
+	Function* F = &(IA->getFunction());
 	for(uint32_t i = 0; i < F->arg_size(); ++i) {
 	  
 	  if(I->I == CI->getArgOperand(i))
-	    queueUpdatePB(IA->argShadows[i], LPBA);
+	    queueUpdatePB(ShadowValue(&(IA->argShadows[i])), LPBA);
 
 	}
 
@@ -171,7 +161,7 @@ void IntegrationAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, Loo
   const Loop* NextL = I->scope == MyL ? I->scope : immediateChildLoop(MyL, I->scope);
   bool investigateHere = true;
 
-  if(TargetLI->scope != MyL) {
+  if(I->scope != MyL) {
 
     if(PeelAttempt* PA = getPeelAttempt(NextL)) {
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
@@ -205,14 +195,14 @@ bool IntegrationAttempt::shouldCheckPB(ShadowValue V) {
     if((!PB.Overdef) && PB.Values.size() == 1) {
 
       // Is this PB as good as it can get already?
-      if(Type != ValSetTypePB || PB.Values[0].Offset != LLONG_MAX)
+      if(PB.Type != ValSetTypePB || PB.Values[0].Offset != LLONG_MAX)
 	return false;
 
     }
 
   }
 
-  const Loop* MyL = getLoopContext();
+  const Loop* MyL = L;
   const Loop* VL = V.getScope();
 				     
   if(MyL != VL) {
@@ -274,7 +264,7 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(ShadowValue V, LoopPBAnalyser
 void InlineAttempt::queueCheckAllArgs(LoopPBAnalyser* LPBA) {
 
   for(uint32_t i = 0; i < F.arg_size(); ++i)
-    queuePBUpdateIfUnresolved(ShadowValue(argShadows[i]));
+    queuePBUpdateIfUnresolved(ShadowValue(&(argShadows[i])), LPBA);
 
 }
 
@@ -282,7 +272,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* CheckL
 
   if((!L) && !CheckL) {
 
-    queueCheckAllArgs();
+    getFunctionRoot()->queueCheckAllArgs(LPBA);
 
   }
 
@@ -297,7 +287,7 @@ void IntegrationAttempt::queuePBUpdateAllUnresolvedVCsInScope(const Loop* CheckL
     if((!CheckL) || (BBL && CheckL->contains(BBL))) {
 
       for(uint32_t j = 0; j < BB->insts.size(); ++j)
-	queuePBUpdateIfUnresolved(ShadowValue(BB->insts[j]), LPBA);
+	queuePBUpdateIfUnresolved(ShadowValue(&(BB->insts[j])), LPBA);
 
     }
 
@@ -361,9 +351,9 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
-      if(it->second->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
-	if(modifiedVCs) {
-	  modifiedVCs->push_back(*it);
+      if(it->getCtx()->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
+	if(modifiedVals) {
+	  modifiedVals->push_back(*it);
 	}
       }
 
@@ -412,12 +402,6 @@ void LoopPBAnalyser::run() {
   }
 
   runPointerBaseSolver(true, 0);
-
-  for(startit = updatedVals.begin(); startit != endit; ++startit) {
-
-    startit->second->tryPromoteSingleValuedPB(*startit);
-    
-  }
 
 }
 

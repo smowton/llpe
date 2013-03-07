@@ -370,6 +370,10 @@ struct ShadowInstruction {
     return getOperand(i);
   }
 
+  uint32_t getNumArgOperands() {
+    return getNumOperands() - 1;
+  }
+
   uint32_t getNumUsers() {
     return invar->userIdxs.size();
   }
@@ -450,6 +454,8 @@ struct ShadowBB {
   bool* succsAlive;
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
+  BasicBlock* committedHead;
+  BasicBlock* committedTail;
 
   bool edgeIsDead(ShadowBBInvar* BB2I) {
 
@@ -477,6 +483,7 @@ struct ShadowLoopInvar {
   uint32_t headerIdx;
   uint32_t preheaderIdx;
   uint32_t latchIdx;
+  std::pair<uint32_t, uint32_t> optimisticEdge;
   std::vector<uint32_t> exitingBlocks;
   std::vector<uint32_t> exitBlocks;
   std::vector<std::pair<uint32_t, uint32_t> > exitEdges;
@@ -487,7 +494,7 @@ struct ShadowFunctionInvar {
 
   ImmutableArray<ShadowBBInvar> BBs;
   ImmutableArray<ShadowArgInvar> Args;
-  DenseMap<const Loop*, ShadowLoopInvar*> LoopInfo;
+  DenseMap<const Loop*, ShadowLoopInvar*> LInfo;
 
 };
 

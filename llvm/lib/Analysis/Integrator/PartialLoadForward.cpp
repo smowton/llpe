@@ -214,7 +214,7 @@ int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
 
 int64_t InlineAttempt::getSpilledVarargAfter(int64_t arg) {
 
-  return parent->getSpilledVarargAfter(CI, arg);
+  return llvm::getSpilledVarargAfter(CI, arg);
   
 }
 
@@ -237,7 +237,7 @@ bool IntegrationAttempt::isVarargsTainted() {
 
 }
 
-void llvm::disableChildVarargsContexts() {
+void IntegrationAttempt::disableChildVarargsContexts() {
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
@@ -258,7 +258,7 @@ void InlineAttempt::disableVarargsContexts() {
   if(parent && isVarargsTainted()) {
 
     errs() << "*** DISABLE " << getShortHeader() << " due to varargs instructions\n";
-    parent->disableInline(CI, false);
+    parent->disableInline(cast<CallInst>(CI->invar->I));
 
   }
   else {
@@ -276,7 +276,7 @@ void PeelAttempt::disableVarargsContexts() {
     if(Iterations[i]->isVarargsTainted()) {
 
       errs() << "*** DISABLE " << getShortHeader() << " due to varargs instructions\n";     
-      parent->disablePeel(L, false);
+      parent->disablePeel(L);
       return;
 
     }
@@ -294,9 +294,6 @@ void PeelAttempt::disableVarargsContexts() {
 }
 
 bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
-
-  ConstantInt* OffsetCI = ConstantInt::get(Type::getInt64Ty(copySource->getContext()), ReadOffset);
-  const Type* byteArrayType = Type::getInt8PtrTy(copySource->getContext());
 
   ShadowValue copyBase;
   int64_t copyOffset;
@@ -355,7 +352,7 @@ bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std
 
 }
 
-bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
+bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
@@ -388,6 +385,7 @@ bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNo
 
 bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error) {
 
+  Function& F = CI->parent->IA->getFunctionRoot()->F;
   int32_t initialOffset = getInitialBytesOnStack(F);
   int32_t initialFPOffset = 48 + getInitialFPBytesOnStack(F);
 
@@ -395,21 +393,21 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
 	
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialOffset)));
+    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialOffset)));
 
   }
   else if(ReadOffset == 4) {
 
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->getContext()), initialFPOffset)));	
+    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialFPOffset)));	
 
   }
   else if(ReadOffset == 8) {
 
     LPDEBUG("Load from va_start field 2: return va_arg ptr to first arg requiring field 2\n");
     // Pointer to first vararg, or first vararg after 48 bytes of real args.
-    int64_t initialVararg = getFirstSpilledVararg(this);
+    int64_t initialVararg = getFirstSpilledVararg(CI->parent->IA);
     if(initialVararg == ImprovedVal::not_va_arg) {
       error = "VaArgFail";
       return false;
@@ -434,13 +432,13 @@ bool llvm::getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t First
 
   // Handling an alias against the result of a realloc, try investigating as an alias against the original
   // allocation, passed as arg0.
-  return getPVFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
+  return getPBFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
 
 }
 
 bool llvm::getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
 
-  return getPVFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
+  return getPBFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
 
 }
 

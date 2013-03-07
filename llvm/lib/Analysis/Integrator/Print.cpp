@@ -74,8 +74,8 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
   if(V.isInval()) {
     Stream << "NULL";
   }
-  else if(Value* V = V.getVal()) {
-    printValue(Stream, V, brief);
+  else if(Value* V2 = V.getVal()) {
+    printValue(Stream, V2, brief);
   }
   else if(ShadowInstruction* SI = V.getInst()) {
     printValue(Stream, SI->invar->I, brief);
@@ -113,13 +113,13 @@ void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
       if(it != PB.Values.begin())
 	out << ", ";
       out << itcache(it->V, brief);
-      if(PB.type == ValSetTypePB) {
+      if(PB.Type == ValSetTypePB) {
 	if(it->Offset == LLONG_MAX)
 	  out << " + ?";
 	else
 	  out << " + " << it->Offset;
       }
-      else if(PB.type == ValSetTypeVarArg) {
+      else if(PB.Type == ValSetTypeVarArg) {
 	out << " #" << it->Offset;
       }
     }

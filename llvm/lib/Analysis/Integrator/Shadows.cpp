@@ -1,12 +1,20 @@
-e// Implement guts of instruction and block shadow structures, as well as utility routines for generating them
+// Implement guts of instruction and block shadow structures, as well as utility routines for generating them
 // from a function or block.
 
-void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops) {
+#include "llvm/Function.h"
+#include "llvm/BasicBlock.h"
+#include "llvm/Instruction.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+
+using namespace llvm;
+
+static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL, bool enterLoops) {
 
   if(!Visited.insert(BB))
     return;
 
-  const Loop* BBL = LI[&F]->getLoopFor(BB);
+  const Loop* BBL = LI->getLoopFor(BB);
   
   // Drifted out of scope?
   if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
@@ -19,7 +27,7 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
     BBL->getExitBlocks(ExitBlocks);
     for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
       
-      createTopOrderingFrom(*it, Result, Visited, MyL, enterLoops);
+      createTopOrderingFrom(*it, Result, Visited, LI, MyL, enterLoops);
       
     }
 
@@ -28,7 +36,7 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
 
     for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-      createTopOrderingFrom(*SI, Result, Visited, MyL, enterLoops);
+      createTopOrderingFrom(*SI, Result, Visited, LI, MyL, enterLoops);
 
     }
 
@@ -38,15 +46,21 @@ void IntegrationAttempt::createTopOrderingFrom(BasicBlock* BB, std::vector<Basic
 
 }
 
-static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
-			DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-			const Loop* L) {
-
-  ShadowLoopInvar* LInfo = new ShadowLoopInfo();
+void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
+					    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+					    const Loop* L) {
+  
+  ShadowLoopInvar* LInfo = new ShadowLoopInvar();
   LoopInfo[L] = LInfo;
   LInfo->headerIdx = BBIndices[L->getHeader()];
   LInfo->preheaderIdx = BBIndices[L->getLoopPreheader()];
   LInfo->latchIdx = BBIndices[L->getLoopLatch()];
+
+  std::pair<BasicBlock*, BasicBlock*> OptEdge = getOptimisticEdge(L);
+  if(OptEdge.first)
+    LInfo->optimisticEdge = std::make_pair(BBIndices[OptEdge.first], BBIndices[OptEdge.second]);
+  else
+    LInfo->optimisticEdge = std::make_pair(0xffffffff, 0xffffffff);
 
   {
     SmallVector<BasicBlock*, 4> temp;
@@ -54,7 +68,7 @@ static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo,
     {
       LInfo->exitingBlocks.reserve(temp.size());
       for(unsigned i = 0; i < temp.size(); ++i)
-	LInfo->exitingBlocks->push_back(BBIndices[temp[i]]);
+	LInfo->exitingBlocks.push_back(BBIndices[temp[i]]);
     }
 
     temp.clear();
@@ -62,16 +76,16 @@ static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo,
     {
       LInfo->exitBlocks.reserve(temp.size());
       for(unsigned i = 0; i < temp.size(); ++i)
-	LInfo->exitBlocks->push_back(BBIndices[temp[i]]);
+	LInfo->exitBlocks.push_back(BBIndices[temp[i]]);
     }
   }
 
   {
-    SmallVector<std::pair<BasicBlock*, BasicBlock>, 4> exitEdges;
+    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
     L->getExitEdges(exitEdges);
     LInfo->exitEdges.reserve(exitEdges.size());
     for(unsigned i = 0; i < exitEdges.size(); ++i)
-      LInfo->exitEdges->push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
+      LInfo->exitEdges.push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
   }
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
@@ -82,12 +96,10 @@ static void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo,
 
 }
 
-
-
-ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Function& F) {
+ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
 
   DenseMap<Function*, ShadowFunctionInvar>::iterator findit = functionInfo.find(&F);
-  if(findit != functionIndices.end())
+  if(findit != functionInfo.end())
     return findit->second;
 
   DenseMap<Instruction*, const Loop*>& instScopes = getInstScopes(&F);
@@ -100,7 +112,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
   std::vector<BasicBlock*> TopOrderedBlocks;
   SmallSet<BasicBlock*, 8> VisitedBlocks;
 
-  createTopOrderingFrom(F.getEntryBlock(), TopOrderedBlocks, VisitedBlocks, /* loop = */ 0, /* enterLoops = */ false);
+  createTopOrderingFrom(&F.getEntryBlock(), TopOrderedBlocks, VisitedBlocks, LI, /* loop = */ 0, /* enterLoops = */ false);
 
   std::reverse(TopOrderedBlocks.begin(), TopOrderedBlocks.end());
 
@@ -137,10 +149,9 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
     SBB.idx = i;
     SBB.BB = BB;
     SBB.naturalScope = LI->getLoopFor(BB);
-    SBB.outerScope = applyIgnoreLoops(BB.naturalScope);
+    SBB.outerScope = applyIgnoreLoops(SBB.naturalScope);
     DenseMap<BasicBlock*, const Loop*>::iterator it = blockScopes.find(BB);
-    const Loop* L;
-    if(it == invariantBlocks.end())
+    if(it == blockScopes.end())
       SBB.scope = SBB.outerScope;
     else
       SBB.scope = applyIgnoreLoops(it->second);
@@ -148,22 +159,24 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
     // Find successor block indices:
 
     succ_iterator SI = succ_begin(BB), SE = succ_end(BB);
-    SBB.succIdx = new uint32_t[std::distance(SI, SE)];
+    uint32_t succSize = std::distance(SI, SE);
+    SBB.succIdxs = ImmutableArray<uint32_t>(new uint32_t[succSize], succSize);
 
     for(uint32_t j = 0; SI != SE; ++SI, ++j) {
 
-      SBB.succIdx[j] = BBIndices[*SI];
+      SBB.succIdxs[j] = BBIndices[*SI];
 
     }
 
     // Find predecessor block indices:
 
     pred_iterator PI = pred_begin(BB), PE = pred_end(BB);
-    SBB.predIdx = new uint32_t[std::distance(PI, PE)];
+    uint32_t predSize = std::distance(PI, PE);
+    SBB.predIdxs = ImmutableArray<uint32_t>(new uint32_t[predSize], predSize);
     
     for(uint32_t j = 0; PI != PE; ++PI, ++j) {
 
-      SBB.predIdx[j] = BBIndices[*PI];
+      SBB.predIdxs[j] = BBIndices[*PI];
 
     }
 
@@ -198,7 +211,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 	}
 	else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k))) {
 
-	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], INVALID_INST_IDX);
+	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
 
 	}
 	else {
@@ -253,11 +266,13 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 
     Argument* A = AI;
     ShadowArgInvar& SArg = Args[i];
-    uint32_t nUsers = std::distance(UI, UE);
-    ShadowInstIdx* Users = new ShadowInstIdx[nUsers];
       
     unsigned j = 0;
-    Argument::use_iterator UI = A->use_begin, UE = A->use_end();
+    Argument::use_iterator UI = A->use_begin(), UE = A->use_end();
+
+    uint32_t nUsers = std::distance(UI, UE);
+    ShadowInstIdx* Users = new ShadowInstIdx[nUsers];
+
     for(; UI != UE; ++UI, ++j) {
 
       Value* UsedV = *UI;
@@ -283,7 +298,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
   // making is-in-loop easy to compute.
 
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
-    getLoopInfo(RetInfo.LoopHeaderIndices, RetInfo.LoopPreheaderIndices, RetInfo.LoopLatchIndices, BBIndices, *it);
+    getLoopInfo(RetInfo.LInfo, BBIndices, *it);
 
   return RetInfo;
 
@@ -294,7 +309,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(const Funct
 
 void InlineAttempt::prepareShadows() {
 
-  invarInfo = pass->getFunctionInvarInfo(F);
+  invarInfo = &pass->getFunctionInvarInfo(F);
   nBBs = F.size();
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
@@ -306,7 +321,7 @@ void InlineAttempt::prepareShadows() {
   Function::arg_iterator it = F.arg_begin();
   for(; i != F.arg_size(); ++i, ++it) {
 
-    argShadows[i].invar = invarInfo->Args[i];
+    argShadows[i].invar = &(invarInfo->Args[i]);
 
   }
 
@@ -314,23 +329,18 @@ void InlineAttempt::prepareShadows() {
 
 void PeelAttempt::getShadowInfo() {
 
-  headerIdx = invarInfo->LoopHeaderIndices[L];
-  preheaderIdx = invarInfo->LoopPreheaderIndices[L];
-  latchIdx = invarInfo->LoopLatchIndices[L];
-  exitBlockIdxs = invarInfo->LoopExitBlocks[L];
-  exitingBlockIdxs = invarInfo->LoopExitingBlocks[L];
-  exitEdgeIdxs = invarInfo->LoopExitEdges[L];
+  invarInfo = parent->invarInfo->LInfo[L];
 
 }
 
 void PeelIteration::prepareShadows() {
 
-  invarInfo = pass->getFunctionInvarInfo(F);
+  invarInfo = &pass->getFunctionInvarInfo(F);
   nBBs = L->getBlocks().size();
-  BBsOffset = new ShadowBB[nBBs];
+  BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;
-  BBsOffset = parentPA->headerIdx;
+  BBsOffset = parentPA->invarInfo->headerIdx;
 
 }
 
@@ -357,20 +367,20 @@ ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool* inScope) {
 
 ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
 
-  return invarInfo->BBs[idx];
+  return &(invarInfo->BBs[idx]);
 
 }
 
 ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
 
   if(BBI->naturalScope == L)
-    return getBB(BBI);
+    return getBB(*BBI);
 
-  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BB1I.naturalScope))) {
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) {
 
     if(LPA->isTerminated() && LPA->Iterations.back()->isOnlyExitingIteration()) {
 
-      return LPA->Iterations.back()->getBBRising(BBI);
+      return LPA->Iterations.back()->getUniqueBBRising(BBI);
 
     }
 
@@ -384,7 +394,7 @@ void IntegrationAttempt::createBB(uint32_t blockIdx) {
 
   release_assert((!BBs[blockIdx]) && "Creating block for the second time");
   ShadowBB* newBB = new ShadowBB();
-  newBB->invar = invarInfo->BBs[blockIdx];
+  newBB->invar = &(invarInfo->BBs[blockIdx]);
   newBB->succsAlive = new bool[newBB->invar->predIdxs.size()];
   for(unsigned i = 0, ilim = newBB->invar->predIdxs.size(); i != ilim; ++i)
     newBB->succsAlive[i] = true;
@@ -393,8 +403,7 @@ void IntegrationAttempt::createBB(uint32_t blockIdx) {
 
   ShadowInstruction* insts = new ShadowInstruction[newBB->invar->insts.size()];
   for(uint32_t i = 0, ilim = newBB->invar->insts.size(); i != ilim; ++i) {
-    insts[i].idx = i;
-    insts[i].invar = newBB->invar->insts[i];
+    insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
   }
 
@@ -402,7 +411,7 @@ void IntegrationAttempt::createBB(uint32_t blockIdx) {
 
 ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint32_t instidx) {
 
-  return invarInfo->BBs[blockidx]->insts[instidx];
+  return &(invarInfo->BBs[blockidx].insts[instidx]);
 
 }
 
@@ -410,11 +419,10 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
 
   if(BB->naturalScope == L) {
 
-    bool inScope;
-    ShadowBB* LocalBB = getBB(BB);
+    ShadowBB* LocalBB = getBB(*BB);
     if(!LocalBB)
       return 0;
-    return LocalBB->insts[instIdx];
+    return &(LocalBB->insts[instIdx]);
 
   }
   else {
@@ -428,8 +436,8 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;
-  ShadowBBInvar* OpBBI = invarInfo->BBs[blockIdx];
-  ShadowInstructionInvar* OpII = OpBBI->insts[instIdx];
+  ShadowBBInvar* OpBBI = &(invarInfo->BBs[blockIdx]);
+  ShadowInstructionInvar* OpII = &(OpBBI->insts[instIdx]);
 
   if(OpII->scope != L)
     return getInstFalling(OpBBI, instIdx);
@@ -448,7 +456,7 @@ ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instI
   }
   else {
 
-    return OpBB->insts[instIdx];
+    return &(OpBB->insts[instIdx]);
 
   }
 
@@ -467,17 +475,17 @@ ShadowInstruction* IntegrationAttempt::getInst(ShadowInstructionInvar* SII) {
 // Note that due to LCSSA form operands are always in the same context or a parent,
 // except for exit PHI operands, which are special cased in HCF's
 // getPHINodeValue function.
-ShadowValue ShadowInstruction::getOperand(uint32_t i); {
+ShadowValue ShadowInstruction::getOperand(uint32_t i) {
 
   ShadowInstIdx& SII = invar->operandIdxs[i];
   uint32_t blockOpIdx = SII.blockIdx;
   if(blockOpIdx == INVALID_BLOCK_IDX) {
     Value* ArgV = invar->I->getOperand(i);
     if(Argument* A = dyn_cast<Argument>(ArgV)) {
-      return ShadowValue(parent->IA->getFunctionRoot()->args[A->getArgNo()]);
+      return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
     }
     else {
-      return ShadowValue(V);
+      return ShadowValue(ArgV);
     }
   }
   else {
@@ -489,7 +497,7 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i); {
 ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
   ShadowInstIdx& SII = invar->userIdxs[i];
-  return parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx];
+  return &(parent->IA->BBs[SII.blockIdx]->insts[SII.instIdx]);
 
 }
 
@@ -510,9 +518,11 @@ bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB) {
 
 void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
-  for(uint32_t i = 0; i < LPA->exitingEdges.size(); ++i) {
+  std::vector<std::pair<uint32_t, uint32_t> >& EE = LPA->invarInfo->exitEdges;
 
-    std::pair<uint32_t, uint32_t> E = LPA->exitingEdges[i];
+  for(uint32_t i = 0; i < EE.size(); ++i) {
+
+    std::pair<uint32_t, uint32_t> E = EE[i];
     if(ShadowBB* BB = getBB(E.first)) {
 
       // Target already known at this scope?
@@ -526,11 +536,11 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 	continue;
 
       // OK, copy it if possible:
-      if(edgeIsDeadRising(BB->invar, getBBInvar(E.second))) {
+      if(edgeIsDeadRising(*BB->invar, *getBBInvar(E.second))) {
 
-	for(uint32_t j = 0; j < BB->invar.succIdxs.size(); ++j) {
-	  if(BB->invar.succIdxs[j] == E.second)
-	    BB->succIdxs[j] = false;
+	for(uint32_t j = 0; j < BB->invar->succIdxs.size(); ++j) {
+	  if(BB->invar->succIdxs[j] == E.second)
+	    BB->succsAlive[j] = false;
 	}
 	
       }
@@ -547,13 +557,19 @@ bool llvm::blockAssumedToExecute(ShadowBB* BB) {
 
 }
 
+bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
+
+  return BB->status == BBSTATUS_CERTAIN;
+
+}
+
 ShadowValue ShadowValue::stripPointerCasts() {
 
   if(isArg())
     return *this;
   if(ShadowInstruction* SI = getInst()) {
 
-    if(inst_is<CastInst>()) {
+    if(inst_is<CastInst>(SI)) {
       ShadowValue Op = SI->getOperand(0);
       return Op.stripPointerCasts();
     }

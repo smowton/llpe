@@ -116,7 +116,7 @@ bool InlineAttempt::entryBlockAssumed() {
 
   if(!parent)
     return true;
-  return parent->blockAssumed(CI->parent);
+  return blockAssumedToExecute(CI->parent);
 
 }
 

@@ -85,7 +85,7 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
 
   assert(!!CS.getCtx() == !!P.getCtx());
 
@@ -126,7 +126,7 @@ AliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKnowledge) {
+AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKnowledge) {
   // Don't assert AA because BasicAA calls us in order to make use of the
   // logic here.
 

@@ -151,7 +151,7 @@ bool PeelIteration::isOnlyExitingIteration() {
   if(iterStatus != IterationStatusFinal)
     return false;
 
-  if(!parentPA->OptimisticEdge.first)
+  if(parentPA->invarInfo->optimisticEdge.first == 0xffffffff)
     return true;
 
   return parentPA->allNonFinalIterationsDoNotExit();
@@ -166,7 +166,7 @@ bool InlineAttempt::isOptimisticPeel() {
 
 bool PeelIteration::isOptimisticPeel() {
 
-  return !!(parentPA->OptimisticEdge.first);
+  return parentPA->invarInfo->optimisticEdge.first != 0xffffffff;
 
 }
 

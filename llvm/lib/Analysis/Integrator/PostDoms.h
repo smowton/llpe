@@ -46,7 +46,7 @@ LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : F(_F), L(_L) {
 
   if(L) {
 
-    LInfo = F.LoopInfo[L];
+    LInfo = F.LInfo[L];
     // Lowest BB index we need is the loop's header:
     
     uint32_t LowestIdx = LInfo->headerIdx;

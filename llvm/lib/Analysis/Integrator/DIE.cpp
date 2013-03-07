@@ -286,7 +286,7 @@ public:
 	  return;
 	
 	// The buffer argument isn't needed if the read call will be deleted.
-	if(UserI->parent->IA->isUnusedReadCall(CI)) {
+	if(UserI->parent->IA->isUnusedReadCall(UserI)) {
 
 	  if(V == UserI->getCallArgOperand(1))
 	    return;

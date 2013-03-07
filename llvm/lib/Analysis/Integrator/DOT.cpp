@@ -411,7 +411,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
   if(brief && !BBs[headerIdx])
     return;
 
-  ShadowLoopInvar& LInfo = *(invarInfo->LoopInfo[DescribeL]);
+  ShadowLoopInvar& LInfo = *(invarInfo->LInfo[DescribeL]);
 
   Out << "subgraph \"cluster_" << DOT::EscapeString(DescribeL->getHeader()->getName()) << "\" {";
 

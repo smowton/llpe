@@ -30,7 +30,7 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowV
   // Try to identify errno: if it's a call to __errno_location(), it is. If it's a resolved object of any kind,
   // it isn't.
 
-  if(const CallInst* CI = dyn_cast_val<CallInst>(Ptr)) {
+  if(const CallInst* CI = dyn_cast_val<CallInst>(P)) {
   
     if(Function* F = CI->getCalledFunction()) {
 
@@ -48,6 +48,18 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowV
     return LibCallLocationInfo::No;
   
   return LibCallLocationInfo::Unknown;
+
+}
+
+static ShadowValue getValArgOperand(ShadowValue V, uint32_t i) {
+
+  if(ShadowInstruction* SI = V.getInst())
+    return SI->getCallArgOperand(i);
+  else {
+    CallInst* I = cast<CallInst>(V.getVal());
+    release_assert(I);
+    return ShadowValue(I->getArgOperand(i));
+  }
 
 }
 
@@ -106,7 +118,7 @@ static LibCallLocationInfo::LocResult isArg3(ShadowValue CS, ShadowValue Ptr, un
 
 static LibCallLocationInfo::LocResult isReturnVal(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
 
-  return aliasCheckAsLCI(Ptr, Size, CS.getInstruction(), AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, CS, AliasAnalysis::UnknownSize, usePBKnowledge);
   
 }
 
@@ -317,7 +329,7 @@ static LibCallFunctionInfo::LocationMRInfo SigactionMR[] = {
 
 };
 
-static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ImmutableCallSite CS, IntegrationAttempt* Ctx) {
+static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)))) {
 

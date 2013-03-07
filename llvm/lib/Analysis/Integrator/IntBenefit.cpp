@@ -619,7 +619,7 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
 
     unexploredLoops.push_back(LoopI);
 
-    for(uint32_t i = invarInfo->LoopInfo[LoopI]->headerIdx; i < invarInfo->BBs.size(); ++i) {
+    for(uint32_t i = invarInfo->LInfo[LoopI]->headerIdx; i < invarInfo->BBs.size(); ++i) {
       ShadowBBInvar* BBI = getBBInvar(i);
       if(!LoopI->contains(BBI->naturalScope))
 	break;

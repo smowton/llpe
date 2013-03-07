@@ -35,11 +35,11 @@ namespace llvm {
     }
     ~LibCallAliasAnalysis();
     
-    ModRefResult getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
     
-    ModRefResult getModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
+    virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       // TODO: Could compare two direct calls against each other if we cared to.
-      return AliasAnalysis::getModRefInfo(CS1, CS2, usePBKnowledge);
+      return AliasAnalysis::get2CSModRefInfo(CS1, CS2, usePBKnowledge);
     }
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
@@ -61,7 +61,7 @@ namespace llvm {
     
   private:
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
-				       ShadowValue CS
+				       ShadowValue CS,
                                        ShadowValue P, unsigned Size,
 				       bool usePBKnowledge);
   };

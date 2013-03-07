@@ -9,9 +9,9 @@
 
 using namespace llvm;
 
-IntegrationAttempt::resetDeadInstructions() {
+void IntegrationAttempt::resetDeadInstructions() {
 
-  for(uint32_t i = 0; i < BBs.size(); ++i) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
     ShadowBB* BB = BBs[i];
     if(!BB)
@@ -19,8 +19,8 @@ IntegrationAttempt::resetDeadInstructions() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* I = BB->insts[j];
-      I->dieStatus = INSTSTATUS_UNKNOWN;
+      ShadowInstruction* I = &(BB->insts[j]);
+      I->i.dieStatus = INSTSTATUS_ALIVE;
 
     }
 
@@ -34,7 +34,7 @@ IntegrationAttempt::resetDeadInstructions() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
-    for(unsigned i = 0; i < it->second->Iterations.count(); ++i) {
+    for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
 
       it->second->Iterations[i]->resetDeadInstructions();
 
@@ -97,7 +97,7 @@ bool InlineAttempt::isEnabled() {
   if(!parent)
     return true;
   else
-    return parent->inlineIsEnabled(CI);
+    return parent->inlineIsEnabled(cast<CallInst>(CI->invar->I));
 
 }
 
@@ -119,9 +119,9 @@ void InlineAttempt::setEnabled(bool en) {
     return;
 
   if(en)
-    parent->enableInline(CI);
+    parent->enableInline(cast<CallInst>(CI->invar->I));
   else
-    parent->disableInline(CI, false);
+    parent->disableInline(cast<CallInst>(CI->invar->I));
 
   pass->getRoot()->collectStats();
 
@@ -138,13 +138,13 @@ void PeelAttempt::setEnabled(bool en) {
   if(en)
     parent->enablePeel(L);
   else
-    parent->disablePeel(L, false);
+    parent->disablePeel(L);
 
 }
 
 bool IntegrationAttempt::isVararg() {
 
-  return (!getLoopContext()) && F.isVarArg();
+  return (!L) && F.isVarArg();
 
 }
 

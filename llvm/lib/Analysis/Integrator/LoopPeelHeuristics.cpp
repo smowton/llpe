@@ -84,14 +84,14 @@ IntegrationAttempt::~IntegrationAttempt() {
 }
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, CallInst* _CI, int depth) : 
-  IntegrationAttempt(Pass, P, F, LI, depth),
+			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth) : 
+  IntegrationAttempt(Pass, P, F, 0, LI, depth),
   CI(_CI)
   { 
     raw_string_ostream OS(HeaderStr);
     OS << (!CI ? "Root " : "") << "Function " << F.getName();
     if(CI && !CI->getType()->isVoidTy())
-      OS << " at " << itcache(*CI, true);
+      OS << " at " << itcache(CI, true);
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
     prepareShadows();
@@ -99,9 +99,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
 			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth) :
-  IntegrationAttempt(Pass, P, F, _LI, depth),
+  IntegrationAttempt(Pass, P, F, PP->L, _LI, depth),
   iterationCount(iter),
-  L(_L),
   parentPA(PP),
   iterStatus(IterationStatusUnknown)
 { 
@@ -114,8 +113,8 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
 			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth) 
-  : pass(Pass), parent(P), F(_F), LI(_LI), L(_L), 
-    residualInstructions(-1), nesting_depth(depth), totalIntegrationGoodness(0), nDependentLoads(0)
+  : pass(Pass), parent(P), F(_F), LI(_LI), 
+    residualInstructions(-1), nesting_depth(depth), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
   this->tag.ptr = (void*)this;
@@ -126,9 +125,7 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   SeqNumber = Pass->getSeq();
   OS << " / " << SeqNumber;
   
-  OptimisticEdge = Pass->getOptimisticEdge(L);
-
-  invarInfo = parent->invarInfo->loopInfo[L];
+  invarInfo = parent->invarInfo->LInfo[L];
 
   getOrCreateIteration(0);
 
@@ -182,7 +179,7 @@ void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
 }
 
-static Function* getReplacementFunction(const ShadowValue& CCalledV) {
+static Function* getReplacementFunction(ShadowValue CCalledV) {
 
   ShadowValue CalledV = CCalledV.stripPointerCasts();
 
@@ -230,12 +227,12 @@ static Function* getReplacementFunction(const ShadowValue& CCalledV) {
 
 }
 
-Function* llvm::getCalledFunction(const ShadowInstruction* SI) {
+Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
   if(inst_is<CallInst>(SI))
-    return getReplacementFunction(SI, SI->getOperandFromEnd(1));
+    return getReplacementFunction(SI->getOperandFromEnd(1));
   else if(inst_is<InvokeInst>(SI))
-    return getReplacementFunction(SI, SI->getOperandFromEnd(3));
+    return getReplacementFunction(SI->getOperandFromEnd(3));
   release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
   return 0;
 
@@ -264,33 +261,13 @@ const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
 
 }
 
-bool llvm::edgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I) {
-
-  bool foundLiveEdge = false;
-
-  for(uint32_t i = 0; i < BB1I->succIdxs.size() && !foundLiveEdge; ++i) {
-
-    if(BB2I->idx == BB1I->succIdxs[i]) {
-
-      if(BB1->succsAlive[i])
-	foundLiveEdge = true;
-
-    }
-
-  }
-
-  if(!foundLiveEdge)
-    return true;
-
-}
-
 bool IntegrationAttempt::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
   bool BB1InScope;
 
-  if(ShadowBB* BB1 = getBB(BB1I->idx, BB1InScope)) {
+  if(ShadowBB* BB1 = getBB(BB1I->idx, &BB1InScope)) {
 
-    return edgeIsDead(BB1, BB2I);
+    return BB1->edgeIsDead(BB2I);
 
   }
   else if(BB1InScope) {
@@ -304,9 +281,9 @@ bool IntegrationAttempt::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
 }
 
-bool IntegrationAttempt::edgeIsDeadRising(const ShadowBBInvar& BB1I, const ShadowBBInvar& BB2I) {
+bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I) {
 
-  if(edgeIsDead(BB1I, BB2I))
+  if(edgeIsDead(&BB1I, &BB2I))
     return true;
 
   if(BB1I.naturalScope == L)
@@ -426,7 +403,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     return 0;
   }
   
-  if(L != SI->scope) {
+  if(L != SI->invar->scope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
@@ -439,7 +416,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   //errs() << "Inline new fn " << FCalled->getName() << "\n";
   mainPhaseProgress();
 
-  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, this->nesting_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1);
   inlineChildren[CI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -453,7 +430,10 @@ void PeelIteration::checkFinalIteration() {
   // Check whether we now have evidence the loop terminates this time around
   // If it does, queue consideration of each exit PHI; by LCSSA these must belong to our parent.
 
-  if(edgeIsDead(L->getLoopLatch(), L->getHeader()) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
+  ShadowBBInvar* LatchBB = getBBInvar(parentPA->invarInfo->latchIdx);
+  ShadowBBInvar* HeaderBB = getBBInvar(parentPA->invarInfo->latchIdx);
+
+  if(edgeIsDead(LatchBB, HeaderBB) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
 
     iterStatus = IterationStatusFinal;
 
@@ -484,7 +464,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   assert(iter == Iterations.size());
 
-  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, L, iter, nesting_depth);
+  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth);
   Iterations.push_back(NewIter);
     
   return NewIter;
@@ -499,7 +479,7 @@ PeelIteration* PeelIteration::getNextIteration() {
 
 bool PeelIteration::allExitEdgesDead() {
 
-  for(SmallVector<std::pair<uint32_t, uint32_t>, 4>::iterator EI = parentPA->ExitEdges.begin(), EE = parentPA->ExitEdges.end(); EI != EE; ++EI) {
+  for(std::vector<std::pair<uint32_t, uint32_t> >::iterator EI = parentPA->invarInfo->exitEdges.begin(), EE = parentPA->invarInfo->exitEdges.end(); EI != EE; ++EI) {
 
     if(!edgeIsDead(getBBInvar(EI->first), getBBInvar(EI->second))) {
       return false;
@@ -521,9 +501,20 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     return 0;
   }
 
-  std::pair<BasicBlock*, BasicBlock*>& OE = parentPA->OptimisticEdge;
+  std::pair<uint32_t, uint32_t>& OE = parentPA->invarInfo->optimisticEdge;
 
-  bool willIterate = (OE.first && edgeIsDead(OE.first, OE.second) && !edgeIsDead(getBBInvar(parentPA->latchIdx), getBBInvar(parentPA->headerIdx))) || allExitEdgesDead();
+  bool willIterate = false;
+
+  if(OE.first != 0xffffffff) {
+    ShadowBBInvar* OE1 = getBBInvar(OE.first);
+    ShadowBBInvar* OE2 = getBBInvar(OE.second);
+    ShadowBBInvar* latchBB = getBBInvar(parentPA->invarInfo->latchIdx);
+    ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->latchIdx);
+    willIterate = edgeIsDead(OE1, OE2) && !edgeIsDead(latchBB, headerBB);
+  }
+
+  if(!willIterate)
+    willIterate = allExitEdgesDead();
 
   if(!willIterate) {
 
@@ -573,9 +564,11 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
     return 0;
  
   // Preheaders only have one successor (the header), so this is enough.
-  if(!blockAssumedToExecute(NewL->getLoopPreheader())) {
+  
+  ShadowBB* preheaderBB = getBB(invarInfo->LInfo[NewL]->preheaderIdx);
+  if(!blockAssumedToExecute(preheaderBB)) {
    
-    LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain to execute\n");
+    LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain/assumed to execute\n");
     return 0;
 
   }
@@ -604,7 +597,7 @@ void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
 
     if(ShadowBB* BB = BBs[i]) {
 
-      ShadowInstruction* TI = BB->insts.back();
+      ShadowInstruction* TI = &(BB->insts.back());
       if(inst_is<ReturnInst>(TI))
 	Vals.push_back(TI->getOperand(0));
 
@@ -640,13 +633,13 @@ bool IntegrationAttempt::isRootMainCall() {
 
 }
 
-bool llvm::isGlobalIdentifiedObject(ShadowValue& V) {
+bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
   if(ShadowInstruction* SI = V.getInst()) {
     return isIdentifiedObject(SI->invar->I);
   }
   else if(ShadowArg* SA = V.getArg()) {
-    return SA->parent->isRootMainCall();
+    return SA->IA->isRootMainCall();
   }
   else {
     return isIdentifiedObject(V.getVal());
@@ -659,7 +652,7 @@ void InlineAttempt::getVarArg(int64_t idx, PointerBase& Result) {
   unsigned numNonFPArgs = 0;
   unsigned numFPArgs = 0;
 
-  uint32_t argIdx;
+  uint32_t argIdx = 0xffffffff;
 
   CallInst* RawCI = cast_inst<CallInst>(CI);
 
@@ -683,12 +676,12 @@ void InlineAttempt::getVarArg(int64_t idx, PointerBase& Result) {
 
   }
 
-  if(Found)
-    getPointerBase(CI->getCallArgOperand(i), Result);
+  if(argIdx < CI->getNumArgOperands())
+    getPointerBase(CI->getCallArgOperand(argIdx), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
-    Result = ShadowValue();
+    Result = PointerBase();
 
   }
 
@@ -1024,7 +1017,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const 
     if(allowTotalDefnImplicitCast(FromType, Target))
       return (FromC);
     else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
-      return ConstExpr::getPtrToInt(FromC, Target);
+      return ConstantExpr::getPtrToInt(FromC, Target);
     DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
     return 0;
   }
@@ -1444,13 +1437,13 @@ void IntegrationHeuristicsPass::commit() {
   std::string Name;
   {
     raw_string_ostream RSO(Name);
-    Name << RootIA->getCommittedBlockPrefix() << ".clone_root";
+    RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
   }
-  RootIA->CommitF = Function::Create(RootIA->F.getType(), RootIA->F.getLinkage(), Name, RootIA->F.getParent());
+  RootIA->CommitF = Function::Create(RootIA->F.getFunctionType(), RootIA->F.getLinkage(), Name, RootIA->F.getParent());
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
   RootIA->commitInstructions();
-  RootIA->F.replaceAllUsesWith(RootIA->commitF);
+  RootIA->F.replaceAllUsesWith(RootIA->CommitF);
 }
 
 static void dieEnvUsage() {
@@ -1632,8 +1625,8 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
 
   }
 
-  if(Idx < F.arg_size())
-    setReplacement(RootIA->shadowArgs[
+  if((unsigned)Idx < F.arg_size())
+    setReplacement(&(RootIA->argShadows[Idx]), Val);
   // Else it's varargs, which are discovered through LF rather than direct propagation
 
 }

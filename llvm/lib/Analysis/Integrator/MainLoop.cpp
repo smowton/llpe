@@ -33,7 +33,7 @@ void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& Cache
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
-    ShadowArg* SArg = argShadows[i];
+    ShadowArg* SArg = &(argShadows[i]);
     tryEvaluate(ShadowValue(SArg), true, 0, CacheThresholdBB, CacheThresholdIA);
 
   }
@@ -98,7 +98,8 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     // Therefore we can scan blockIdx forwards until we leave the loop BBL.
    
     // First, examine each block in the loop to discover invariants, including invariant dead blocks.
-    for(uint32_t i = blockIdx; i < invarInfo->BBs.size() && BBL->contains(invarInfo->BBs[i]->naturalScope; ++i)) {
+    uint32_t i;
+    for(i = blockIdx; i < invarInfo->BBs.size() && BBL->contains(invarInfo->BBs[i].naturalScope); ++i) {
       
       // Thresholds should not be modified due to withinUnboundedLoop = true,
       // but just to be safe...
@@ -122,7 +123,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
-    if((!LPA) || (!LPA->isTerminated()) {
+    if((!LPA) || !LPA->isTerminated()) {
       analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
     }
     else {
@@ -145,7 +146,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     if((!withinUnboundedLoop) && BB->status == BBSTATUS_CERTAIN) {
 
       LPDEBUG("Advance threshold to " << BB->getName() << "\n");
-      CacheThresholdBB = BB;
+      CacheThresholdBB = BB->invar->BB;
       CacheThresholdIA = this;
 
     }
@@ -163,7 +164,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
   for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
-    ShadowInstruction* SI = BB->insts[i];
+    ShadowInstruction* SI = &(BB->insts[i]);
     ShadowInstructionInvar* SII = SI->invar;
     Instruction* I = SII->I;
 
@@ -175,7 +176,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
     if(SII->scope != MyL)
       continue;
     
-    if(CallInst* CI = dyn_cast<CallInst>(BI)) {
+    if(isa<CallInst>(I)) {
 
       if(tryPromoteOpenCall(SI))
 	continue;

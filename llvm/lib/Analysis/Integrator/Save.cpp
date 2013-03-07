@@ -62,7 +62,7 @@ void IntegrationAttempt::localPrepareCommit() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* SI = BB->insts[j];
+      ShadowInstruction* SI = &(BB->insts[j]);
       if(mayBeReplaced(SI) && !willBeReplacedOrDeleted(ShadowValue(SI)))
 	SI->i.PB = PointerBase();
 
@@ -82,7 +82,7 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
   std::string ret;
   raw_string_ostream RSO(ret);
-  RSO << getFunctionRoot()->getShortHeader() << " loop " << parentPA->getShortHeader() << " iteration " << iterCount;
+  RSO << getFunctionRoot()->getShortHeader() << " loop " << parentPA->getShortHeader() << " iteration " << iterationCount;
   RSO.flush();
   return ret;
 
@@ -90,8 +90,8 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
 void IntegrationAttempt::commitCFG() {
 
-  const Function* CF = getFunctionRoot()->CommitF;
-  const Loop* currentLoop;
+  Function* CF = getFunctionRoot()->CommitF;
+  const Loop* currentLoop = L;
 
   for(uint32_t i = 0; i < nBBs; ++i) {
 
@@ -104,14 +104,14 @@ void IntegrationAttempt::commitCFG() {
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled()) {
-	for(unsigned i = 0; i < Iterations.size(); ++i)
-	  Iterations[i]->commitCFG();
+	for(unsigned i = 0; i < PA->Iterations.size(); ++i)
+	  PA->Iterations[i]->commitCFG();
       }
       
       // If the loop has terminated, skip emitting the blocks in this context.
       if(PA && PA->isTerminated()) {
 	const Loop* skipL = BB->invar->naturalScope;
-	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->naturalScope)))
+	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
       }
 
@@ -132,7 +132,7 @@ void IntegrationAttempt::commitCFG() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      if(CallInst* CI = dyn_cast_inst<CallInst>(BB->insts[j])) {
+      if(CallInst* CI = dyn_cast_inst<CallInst>(&(BB->insts[j]))) {
 
 	if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
@@ -143,7 +143,7 @@ void IntegrationAttempt::commitCFG() {
 	      std::string Name;
 	      {
 		raw_string_ostream RSO(Name);
-		Name << IA->getCommittedBlockPrefix() << ".callexit";
+		RSO << IA->getCommittedBlockPrefix() << ".callexit";
 	      }
 	      BB->committedTail = IA->returnBlock = BasicBlock::Create(F.getContext(), Name, CF);
 	      IA->CommitF = CF;
@@ -155,9 +155,9 @@ void IntegrationAttempt::commitCFG() {
 	      std::string Name;
 	      {
 		raw_string_ostream RSO(Name);
-		Name << IA->getCommittedBlockPrefix() << ".clone";
+		RSO << IA->getCommittedBlockPrefix() << ".clone";
 	      }
-	      IA->CommitF = Function::Create(IA->F.getType(), GlobalValue::PrivateLinkage, Name, CF->getParent());
+	      IA->CommitF = Function::Create(IA->F.getFunctionType(), GlobalValue::PrivateLinkage, Name, CF->getParent());
 	      IA->returnBlock = 0;
 
 	    }
@@ -176,7 +176,7 @@ void IntegrationAttempt::commitCFG() {
 
 }
 
-static Value* getCommittedValue(ShadowValue& SV) {
+static Value* getCommittedValue(ShadowValue SV) {
 
   if(Value* V = SV.getVal())
     return V;
@@ -184,20 +184,19 @@ static Value* getCommittedValue(ShadowValue& SV) {
   release_assert((!willBeDeleted(SV)) && "Instruction depends on deleted value");
 
   if(ShadowInstruction* SI = SV.getInst())
-    return SI->i.committedVal;
-  }
+    return SI->committedVal;
   else {
     ShadowArg* SA = SV.getArg();
-    return SA->parent->getArgCommittedValue(SA);
+    return SA->IA->getFunctionRoot()->getArgCommittedValue(SA);
   }
   
 }
 
-Value* IntegrationAttempt::getArgCommittedValue(ShadowArg* SA) {
+Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
   unsigned n = SA->invar->A->getArgNo();
 
-  if(isVarArg() || (!parent) || !isEnabled()) {
+  if(isVararg() || (!parent) || !isEnabled()) {
 
     // Use corresponding argument:
     Function::arg_iterator it = CommitF->arg_begin();
@@ -224,9 +223,9 @@ BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
 ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
-  uint32_t succ = BB->invar->succs[succIdx];
+  uint32_t succ = BB->invar->succIdxs[succIdx];
 
-  if(BB->invar->idx == parentPA->latchIdx && succ == parentPA->headerIdx) {
+  if(BB->invar->idx == parentPA->invarInfo->latchIdx && succ == parentPA->invarInfo->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
       return PI->getBB(succ);
@@ -243,7 +242,7 @@ ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
 ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
-  uint32_t succ = BB->invar->succs[succIdx];
+  uint32_t succ = BB->invar->succIdxs[succIdx];
   ShadowBBInvar* BBI = getBBInvar(succ);
   return getBBFalling(BBI);
   
@@ -251,8 +250,8 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
 ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
 
-  if(BBI->naturalScope == this)
-    return getBB(BBI);
+  if(BBI->naturalScope == L)
+    return getBB(*BBI);
   else {
     release_assert(parent && L && "Out of scope in getBBFalling");
     return parent->getBBFalling(BBI);
@@ -265,7 +264,7 @@ static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) 
   if(Ty == V->getType())
     return V;
 
-  release_assert(isCastable(V->getType(), Ty) && "Bad cast in commit stage");
+  release_assert(CastInst::isCastable(V->getType(), Ty) && "Bad cast in commit stage");
   Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
   return CastInst::Create(Op, V, Ty, "speccast", insertBefore);
 
@@ -278,26 +277,27 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
   PHINode* PN = cast_inst<PHINode>(I);
 
-  if(BB->invar->idx == parentPA->headerIdx) {
+  if(BB->invar->idx == parentPA->invarInfo->headerIdx) {
     
     ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
-    PHINode* NewPN = I->committedVal = PHINode::Create(I->invar->I->getType(), "header", emitBB);
+    PHINode* NewPN;
+    I->committedVal = NewPN = PHINode::Create(I->invar->I->getType(), "header", emitBB);
     ShadowBB* SourceBB;
 
-    if(iterCount == 0) {
+    if(iterationCount == 0) {
 
-      SourceBB = parent->getBB(parentPA->preheaderIdx);
+      SourceBB = parent->getBB(parentPA->invarInfo->preheaderIdx);
 
     }
     else {
 
-      PeelIteration* prevIter = parentPA->Iterations[iterCount-1];
-      SourceBB = prevIter->getBB(parentPA->latchIdx);
+      PeelIteration* prevIter = parentPA->Iterations[iterationCount-1];
+      SourceBB = prevIter->getBB(parentPA->invarInfo->latchIdx);
 
     }
 
-    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType());
-    NewPB->addIncoming(PHIOp, SourceBB->committedTail);
+    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), PN);
+    PN->addIncoming(PHIOp, SourceBB->committedTail);
     return;
 
   }
@@ -306,17 +306,17 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
 }
 
-void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB) {
+void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPN) {
 
   // Emit a normal PHI; all arguments have already been prepared.
-  for(uint32_t i = 0, ilim = I->parent->invar->preds.size(); i != ilim && !breaknow; i+=2) {
+  for(uint32_t i = 0, ilim = I->parent->invar->predIdxs.size(); i != ilim; i+=2) {
       
     SmallVector<ShadowValue, 1> predValues;
     SmallVector<ShadowBB*, 1> predBBs;
-    ShadowValue PredV = getExitPHIOperands(I, i, predValues, &predBBs);
+    getExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
-      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType());
+      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), NewPN);
       NewPN->addIncoming(PHIOp, predBBs[j]->committedTail);
     }
 
@@ -326,7 +326,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 
 void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
-  PHINode* NewPN = I->committedVal = PHINode::Create(I->invar->I->getType(), "", emitBB);
+  PHINode* NewPN;
+  I->committedVal = NewPN = PHINode::Create(I->invar->I->getType(), "", emitBB);
 
   // Special case: emitting the header PHI of a residualised loop.
   // Make an empty node for the time being; this will be revisted once the loop body is emitted
@@ -340,10 +341,10 @@ void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBl
 void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
   uint32_t i;
-  for(i = 0; i < BB->insts.size() && inst_is<PHINode>(BB->insts[i]); ++i) {
-    if(!BB->insts[i]->committedVal)
+  for(i = 0; i < BB->insts.size() && inst_is<PHINode>(&(BB->insts[i])); ++i) {
+    if(!BB->insts[i].committedVal)
       continue;
-    populatePHINode(BB, BB->insts[i], cast<PHINode>(BB->insts[i]->committedVal));
+    populatePHINode(BB, &(BB->insts[i]), cast<PHINode>(BB->insts[i].committedVal));
   }
 
 }
@@ -359,7 +360,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   if(inst_is<ReturnInst>(I)) {
 
-    if(getFunctionRoot()->isVarArg()) {
+    if(getFunctionRoot()->isVararg()) {
 
       // Normal return
       emitInst(BB, I, emitBB);
@@ -367,13 +368,15 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     }
     else {
 
-      // Branch to the exit block
-      release_assert(exitBlock && "Exit block unset?");
-      BranchInst::Create(exitBlock, emitBB);
+      InlineAttempt* IA = getFunctionRoot();
 
-      if(PHINode* retPHI = getFunctionRoot()->returnPHI) {
-	Value* PHIVal = getValueAsType(getCommittedValue(I->getOperand(0)), F.getReturnTy());
-	retPHI->addIncoming(PHIVal, BB->committedTail);
+      // Branch to the exit block
+      release_assert(IA->returnBlock && "Exit block unset?");
+      Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
+
+      if(IA->returnPHI) {
+	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
+	IA->returnPHI->addIncoming(PHIVal, BB->committedTail);
       }
 
     }
@@ -384,9 +387,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   // Do we know where this terminator will go?
   uint32_t knownSucc = 0xffffffff;
-  for(uint32_t i = 0; i < BB->succIdxs.size(); ++i) {
+  for(uint32_t i = 0; i < BB->invar->succIdxs.size(); ++i) {
 
-    if(BB->succsLive[i]) {
+    if(BB->succsAlive[i]) {
 
       if(knownSucc == 0xffffffff)
 	knownSucc = i;
@@ -406,27 +409,27 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
   if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
-    ShadowBB* BB = getSuccessorBB(BB, knownSucc);
-    release_assert(BB && "Failed to get successor BB");
-    BranchInst::Create(BB->committedHead, emitBB);
+    ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
+    release_assert(SBB && "Failed to get successor BB");
+    BranchInst::Create(SBB->committedHead, emitBB);
 
   }
   else {
 
     // Clone existing branch/switch
-    release_assert((isa<SwitchInst>(I) || isa<BranchInst>(I)) && "Unsupported terminator type");
+    release_assert((inst_is<SwitchInst>(I) || inst_is<BranchInst>(I)) && "Unsupported terminator type");
     Instruction* newTerm = I->invar->I->clone();
     emitBB->getInstList().push_back(newTerm);
     
     // Like emitInst, but can emit BBs.
     for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
-      if(I->invar->operandIdxs[i].instIdx == INVALID_INST_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
+      if(I->invar->operandIdxs[i].instIdx == INVALID_INSTRUCTION_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
 
 	// Argument is a BB.
-	ShadowBB* BB = getSuccessorBB(BB, knownSucc);
-	release_assert(BB && "Failed to get successor BB (2)");
-	newTerm->setOperand(i, BB->committedHead);
+	ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
+	release_assert(SBB && "Failed to get successor BB (2)");
+	newTerm->setOperand(i, SBB->committedHead);
 
       }
       else { 
@@ -443,7 +446,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 }
 
-void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   CallInst* CI = cast_inst<CallInst>(I);
 
@@ -509,7 +512,7 @@ void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	
       }
 
-      return;
+      return true;
 
     }
 
@@ -523,7 +526,7 @@ void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
       if(!it->second.MayDelete)
 	emitInst(BB, I, emitBB);
 
-      return;
+      return true;
 
     }
 
@@ -535,11 +538,11 @@ void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
     if(it != forwardableOpenCalls.end()) {
       if(it->second->success && I->i.dieStatus == INSTSTATUS_ALIVE) {
 
-	emitInst(I, BB, emitBB);
+	emitInst(BB, I, emitBB);
 
       }
 
-      return;
+      return true;
     }
 
   }
@@ -551,14 +554,18 @@ void IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
       if(it->second.MayDelete && it->second.openArg->MayDelete) {
 	if(it->second.openInst->i.dieStatus == INSTSTATUS_DEAD)
-	  return;
+	  return true;
       }
 
-      emitInst(I, BB, emitBB);
+      emitInst(BB, I, emitBB);
+
+      return true;
 
     }
 
   }
+
+  return false;
 
 }
 
@@ -570,7 +577,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
     if(IA->isEnabled()) {
 
-      if(!IA->isVarArg()) {
+      if(!IA->isVararg()) {
 
 	// Branch from the current write BB to the call's entry block:
 	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
@@ -578,12 +585,12 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	// Make a PHI node that will catch return values, and make it our committed
 	// value so that users get that instead of the call.
 
-	bool createRetPHI = !IA->F.getReturnTy()->isVoidTy();
+	bool createRetPHI = !IA->F.getFunctionType()->getReturnType()->isVoidTy();
 	if(createRetPHI && willBeReplacedOrDeleted(ShadowValue(I)))
 	  createRetPHI = false;
 	
 	if(createRetPHI)
-	  I->i.committedVal = IA->returnPHI = PHINode::Create(IA->F.getReturnTy(), "retval", IA->returnBlock);
+	  I->committedVal = IA->returnPHI = PHINode::Create(IA->F.getFunctionType()->getReturnType(), "retval", IA->returnBlock);
 
 	// Emit further instructions in this ShadowBB to the successor block:
 	emitBB = IA->returnBlock;
@@ -622,8 +629,8 @@ void IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
     ShadowValue op = I->getOperand(i);
     Value* opV = getCommittedValue(op);
-    const Type* needTy = newI->getOperand(i, opV)->getType();
-    newI->setOperand(i, getValAsType(opV, needTy));
+    const Type* needTy = newI->getOperand(i)->getType();
+    newI->setOperand(i, getValAsType(opV, needTy, newI));
 
   }
 
@@ -651,7 +658,7 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
       OffsetGV = CastGV;
     else {
       Constant* Offset = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
-      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, Offset, 1);
+      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &Offset, 1);
     }
     
     // Cast to proper type:
@@ -681,16 +688,16 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
     if(Offset == 0)
       OffsetI = CastI;
     else {
-      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
-      OffsetI = GetElementPtrInst::Create(OffsetI, Offset, "synthgep", emitBB);
+      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
+      OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
     }
 
     // Cast back:
     if(I->getType() == Int8Ptr) {
-      I->committedInst = OffsetI;
+      I->committedVal = OffsetI;
     }
     else {
-      I->committedInst = new BitCastInst(OffsetI, I->getType(), "synthcastback", emitBB);
+      I->committedVal = new BitCastInst(OffsetI, I->getType(), "synthcastback", emitBB);
     }
 
   }
@@ -699,7 +706,6 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
 
 void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
 
-  const Function* CF = getFunctionRoot()->CommitF;
   uint32_t thisLoopHeaderIdx = i;
 
   for(; i < nBBs; ++i) {
@@ -716,14 +722,14 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled()) {
-	for(unsigned i = 0; i < Iterations.size(); ++i)
-	  Iterations[i]->commitInstructions();
+	for(unsigned i = 0; i < PA->Iterations.size(); ++i)
+	  PA->Iterations[i]->commitInstructions();
       }
       
       // If the loop has terminated, skip populating the blocks in this context.
       if(PA && PA->isTerminated()) {
 	const Loop* skipL = BB->invar->naturalScope;
-	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->naturalScope)))
+	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
 	--i;
 	continue;
@@ -741,29 +747,29 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     // Emit instructions for this block:
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      ShadowInstruction* I = BB->insts[j];
+      ShadowInstruction* I = &(BB->insts[j]);
 
       if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
 	emitCall(BB, I, emitBB);
-	if(I->i.committedVal)
+	if(I->committedVal)
 	  continue;
 	// Else fall through to fill in a committed value:
       }
 
-      if(I->dieStatus != INSTSTATUS_ALIVE)
+      if(I->i.dieStatus != INSTSTATUS_ALIVE)
 	continue;
 
       if(Constant* C = getConstReplacement(ShadowValue(I))) {
-	I->committedVal = ShadowValue(C);
+	I->committedVal = C;
 	continue;
       }
 
-      else if(I->i.PB.type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
-	I->committedVal = I->i.PB.Values[0].V;
+      else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
+	I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
 	continue;
       }
       
-      else if(I->i.PB.type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
+      else if(I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
 	synthCommittedPointer(I, emitBB);
 	continue;
       }
@@ -791,7 +797,6 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 void IntegrationAttempt::commitInstructions() {
 
-  const Function* CF = getFunctionRoot()->CommitF;
   uint32_t i = 0;
   commitLoopInstructions(0, i);
 

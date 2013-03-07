@@ -66,6 +66,7 @@ class NormalLoadForwardWalker;
 class PBLoadForwardWalker;
 class MemSetInst;
 class MemTransferInst;
+class ShadowLoopInvar;
 
 bool functionIsBlacklisted(Function*);
 
@@ -84,6 +85,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<Instruction*, const Loop*>* > invariantInstScopes;
    DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* > invariantEdgeScopes;
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
+   DenseMap<Function*, ShadowFunctionInvar> functionInfo;
 
    DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
 
@@ -113,11 +115,13 @@ class IntegrationHeuristicsPass : public ModulePass {
    static char ID;
 
    uint64_t SeqNumber;
+   bool mustRecomputeDIE;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
      SeqNumber = 0;
+     mustRecomputeDIE = false;
 
    }
 
@@ -174,6 +178,8 @@ class IntegrationHeuristicsPass : public ModulePass {
      return it->second.count(HBB);
    }
 
+  const Loop* applyIgnoreLoops(const Loop*);
+
    bool assumeEndsAfter(Function* F, BasicBlock* HBB, uint64_t C) {
      DenseMap<std::pair<Function*, BasicBlock*>, uint64_t>::iterator it = maxLoopIters.find(std::make_pair(F, HBB));
      if(it == maxLoopIters.end())
@@ -181,9 +187,15 @@ class IntegrationHeuristicsPass : public ModulePass {
      return it->second == C;
    }
 
+   void runDSEAndDIE();
    void rerunDSEAndDIE();
 
    unsigned getMallocAlignment();
+
+   ShadowFunctionInvar& getFunctionInvarInfo(Function& F);
+   void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
+		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+		    const Loop* L);
 
    uint64_t getSeq() {
      return SeqNumber++;
@@ -514,9 +526,9 @@ public:
       queueUpdatePB(VC);
   }
 
-  void addVC(ShadowValue VC) {
-    inLoopVCs.insert(VC);
-    queueUpdatePB(VC);
+  void addVal(ShadowValue V) {
+    inLoopVCs.insert(V);
+    queueUpdatePB(V);
   }
 
   void runPointerBaseSolver(bool finalise, std::vector<ShadowValue>* modifiedVCs);
@@ -606,13 +618,6 @@ class IntegrationAttempt {
 protected:
 
   IntegrationHeuristicsPass* pass;
-  ShadowFunctionInvar* invarInfo;
-  ShadowBB** BBs;
-  uint32_t nBBs;
-  // BBsOffset: offset from indices in the BBs array to invarInfo.BBs.
-  // For inlineAttempts this is 0; for loop iterations it is the index of the loop's header
-  // within the invar info.
-  uint32_t BBsOffset;
 
   // Analyses created by the Pass.
   DenseMap<Function*, LoopInfo*>& LI;
@@ -660,6 +665,15 @@ protected:
   Function& F;
   const Loop* L;
 
+  ShadowBB** BBs;
+  uint32_t nBBs;
+  // BBsOffset: offset from indices in the BBs array to invarInfo.BBs.
+  // For inlineAttempts this is 0; for loop iterations it is the index of the loop's header
+  // within the invar info.
+  uint32_t BBsOffset;
+
+  ShadowFunctionInvar* invarInfo;
+
   bool contextIsDead;
 
   struct IntegratorTag tag;
@@ -673,7 +687,7 @@ protected:
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
     
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-		    DenseMap<Function*, LoopInfo*>& _LI, int depth) : 
+		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth) : 
   pass(Pass),
     LI(_LI),
     improvableInstructions(0),
@@ -689,6 +703,7 @@ protected:
     contextTaintedByVarargs(false),
     nesting_depth(depth),
     F(_F),
+    L(_L),
     contextIsDead(false),
     totalIntegrationGoodness(0),
     nDependentLoads(0),
@@ -711,13 +726,12 @@ protected:
   void callWithScope(Callable& C, const Loop* LScope);
 
   bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
+  bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I);
 
   const Loop* applyIgnoreLoops(const Loop*);
 
   virtual bool entryBlockIsCertain() = 0;
   virtual bool entryBlockAssumed() = 0;
-  bool blockCertainlyExecutes(ShadowBB*);
-  bool blockAssumed(ShadowBB*);
 
   virtual BasicBlock* getEntryBlock() = 0;
   virtual bool hasParent();
@@ -745,9 +759,8 @@ protected:
   // The toplevel loop:
   void analyse();
   void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void analyseBlock(uint32_t BBIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+  void analyseBlock(uint32_t& BBIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
   void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, const Loop* MyL, bool enterLoops);
 
   // Constant propagation:
 
@@ -777,13 +790,14 @@ protected:
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }
+  void copyLoopExitingDeadEdges(PeelAttempt* LPA);
   
   // Child (inlines, peels) management
 
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
-  bool shouldInlineFunction(CallInst* CI);
-  InlineAttempt* getOrCreateInlineAttempt(CallInst* CI);
+  bool shouldInlineFunction(ShadowInstruction*, Function*);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -808,15 +822,15 @@ protected:
   bool openCallSucceeds(Value*);
   virtual int64_t tryGetIncomingOffset(CallInst*);
   virtual ReadFile* tryGetReadFile(CallInst* CI);
-  bool tryPromoteOpenCall(CallInst* CI);
+  bool tryPromoteOpenCall(ShadowInstruction* CI);
   void tryPromoteAllCalls();
-  bool tryResolveVFSCall(CallInst*);
+  bool tryResolveVFSCall(ShadowInstruction*);
   WalkInstructionResult isVfsCallUsingFD(ShadowInstruction* VFSCall, ShadowInstruction* FD, bool ignoreClose);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   bool isResolvedVFSCall(const Instruction*);
   bool isSuccessfulVFSCall(const Instruction*);
-  bool isUnusedReadCall(CallInst*);
+  bool isUnusedReadCall(ShadowInstruction*);
   bool isCloseCall(CallInst*);
   OpenStatus& getOpenStatus(CallInst*);
   void tryKillAllVFSOps();
@@ -824,7 +838,6 @@ protected:
 
   // Load forwarding extensions for varargs:
   virtual void getVarArg(int64_t, PointerBase&) = 0;
-  int64_t getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg);
   void disableChildVarargsContexts();
   bool isVarargsTainted();
   
@@ -856,13 +869,14 @@ protected:
   bool valueIsDead(ShadowValue);
   bool shouldDIE(ShadowInstruction* V);
   virtual void runDIE();
+  void resetDeadInstructions();
 
   // Pointer base analysis
   void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
   void queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser*);
   void queueUserUpdatePB(ShadowInstructionInvar*, LoopPBAnalyser*);
-  void queueUsersUpdatePBFalling(ShadowInstructionInvar* I, const Loop* IL, Value* V, LoopPBAnalyser*);
-  void queueUsersUpdatePBRising(ShadowInstructionInvar* I, const Loop* TargetL, Value* V, LoopPBAnalyser*);
+  void queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser*);
+  void queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser*);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
   void queuePBUpdateIfUnresolved(ShadowValue, LoopPBAnalyser*);
   void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
@@ -880,10 +894,10 @@ protected:
   // Enabling / disabling exploration:
 
   void enablePeel(const Loop*);
-  uint64_t disablePeel(const Loop*);
+  void disablePeel(const Loop*);
   bool loopIsEnabled(const Loop*);
   void enableInline(CallInst*);
-  uint64_t disableInline(CallInst*);
+  void disableInline(CallInst*);
   bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
@@ -954,14 +968,13 @@ protected:
   void localPrepareCommit();
   virtual std::string getCommittedBlockPrefix() = 0;
   void commitCFG();
-  Value* getArgCommittedValue(ShadowArg* SA);
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void fixupHeaderPHIs(ShadowBB* BB);
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  void emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
+  bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
   void emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB);
@@ -1005,7 +1018,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int iter, int depth);
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth);
 
   IterationStatus iterStatus;
 
@@ -1084,14 +1097,14 @@ class PeelAttempt {
 
    DenseMap<Function*, LoopInfo*>& LI;
 
-   const Loop* L;
-
    int64_t residualInstructions;
 
    int nesting_depth;
    int debugIndent;
 
  public:
+
+   const Loop* L;
 
    struct IntegratorTag tag;
 
@@ -1101,7 +1114,6 @@ class PeelAttempt {
    ShadowLoopInvar* invarInfo;
 
    std::vector<PeelIteration*> Iterations;
-   std::pair<BasicBlock*, BasicBlock*> OptimisticEdge;
 
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
    ~PeelAttempt();
@@ -1166,11 +1178,14 @@ class PeelAttempt {
 class InlineAttempt : public IntegrationAttempt { 
 
   ShadowInstruction* CI;
-  Function* CommitF;
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, CallInst* _CI, int depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth);
+
+  Function* CommitF;
+  BasicBlock* returnBlock;
+  PHINode* returnPHI;
 
   ShadowArg* argShadows;
 
@@ -1236,6 +1251,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void runDIE();
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
+  Value* getArgCommittedValue(ShadowArg* SA);
+
 };
 
  Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
@@ -1260,7 +1277,7 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialFPBytesOnStack(Function& F);
 
  PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
- PointerBase tryForwardLoadArtifical(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
+ PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
  std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
@@ -1269,7 +1286,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
  bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error);
- bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
+ bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error);
  bool getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
  bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
  bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
@@ -1285,7 +1302,14 @@ class InlineAttempt : public IntegrationAttempt {
 
  bool instructionCounts(Instruction* I);
 
- Function* getCalledFunction(const ShadowInstruction*);
+ Function* getCalledFunction(ShadowInstruction*);
+
+ bool edgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I);
+
+ int64_t getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg);
+
+ bool blockCertainlyExecutes(ShadowBB*);
+ bool blockAssumedToExecute(ShadowBB*);
 
  extern bool mainDIE;
 
