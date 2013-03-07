@@ -51,18 +51,6 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowV
 
 }
 
-static ShadowValue getValArgOperand(ShadowValue V, uint32_t i) {
-
-  if(ShadowInstruction* SI = V.getInst())
-    return SI->getCallArgOperand(i);
-  else {
-    CallInst* I = cast<CallInst>(V.getVal());
-    release_assert(I);
-    return ShadowValue(I->getArgOperand(i));
-  }
-
-}
-
 static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size, bool usePBKnowledge) {
 
   AliasAnalysis::AliasResult AR = GlobalAA->aliasHypothetical(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);

@@ -562,27 +562,3 @@ bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
   return BB->status == BBSTATUS_CERTAIN;
 
 }
-
-ShadowValue ShadowValue::stripPointerCasts() {
-
-  if(isArg())
-    return *this;
-  if(ShadowInstruction* SI = getInst()) {
-
-    if(inst_is<CastInst>(SI)) {
-      ShadowValue Op = SI->getOperand(0);
-      return Op.stripPointerCasts();
-    }
-    else {
-      return *this;
-    }
-
-  }
-  else {
-
-    return getVal()->stripPointerCasts();
-
-  }
-
-}
-

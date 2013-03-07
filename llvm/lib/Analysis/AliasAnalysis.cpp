@@ -34,6 +34,7 @@
 #include "llvm/Instructions.h"
 #include "llvm/Type.h"
 #include "llvm/Target/TargetData.h"
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 using namespace llvm;
 
 // Register the AliasAnalysis interface, providing a nice name to refer to.
@@ -49,17 +50,6 @@ AliasAnalysis::alias(const Value *V1, unsigned V1Size,
                      const Value *V2, unsigned V2Size) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   return AA->alias(V1, V1Size, V2, V2Size);
-}
-
-AliasAnalysis::AliasResult
-AliasAnalysis::aliasHypothetical(const Value *V1, unsigned V1Size,
-				 const Value *V2, unsigned V2Size,
-				 IntegrationAttempt* P, bool usePBKnowledge) {
-  assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
-  if(!P)
-    return alias(V1, V1Size, V2, V2Size);
-  else
-    return AA->aliasHypothetical(V1, V1Size, V2, V2Size, P);
 }
 
 AliasAnalysis::AliasResult
@@ -87,7 +77,7 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 AliasAnalysis::ModRefResult
 AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
 
-  assert(!!CS.getCtx() == !!P.getCtx());
+  assert(!!CSV.getCtx() == !!P.getCtx());
 
   ImmutableCallSite CS(CSV.getBareVal());
 
@@ -103,8 +93,8 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bo
     Mask = Ref;
   else if (MRB == AliasAnalysis::AccessesArguments) {
     bool doesAlias = false;
-    for(unsigned i = 0; i < CS.getNumArgOperands() && !doesAlias; ++i) {
-      if (!isNoAlias(getValArgOperand(CS, 0), ~0U, P, Size, usePBKnowledge))
+    for(unsigned i = 0; i < CS.arg_size() && !doesAlias; ++i) {
+      if (!isNoAlias(getValArgOperand(CSV, 0), ~0U, P, Size, usePBKnowledge))
         doesAlias = true;
     }
     
@@ -122,7 +112,7 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bo
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CSV, P, Size, usePBKnowledge) & Mask);
+  return ModRefResult(AA->getCSModRefInfo(CSV, P, Size, usePBKnowledge) & Mask);
 }
 
 AliasAnalysis::ModRefResult
@@ -158,8 +148,8 @@ AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKn
   // CS2's arguments.
   if (CS2B == AccessesArguments) {
     AliasAnalysis::ModRefResult R = NoModRef;
-    for(unsigned i = 0; i < CS2.getNumArgOperands() && R != Mask; ++i) {
-      R = ModRefResult((R | getModRefInfo(CS1, getValArgOperand(CS2V, i), UnknownSize)) & Mask);
+    for(unsigned i = 0; i < CS2.arg_size() && R != Mask; ++i) {
+      R = ModRefResult((R | getSVModRefInfo(CS1V, getValArgOperand(CS2V, i), UnknownSize)) & Mask);
     }
     return R;
   }
@@ -168,8 +158,8 @@ AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKn
   // any of the memory referenced by CS1's arguments. If not, return NoModRef.
   if (CS1B == AccessesArguments) {
     AliasAnalysis::ModRefResult R = NoModRef;
-    for(unsigned i = 0; i < CS1.getNumArgOperands() && R != Mask; ++i) {
-      if (getModRefInfo(CS2, getValArgOperand(CS1V, i), UnknownSize, usePBKnowledge) != NoModRef) {
+    for(unsigned i = 0; i < CS1.arg_size() && R != Mask; ++i) {
+      if (getSVModRefInfo(CS2V, getValArgOperand(CS1V, i), UnknownSize, usePBKnowledge) != NoModRef) {
         R = Mask;
         break;
       }
@@ -183,7 +173,7 @@ AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKn
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getModRefInfo(CS1V, CS2V, usePBKnowledge) & Mask);
+  return ModRefResult(AA->get2CSModRefInfo(CS1V, CS2V, usePBKnowledge) & Mask);
 }
 
 AliasAnalysis::ModRefBehavior
@@ -265,7 +255,7 @@ AliasAnalysis::getVAModRefInfo(ShadowValue I, ShadowValue V, unsigned Size, bool
 
   // If the va_arg address cannot alias the pointer in question, then the
   // specified memory cannot be accessed by the va_arg.
-  if (!aliasHypothetical(getValOperand(I, 0), UnknownSize, P, Size, usePBKnowledge))
+  if (!aliasHypothetical(getValOperand(I, 0), UnknownSize, V, Size, usePBKnowledge))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
@@ -336,7 +326,7 @@ bool AliasAnalysis::canInstructionRangeModify(const Instruction &I1,
   ++E;  // Convert from inclusive to exclusive range.
 
   for (; I != E; ++I) // Check every instruction in range
-    if (getModRefInfo(I, Ptr, Size) & Mod)
+    if (getModRefInfo(const_cast<Instruction*>(&*I), Ptr, Size) & Mod)
       return true;
   return false;
 }

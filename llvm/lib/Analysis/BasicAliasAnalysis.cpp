@@ -290,71 +290,8 @@ namespace {
     virtual AliasResult alias(const Value *V1, unsigned V1Size,
                               const Value *V2, unsigned V2Size) {
 
-      return aliasHypothetical(ShadowValue(V1), V1Size, ShadowValue(V2), V2Size, true);
+      return aliasHypothetical(ShadowValue(const_cast<Value*>(V1)), V1Size, ShadowValue(const_cast<Value*>(V2)), V2Size, true);
 
-    }
-
-    virtual AliasAnalysis::AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
-
-      if(PB1.Values.size() == 1 && PB2.Values.size() == 1 && PB1.Values[0].Offset != LLONG_MAX && PB2.Values[0].Offset != LLONG_MAX && PB1.Values[0].V == PB2.Values[0].V)
-	return AliasAnalysis::MustAlias;
-
-      for(unsigned i = 0; i < PB1.Values.size(); ++i) {
-
-	for(unsigned j = 0; j < PB2.Values.size(); ++j) {
-
-	  if(!basesMayAlias(PB1.Values[i].V, PB2.Values[j].V))
-	    continue;
-
-	  if(PB1.Values[i].Offset == LLONG_MAX || PB2.Values[j].Offset == LLONG_MAX)
-	    return AliasAnalysis::MayAlias;
-	   
-	  if(!((V2Size != AliasAnalysis::UnknownSize && 
-		PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || 
-	       (V1Size != AliasAnalysis::UnknownSize && 
-		(PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
-	    return AliasAnalysis::MayAlias;
-
-	}
-
-      }
-	
-      return AliasAnalysis::NoAlias;
-
-    }
-
-    virtual AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
-      
-      PointerBase PB1(ValSetTypePB);
-      PB1.insert(ImprovedVal(V1Base, V1Offset));
-      PointerBase PB2;
-      if(!getPointerBase(V2, PB2))
-	return AliasAnalysis::MayAlias;
-      
-      if(PB2.Overdef || PB2.Values.size() == 0)
-	return AliasAnalysis::MayAlias;
-
-      if(PB2.type != ValSetTypePB)
-	return AliasAnalysis::MayAlias;
-
-      return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
-
-    }
-
-    AliasAnalysis::AliasResult tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
-      
-      PointerBase PB1, PB2;
-      if((!getPointerBase(V1, PB1)) || (!getPointerBase(V2, PB2)))
-	return AliasAnalysis::MayAlias;
-      
-      if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
-	return AliasAnalysis::MayAlias;
-
-      if(PB1.type != ValSetTypePB || PB2.type != ValSetTypePB)
-	return AliasAnalysis::MayAlias;
-
-      return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
-       
     }
 
     virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size,
@@ -362,13 +299,7 @@ namespace {
 
       // I think I can ignore the not-different assertion!
       assert(Visited.empty() && "Visited must be cleared after use!");
-      AliasResult Alias;
-      if((!V1.isVal()) || (!V2.isVal())) {
-	Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
-	if(Alias != AliasAnalysis::MayAlias)
-	  return Alias;
-      }
-      Alias = aliasCheck(V1, V1Size, V2, V2Size);
+      AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
       Visited.clear();
       return Alias;
 
@@ -379,7 +310,7 @@ namespace {
 
     virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       // The AliasAnalysis base class has some smarts, lets use them.
-      return AliasAnalysis::getModRefInfo(CS1, CS2, usePBKnowledge);
+      return AliasAnalysis::get2CSModRefInfo(CS1, CS2, usePBKnowledge);
     }
 
     /// pointsToConstantMemory - Chase pointers until we find a (constant
@@ -406,7 +337,7 @@ namespace {
     
   private:
     // Visited - Track instructions visited by a aliasPHI, aliasSelect(), and aliasGEP().
-    SmallPtrSet<ShadowValue, 16> Visited;
+    SmallPtrSet<Value*, 16> Visited;
     
     // aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP
     // instruction against another.
@@ -435,12 +366,12 @@ namespace {
     ShadowValue getFirstOffset(ShadowValue);
 		  
     // idOnly means that we won't walk through GEP instructions that offset the pointer.
-    Value* getUnderlyingObject(ShadowValue VIn, bool& isOffset, bool idOnly = false);
+    ShadowValue getUnderlyingObject(ShadowValue VIn, bool& isOffset, bool idOnly = false);
 
 
-    Value* GetLinearExpression(Value *V, APInt &Scale, APInt &Offset,
-			       ExtensionKind &Extension,
-			       const TargetData &TD, unsigned Depth, IntegrationAttempt* Ctx);
+    ShadowValue GetLinearExpression(ShadowValue, APInt &Scale, APInt &Offset,
+				    ExtensionKind &Extension,
+				    const TargetData &TD, unsigned Depth);
 
   };
 }  // End of anonymous namespace
@@ -453,24 +384,6 @@ INITIALIZE_AG_PASS(BasicAliasAnalysis, AliasAnalysis, "basicaa",
 
 ImmutablePass *llvm::createBasicAliasAnalysisPass() {
   return new BasicAliasAnalysis();
-}
-
-// Define these helpers here since only AA may use ShadowValues that might contain an Instruction
-// without a shadow structure.
-
-static ShadowValue getValOperand(ShadowValue& V, uint32_t i) {
-
-  if(ShadowInstruction* SI = V.getInst())
-    return SI->getOperand(i);
-  else {
-    Instruction* I = cast<Instruction>(V.getVal());
-    return ShadowValue(I->getOperand(i);
-  }
-
-}
-
-static ShadowValue getValArgOperand(ShadowValue& V, uint32_t i) {
-  return getValOperand(V, i);
 }
 
 bool BasicAliasAnalysis::GEPHasAllZeroIndices(ShadowValue GEPOp) {
@@ -495,9 +408,9 @@ bool BasicAliasAnalysis::GEPHasAllZeroIndices(ShadowValue GEPOp) {
 ///
 /// Note that this looks through extends, so the high bits may not be
 /// represented in the result.
-Value* BasicAliasAnalysis::GetLinearExpression(ShadowValue V, APInt &Scale, APInt &Offset,
-					       ExtensionKind &Extension,
-					       const TargetData &TD, unsigned Depth) {
+ShadowValue BasicAliasAnalysis::GetLinearExpression(ShadowValue V, APInt &Scale, APInt &Offset,
+						    ExtensionKind &Extension,
+						    const TargetData &TD, unsigned Depth) {
   assert(V->getType()->isIntegerTy() && "Not an integer value");
 
   // Limit our recursion depth.
@@ -509,29 +422,29 @@ Value* BasicAliasAnalysis::GetLinearExpression(ShadowValue V, APInt &Scale, APIn
   
   if (BinaryOperator* BOp = dyn_cast_val<BinaryOperator>(V)) {
     ShadowValue VC = getValOperand(V, 1);
-    if (ConstantInt *RHSC = dyn_cast_or_null<ConstantInt>(getConstReplacement(V))) {
+    if (ConstantInt *RHSC = dyn_cast_or_null<ConstantInt>(getConstReplacement(VC))) {
       switch (BOp->getOpcode()) {
       default: break;
       case Instruction::Or:
         // X|C == X+C if all the bits in C are unset in X.  Otherwise we can't
         // analyze it.
-        if (!MaskedValueIsZero(getValOperand(V, 0).getBareValue(), RHSC->getValue(), &TD))
+        if (!MaskedValueIsZero(getValOperand(V, 0).getBareVal(), RHSC->getValue(), &TD))
           break;
         // FALL THROUGH.
       case Instruction::Add:
         V = GetLinearExpression(getValOperand(V, 0), Scale, Offset, Extension,
-                                TD, Depth+1, ctx);
+                                TD, Depth+1);
         Offset += RHSC->getValue();
         return V;
       case Instruction::Mul:
         V = GetLinearExpression(getValOperand(V, 0), Scale, Offset, Extension,
-                                TD, Depth+1, ctx);
+                                TD, Depth+1);
         Offset *= RHSC->getValue();
         Scale *= RHSC->getValue();
         return V;
       case Instruction::Shl:
         V = GetLinearExpression(getValOperand(V, 0), Scale, Offset, Extension,
-                                TD, Depth+1, ctx);
+                                TD, Depth+1);
         Offset <<= RHSC->getValue().getLimitedValue();
         Scale <<= RHSC->getValue().getLimitedValue();
         return V;
@@ -549,10 +462,10 @@ Value* BasicAliasAnalysis::GetLinearExpression(ShadowValue V, APInt &Scale, APIn
     unsigned SmallWidth = CastOp.getType()->getPrimitiveSizeInBits();
     Scale.trunc(SmallWidth);
     Offset.trunc(SmallWidth);
-    Extension = isa<SExtInst>(V) ? EK_SignExt : EK_ZeroExt;
+    Extension = val_is<SExtInst>(V) ? EK_SignExt : EK_ZeroExt;
 
-    Value *Result = GetLinearExpression(CastOp, Scale, Offset, Extension,
-                                        TD, Depth+1, ctx);
+    ShadowValue Result = GetLinearExpression(CastOp, Scale, Offset, Extension,
+					     TD, Depth+1);
     Scale.zext(OldWidth);
     Offset.zext(OldWidth);
     
@@ -655,7 +568,7 @@ const ShadowValue BasicAliasAnalysis::DecomposeGEPExpression(ShadowValue FirstV,
       
       // Use GetLinearExpression to decompose the index into a C1*V+C2 form.
       APInt IndexScale(Width, 0), IndexOffset(Width, 0);
-      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension, *TD, 0, V.second);
+      Index = GetLinearExpression(Index, IndexScale, IndexOffset, Extension, *TD, 0);
       
       // The GEP index scale ("Scale") scales C1*V+C2, yielding (C1*V+C2)*Scale.
       // This gives us an aggregate computation of (C1*Scale)*V + C2*Scale.
@@ -748,12 +661,14 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 /// function, we really can't say much about this query.  We do, however, use
 /// simple "address taken" analysis on local objects.
 AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
   assert((notDifferentParent(CSV.getBareVal(), P.getBareVal()) || (CSV.getCtx() && P.getCtx())) &&
          "AliasAnalysis query involving multiple functions!");
 
   // Either both values have a context or neither one does.
   assert(!!CSV.getCtx() == !!P.getCtx());
+
+  
 
   int64_t POffset;
   ShadowValue PUO;
@@ -782,7 +697,7 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
     // If the pointer is to a locally allocated object that does not escape,
     // then the call can not mod/ref the pointer unless the call takes the pointer
     // as an argument, and itself doesn't capture it.
-    if (!isa<Constant>(Object) && CS.getBareVal() != Object &&
+    if (!isa<Constant>(Object) && CSV.getBareVal() != Object &&
 	isNonEscapingLocalObject(Object)) {
       bool PassedAsArg = false;
       unsigned ArgNo = 0;
@@ -798,7 +713,7 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
 	// is impossible to alias the pointer we're checking.  If not, we have to
 	// assume that the call could touch the pointer, even though it doesn't
 	// escape.
-	if (!isNoAlias(CI, UnknownSize, P, UnknownSize, usePBKnowledge)) {
+	if (!isNoAlias(getValOperand(CSV, ArgNo), UnknownSize, P, UnknownSize, usePBKnowledge)) {
 	  PassedAsArg = true;
 	  break;
 	}
@@ -811,17 +726,17 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
   }
 
   // Finally, handle specific knowledge of intrinsics.
-  const IntrinsicInst *II = dyn_cast_val<IntrinsicInst>(CS);
+  const IntrinsicInst *II = dyn_cast_val<IntrinsicInst>(CSV);
   if (II != 0)
     switch (II->getIntrinsicID()) {
     default: break;
     case Intrinsic::memcpy:
     case Intrinsic::memmove: {
       unsigned Len = UnknownSize;
-      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 2))))
+      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CSV, 2))))
         Len = LenCI->getZExtValue();
-      ShadowValue Dest = getValArgOperand(CS, 0);
-      ShadowValue Src = getValArgOperand(CS, 1);
+      ShadowValue Dest = getValArgOperand(CSV, 0);
+      ShadowValue Src = getValArgOperand(CSV, 1);
       if (isNoAlias(Dest, Len, P, Size, usePBKnowledge)) {
         if (isNoAlias(Src, Len, P, Size, usePBKnowledge))
           return NoModRef;
@@ -832,9 +747,9 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
     case Intrinsic::memset:
       // Since memset is 'accesses arguments' only, the AliasAnalysis base class
       // will handle it for the variable length case.
-      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 2)))) {
+      if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CSV, 2)))) {
         unsigned Len = LenCI->getZExtValue();
-        ShadowValue Dest = getValArgOperand(CS, 0);
+        ShadowValue Dest = getValArgOperand(CSV, 0);
         if (isNoAlias(Dest, Len, P, Size, usePBKnowledge))
           return NoModRef;
       }
@@ -852,7 +767,7 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
     case Intrinsic::atomic_load_umax:
     case Intrinsic::atomic_load_umin:
       if (TD) {
-        ShadowValue Op1 = getValArgOperand(CS, 0);
+        ShadowValue Op1 = getValArgOperand(CSV, 0);
         unsigned Op1Size = TD->getTypeStoreSize(Op1.getType());
         if (isNoAlias(Op1, Op1Size, P, Size, usePBKnowledge))
           return NoModRef;
@@ -862,22 +777,22 @@ BasicAliasAnalysis::getModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size,
     case Intrinsic::lifetime_end:
     case Intrinsic::invariant_start: {
       unsigned PtrSize =
-        cast_val<ConstantInt>(getValArgOperand(CS, 0))->getZExtValue();
-      if (isNoAlias(getValArgOperand(CS, 1), PtrSize, P, Size, usePBKnowledge))
+        (cast_val<ConstantInt>(getValArgOperand(CSV, 0)))->getZExtValue();
+      if (isNoAlias(getValArgOperand(CSV, 1), PtrSize, P, Size, usePBKnowledge))
         return NoModRef;
       break;
     }
     case Intrinsic::invariant_end: {
       unsigned PtrSize =
-        cast_val<ConstantInt>(getValArgOperand(CS, 1))->getZExtValue();
-      if (isNoAlias(getValArgOperand(Cs, 2), PtrSize, P, Size, usePBKnowledge))
+        cast_val<ConstantInt>(getValArgOperand(CSV, 1))->getZExtValue();
+      if (isNoAlias(getValArgOperand(CSV, 2), PtrSize, P, Size, usePBKnowledge))
         return NoModRef;
       break;
     }
     }
 
   // The AliasAnalysis base class has some smarts, lets use them.
-  return AliasAnalysis::getModRefInfo(CS, P, Size, usePBKnowledge);
+  return AliasAnalysis::getCSModRefInfo(CSV, P, Size, usePBKnowledge);
 }
 
 
@@ -896,7 +811,7 @@ BasicAliasAnalysis::aliasGEP(ShadowValue V1, unsigned V1Size,
   // Such cycles are only valid when PHI nodes are involved or in unreachable
   // code. The visitPHI function catches cycles containing PHIs, but there
   // could still be a cycle without PHIs in unreachable code.
-  if (!Visited.insert(V1))
+  if (!Visited.insert(V1.getBareVal()))
     return MayAlias;
 
   int64_t GEP1BaseOffset;
@@ -1016,7 +931,7 @@ BasicAliasAnalysis::aliasSelect(ShadowValue V1, unsigned SISize,
   // Such cycles are only valid when PHI nodes are involved or in unreachable
   // code. The visitPHI function catches cycles containing PHIs, but there
   // could still be a cycle without PHIs in unreachable code.
-  if (!Visited.insert(V1))
+  if (!Visited.insert(V1.getBareVal()))
     return MayAlias;
 
   if(ShadowInstruction* SI = V1.getInst()) {
@@ -1053,7 +968,7 @@ BasicAliasAnalysis::aliasSelect(ShadowValue V1, unsigned SISize,
   // If V2 is visited, the recursive case will have been caught in the
   // above aliasCheck call, so these subsequent calls to aliasCheck
   // don't need to assume that V2 is being visited recursively.
-  Visited.erase(V2);
+  Visited.erase(V2.getBareVal());
 
   AliasResult ThisAlias =
     aliasCheck(V2, V2Size, getValOperand(V1, 2), SISize);
@@ -1085,21 +1000,22 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
       AliasAnalysis::AliasResult Alias = MayAlias;
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
 	
-	AliasResult ThisAlias;
+	AliasResult ThisAlias = MayAlias;
 
-	if(ShadowInst* SI = V1.getInst()) {
+	if(ShadowInstruction* SI = V1.getInst()) {
 
 	  ShadowBBInvar* PHIBB = SI->parent->invar;
-	  uint32_t PredIdx = PHIBB->preds[(i*2)+1];
-	  ShadowBBInvar* PredBB = SI->parent->IA->getBlockInvar(PredIdx);
-	  if(edgeIsDead(PredBB, PHIBB))
+	  ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
+	  ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
+	  if(SI->parent->IA->edgeIsDead(PredBB, PHIBB))
 	    continue;
-	  ShadowInst* SI2 = V2.getInst();
-	  
-	  for(uint32_t j = 0; j < SI2->parent->invar->preds.size(); j += 2) {
+	  ShadowInstruction* SI2 = V2.getInst();
+
+	  bool found = false;
+  
+	  for(uint32_t j = 0; j < SI2->parent->invar->predIdxs.size() && !found; j += 2) {
 	    
-	    bool found = false;
-	    if(SI2->parent->invar->preds[j+1].blockIdx == PredIdx) {
+	    if(SI2->invar->operandIdxs[j+1].blockIdx == blockOp.blockIdx) {
 	      ThisAlias = aliasCheck(SI->getOperand(i*2), PNSize, SI2->getOperand(j*2), V2Size);
 	      assert((!found) && "PHI predecessor named more than once?");
 	      found = true;
@@ -1111,7 +1027,6 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 
 	}
 	else {
-	  BasicBlock* PredBB = PN->getIncomingBlock(i);
 	  ThisAlias =
 	    aliasCheck(ShadowValue(PN->getIncomingValue(i)), PNSize,
 		       ShadowValue(PN2->getIncomingValueForBlock(PN->getIncomingBlock(i))), V2Size);
@@ -1127,7 +1042,6 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
       return Alias;
     }
 
-  SmallPtrSet<ShadowValue, 4> UniqueSrc;
   SmallVector<ShadowValue, 4> V1Srcs;
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
     // Get incoming value for predecessor i:
@@ -1138,7 +1052,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
       // sides are PHI nodes. In which case, this is O(m x n) time where 'm'
       // and 'n' are the number of PHI sources.
       return MayAlias;
-    if (UniqueSrc.insert(PV1))
+    if (std::find(V1Srcs.begin(), V1Srcs.end(), PV1) == V1Srcs.end())
       V1Srcs.push_back(PV1);
   }
 
@@ -1156,7 +1070,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
     // If V2 is visited, the recursive case will have been caught in the
     // above aliasCheck call, so these subsequent calls to aliasCheck
     // don't need to assume that V2 is being visited recursively.
-    Visited.erase(V2);
+    Visited.erase(V2.getBareVal());
 
     AliasResult ThisAlias = aliasCheck(V2, V2Size, V, PNSize);
     if (ThisAlias != Alias || ThisAlias == MayAlias)
@@ -1207,7 +1121,7 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
       }
 
     }
-    else if(Value* V2 = VIn.getInst()) {
+    else if(Value* V2 = VIn.getVal()) {
 
       V2 = V2->stripPointerCasts();
       if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V2)) {
@@ -1291,12 +1205,12 @@ BasicAliasAnalysis::aliasCheck(ShadowValue V1, unsigned V1Size,
 
   if (UO1 != UO2) {
     // If V1/V2 point to two different objects we know that we have no alias.
-    if (UO1.isIdentifiedObject() && UO2.isIdentifiedObject())
+    if (UO1.isIDObject() && UO2.isIDObject())
       return NoAlias;
 
     // Constant pointers can't alias with non-const isIdentifiedObject objects.
-    if ((val_is<Constant>(UO1) && UO2.isIdentifiedObject() && !val_is<Constant>(UO2)) ||
-        (val_is<Constant>(UO2) && UO1.isIdentifiedObject() && !val_is<Constant>(UO1)))
+    if ((val_is<Constant>(UO1) && UO2.isIDObject() && !val_is<Constant>(UO2)) ||
+        (val_is<Constant>(UO2) && UO1.isIDObject() && !val_is<Constant>(UO1)))
       return NoAlias;
 
     // Arguments can't alias with local allocations or noalias calls

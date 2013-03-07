@@ -104,10 +104,10 @@ namespace {
                       const Value *V2, unsigned V2Size);
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Value *P, unsigned Size, IntegrationAttempt* CSCtx = 0, IntegrationAttempt* PCtx = 0, bool usePBKnowledge = true);
+                               const Value *P, unsigned Size, bool usePBKnowledge = true);
     ModRefResult getModRefInfo(ImmutableCallSite CS1, ImmutableCallSite CS2,
-			       IntegrationAttempt* CS1Ctx = 0, IntegrationAttempt* CS2Ctx = 0, bool usePBKnowledge = true) {
-      return AliasAnalysis::getModRefInfo(CS1, CS2, CS1Ctx, CS2Ctx, usePBKnowledge);
+			       bool usePBKnowledge = true) {
+      return AliasAnalysis::getModRefInfo(CS1, CS2, usePBKnowledge);
     }
   };
 }
@@ -148,8 +148,8 @@ AliasAnalysisCounter::alias(const Value *V1, unsigned V1Size,
 
 AliasAnalysis::ModRefResult
 AliasAnalysisCounter::getModRefInfo(ImmutableCallSite CS,
-                                    const Value *P, unsigned Size, IntegrationAttempt* CSCtx, IntegrationAttempt* PCtx, bool usePBKnowledge) {
-  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, P, Size, CSCtx, PCtx, usePBKnowledge);
+                                    const Value *P, unsigned Size, bool usePBKnowledge) {
+  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, P, Size, usePBKnowledge);
 
   const char *MRString;
   switch (R) {

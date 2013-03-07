@@ -265,7 +265,70 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
-  PointerBase& insert(ImprovedVal& V);
+  virtual PointerBase& insert(ImprovedVal V) {
+
+    if(Overdef)
+      return *this;
+    if(std::count(Values.begin(), Values.end(), V))
+      return *this;
+
+    // Pointer merge: if either the new val or any of our own are vague pointers
+    // to object X, any exact pointers to X should be merged in.
+    // Further, if we're about to become oversized and we contain more than one exact
+    // pointer to X, merge them into a vague one.
+
+    if(Type == ValSetTypePB) {
+
+      bool doMerge = false;
+
+      if(Values.size() + 1 > PBMAX)
+	doMerge = true;
+    
+      if(V.Offset == LLONG_MAX)
+	doMerge = true;
+
+      if(!doMerge) {
+
+	for(unsigned i = 0; i < Values.size(); ++i) {
+
+	  if(Values[i].V == V.V && Values[i].Offset == LLONG_MAX)
+	    doMerge = true;
+
+	}
+
+      }
+
+      if(doMerge) {
+
+	for(SmallVector<ImprovedVal, 1>::iterator it = Values.end(), endit = Values.begin(); it != endit; --it) {
+
+	  ImprovedVal& ThisV = *(it - 1);
+	  if(ThisV.V == V.V)
+	    Values.erase(it);
+
+	}
+
+	if(Values.size() + 1 > PBMAX)
+	  setOverdef();
+	else
+	  Values.push_back(ImprovedVal(V.V, LLONG_MAX));
+
+	return *this;
+
+      }
+
+    }
+
+    if(Values.size() + 1 > PBMAX) {
+      setOverdef();
+    }
+    else {
+      Values.push_back(V);
+    }
+
+    return *this;
+
+  }
 
   PointerBase& merge(PointerBase& OtherPB) {
     if(OtherPB.Overdef) {
@@ -360,7 +423,7 @@ struct ShadowInstruction {
     return invar->operandIdxs.size();
   }
 
-  ShadowValue getOperand(uint32_t i);
+  virtual ShadowValue getOperand(uint32_t i);
 
   ShadowValue getOperandFromEnd(uint32_t i) {
     return getOperand(invar->operandIdxs.size() - i);
@@ -603,7 +666,7 @@ inline InstArgImprovement* ShadowValue::getIAI() {
 
 }
 
-template<class X> inline bool val_is(ShadowValue& V) {
+template<class X> inline bool val_is(ShadowValue V) {
   if(Value* V2 = V.getVal())
     return isa<X>(V2);
   else if(ShadowArg* A = V.getArg())
@@ -612,7 +675,7 @@ template<class X> inline bool val_is(ShadowValue& V) {
     return inst_is<X>(V.getInst());
 }
 
-template<class X> inline X* dyn_cast_val(ShadowValue& V) {
+template<class X> inline X* dyn_cast_val(ShadowValue V) {
   if(Value* V2 = V.getVal())
     return dyn_cast<X>(V2);
   else if(ShadowArg* A = V.getArg())
@@ -621,7 +684,7 @@ template<class X> inline X* dyn_cast_val(ShadowValue& V) {
     return dyn_cast_inst<X>(V.getInst());
 }
 
-template<class X> inline X* cast_val(ShadowValue& V) {
+template<class X> inline X* cast_val(ShadowValue V) {
   if(Value* V2 = V.getVal())
     return cast<X>(V2);
   else if(ShadowArg* A = V.getArg())
@@ -772,6 +835,55 @@ inline void setReplacement(ShadowArg* SA, Constant* C) {
   std::pair<ValSetType, ImprovedVal> P = getValPB(C);
   SA->i.PB.Values.push_back(P.second);
   SA->i.PB.Type = P.first;
+
+}
+
+inline ShadowValue ShadowValue::stripPointerCasts() {
+
+  if(isArg())
+    return *this;
+  if(ShadowInstruction* SI = getInst()) {
+
+    if(inst_is<CastInst>(SI)) {
+      ShadowValue Op = SI->getOperand(0);
+      return Op.stripPointerCasts();
+    }
+    else {
+      return *this;
+    }
+
+  }
+  else {
+
+    return getVal()->stripPointerCasts();
+
+  }
+
+}
+
+// Support functions for AA, which can use bare instructions in a ShadowValue.
+// The caller always knows that it's either a bare or a shadowed instruction.
+
+inline ShadowValue getValArgOperand(ShadowValue V, uint32_t i) {
+
+  if(ShadowInstruction* SI = V.getInst())
+    return SI->getCallArgOperand(i);
+  else {
+    CallInst* I = cast<CallInst>(V.getVal());
+    return ShadowValue(I->getArgOperand(i));
+  }
+
+}
+
+
+inline ShadowValue getValOperand(ShadowValue V, uint32_t i) {
+
+  if(ShadowInstruction* SI = V.getInst())
+    return SI->getOperand(i);
+  else {
+    Instruction* I = cast<Instruction>(V.getVal());
+    return ShadowValue(I->getOperand(i));
+  }
 
 }
 

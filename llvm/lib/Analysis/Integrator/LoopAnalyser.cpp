@@ -439,30 +439,3 @@ bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
   return parent->ctxContains(IA);
 
 }
-
-bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
-
-  if(V1.isVal()) {
-
-    if(!V2.isVal())
-      return false;
-    else
-      return V1.getVal() == V2.getVal();
-
-  }
-  else {
-
-    if(!V2.isInst())
-      return false;
-
-    if(V1.getInst()->invar == V2.getInst()->invar) {
-
-      return (V1.getCtx()->ctxContains(V2.getCtx()) || V2.getCtx()->ctxContains(V1.getCtx()));
-
-    }
-    else
-      return false;
-
-  }
-
-}

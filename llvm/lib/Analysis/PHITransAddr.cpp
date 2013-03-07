@@ -279,8 +279,6 @@ Value *PHITransAddr::PHITranslateSubExpr(Value *V, BasicBlock *CurBB,
     if (BinaryOperator *BOp = dyn_cast<BinaryOperator>(LHS))
       if (BOp->getOpcode() == Instruction::Add) {
 	ConstantInt* CI = dyn_cast<ConstantInt>(BOp->getOperand(1));
-	if(parent && !CI)
-	  CI = dyn_cast<ConstantInt>(BOp->getOperand(1));
         if (CI) {
           LHS = BOp->getOperand(0);
           RHS = ConstantExpr::getAdd(RHS, CI);

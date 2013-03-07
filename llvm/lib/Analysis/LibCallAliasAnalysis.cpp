@@ -104,18 +104,12 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   return MRInfo;
 }
 
-static const Function* getCalledFunction(ShadowValue CS) {
+static Function* getValCalledFunction(ShadowValue V) {
 
-  if(Value* V = CS.getVal()) {
-    
-    return ImmutableCallSite(V).getCalledFunction();
-
-  }
-  else {
-
-    return getCalledFunction(CS);
-
-  }
+  if(ShadowInstruction* SI = V.getInst())
+    return getCalledFunction(SI);
+  else
+    return const_cast<Function*>(ImmutableCallSite(cast<Instruction>(V.getVal())).getCalledFunction());
 
 }
 
@@ -123,13 +117,13 @@ static const Function* getCalledFunction(ShadowValue CS) {
 // specified memory object.
 //
 AliasAnalysis::ModRefResult
-LibCallAliasAnalysis::getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the
   // information about the runtime function.
   if (LCI) {
-    if (const Function *F = getCalledFunction(CS)) {
+    if (Function *F = getValCalledFunction(CS)) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
         MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, usePBKnowledge));
         if (MRInfo == NoModRef) return NoModRef;
@@ -138,5 +132,5 @@ LibCallAliasAnalysis::getModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo & AliasAnalysis::getModRefInfo(CS, P, Size, usePBKnowledge));
+  return (ModRefResult)(MRInfo & AliasAnalysis::getCSModRefInfo(CS, P, Size, usePBKnowledge));
 }

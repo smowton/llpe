@@ -12,7 +12,8 @@
 #include "llvm/Constant.h"
 #include "llvm/Argument.h"
 #include "llvm/Instruction.h"
-#include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/Instructions.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits.h>
 #include <string>
@@ -34,7 +35,6 @@ class raw_ostream;
 class ConstantInt;
 class Type;
 class Argument;
-class CallInst;
 class InvokeInst;
 class StoreInst;
 class MemTransferInst;
@@ -70,8 +70,14 @@ class ShadowLoopInvar;
 
 bool functionIsBlacklisted(Function*);
 
+inline void release_assert_fail(const char* str) {
+
+  errs() << "Assertion failed: " << str << "\n";
+  exit(1);
+
+}
+
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
- void release_assert_fail(const char*);
 
 // Include structures and functions for working with instruction and argument shadows.
 #include "ShadowInlines.h"
@@ -725,7 +731,8 @@ protected:
   
   void callWithScope(Callable& C, const Loop* LScope);
 
-  bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
+  // virtual for external access:
+  virtual bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
   bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I);
 
   const Loop* applyIgnoreLoops(const Loop*);
@@ -748,7 +755,8 @@ protected:
   virtual InlineAttempt* getFunctionRoot() = 0;
   ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0);
   ShadowBB* getBB(uint32_t idx, bool* inScope = 0);
-  ShadowBBInvar* getBBInvar(uint32_t idx);
+  // virtual for external access:
+  virtual ShadowBBInvar* getBBInvar(uint32_t idx);
   ShadowBB* getUniqueBBRising(ShadowBBInvar* BBI);
   void createBB(uint32_t blockIdx);
   ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
@@ -1292,6 +1300,17 @@ class InlineAttempt : public IntegrationAttempt {
  bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
  bool getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
+ enum SVAAResult {
+   SVNoAlias,
+   SVMayAlias,
+   SVMustAlias
+ };
+
+ SVAAResult aliasSVs(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
+ 
  bool basesAlias(ShadowValue, ShadowValue);
 
  bool tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB);

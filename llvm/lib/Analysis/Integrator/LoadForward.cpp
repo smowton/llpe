@@ -43,7 +43,7 @@ public:
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
   virtual bool shouldEnterCall(ShadowInstruction*);
-  virtual WalkInstructionResult handleAlias(ShadowInstruction*, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) = 0;
+  virtual WalkInstructionResult handleAlias(ShadowInstruction*, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) = 0;
 
 };
 
@@ -70,7 +70,7 @@ public:
 
   NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV) { }
 
-  virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
+  virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
   virtual bool mayAscendFromContext(IntegrationAttempt* IA, void*);
   bool addPartialVal(PartialVal& PV, PointerBase& PB, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool cacheAllowed, bool maySubquery);
@@ -143,7 +143,7 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(ShadowInstruction* I, v
   else if (inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
     
     if(LoadPtrBase == I) {
-      return handleAlias(I, AliasAnalysis::MustAlias, ShadowValue(I), LoadSize, Ctx);
+      return handleAlias(I, SVMustAlias, ShadowValue(I), LoadSize, Ctx);
     }
     else
       return WIRContinue;
@@ -200,12 +200,12 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(ShadowInstruction* I, v
 
   }
 
-  AliasAnalysis::AliasResult R;
+  SVAAResult R;
   if(!(LoadedPtr.isInval()))
-    R = GlobalAA->tryResolvePointerBases(LoadPtrBase, LoadPtrOffset, LoadSize, Ptr, PtrSize, true);
+    R = tryResolvePointerBases(LoadPtrBase, LoadPtrOffset, LoadSize, Ptr, PtrSize, true);
   else
-    R = GlobalAA->aliasHypothetical(LoadedPtr, LoadSize, Ptr, PtrSize, true);
-  if(R == AliasAnalysis::NoAlias)
+    R = aliasSVs(LoadedPtr, LoadSize, Ptr, PtrSize, true);
+  if(R == SVNoAlias)
     return WIRContinue;
 
   return handleAlias(I, R, Ptr, PtrSize, Ctx);
@@ -618,7 +618,7 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
 
 #define NLFWFail(Code) do { std::string failureText; { raw_string_ostream RSO(failureText); RSO << Code << " " << (I); }  setPBOverdef(failureText, cacheAllowed); if(!cacheAllowed) { cancelCache(); } return WIRStopWholeWalk; } while(0);
 
-WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, AliasAnalysis::AliasResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) { 
+WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) { 
 
   PartialVal NewPV;
   PointerBase NewPB;
@@ -636,7 +636,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
     bool ignore = true;
 
-    if(R == AliasAnalysis::MustAlias) {
+    if(R == SVMustAlias) {
       if(inst_is<AllocaInst>(I))
 	ignore = false;
       else if(inst_is<StoreInst>(I)) {
@@ -652,7 +652,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
   }
   
-  if(R == AliasAnalysis::MustAlias) {
+  if(R == SVMustAlias) {
 
     FirstDef = 0; FirstNotDef = std::min(LoadSize, PtrSize); ReadOffset = 0;
 
@@ -1371,3 +1371,112 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
 }
 
+
+SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
+
+  if(PB1.Values.size() == 1 && PB2.Values.size() == 1 && PB1.Values[0].Offset != LLONG_MAX && PB2.Values[0].Offset != LLONG_MAX && PB1.Values[0].V == PB2.Values[0].V)
+    return SVMustAlias;
+
+  for(unsigned i = 0; i < PB1.Values.size(); ++i) {
+
+    for(unsigned j = 0; j < PB2.Values.size(); ++j) {
+
+      if(!basesAlias(PB1.Values[i].V, PB2.Values[j].V))
+	continue;
+
+      if(PB1.Values[i].Offset == LLONG_MAX || PB2.Values[j].Offset == LLONG_MAX)
+	return SVMayAlias;
+	   
+      if(!((V2Size != AliasAnalysis::UnknownSize && 
+	    PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || 
+	   (V1Size != AliasAnalysis::UnknownSize && 
+	    (PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
+	return SVMayAlias;
+
+    }
+
+  }
+	
+  return SVNoAlias;
+
+}
+
+SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+      
+  PointerBase PB1(ValSetTypePB);
+  PB1.insert(ImprovedVal(V1Base, V1Offset));
+  PointerBase PB2;
+  if(!getPointerBase(V2, PB2))
+    return SVMayAlias;
+      
+  if(PB2.Overdef || PB2.Values.size() == 0)
+    return SVMayAlias;
+
+  if(PB2.Type != ValSetTypePB)
+    return SVMayAlias;
+
+  return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+
+}
+
+SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+      
+  PointerBase PB1, PB2;
+  if((!getPointerBase(V1, PB1)) || (!getPointerBase(V2, PB2)))
+    return SVMayAlias;
+      
+  if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
+    return SVMayAlias;
+
+  if(PB1.Type != ValSetTypePB || PB2.Type != ValSetTypePB)
+    return SVMayAlias;
+
+  return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+       
+}
+
+SVAAResult llvm::aliasSVs(ShadowValue V1, unsigned V1Size,
+					  ShadowValue V2, unsigned V2Size,
+					  bool usePBKnowledge) {
+  
+  if((!V1.isVal()) || (!V2.isVal())) {
+    SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
+    if(Alias != SVMayAlias)
+      return Alias;
+  }
+
+  switch(GlobalAA->aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge)) {
+  case AliasAnalysis::NoAlias: return SVNoAlias;
+  case AliasAnalysis::MustAlias: return SVMustAlias;
+  case AliasAnalysis::MayAlias: return SVMayAlias;
+  default: release_assert(0); return SVMayAlias;
+  }
+
+}
+
+bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
+
+  if(V1.isVal()) {
+
+    if(!V2.isVal())
+      return false;
+    else
+      return V1.getVal() == V2.getVal();
+
+  }
+  else {
+
+    if(!V2.isInst())
+      return false;
+
+    if(V1.getInst()->invar == V2.getInst()->invar) {
+
+      return (V1.getCtx()->ctxContains(V2.getCtx()) || V2.getCtx()->ctxContains(V1.getCtx()));
+
+    }
+    else
+      return false;
+
+  }
+   
+}

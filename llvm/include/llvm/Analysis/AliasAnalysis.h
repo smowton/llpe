@@ -31,8 +31,8 @@
 #include "llvm/System/IncludeFile.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include <vector>
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 namespace llvm {
 
@@ -100,20 +100,9 @@ public:
 
   // A version of alias that assumes instructions have been replaced by constants
   // as specified.
-  virtual AliasResult aliasHypothetical(const Value *V1, unsigned V1Size,
-					const Value *V2, unsigned V2Size,
-					IntegrationAttempt*, bool usePBKnowledge = true);
-
   virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size,
 					ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true);
 
-  virtual AliasResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
-    return AliasAnalysis::MayAlias;
-  }
-
-  virtual AliasResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
-    return AliasAnalysis::MayAlias;
-  }
 
   /// alias - The main low level interface to the alias analysis implementation.
   /// Returns a Result indicating whether the two pointers are aliased to each

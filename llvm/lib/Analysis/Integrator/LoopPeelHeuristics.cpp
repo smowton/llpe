@@ -179,65 +179,6 @@ void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
 
 }
 
-static Function* getReplacementFunction(ShadowValue CCalledV) {
-
-  ShadowValue CalledV = CCalledV.stripPointerCasts();
-
-  Constant* C = getConstReplacement(CalledV);
-
-  if(!C) {
-
-    Constant* OnlyVal = 0;
-    PointerBase PB;
-    if(getPointerBase(CalledV, PB)) {
-     
-      if(!PB.Overdef) {
-
-	for(unsigned i = 0; i < PB.Values.size(); ++i) {
-
-	  Constant* ThisVal = dyn_cast_or_null<Constant>(PB.Values[i].V.getVal());
-	  if(!ThisVal) {
-	    OnlyVal = 0;
-	    break;
-	  }
-	  if(ThisVal->isNullValue())
-	    continue;
-	  if(!OnlyVal)
-	    OnlyVal = ThisVal;
-	  else if(OnlyVal != ThisVal) {
-	    OnlyVal = 0;
-	    break;
-	  }
-
-	}
-
-	if(OnlyVal)
-	  C = OnlyVal;
-
-      }
-
-    }
-
-  }
-
-  if(!C)
-    return 0;
-
-  return dyn_cast<Function>(C->stripPointerCasts());
-
-}
-
-Function* llvm::getCalledFunction(ShadowInstruction* SI) {
-
-  if(inst_is<CallInst>(SI))
-    return getReplacementFunction(SI->getOperandFromEnd(1));
-  else if(inst_is<InvokeInst>(SI))
-    return getReplacementFunction(SI->getOperandFromEnd(3));
-  release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
-  return 0;
-
-}
-
 const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
 
   if(!L)
@@ -1814,9 +1755,6 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
 }
 
-TargetData* llvm::GlobalTD;
-AliasAnalysis* llvm::GlobalAA;
-
 void IntegrationHeuristicsPass::runDSEAndDIE() {
 
   DEBUG(dbgs() << "Finding dead MTIs\n");
@@ -1937,9 +1875,3 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   
 }
 
-void llvm::release_assert_fail(const char* str) {
-
-  errs() << "Assertion failed: " << str << "\n";
-  exit(1);
-
-}

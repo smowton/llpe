@@ -17,7 +17,6 @@
 #include "llvm/Instruction.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 namespace llvm {
   class DominatorTree;

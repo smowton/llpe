@@ -251,11 +251,13 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI, ValueMap<const V
   
   const Function *CalledFunc = CS.getCalledFunction();
 
+  /*
   if((!CalledFunc) && Ctx) {
     if(CallInst* CI = dyn_cast<CallInst>(CS.getInstruction())) {
       CalledFunc = Ctx->getCalledFunction(CI);
     }
   }
+  */
 
   if (CalledFunc == 0 ||          // Can't inline external function or indirect
       CalledFunc->isDeclaration() || // call, or call to a vararg function!
