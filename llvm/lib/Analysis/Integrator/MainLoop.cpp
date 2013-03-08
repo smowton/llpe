@@ -43,6 +43,8 @@ void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& Cache
 
 void IntegrationAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
+  createEntryBlock();
+
   for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
     // analyseBlock can increment i past loops
@@ -76,9 +78,6 @@ void PeelAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdB
 
 void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
-  checkBlock(blockIdx);
-  // Was block killed?
-
   ShadowBB* BB = getBB(blockIdx);
   if(!BB)
     return;
@@ -107,7 +106,6 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       BasicBlock* InvarCTBB = CacheThresholdBB;
       IntegrationAttempt* InvarCTIA = CacheThresholdIA;
       
-      checkBlock(i);
       if(ShadowBB* LoopBB = getBB(i))
 	analyseBlockInstructions(LoopBB, true, InvarCTBB, InvarCTIA);
       
@@ -168,9 +166,10 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
     ShadowInstructionInvar* SII = SI->invar;
     Instruction* I = SII->I;
 
-    if(BranchInst* BrI = dyn_cast<BranchInst>(I)) {
-      if(!BrI->isConditional())
-	break;
+    if(inst_is<TerminatorInst>(SI)) {
+      // Call tryEvalTerminator regardless of scope.
+      tryEvaluateTerminator(SI);
+      continue;
     }
 
     if(SII->scope != MyL)
@@ -189,10 +188,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     }
 
-    if(inst_is<TerminatorInst>(SI))
-      tryEvaluateTerminator(SI);
-    else
-      tryEvaluate(ShadowValue(SI), true, 0, CacheThresholdBB, CacheThresholdIA);
+    tryEvaluate(ShadowValue(SI), true, 0, CacheThresholdBB, CacheThresholdIA);
 
   }
 

@@ -73,7 +73,7 @@ bool functionIsBlacklisted(Function*);
 inline void release_assert_fail(const char* str) {
 
   errs() << "Assertion failed: " << str << "\n";
-  exit(1);
+  abort();
 
 }
 
@@ -755,10 +755,13 @@ protected:
   virtual InlineAttempt* getFunctionRoot() = 0;
   ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0);
   ShadowBB* getBB(uint32_t idx, bool* inScope = 0);
+  ShadowBB* getOrCreateBB(ShadowBBInvar* BBI);
+  ShadowBB* getOrCreateBB(uint32_t);
   // virtual for external access:
   virtual ShadowBBInvar* getBBInvar(uint32_t idx);
   ShadowBB* getUniqueBBRising(ShadowBBInvar* BBI);
-  void createBB(uint32_t blockIdx);
+  ShadowBB* createBB(uint32_t blockIdx);
+  ShadowBB* createBB(ShadowBBInvar*);
   ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
   ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
@@ -791,10 +794,13 @@ protected:
 
   // CFG analysis:
 
-  void checkBlock(uint32_t idx);
+  void createEntryBlock();
+  void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
   void tryEvaluateTerminator(ShadowInstruction* SI);
-  void markBlockCertain(ShadowBBInvar* BB);
-  void markBlockAssumed(ShadowBBInvar* BB);
+  void tryEvaluateTerminatorInst(ShadowInstruction* SI);
+  IntegrationAttempt* getIAForScope(const Loop* Scope);
+  IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  void setBlockStatus(ShadowBBInvar* BB, ShadowBBStatus);
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }

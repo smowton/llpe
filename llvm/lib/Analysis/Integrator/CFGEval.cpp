@@ -27,21 +27,11 @@ using namespace llvm;
 // Implement instruction/block analysis concerning control flow, i.e. determining a block's
 // status and relatedly analysing terminator instructions.
 
-void IntegrationAttempt::markBlockCertain(ShadowBBInvar* BB) {
+void IntegrationAttempt::setBlockStatus(ShadowBBInvar* BBI, ShadowBBStatus s) {
 
-  LPDEBUG("Block " << BB->getName() << " is certain to execute\n");
-  if(!BBs[BB->idx])
-    createBB(BB->idx);
-  BBs[BB->idx]->status = BBSTATUS_CERTAIN;
+  ShadowBB* BB = getOrCreateBB(BBI);
+  BB->status = s;
     
-}
-
-void IntegrationAttempt::markBlockAssumed(ShadowBBInvar* BB) {
-
-  if(!BBs[BB->idx])
-    createBB(BB->idx);
-  BBs[BB->idx]->status = BBSTATUS_ASSUMED;
-
 }
 
 // specialise WriteAsOperand to allow printing of our special DomTree's BBWrapper nodes:
@@ -127,148 +117,28 @@ bool PeelIteration::entryBlockAssumed() {
 
 }
 
+void IntegrationAttempt::createEntryBlock() {
 
-void IntegrationAttempt::checkBlock(uint32_t blockIdx) {
-
-  ShadowBBInvar& SBBI = invarInfo->BBs[blockIdx];
-  BasicBlock* BB = SBBI.BB;
-
-  LPDEBUG("Checking status of block " << BB->getName() << "\n");
-
-  release_assert((!getBB(blockIdx)) && "Block already created?");
-
-  // Check whether this block has become dead or certain
-  
-  bool isDead = true;
-  bool isCertain = true;
-  bool isAssumed = true;
-
-  if(BB == getEntryBlock()) {
-
-    isCertain = entryBlockIsCertain();
-    isAssumed = isCertain || entryBlockAssumed();
-    isDead = false;
-
-  }
-  else {
-
-    for(unsigned i = 0, ilim = SBBI.predIdxs.size(); i < ilim; ++i) {
-
-      ShadowBBInvar* PSBBI = &(invarInfo->BBs[SBBI.predIdxs[i]]);
-
-      if(!edgeIsDead(PSBBI, &SBBI)) {
-
-	isDead = false;
-
-	// We know the BB exists somewhere because edgeIsDead returned false,
-	// so a failure here means the predecessor is not unique.
-	ShadowBB* PredBB = getUniqueBBRising(PSBBI);
-
-	if(PredBB) {
-
-	  bool PICertain = PredBB->status == BBSTATUS_CERTAIN;
-	  if(!PICertain)
-	    isCertain = false;
-
-	  bool PIAssumed = PICertain || PredBB->status == BBSTATUS_ASSUMED;
-
-	  if(PIAssumed) {
-
-	    bool onlySuccessor = true;
-
-	    for(uint32_t j = 0, jlim = PSBBI->succIdxs.size(); j != jlim; ++j) {
-
-	      ShadowBBInvar* SSBBI = getBBInvar(PSBBI->succIdxs[j]);
-
-	      if(SBBI.BB != SSBBI->BB && !PredBB->edgeIsDead(SSBBI)) {
-		onlySuccessor = false;
-		break;
-	      }
-
-	    }
-
-	    if(!onlySuccessor) {
-	      isCertain = false;
-	      if(!shouldAssumeEdge(PSBBI->BB, SBBI.BB))
-		isAssumed = false;
-	    }
-	    
-	  }
-	  else {
-
-	    isAssumed = false;
-
-	  }
-
-	}
-	else {
-	  
-	  // Else there's more than once successor possible, i.e. more than one exiting loop iteration.
-
-	  isCertain = false;
-	  isAssumed = false;
-
-	}
-
-      }
-
-    }
-
-  }
-
-  if(isDead && (isCertain || isAssumed)) {
-    isCertain = false;
-    isAssumed = false;
-  }
-
-  if(isDead) {
-
-    // Block is implied dead as we do not create a BB structure for it at this point.
-    return;
-
-  }
-  else if(isCertain || isAssumed) {
-
-    const Loop* MyL = L;
-
-    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(MyL, &SBBI, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
-	
-      const BBWrapper* BW = DTN->getBlock();
-      if(BW->BB) {
-	  
-	const Loop* BBL = const_cast<ShadowBBInvar*>(BW->BB)->scope;
-	if(BBL == MyL) {
-
-	  if(isCertain)
-	    markBlockCertain(const_cast<ShadowBBInvar*>(BW->BB));
-	  else
-	    markBlockAssumed(const_cast<ShadowBBInvar*>(BW->BB));
-
-	}
-
-      }
-
-    }
-
-  }
-  else {
-
-    createBB(SBBI.idx);
-
-  }
+  ShadowBB* BB = createBB(BBsOffset);
+  if(entryBlockIsCertain())
+    BB->status = BBSTATUS_CERTAIN;
+  else if(entryBlockAssumed())
+    BB->status = BBSTATUS_ASSUMED;
 
 }
 
-
-void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
+void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
   if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI)))
     return;
 
-  // Unconditional branches are already eliminated.
+  if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
+    if(BI->isUnconditional())
+      return;
+  }
 
   // Easiest case: copy edge liveness from our parent.
-  if(tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
+  if(parent && tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
     return;
 
   // Both switches and conditional branches use operand 0 for the condition.
@@ -312,6 +182,101 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
 	}
 
       }
+
+    }
+
+  }
+
+}
+
+IntegrationAttempt* IntegrationAttempt::getIAForScope(const Loop* Scope) {
+
+  if((!L) || L->contains(Scope))
+    return this;
+
+  return getIAForScopeFalling(Scope);
+
+}
+
+IntegrationAttempt* IntegrationAttempt::getIAForScopeFalling(const Loop* Scope) {
+
+  if(L == Scope)
+    return this;
+  release_assert(parent && "Out of scope getIAForScopeFalling");
+  return parent->getIAForScopeFalling(Scope);
+
+}
+
+void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus) {
+
+  ShadowBB* SBB = createBB(idx);
+  
+  if(newStatus != BBSTATUS_UNKNOWN) {
+
+    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB->invar, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+	
+      const BBWrapper* BW = DTN->getBlock();
+      if(BW->BB) {
+	  
+	const Loop* BBL = const_cast<ShadowBBInvar*>(BW->BB)->scope;
+	if(BBL == L) {
+
+	  setBlockStatus(const_cast<ShadowBBInvar*>(BW->BB), newStatus);
+
+	}
+
+      }
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI) {
+
+  // Clarify branch target if possible:
+  tryEvaluateTerminatorInst(SI);
+
+  ShadowBB* BB = SI->parent;
+  ShadowBBInvar* BBI = BB->invar;
+  
+  uint32_t uniqueSucc = 0xffffffff;
+
+  for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
+
+    if(!BB->succsAlive[i])
+      continue;
+    if(uniqueSucc == BBI->succIdxs[i] || uniqueSucc == 0xffffffff)
+      uniqueSucc = BBI->succIdxs[i];
+    else {
+      uniqueSucc = 0xffffffff;
+      break;
+    }
+
+  }
+
+  for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
+
+    if(!BB->succsAlive[i])
+      continue;
+
+    ShadowBBInvar* SBBI = getBBInvar(BB->invar->succIdxs[i]);
+    IntegrationAttempt* IA = getIAForScope(SBBI->naturalScope);
+
+    if(!IA->getBB(BB->invar->succIdxs[i])) {
+
+      // Can grant the new block some status if either (a) I have status and this is my only live successor,
+      // or (b) this edge should be assumed.
+
+      ShadowBBStatus newStatus = BBSTATUS_UNKNOWN;
+      
+      if(BB->status != BBSTATUS_UNKNOWN && uniqueSucc != 0xffffffff)
+	newStatus = BB->status;
+      else if(shouldAssumeEdge(BB->invar->BB, BBI->BB))
+	newStatus = BBSTATUS_ASSUMED;
+
+      IA->createBBAndPostDoms(BB->invar->succIdxs[i], newStatus);
 
     }
 

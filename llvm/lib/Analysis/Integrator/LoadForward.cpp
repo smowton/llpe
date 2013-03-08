@@ -66,9 +66,9 @@ public:
   LFCacheKey usedCacheEntryKey;
   bool isVarargTainted;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false) { }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false) { }
 
   virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();

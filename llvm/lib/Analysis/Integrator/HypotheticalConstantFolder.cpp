@@ -906,7 +906,6 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   
   Instruction* I = SI->invar->I;
 
-
   if(inst_is<AllocaInst>(SI) || isNoAliasCall(SI->invar->I)) {
 
     ImpType = ValSetTypePB;
@@ -1212,6 +1211,10 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   case Instruction::Call:
     tryMerge = true;
     break;
+  case Instruction::Br:
+  case Instruction::Switch:
+    // Normally these are filtered, but the loop solver can queue them:
+    return false;
   default:
     break;
 
@@ -1219,14 +1222,16 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
 
   if(tryMerge) {
 
-    return tryEvaluateMerge(SI, finalise, NewPB);
+    tryEvaluateMerge(SI, finalise, NewPB);
 
   }
   else {
 
-    return tryEvaluateOrdinaryInst(SI, NewPB);
+    tryEvaluateOrdinaryInst(SI, NewPB);
 
   }
+
+  return NewPB.isInitialised();
 
 }
 

@@ -266,6 +266,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
     Argument* A = AI;
     ShadowArgInvar& SArg = Args[i];
+    SArg.A = A;
       
     unsigned j = 0;
     Argument::use_iterator UI = A->use_begin(), UE = A->use_end();
@@ -289,9 +290,11 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
     }
 
-    SArg.userIdxs = ImmutableArray<ShadowInstIdx>(Users, F.arg_size());
+    SArg.userIdxs = ImmutableArray<ShadowInstIdx>(Users, nUsers);
 
   }
+
+  RetInfo.Args = ImmutableArray<ShadowArgInvar>(Args, F.arg_size());
 
   // Populate map from loop headers to header index. Due to the topological sort,
   // all loops consist of that block + L->getBlocks().size() further, contiguous blocks,
@@ -322,6 +325,9 @@ void InlineAttempt::prepareShadows() {
   for(; i != F.arg_size(); ++i, ++it) {
 
     argShadows[i].invar = &(invarInfo->Args[i]);
+    argShadows[i].IA = this;
+    argShadows[i].i.PB = PointerBase();
+    argShadows[i].i.dieStatus = INSTSTATUS_ALIVE;
 
   }
 
@@ -341,6 +347,22 @@ void PeelIteration::prepareShadows() {
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;
   BBsOffset = parentPA->invarInfo->headerIdx;
+
+}
+
+ShadowBB* IntegrationAttempt::getOrCreateBB(uint32_t i) {
+
+  if(ShadowBB* BB = getBB(i))
+    return BB;
+  return createBB(i);
+
+}
+
+ShadowBB* IntegrationAttempt::getOrCreateBB(ShadowBBInvar* BBI) {
+
+  if(ShadowBB* BB = getBB(*BBI))
+    return BB;
+  return createBB(BBI);
 
 }
 
@@ -390,13 +412,13 @@ ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
 
 }
 
-void IntegrationAttempt::createBB(uint32_t blockIdx) {
+ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
-  release_assert((!BBs[blockIdx]) && "Creating block for the second time");
+  release_assert((!BBs[blockIdx - BBsOffset]) && "Creating block for the second time");
   ShadowBB* newBB = new ShadowBB();
   newBB->invar = &(invarInfo->BBs[blockIdx]);
-  newBB->succsAlive = new bool[newBB->invar->predIdxs.size()];
-  for(unsigned i = 0, ilim = newBB->invar->predIdxs.size(); i != ilim; ++i)
+  newBB->succsAlive = new bool[newBB->invar->succIdxs.size()];
+  for(unsigned i = 0, ilim = newBB->invar->succIdxs.size(); i != ilim; ++i)
     newBB->succsAlive[i] = true;
   newBB->status = BBSTATUS_UNKNOWN;
   newBB->IA = this;
@@ -406,6 +428,16 @@ void IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
   }
+  newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
+
+  BBs[blockIdx - BBsOffset] = newBB;
+  return newBB;
+
+}
+
+ShadowBB* IntegrationAttempt::createBB(ShadowBBInvar* BBI) {
+
+  return createBB(BBI->idx);
 
 }
 
@@ -439,7 +471,7 @@ ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instI
   ShadowBBInvar* OpBBI = &(invarInfo->BBs[blockIdx]);
   ShadowInstructionInvar* OpII = &(OpBBI->insts[instIdx]);
 
-  if(OpII->scope != L)
+  if(OpII->scope != L && ((!OpII->scope) || OpII->scope->contains(L)))
     return getInstFalling(OpBBI, instIdx);
 
   ShadowBB* OpBB = getBB(blockIdx, &inScope);

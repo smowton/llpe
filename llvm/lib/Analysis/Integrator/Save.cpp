@@ -223,15 +223,13 @@ BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
 ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
-  uint32_t succ = BB->invar->succIdxs[succIdx];
-
-  if(BB->invar->idx == parentPA->invarInfo->latchIdx && succ == parentPA->invarInfo->headerIdx) {
+  if(BB->invar->idx == parentPA->invarInfo->latchIdx && succIdx == parentPA->invarInfo->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
-      return PI->getBB(succ);
+      return PI->getBB(succIdx);
     else {
       release_assert(iterStatus != IterationStatusFinal && "Branch to header in final iteration?");
-      return parent->getBB(succ);
+      return parent->getBB(succIdx);
     }
 
   }
@@ -242,10 +240,20 @@ ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
 ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
-  uint32_t succ = BB->invar->succIdxs[succIdx];
-  ShadowBBInvar* BBI = getBBInvar(succ);
-  return getBBFalling(BBI);
-  
+  ShadowBBInvar* BBI = getBBInvar(succIdx);
+
+  if((!BBI->naturalScope) || BBI->naturalScope->contains(L))
+    return getBBFalling(BBI);
+
+  // Else, BBI is further in than this block: we must be entering exactly one loop.
+  if(PeelAttempt* PA = getPeelAttempt(BBI->naturalScope)) {
+    if(PA->isEnabled())
+      return PA->Iterations[0]->getBB(*BBI);
+  }
+
+  // Otherwise loop unexpanded or disabled: jump direct to the residual loop.
+  return getBB(*BBI);
+
 }
 
 ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
@@ -409,7 +417,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
   if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
-    ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
+    ShadowBB* SBB = getSuccessorBB(BB, BB->invar->succIdxs[knownSucc]);
     release_assert(SBB && "Failed to get successor BB");
     BranchInst::Create(SBB->committedHead, emitBB);
 
@@ -427,7 +435,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       if(I->invar->operandIdxs[i].instIdx == INVALID_INSTRUCTION_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
 
 	// Argument is a BB.
-	ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
+	ShadowBB* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx);
 	release_assert(SBB && "Failed to get successor BB (2)");
 	newTerm->setOperand(i, SBB->committedHead);
 

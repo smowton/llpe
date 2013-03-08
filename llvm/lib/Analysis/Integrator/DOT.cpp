@@ -338,7 +338,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
     Out << "<tr>\n";
     unsigned i = 0;
-    for(succ_const_iterator SI = succ_begin((const BasicBlock*)BB), SE = succ_end((const BasicBlock*)BB); SI != SE; ++SI, ++i) {
+    for(succ_const_iterator SI = succ_begin(const_cast<const BasicBlock*>(BB->invar->BB)), SE = succ_end(const_cast<const BasicBlock*>(BB->invar->BB)); SI != SE; ++SI, ++i) {
       Out << "<td port=\"s" << i << "\" border=\"1\">" << DOTGraphTraits<const Function*>::getEdgeSourceLabel(BB->invar->BB, SI) << "</td>\n";
     }
     Out << "</tr>\n";
