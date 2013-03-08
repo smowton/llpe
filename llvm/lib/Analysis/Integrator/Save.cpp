@@ -350,7 +350,7 @@ void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
   uint32_t i;
   for(i = 0; i < BB->insts.size() && inst_is<PHINode>(&(BB->insts[i])); ++i) {
-    if(!BB->insts[i].committedVal)
+    if((!BB->insts[i].committedVal) || !isa<PHINode>(BB->insts[i].committedVal))
       continue;
     populatePHINode(BB, &(BB->insts[i]), cast<PHINode>(BB->insts[i].committedVal));
   }

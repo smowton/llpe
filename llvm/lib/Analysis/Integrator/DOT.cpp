@@ -154,12 +154,14 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
       Out << (*C);
     return;
   }
+  /*
   if(IAI->dieStatus != INSTSTATUS_ALIVE) {
     if(isInvariant)
       Out << "(invar) ";
     Out << "DEAD";
     return;
   }
+  */
   bool PBPrinted = false;
   if(IAI->PB.Values.size() > 0 && !IAI->PB.Overdef) {
     printPB(Out, IAI->PB, true);

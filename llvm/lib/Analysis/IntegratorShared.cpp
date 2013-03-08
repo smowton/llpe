@@ -11,7 +11,7 @@ using namespace llvm;
 std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
   Constant* C = dyn_cast<Constant>(V);
-  if(C)
+  if(!C)
     return std::make_pair(ValSetTypeUnknown, ImprovedVal());
 
   if(ConstantExpr* CE = dyn_cast<ConstantExpr>(C)) {
@@ -135,7 +135,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
   }
   else if(isa<GlobalValue>(C)) {
     
-    return std::make_pair(ValSetTypePB, ShadowValue(C));
+    return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
 
   }
   else {

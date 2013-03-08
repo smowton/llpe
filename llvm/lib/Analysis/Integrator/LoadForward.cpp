@@ -1276,7 +1276,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   PointerBase ConstResult;
   if(tryResolveLoadFromConstant(LI, ConstResult)) {
     NewPB = ConstResult;
-    return true;
+    return NewPB.isInitialised();
   }
 
   // Freed by the walker:
@@ -1367,7 +1367,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
     contextTaintedByVarargs = true;
 
   NewPB = Walker.Result;
-  return true;
+  return NewPB.isInitialised();
 
 }
 

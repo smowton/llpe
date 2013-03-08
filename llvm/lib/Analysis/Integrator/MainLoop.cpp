@@ -136,7 +136,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     }
 
     // Advance the main loop past this loop.
-    blockIdx = i;
+    blockIdx = i - 1;
 
   }
   else {

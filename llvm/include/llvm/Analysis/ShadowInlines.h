@@ -696,19 +696,19 @@ template<class X> inline X* cast_val(ShadowValue V) {
 
 inline Constant* getConstReplacement(ShadowArg* SA) {
  
-  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 0 || SA->i.PB.Type != ValSetTypeScalar)
+  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 1 || SA->i.PB.Type != ValSetTypeScalar)
     return 0;
   else
-    return cast<Constant*>(SA->i.PB.Values[0].V);
+    return cast<Constant>(SA->i.PB.Values[0].V.getVal());
 
 }
 
 inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
-  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 0 || SI->i.PB.Type != ValSetTypeScalar)
+  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 1 || SI->i.PB.Type != ValSetTypeScalar)
     return 0;
   else
-    return cast<Constant*>(SI->i.PB.Values[0].V);
+    return cast<Constant>(SI->i.PB.Values[0].V.getVal());
 
 }
 
