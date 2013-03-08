@@ -243,7 +243,7 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 
   // Handle exits from this loop / this loop's latch specially:
   if(!getSpecialEdgeDescription(BBI, SBI, rso))
-    rso << "Node" << SB;
+    rso << "Node" << SB->invar->BB;
 
   if(edgeIsDead(BBI, SBI)) {
     rso << "[color=gray]";
@@ -277,7 +277,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   if(useLabels)
     numSuccessors = TI->getNumSuccessors();
 
-  Out << "Node" << BB << " [shape=plaintext,fontsize=10,label=<<table cellspacing=\"0\" border=\"0\"><tr><td colspan=\"" << numSuccessors << "\" border=\"1\"><table border=\"0\">\n";
+  Out << "Node" << BBI->BB << " [shape=plaintext,fontsize=10,label=<<table cellspacing=\"0\" border=\"0\"><tr><td colspan=\"" << numSuccessors << "\" border=\"1\"><table border=\"0\">\n";
 
   Out << "<tr><td border=\"0\" align=\"left\" colspan=\"2\"";
   
@@ -345,7 +345,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   }
 
-  Out << "</table>>];";
+  Out << "</table>>];\n";
 
   if(forceSuccessors) {
 
@@ -453,7 +453,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
       }
 
-      describeBlockAsDOT(BB->invar, BB, L, &deferredEdges, Out, &Targets, brief);      
+      describeBlockAsDOT(BB->invar, BB, DescribeL, &deferredEdges, Out, &Targets, brief);      
 
     }
 
@@ -466,7 +466,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
     for(idx = headerIdx, BBInvar = getBBInvar(headerIdx); DescribeL->contains(BBInvar->naturalScope); ++idx, BBInvar = getBBInvar(idx)) {
 
       ShadowBB* BB = getBB(*BBInvar);
-      describeBlockAsDOT(BBInvar, BB, L, &deferredEdges, Out, 0, brief);
+      describeBlockAsDOT(BBInvar, BB, DescribeL, &deferredEdges, Out, 0, brief);
 
     }
 
@@ -526,6 +526,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 	// Advance past the loop:
 	while(i < nBBs && enterL->contains(getBBInvar(i + BBsOffset)->naturalScope))
 	  ++i;
+	--i;
 	continue;
 
       }
