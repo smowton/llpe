@@ -372,7 +372,7 @@ void PeelIteration::checkFinalIteration() {
   // If it does, queue consideration of each exit PHI; by LCSSA these must belong to our parent.
 
   ShadowBBInvar* LatchBB = getBBInvar(parentPA->invarInfo->latchIdx);
-  ShadowBBInvar* HeaderBB = getBBInvar(parentPA->invarInfo->latchIdx);
+  ShadowBBInvar* HeaderBB = getBBInvar(parentPA->invarInfo->headerIdx);
 
   if(edgeIsDead(LatchBB, HeaderBB) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
 

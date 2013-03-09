@@ -82,7 +82,7 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
   std::string ret;
   raw_string_ostream RSO(ret);
-  RSO << getFunctionRoot()->getShortHeader() << " loop " << parentPA->getShortHeader() << " iteration " << iterationCount;
+  RSO << parentPA->getShortHeader() << " iteration " << iterationCount << " ";
   RSO.flush();
   return ret;
 
@@ -322,7 +322,7 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
     }
 
     Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), PN);
-    PN->addIncoming(PHIOp, SourceBB->committedTail);
+    NewPN->addIncoming(PHIOp, SourceBB->committedTail);
     return;
 
   }
@@ -334,7 +334,7 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPN) {
 
   // Emit a normal PHI; all arguments have already been prepared.
-  for(uint32_t i = 0, ilim = I->parent->invar->predIdxs.size(); i != ilim; i+=2) {
+  for(uint32_t i = 0, ilim = I->invar->operandIdxs.size(); i != ilim; i+=2) {
       
     SmallVector<ShadowValue, 1> predValues;
     SmallVector<ShadowBB*, 1> predBBs;
@@ -356,7 +356,7 @@ void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
   // Special case: emitting the header PHI of a residualised loop.
   // Make an empty node for the time being; this will be revisted once the loop body is emitted
-  if(BB->invar->naturalScope->getHeader() == BB->invar->BB)
+  if(BB->invar->naturalScope && BB->invar->naturalScope->getHeader() == BB->invar->BB)
     return;
 
   populatePHINode(BB, I, NewPN);
@@ -815,7 +815,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
   }
   
-  if(L)
+  if(L && (ScopeL != L))
     fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
 
 }

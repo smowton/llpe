@@ -449,7 +449,9 @@ ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint
 
 ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
 
-  if(BB->naturalScope == L) {
+  ShadowInstructionInvar* SII = &(BB->insts[instIdx]);
+
+  if(SII->scope == L) {
 
     ShadowBB* LocalBB = getBB(*BB);
     if(!LocalBB)
@@ -458,9 +460,9 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
 
   }
   else {
-
+    
     return parent->getInstFalling(BB, instIdx);
-
+    
   }
 
 }

@@ -276,25 +276,22 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 
 }
 
-void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
+void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
-  // SI block dead at this scope?
-  // I don't use edgeIsDead here because that recursively checks loop iterations
-  // which we're about to do anyway.
-  if(!getBB(SI->parent->idx))
+  if(edgeIsDead(ExitingBB, ExitedBB))
     return;
 
-  if(SI->scope != L) {
+  if(ExitingBB->naturalScope != L) {
     
     // Read from child loop if appropriate:
-    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, SI->scope))) {
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
 
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
 	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 
 	  PeelIteration* Iter = PA->Iterations[i];
-	  Iter->getOperandRising(SI, ExitedBB, ops, BBs);
+	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs);
 
 	}
 
@@ -306,11 +303,20 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
 
   }
 
-  // Value is local, or in a child loop which is unterminated or entirely unexpanded.
-  if(!edgeIsDead(SI->parent, ExitedBB)) {
-    ops.push_back(getInst(SI));
-    if(BBs)
-      BBs->push_back(getBB(*ExitedBB));
+  // Loop unexpanded or value local or lower:
+
+  ShadowInstIdx valOp = SI->invar->operandIdxs[valOpIdx];
+  ShadowValue NewOp;
+  if(valOp.instIdx != INVALID_INSTRUCTION_IDX && valOp.blockIdx != INVALID_BLOCK_IDX)
+    NewOp = getInst(valOp.blockIdx, valOp.instIdx);
+  else
+    NewOp = SI->getOperand(valOpIdx);
+
+  ops.push_back(NewOp);
+  if(BBs) {
+    ShadowBB* NewBB = getBB(*ExitingBB);
+    release_assert(NewBB);
+    BBs->push_back(NewBB);
   }
 
 }
@@ -318,32 +324,28 @@ void IntegrationAttempt::getOperandRising(ShadowInstructionInvar* SI, ShadowBBIn
 void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   ShadowInstructionInvar* SII = SI->invar;
+  ShadowBBInvar* BB = SII->parent;
   
-  ShadowInstIdx valOp = SII->operandIdxs[valOpIdx];
   ShadowInstIdx blockOp = SII->operandIdxs[valOpIdx+1];
 
   assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
 
-  // PHI arg is an instruction?
-  if(valOp.blockIdx != INVALID_BLOCK_IDX && valOp.instIdx != INVALID_INSTRUCTION_IDX) {
+  ShadowBBInvar* OpBB = getBBInvar(blockOp.blockIdx);
 
-    // PHI arg at child scope?
-    ShadowInstructionInvar* PredSII = getInstInvar(valOp.blockIdx, valOp.instIdx);
-    if(!((!PredSII->scope) || PredSII->scope->contains(L))) {
+  if(OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
+    getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
+  else {
 
-      getOperandRising(PredSII, SII->parent, ops, BBs);
-      return;
-
+    // Arg is local (can't be lower or this is a header phi)
+    if(!edgeIsDead(OpBB, BB)) {
+      ops.push_back(SI->getOperand(valOpIdx));
+      if(BBs) {
+	ShadowBB* NewBB = getBBFalling(OpBB);
+	release_assert(NewBB);
+	BBs->push_back(NewBB);
+      }
     }
 
-  }
-  
-  // Arg is local or a constant or argument, use normal getOperand.
-  ShadowBBInvar* BB = getBBInvar(blockOp.blockIdx);
-  if(!edgeIsDead(BB, SI->parent->invar)) {
-    ops.push_back(SI->getOperand(valOpIdx));
-    if(BBs)
-      BBs->push_back(getBB(*BB));
   }
 
 }
