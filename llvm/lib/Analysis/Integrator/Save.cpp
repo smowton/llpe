@@ -88,6 +88,21 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
 }
 
+Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name) {
+
+  Function* NewF = Function::Create(F->getFunctionType(), LT, Name, F->getParent());
+
+  Function::arg_iterator DestI = NewF->arg_begin();
+  for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
+       I != E; ++I, ++DestI)
+    DestI->setName(I->getName());
+  
+  NewF->copyAttributesFrom(F);
+
+  return NewF;
+
+}
+
 void IntegrationAttempt::commitCFG() {
 
   Function* CF = getFunctionRoot()->CommitF;
@@ -113,6 +128,8 @@ void IntegrationAttempt::commitCFG() {
 	const Loop* skipL = BB->invar->naturalScope;
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
+	--i;
+	continue;
       }
 
     }
@@ -157,7 +174,7 @@ void IntegrationAttempt::commitCFG() {
 		raw_string_ostream RSO(Name);
 		RSO << IA->getCommittedBlockPrefix() << ".clone";
 	      }
-	      IA->CommitF = Function::Create(IA->F.getFunctionType(), GlobalValue::PrivateLinkage, Name, CF->getParent());
+	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::PrivateLinkage, Name);
 	      IA->returnBlock = 0;
 
 	    }
@@ -368,18 +385,17 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   if(inst_is<ReturnInst>(I)) {
 
-    if(getFunctionRoot()->isVararg()) {
+    InlineAttempt* IA = getFunctionRoot();
 
-      // Normal return
+    if(!IA->returnBlock) {
+
+      // Normal return (vararg function or root function)
       emitInst(BB, I, emitBB);
 
     }
     else {
 
-      InlineAttempt* IA = getFunctionRoot();
-
       // Branch to the exit block
-      release_assert(IA->returnBlock && "Exit block unset?");
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
       if(IA->returnPHI) {
@@ -730,8 +746,8 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled()) {
-	for(unsigned i = 0; i < PA->Iterations.size(); ++i)
-	  PA->Iterations[i]->commitInstructions();
+	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
+	  PA->Iterations[j]->commitInstructions();
       }
       
       // If the loop has terminated, skip populating the blocks in this context.
@@ -739,14 +755,15 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	const Loop* skipL = BB->invar->naturalScope;
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
-	--i;
-	continue;
       }
       else {
 	// Emit blocks for the residualised loop
 	// (also has the side effect of winding us past the loop)
 	commitLoopInstructions(BB->invar->naturalScope, i);
       }
+
+      --i;
+      continue;
 
     }
 
@@ -806,6 +823,6 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 void IntegrationAttempt::commitInstructions() {
 
   uint32_t i = 0;
-  commitLoopInstructions(0, i);
+  commitLoopInstructions(L, i);
 
 }

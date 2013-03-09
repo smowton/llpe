@@ -1380,11 +1380,21 @@ void IntegrationHeuristicsPass::commit() {
     raw_string_ostream RSO(Name);
     RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
   }
-  RootIA->CommitF = Function::Create(RootIA->F.getFunctionType(), RootIA->F.getLinkage(), Name, RootIA->F.getParent());
+  RootIA->CommitF = cloneEmptyFunction(&(RootIA->F), RootIA->F.getLinkage(), Name);
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
   RootIA->commitInstructions();
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
+  // Also exchange names so that external users will use this new version:
+
+  std::string oldFName;
+  {
+    raw_string_ostream RSO(oldFName);
+    RSO << RootIA->F.getName() << ".old";
+  }
+
+  RootIA->CommitF->takeName(&(RootIA->F));
+  RootIA->F.setName(oldFName);
 }
 
 static void dieEnvUsage() {

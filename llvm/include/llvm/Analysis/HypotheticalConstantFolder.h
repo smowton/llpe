@@ -13,6 +13,7 @@
 #include "llvm/Argument.h"
 #include "llvm/Instruction.h"
 #include "llvm/Instructions.h"
+#include "llvm/GlobalValue.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits.h>
@@ -1335,6 +1336,8 @@ class InlineAttempt : public IntegrationAttempt {
 
  bool blockCertainlyExecutes(ShadowBB*);
  bool blockAssumedToExecute(ShadowBB*);
+
+ Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name);
 
  extern bool mainDIE;
 
