@@ -796,7 +796,7 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 
   for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
 
-    ShadowBB* BB = getBB(i);
+    ShadowBB* BB = BBs[i];
     if(!BB)
       continue;
 
@@ -842,7 +842,7 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 
   for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
 
-    ShadowBB* BB = getBB(i);
+    ShadowBB* BB = BBs[i];
     if(!BB)
       continue;
 
@@ -852,6 +852,8 @@ void IntegrationAttempt::tryKillAllVFSOps() {
       if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
 	DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
+	if(it == forwardableOpenCalls.end())
+	  continue;
 	// Skip failed opens, we can always delete those
 	if(!it->second->success)
 	  continue;

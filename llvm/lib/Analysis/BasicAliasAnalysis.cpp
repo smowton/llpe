@@ -540,7 +540,7 @@ const ShadowValue BasicAliasAnalysis::DecomposeGEPExpression(ShadowValue FirstV,
       ShadowValue Index = tryGetConstReplacement(getValOperand(V, i+1));
       
       // Compute the (potentially symbolic) offset in bytes for this index.
-      if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
+      if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
         // For a struct, add the member offset.
         unsigned FieldNo = cast_val<ConstantInt>(Index)->getZExtValue();
         if (FieldNo == 0) continue;

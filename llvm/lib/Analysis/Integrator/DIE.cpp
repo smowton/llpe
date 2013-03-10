@@ -325,7 +325,7 @@ public:
 		return;
 
 	      }
-	      else if(willBeReplacedOrDeleted(ShadowValue(&(IA->argShadows[i])))) {
+	      else if(!willBeReplacedOrDeleted(ShadowValue(&(IA->argShadows[i])))) {
 
 		maybeLive = true;
 		return;
@@ -441,6 +441,7 @@ void IntegrationAttempt::runDIE() {
       // Skip loop blocks regardless of whether we entered the loop:
       while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && EnterL->contains(BBs[i-1]->invar->naturalScope))
 	--i;
+      ++i;
       continue;
 
     }

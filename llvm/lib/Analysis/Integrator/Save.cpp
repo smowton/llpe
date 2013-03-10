@@ -615,10 +615,20 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	
 	if(createRetPHI)
 	  I->committedVal = IA->returnPHI = PHINode::Create(IA->F.getFunctionType()->getReturnType(), "retval", IA->returnBlock);
+	else {
+	  I->committedVal = 0;
+	  IA->returnPHI = 0;
+	}
 
 	// Emit further instructions in this ShadowBB to the successor block:
 	emitBB = IA->returnBlock;
 	
+      }
+      else {
+
+	CallInst* CI = cast<CallInst>(emitInst(BB, I, emitBB));
+	CI->setCalledFunction(IA->CommitF);
+
       }
       
       IA->commitInstructions();
@@ -627,10 +637,10 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
       // I think this ought to be worked out in the main solver, killing future code.
       // The remaining instructions in the block should be skipped too.
 
+      return;
+    
     }
 
-    return;
-    
   }
   
   if(emitVFSCall(BB, I, emitBB))
@@ -641,7 +651,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
 }
 
-void IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Clone all attributes:
   Instruction* newI = I->invar->I->clone();
@@ -657,6 +667,8 @@ void IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock
     newI->setOperand(i, getValAsType(opV, needTy, newI));
 
   }
+
+  return newI;
 
 }
 
@@ -794,7 +806,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	continue;
       }
       
-      else if(I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
+      else if((!inst_is<AllocaInst>(I)) && I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
 	synthCommittedPointer(I, emitBB);
 	continue;
       }

@@ -991,7 +991,7 @@ protected:
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
-  void emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
+  Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
