@@ -201,7 +201,7 @@ WalkInstructionResult LoadForwardWalker::walkInstruction(ShadowInstruction* I, v
   }
 
   SVAAResult R;
-  if(!(LoadedPtr.isInval()))
+  if(LoadedPtr.isInval())
     R = tryResolvePointerBases(LoadPtrBase, LoadPtrOffset, LoadSize, Ptr, PtrSize, true);
   else
     R = aliasSVs(LoadedPtr, LoadSize, Ptr, PtrSize, true);

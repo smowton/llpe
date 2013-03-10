@@ -389,8 +389,8 @@ ImmutablePass *llvm::createBasicAliasAnalysisPass() {
 bool BasicAliasAnalysis::GEPHasAllZeroIndices(ShadowValue GEPOp) {
   const GEPOperator* GEP = cast_val<GEPOperator>(GEPOp);
   for (unsigned i = 1, e = GEP->getNumOperands(); i != e; ++i) {
-    ShadowValue V = getConstReplacement(getValOperand(GEPOp, i));
-    if (ConstantInt *CI = dyn_cast_val<ConstantInt>(V)) {
+    Constant* C = getConstReplacement(getValOperand(GEPOp, i));
+    if (ConstantInt *CI = dyn_cast_or_null<ConstantInt>(C)) {
       if (!CI->isZero()) return false;
     } 
     else {
@@ -1046,6 +1046,8 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
     // Get incoming value for predecessor i:
     ShadowValue PV1 = getValOperand(V1, i*2);
+    if(PV1.isInval()) // Operand comes from a dead block
+      continue;
     if (val_is<PHINode>(PV1))
       // If any of the source itself is a PHI, return MayAlias conservatively
       // to avoid compile time explosion. The worst possible case is if both
@@ -1090,7 +1092,7 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
   ShadowValue V = VIn;
   for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
 
-    if(ShadowInstruction* SI = VIn.getInst()) {
+    if(ShadowInstruction* SI = V.getInst()) {
 
       if(inst_is<GetElementPtrInst>(SI)) {
 
@@ -1121,7 +1123,7 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
       }
 
     }
-    else if(Value* V2 = VIn.getVal()) {
+    else if(Value* V2 = V.getVal()) {
 
       V2 = V2->stripPointerCasts();
       if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V2)) {

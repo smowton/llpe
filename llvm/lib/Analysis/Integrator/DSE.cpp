@@ -137,9 +137,9 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
       if(!(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
-	AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Pointer, MISize, StorePtr, Size);
+	SVAAResult R = aliasSVs(Pointer, MISize, StorePtr, Size, true);
 
-	if(R != AliasAnalysis::NoAlias) {
+	if(R != SVNoAlias) {
 
 	  // If it's not dead it must be regarded as a big unresolved load.
 
@@ -203,8 +203,8 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     
     // Otherwise the load will happen for real at runtime: check if it may alias:
 
-    AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Pointer, LoadSize, StorePtr, Size);
-    if(R != AliasAnalysis::NoAlias) {
+    SVAAResult R = aliasSVs(Pointer, LoadSize, StorePtr, Size, true);
+    if(R != SVNoAlias) {
 
       LPDEBUG("Can't kill store to " << itcache(StorePtr) << " because of unresolved load " << itcache(Pointer) << "\n");
       return WIRStopWholeWalk;
@@ -319,7 +319,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
   if(!deadBytes)
     return false;
 
-  AliasAnalysis::AliasResult R = GlobalAA->aliasHypothetical(Writer, WriteSize, StorePtr, Size);
+  SVAAResult R = aliasSVs(Writer, WriteSize, StorePtr, Size, true);
 
   int64_t WriteOffset = 0;
   ShadowValue WriteBase;
@@ -328,7 +328,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
   
   uint64_t Offset, FirstDef, FirstNotDef;
 
-  if(R == AliasAnalysis::MayAlias) {
+  if(R == SVMayAlias) {
 
     if(!GetDefinedRange(StoreBase, StoreOffset, Size,
 			WriteBase, WriteOffset, WriteSize,
@@ -340,7 +340,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
     }
 	  
   }
-  else if(R == AliasAnalysis::MustAlias) {
+  else if(R == SVMustAlias) {
 
     FirstDef = 0;
     FirstNotDef = std::min(WriteSize, Size);

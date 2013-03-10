@@ -124,7 +124,7 @@ void IntegrationAttempt::commitCFG() {
       }
       
       // If the loop has terminated, skip emitting the blocks in this context.
-      if(PA && PA->isTerminated()) {
+      if(PA && PA->isEnabled() && PA->isTerminated()) {
 	const Loop* skipL = BB->invar->naturalScope;
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
@@ -389,6 +389,8 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(!IA->returnBlock) {
 
+      if(I->i.dieStatus != INSTSTATUS_ALIVE)
+	return;
       // Normal return (vararg function or root function)
       emitInst(BB, I, emitBB);
 
@@ -398,7 +400,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       // Branch to the exit block
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
-      if(IA->returnPHI) {
+      if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
 	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
 	IA->returnPHI->addIncoming(PHIVal, BB->committedTail);
       }
@@ -749,7 +751,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     // Else fall through to fill in a committed value:
   }
 
-  if(I->i.dieStatus != INSTSTATUS_ALIVE)
+  if(I->i.dieStatus != INSTSTATUS_ALIVE && !inst_is<TerminatorInst>(I))
     return;
 
   if(instResolvedAsInvariant(I))
@@ -794,6 +796,9 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     if(!BB)
       continue;
 
+    if(ScopeL && !ScopeL->contains(BB->invar->naturalScope))
+      break;
+
     if(BB->invar->naturalScope != ScopeL) {
 
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
@@ -804,7 +809,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       }
       
       // If the loop has terminated, skip populating the blocks in this context.
-      if(PA && PA->isTerminated()) {
+      if(PA && PA->isEnabled() && PA->isTerminated()) {
 	const Loop* skipL = BB->invar->naturalScope;
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
@@ -833,7 +838,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
   }
   
-  if(L && (ScopeL != L))
+  if(ScopeL != L)
     fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
 
 }

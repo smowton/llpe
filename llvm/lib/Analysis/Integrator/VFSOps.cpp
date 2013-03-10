@@ -362,6 +362,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   // All calls beyond here operate on FDs.
   ShadowInstruction* OpenCall = getFD(SI->getCallArgOperand(0));
+  if(!OpenCall)
+    return true;
 
   OpenStatus& OS = OpenCall->parent->IA->getOpenStatus(cast_inst<CallInst>(OpenCall));
 

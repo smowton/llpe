@@ -539,7 +539,11 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
     }
   }
   else {
-    return ShadowValue(parent->IA->getInst(blockOpIdx, SII.instIdx));
+    ShadowInstruction* OpInst = parent->IA->getInst(blockOpIdx, SII.instIdx);
+    if(OpInst)
+      return ShadowValue(OpInst);
+    else
+      return ShadowValue();
   }
 
 }

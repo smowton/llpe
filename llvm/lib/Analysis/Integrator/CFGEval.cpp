@@ -138,7 +138,7 @@ void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
   }
 
   // Easiest case: copy edge liveness from our parent.
-  if(parent && tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
+  if(L && tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
     return;
 
   // Both switches and conditional branches use operand 0 for the condition.

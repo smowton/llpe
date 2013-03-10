@@ -286,7 +286,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
     // Read from child loop if appropriate:
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
 
-      if(PA->Iterations.back()->iterStatus == IterationStatusFinal) {
+      if(PA->isEnabled() && PA->isTerminated()) {
 
 	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 

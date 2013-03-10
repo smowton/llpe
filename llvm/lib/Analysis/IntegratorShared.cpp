@@ -34,7 +34,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(BasePB.second.Offset == LLONG_MAX)
 	  return BasePB;
 
-	int64_t Offset;
+	int64_t Offset = 0;
 
 	GEPOperator* GEP = cast<GEPOperator>(CE);
 	gep_type_iterator GTI = gep_type_begin(GEP);
