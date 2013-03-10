@@ -393,14 +393,14 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
 	
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg argument bytes passed on the stack on Dragonegg / x86_64:
-    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialOffset)));
+    NewPV = PartialVal::getTotal(ValSetTypeScalar, ImprovedVal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialOffset))));
 
   }
   else if(ReadOffset == 4) {
 
     LPDEBUG("Load from va_start field 0: return non-vararg byte count\n");
     // Get number of non-vararg FP argument bytes passed on the stack on Dragonegg / x86_64:	
-    NewPV = PartialVal::getTotal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialFPOffset)));	
+    NewPV = PartialVal::getTotal(ValSetTypeScalar, ImprovedVal(ShadowValue(ConstantInt::get(Type::getInt32Ty(CI->invar->I->getContext()), initialFPOffset))));	
 
   }
   else if(ReadOffset == 8) {
@@ -413,13 +413,13 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
       return false;
     }
 
-    NewPV = PartialVal::getTotal(ShadowValue(CI, initialVararg));
+    NewPV = PartialVal::getTotal(ValSetTypeVarArg, ImprovedVal(ShadowValue(CI), initialVararg));
 
   }
   else if(ReadOffset == 16) {
 
     LPDEBUG("Load from va_start field 3: return va_arg ptr to stack base represented as negative vararg\n");
-    NewPV = PartialVal::getTotal(ShadowValue(CI, ImprovedVal::va_baseptr));
+    NewPV = PartialVal::getTotal(ValSetTypeVarArg, ImprovedVal(ShadowValue(CI), ImprovedVal::va_baseptr));
 
   }
 

@@ -69,7 +69,7 @@ struct ShadowValue {
 
 ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
 ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
-ShadowValue(ShadowInstruction* _I, int64_t _v = -1) : t(SHADOWVAL_INST) { u.I = _I; }
+ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST) { u.I = _I; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
 
   bool isInval() {

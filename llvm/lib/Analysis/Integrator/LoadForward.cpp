@@ -78,6 +78,7 @@ public:
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
   bool* getValidBuf();
   virtual WalkInstructionResult walkFromBlock(ShadowBB* BB, void* Ctx);
+  PointerBase PVToPB(PartialVal& PV, raw_string_ostream& RSO);
   ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO);
 
   void addPBDefn(PointerBase& NewPB, bool cacheAllowed);
@@ -234,7 +235,7 @@ void PartialVal::initByteArray(uint64_t nbytes) {
 
 }
 
-PartialVal::PartialVal(uint64_t nbytes) : isVarargTainted(false), TotalSV(), C(0), ReadOffset(0), partialValidBuf(0)  {
+PartialVal::PartialVal(uint64_t nbytes) : isVarargTainted(false), TotalIV(), C(0), ReadOffset(0), partialValidBuf(0)  {
 
   initByteArray(nbytes);
 
@@ -253,7 +254,8 @@ PartialVal& PartialVal::operator=(const PartialVal& Other) {
 
   type = Other.type;
   isVarargTainted = Other.isVarargTainted;
-  TotalSV = Other.TotalSV;
+  TotalIV = Other.TotalIV;
+  TotalIVType = Other.TotalIVType;
   C = Other.C;
   ReadOffset = Other.ReadOffset;
 
@@ -402,7 +404,7 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
   if(Other.isTotal()) {
 
-    Constant* TotalC = dyn_cast_or_null<Constant>(Other.TotalSV.getVal());
+    Constant* TotalC = dyn_cast_or_null<Constant>(Other.TotalIV.V.getVal());
     if(!TotalC) {
       //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
       error = "PP2";
@@ -551,15 +553,12 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
     ShadowValue NewSV;
     {
       raw_string_ostream RSO(synthError);
-      NewSV = PVToSV(valSoFar, RSO);
+      NewPB = PVToPB(valSoFar, RSO);
     }
-    if(NewSV.isInval()) {
+    if(!NewPB.isInitialised()) {
       error = synthError;
       return false;
     }
-
-    if(!getPointerBase(NewSV, NewPB))
-      return false;
 
   }
 
@@ -671,7 +670,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	defType = AI->getAllocatedType();
       else
 	defType = Type::getIntNTy(I->invar->I->getContext(), 8 * LoadSize);
-      NewPV = PartialVal::getTotal(ShadowValue(Constant::getNullValue(defType)));
+      NewPV = PartialVal::getTotal(ValSetTypeScalar, ImprovedVal(ShadowValue(Constant::getNullValue(defType))));
 
     }
     else {
@@ -974,24 +973,35 @@ WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void*
 
 }
  
-ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& RSO) {
-
-  uint64_t LoadSize = (GlobalTD->getTypeSizeInBits(originalType) + 7) / 8;
+PointerBase NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& RSO) {
 
   // Try to use an entire value:
   if(PV.isTotal()) {
 
-    ShadowValue Res = PV.TotalSV;
-    const Type* sourceType = Res.getType();
-    if(allowTotalDefnImplicitCast(sourceType, originalType)) {
-      return Res;
-    }
-    else if(allowTotalDefnImplicitPtrToInt(sourceType, originalType, GlobalTD)) {
-      LPDEBUG("Accepting " << itcache(Res) << " implicit ptrtoint to " << *(sourceType) << "\n");
-      return Res;
-    }
+    release_assert(PV.TotalIVType == ValSetTypeScalar || PV.TotalIVType == ValSetTypeVarArg);
+    if(PV.TotalIVType == ValSetTypeVarArg)
+      return PointerBase::get(PV.TotalIV, PV.TotalIVType);
+
+    const Type* sourceType = PV.TotalIV.V.getType();
+
+    if(allowTotalDefnImplicitCast(sourceType, originalType) || allowTotalDefnImplicitPtrToInt(sourceType, originalType, GlobalTD))
+      return PointerBase::get(PV.TotalIV, PV.TotalIVType);
 
   }
+
+  ShadowValue NewSV = PVToSV(PV, RSO);
+  if(NewSV.isInval())
+    return PointerBase();
+
+  PointerBase NewPB;
+  if(!getPointerBase(NewSV, NewPB))
+    return PointerBase();
+
+  return NewPB;
+
+}
+
+ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& RSO) {
 
   // Otherwise try to use a sub-value:
   if(PV.isTotal() || PV.isPartial()) {
@@ -1003,7 +1013,7 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
     // Note that because you can't write an LLVM struct literal featuring a non-constant,
     // the only kinds of pointers this permits to be moved around are globals, since they are constant pointers.
-    Constant* SalvageC = PV.isTotal() ? dyn_cast_or_null<Constant>(PV.TotalSV.getVal()) : PV.C;
+    Constant* SalvageC = PV.isTotal() ? dyn_cast_or_null<Constant>(PV.TotalIV.V.getVal()) : PV.C;
 
     if(SalvageC) {
 
@@ -1374,7 +1384,11 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
 SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
 
-  if(PB1.Values.size() == 1 && PB2.Values.size() == 1 && PB1.Values[0].Offset != LLONG_MAX && PB2.Values[0].Offset != LLONG_MAX && PB1.Values[0].V == PB2.Values[0].V)
+  if(PB1.Values.size() == 1 && 
+     PB2.Values.size() == 1 && 
+     PB1.Values[0].Offset != LLONG_MAX && 
+     PB1.Values[0].Offset == PB2.Values[0].Offset && 
+     PB1.Values[0].V == PB2.Values[0].V)
     return SVMustAlias;
 
   for(unsigned i = 0; i < PB1.Values.size(); ++i) {
@@ -1436,8 +1450,8 @@ SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowV
 }
 
 SVAAResult llvm::aliasSVs(ShadowValue V1, unsigned V1Size,
-					  ShadowValue V2, unsigned V2Size,
-					  bool usePBKnowledge) {
+			  ShadowValue V2, unsigned V2Size,
+			  bool usePBKnowledge) {
   
   if((!V1.isVal()) || (!V2.isVal())) {
     SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);

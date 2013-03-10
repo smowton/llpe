@@ -296,7 +296,8 @@ struct PartialVal {
   // Value is tainted by varargs at any point?
   bool isVarargTainted;
 
-  ShadowValue TotalSV;
+  ImprovedVal TotalIV;
+  ValSetType TotalIVType;
 
   // Used if it's a bounded constant:
   Constant* C;
@@ -318,12 +319,12 @@ struct PartialVal {
 
   void initByteArray(uint64_t);
   
- PartialVal(ShadowValue Total) : 
-  type(PVTotal), isVarargTainted(false), TotalSV(Total), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
- PartialVal(Constant* _C, uint64_t Off) : 
-  type(PVPartial), isVarargTainted(false), TotalSV(), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  PartialVal(ValSetType TotalType, ImprovedVal Total) : 
+  type(PVTotal), isVarargTainted(false), TotalIV(Total), TotalIVType(TotalType), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  PartialVal(Constant* _C, uint64_t Off) : 
+  type(PVPartial), isVarargTainted(false), TotalIV(), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
  PartialVal() :
-  type(PVEmpty), isVarargTainted(false), TotalSV(), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
+  type(PVEmpty), isVarargTainted(false), TotalIV(), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
   PartialVal(uint64_t nBytes); // Byte array constructor
   PartialVal(const PartialVal& Other);
   PartialVal& operator=(const PartialVal& Other);
@@ -338,8 +339,8 @@ struct PartialVal {
     return PartialVal(_C, Off);
   }
 
-  static PartialVal getTotal(ShadowValue SV) {
-    return PartialVal(SV);
+  static PartialVal getTotal(ValSetType Type, ImprovedVal IV) {
+    return PartialVal(Type, IV);
   }
   
   static PartialVal getByteArray(uint64_t size) {
@@ -354,7 +355,7 @@ inline bool operator==(PartialVal V1, PartialVal V2) {
   if(V1.type == PVEmpty && V2.type == PVEmpty)
     return true;
   else if(V1.type == PVTotal && V2.type == PVTotal)
-    return V1.TotalSV == V2.TotalSV;
+    return V1.TotalIV == V2.TotalIV;
   else if(V1.type == PVPartial && V2.type == PVPartial)
     return ((V1.C == V2.C) &&
 	    (V1.ReadOffset == V2.ReadOffset));
