@@ -44,6 +44,9 @@ bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
     return false;
   }
 
+  if(instResolvedAsInvariant(I))
+    return false;
+
   switch(I->invar->I->getOpcode()) {
   default:
     return true;

@@ -467,6 +467,22 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
 
 }
 
+bool IntegrationAttempt::instResolvedAsInvariant(ShadowInstruction* SI) {
+
+  const Loop* SVScope = SI->invar->scope;
+  if(L && SVScope != L && ((!SVScope) || SVScope->contains(L))) {
+      
+    ShadowInstruction* SI2 = getInstFalling(SI->parent->invar, SI->invar->idx);
+
+    if(getConstReplacement(SI2))
+      return true;
+
+  }
+
+  return false;
+
+}
+
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;

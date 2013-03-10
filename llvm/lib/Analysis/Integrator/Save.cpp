@@ -740,6 +740,50 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
 
 }
 
+void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB) {
+
+  if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
+    emitCall(BB, I, emitBB);
+    if(I->committedVal)
+      return;
+    // Else fall through to fill in a committed value:
+  }
+
+  if(I->i.dieStatus != INSTSTATUS_ALIVE)
+    return;
+
+  if(instResolvedAsInvariant(I))
+    return;
+
+  if(Constant* C = getConstReplacement(ShadowValue(I))) {
+    I->committedVal = C;
+    return;
+  }
+
+  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
+    I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
+    return;
+  }
+      
+  else if((!inst_is<AllocaInst>(I)) && I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
+    synthCommittedPointer(I, emitBB);
+    return;
+  }
+
+  // Already emitted calls above:
+  if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
+    return;
+
+  // We'll emit an instruction. Is it special?
+  if(inst_is<PHINode>(I))
+    emitPHINode(BB, I, emitBB);
+  else if(inst_is<TerminatorInst>(I))
+    emitTerminator(BB, I, emitBB);
+  else
+    emitInst(BB, I, emitBB);
+
+}
+
 void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
 
   uint32_t thisLoopHeaderIdx = i;
@@ -749,9 +793,6 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     ShadowBB* BB = BBs[i];
     if(!BB)
       continue;
-
-    if(ScopeL && !ScopeL->contains(BB->invar->naturalScope))
-      break;
 
     if(BB->invar->naturalScope != ScopeL) {
 
@@ -785,43 +826,8 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* I = &(BB->insts[j]);
-
-      if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
-	emitCall(BB, I, emitBB);
-	if(I->committedVal)
-	  continue;
-	// Else fall through to fill in a committed value:
-      }
-
-      if(I->i.dieStatus != INSTSTATUS_ALIVE)
-	continue;
-
-      if(Constant* C = getConstReplacement(ShadowValue(I))) {
-	I->committedVal = C;
-	continue;
-      }
-
-      else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
-	I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
-	continue;
-      }
-      
-      else if((!inst_is<AllocaInst>(I)) && I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
-	synthCommittedPointer(I, emitBB);
-	continue;
-      }
-
-      // Already emitted calls above:
-      if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
-	continue;
-
-      // We'll emit an instruction. Is it special?
-      if(inst_is<PHINode>(I))
-	emitPHINode(BB, I, emitBB);
-      else if(inst_is<TerminatorInst>(I))
-	emitTerminator(BB, I, emitBB);
-      else
-	emitInst(BB, I, emitBB);
+      I->committedVal = 0;
+      emitOrSynthInst(I, BB, emitBB);
 
     }    
 

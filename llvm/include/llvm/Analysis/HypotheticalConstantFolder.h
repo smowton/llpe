@@ -767,6 +767,7 @@ protected:
   ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
   ShadowInstruction* getInst(ShadowInstructionInvar* SII);
+  bool instResolvedAsInvariant(ShadowInstruction* SI);
 
   // The toplevel loop:
   void analyse();
@@ -993,6 +994,7 @@ protected:
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB);
+  void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 

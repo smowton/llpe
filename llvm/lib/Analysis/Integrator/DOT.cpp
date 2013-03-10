@@ -49,16 +49,9 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
     return "green";
   else if(ShadowInstruction* SI = SV.getInst()) {
 
-    const Loop* SVScope = SV.getScope();
-    if(L && SVScope != L && ((!SVScope) || SVScope->contains(L))) {
-      
-      ShadowInstruction* SI2 = getInstFalling(SI->parent->invar, SI->invar->idx);
+    if(instResolvedAsInvariant(SI))
+      return "limegreen";
 
-      if(getConstReplacement(SI2))
-	return "limegreen";
-
-    }
-    
   }
   else if(IAI->PB.Values.size() != 0 && !IAI->PB.Overdef)
       return "darkgreen";
