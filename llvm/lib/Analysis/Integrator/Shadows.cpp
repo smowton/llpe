@@ -9,10 +9,7 @@
 
 using namespace llvm;
 
-static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL, bool enterLoops) {
-
-  if(!Visited.insert(BB))
-    return;
+static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL) {
 
   const Loop* BBL = LI->getLoopFor(BB);
   
@@ -20,26 +17,27 @@ static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resu
   if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
     return;
 
-  if(enterLoops && (MyL != BBL)) {
+  if(!Visited.insert(BB))
+    return;
 
-    // Child loop. Use the loop successors rather than the block successors.
+  // Follow loop exiting edges if any
+  if(MyL != BBL) {
+
     SmallVector<BasicBlock*, 4> ExitBlocks;
     BBL->getExitBlocks(ExitBlocks);
     for(SmallVector<BasicBlock*, 4>::iterator it = ExitBlocks.begin(), it2 = ExitBlocks.end(); it != it2; ++it) {
       
-      createTopOrderingFrom(*it, Result, Visited, LI, MyL, enterLoops);
+      createTopOrderingFrom(*it, Result, Visited, LI, MyL);
       
     }
 
   }
-  else {
 
-    for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
+  // Explore all successors within this loop:
+  for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
-      createTopOrderingFrom(*SI, Result, Visited, LI, MyL, enterLoops);
-
-    }
-
+    createTopOrderingFrom(*SI, Result, Visited, LI, BBL);
+    
   }
 
   Result.push_back(BB);
@@ -112,7 +110,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   std::vector<BasicBlock*> TopOrderedBlocks;
   SmallSet<BasicBlock*, 8> VisitedBlocks;
 
-  createTopOrderingFrom(&F.getEntryBlock(), TopOrderedBlocks, VisitedBlocks, LI, /* loop = */ 0, /* enterLoops = */ false);
+  createTopOrderingFrom(&F.getEntryBlock(), TopOrderedBlocks, VisitedBlocks, LI, /* loop = */ 0);
 
   std::reverse(TopOrderedBlocks.begin(), TopOrderedBlocks.end());
 
