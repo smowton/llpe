@@ -769,6 +769,7 @@ protected:
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
   ShadowInstruction* getInst(ShadowInstructionInvar* SII);
   bool instResolvedAsInvariant(ShadowInstruction* SI);
+  ShadowInstruction* getMostLocalInst(uint32_t blockIdx, uint32_t instIdx);
 
   // The toplevel loop:
   void analyse();
@@ -793,6 +794,8 @@ protected:
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
   void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
+  void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
+  void getCommittedOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, bool finalise, PointerBase& NewPB);
 
   // CFG analysis:
@@ -987,6 +990,7 @@ protected:
   void commitCFG();
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
+  ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void fixupHeaderPHIs(ShadowBB* BB);

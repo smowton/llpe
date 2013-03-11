@@ -246,6 +246,8 @@ bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
       if(Base.getCtx() && !Base.getCtx()->isAvailableFromCtx(V.getCtx()))
 	return false;
+      if(Base.getInst() && Base.getInst() == V.getInst())
+	return false;
 
     }
 
@@ -375,7 +377,7 @@ bool InlineAttempt::isOwnCallUnused() {
   if(!parent)
     return false;
   else
-    return parent->valueIsDead(CI);
+    return CI->i.dieStatus != INSTSTATUS_ALIVE;
 
 }
 
@@ -462,15 +464,7 @@ void IntegrationAttempt::runDIE() {
 
       CallInst* CI = dyn_cast_inst<CallInst>(SI);
 
-      if(CI) {
-	if(InlineAttempt* IA = getInlineAttempt(CI)) {
-
-	  IA->runDIE();
-
-	}
-      }
-
-      if(SI->invar->I->mayHaveSideEffects() && ((!CI) || !forwardableOpenCalls.count(CI))) {
+      if(SI->invar->I->mayHaveSideEffects() && !CI) {
 
 	continue;
 
@@ -479,6 +473,16 @@ void IntegrationAttempt::runDIE() {
       if(valueIsDead(ShadowValue(SI))) {
 
 	SI->i.dieStatus |= INSTSTATUS_DEAD;
+
+      }
+
+      if(CI) {
+
+	if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+	  IA->runDIE();
+
+	}
 
       }
 

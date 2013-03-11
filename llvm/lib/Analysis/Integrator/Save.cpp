@@ -263,9 +263,13 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
     return getBBFalling(BBI);
 
   // Else, BBI is further in than this block: we must be entering exactly one loop.
-  if(PeelAttempt* PA = getPeelAttempt(BBI->naturalScope)) {
-    if(PA->isEnabled())
-      return PA->Iterations[0]->getBB(*BBI);
+  // Only enter if we're emitting the loop in its proper scope: otherwise we're
+  // writing the residual version of a loop.
+  if(BB->invar->scope == L) {
+    if(PeelAttempt* PA = getPeelAttempt(BBI->naturalScope)) {
+      if(PA->isEnabled())
+	return PA->Iterations[0]->getBB(*BBI);
+    }
   }
 
   // Otherwise loop unexpanded or disabled: jump direct to the residual loop.
@@ -273,15 +277,23 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
 
 }
 
-ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
+ShadowBB* IntegrationAttempt::getBBFalling2(ShadowBBInvar* BBI) {
 
   if(BBI->naturalScope == L)
     return getBB(*BBI);
   else {
     release_assert(parent && L && "Out of scope in getBBFalling");
-    return parent->getBBFalling(BBI);
+    return parent->getBBFalling2(BBI);
   }
 
+}
+
+ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
+
+  if((!L) || L->contains(BBI->naturalScope))
+    return getBB(*BBI);
+  return parent->getBBFalling2(BBI);
+  
 }
 
 static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) {
@@ -331,14 +343,136 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
 }
 
+void IntegrationAttempt::getCommittedOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
+
+  if(edgeIsDead(ExitingBB, ExitedBB))
+    return;
+
+  if(ExitingBB->naturalScope != L) {
+    
+    // Read from child loop if appropriate:
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
+
+      if(PA->isEnabled()) {
+
+	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
+	    
+	  PeelIteration* Iter = PA->Iterations[i];
+	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs);
+	  
+	}
+
+	if(PA->isTerminated())
+	  return;
+
+      }
+
+    }
+
+  }
+
+  // Loop unexpanded or value local or lower:
+
+  ShadowInstIdx valOp = SI->invar->operandIdxs[valOpIdx];
+  ShadowValue NewOp;
+  if(valOp.instIdx != INVALID_INSTRUCTION_IDX && valOp.blockIdx != INVALID_BLOCK_IDX) {
+    NewOp = getInst(valOp.blockIdx, valOp.instIdx);
+    if(!getConstReplacement(NewOp))
+      NewOp = getMostLocalInst(valOp.blockIdx, valOp.instIdx);
+  }
+  else
+    NewOp = SI->getOperand(valOpIdx);
+
+  ops.push_back(NewOp);
+  if(BBs) {
+    ShadowBB* NewBB = getBB(*ExitingBB);
+    release_assert(NewBB);
+    BBs->push_back(NewBB);
+  }
+
+}
+
+void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
+
+  ShadowInstructionInvar* SII = SI->invar;
+  ShadowBBInvar* BB = SII->parent;
+  
+  ShadowInstIdx blockOp = SII->operandIdxs[valOpIdx+1];
+
+  assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
+
+  ShadowBBInvar* OpBB = getBBInvar(blockOp.blockIdx);
+
+  // SI->parent->invar->scope == L checks that we're not emitting a PHI for a residual loop body.
+  if(SI->parent->invar->scope == L && OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
+    getCommittedOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
+  else {
+
+    // Arg is local (can't be lower or this is a header phi)
+    if(!edgeIsDead(OpBB, BB)) {
+      ops.push_back(SI->getCommittedOperand(valOpIdx));
+      if(BBs) {
+	ShadowBB* NewBB = getBBFalling(OpBB);
+	release_assert(NewBB);
+	BBs->push_back(NewBB);
+      }
+    }
+
+  }
+
+}
+
 void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPN) {
+
+  // Special case: populating the header PHI of a residualised loop that has some specialised iterations.
+  // Populate with PHI([latch_value, last_spec_latch], [latch_value, general_latch])
+  // This can't be a header of an terminated loop or that of a specialised iteration since populate
+  // is not called for those.
+
+  if(BB->invar->naturalScope && BB->invar->BB == BB->invar->naturalScope->getHeader()) {
+    if(PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope)) {
+      if(PA->isEnabled()) {
+
+	// Find the latch arg:
+	uint32_t latchIdx = PA->invarInfo->latchIdx;
+	int latchOperand = cast<PHINode>(I->invar->I)->
+	  getBasicBlockIndex(BB->invar->naturalScope->getLoopLatch());
+	release_assert(latchOperand >= 0);
+
+	ShadowValue lastLatchOperand, generalLatchOperand;
+	
+	ShadowInstIdx& valIdx = I->invar->operandIdxs[latchOperand*2];
+	if(valIdx.blockIdx == INVALID_BLOCK_IDX || valIdx.instIdx == INVALID_INSTRUCTION_IDX) {
+	  lastLatchOperand = I->getOperand(latchOperand*2);
+	  generalLatchOperand = lastLatchOperand;
+	}
+	else {
+	  lastLatchOperand = ShadowValue(PA->Iterations.back()->getInst(valIdx.blockIdx, valIdx.instIdx));
+	  generalLatchOperand = ShadowValue(getInst(valIdx.blockIdx, valIdx.instIdx));
+	}
+
+	// Right, build the PHI:
+	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedTail;
+	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedTail;
+
+	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), NewPN);
+	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), NewPN);
+
+	NewPN->addIncoming(lastLatchVal, lastLatchBlock);
+	NewPN->addIncoming(generalLatchVal, generalLatchBlock);
+
+	return;
+
+      }
+    }
+  }
 
   // Emit a normal PHI; all arguments have already been prepared.
   for(uint32_t i = 0, ilim = I->invar->operandIdxs.size(); i != ilim; i+=2) {
       
     SmallVector<ShadowValue, 1> predValues;
     SmallVector<ShadowBB*, 1> predBBs;
-    getExitPHIOperands(I, i, predValues, &predBBs);
+    getCommittedExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
       Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), NewPN);
@@ -401,7 +535,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
       if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
-	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
+	Value* PHIVal = getValAsType(getCommittedValue(I->getCommittedOperand(0)), F.getFunctionType()->getReturnType(), BI);
 	IA->returnPHI->addIncoming(PHIVal, BB->committedTail);
       }
 
@@ -460,7 +594,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       }
       else { 
 
-	ShadowValue op = I->getOperand(i);
+	ShadowValue op = I->getCommittedOperand(i);
 	Value* opV = getCommittedValue(op);
 	newTerm->setOperand(i, opV);
 
@@ -663,7 +797,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   // Normal instruction: no BB arguments, and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
-    ShadowValue op = I->getOperand(i);
+    ShadowValue op = I->getCommittedOperand(i);
     Value* opV = getCommittedValue(op);
     const Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
@@ -735,7 +869,7 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
       I->committedVal = OffsetI;
     }
     else {
-      I->committedVal = new BitCastInst(OffsetI, I->getType(), "synthcastback", emitBB);
+      I->committedVal = CastInst::CreatePointerCast(OffsetI, I->getType(), "synthcastback", emitBB);
     }
 
   }

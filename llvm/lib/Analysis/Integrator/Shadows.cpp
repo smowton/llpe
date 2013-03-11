@@ -485,6 +485,29 @@ bool IntegrationAttempt::instResolvedAsInvariant(ShadowInstruction* SI) {
 
 }
 
+ShadowInstruction* IntegrationAttempt::getMostLocalInst(uint32_t blockIdx, uint32_t instIdx) {
+
+  bool inScope;
+  ShadowBB* OpBB = getBB(blockIdx, &inScope);
+  if(!inScope) {
+
+    // Access to parent context.
+    return getMostLocalInst(blockIdx, instIdx);
+
+  }
+  else if(!OpBB) {
+    
+    return 0;
+
+  }
+  else {
+
+    return &(OpBB->insts[instIdx]);
+
+  }
+
+}
+
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;
@@ -547,6 +570,23 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
     else
       return ShadowValue();
   }
+
+}
+
+// Like getOperand, but we need to only return invariant versions of instructions
+// if they're resolved.
+ShadowValue ShadowInstruction::getCommittedOperand(uint32_t i) {
+
+  ShadowValue normalOp = getOperand(i);
+  ShadowInstruction* opInst = normalOp.getInst();
+  if(!opInst)
+    return normalOp;
+  if(getConstReplacement(normalOp))
+    return normalOp;
+
+  ShadowInstIdx& SII = invar->operandIdxs[i];
+  uint32_t blockOpIdx = SII.blockIdx;
+  return ShadowValue(parent->IA->getMostLocalInst(blockOpIdx, SII.instIdx));
 
 }
 
