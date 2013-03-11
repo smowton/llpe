@@ -54,7 +54,18 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
 
   std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> P;
 
-  DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> >::iterator it = LoopPDTs.find(L);
+  const Loop* Key = L;
+  if(!Key) {
+
+    // Hack: for root contexts use the ShadowFI pointer as a key. This should be fine as those
+    // are never deallocated and so can never clash with loop pointers.
+    Key = (const Loop*)(&invarInfo);
+
+  }
+
+  DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> >::iterator it = 
+    LoopPDTs.find(Key);
+
   if(it != LoopPDTs.end()) {
 
     P = it->second;
@@ -71,7 +82,7 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
     DEBUG(LPDT->print(dbgs()));
     */
 
-    LoopPDTs[L] = P = std::make_pair(LW, LPDT);
+    LoopPDTs[Key] = P = std::make_pair(LW, LPDT);
 
   }
 
@@ -218,11 +229,9 @@ void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newSta
       const BBWrapper* BW = DTN->getBlock();
       if(BW->BB) {
 	  
-	const Loop* BBL = const_cast<ShadowBBInvar*>(BW->BB)->scope;
-	if(BBL == L) {
-
-	  setBlockStatus(const_cast<ShadowBBInvar*>(BW->BB), newStatus);
-
+	if((!BW->BB->naturalScope) || BW->BB->naturalScope->contains(L)) {
+	  IntegrationAttempt* BlockIA = getIAForScope(BW->BB->naturalScope);
+	  BlockIA->setBlockStatus(const_cast<ShadowBBInvar*>(BW->BB), newStatus);
 	}
 
       }

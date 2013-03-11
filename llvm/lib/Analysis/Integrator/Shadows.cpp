@@ -360,8 +360,10 @@ ShadowBB* IntegrationAttempt::getOrCreateBB(uint32_t i) {
 
 ShadowBB* IntegrationAttempt::getOrCreateBB(ShadowBBInvar* BBI) {
 
-  if(ShadowBB* BB = getBB(*BBI))
+  bool inScope;
+  if(ShadowBB* BB = getBB(*BBI, &inScope))
     return BB;
+  release_assert(inScope && "getOrCreateBB in wrong scope");
   return createBB(BBI);
 
 }
