@@ -22,6 +22,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
     case Instruction::IntToPtr:
     case Instruction::SExt:
     case Instruction::ZExt:
+    case Instruction::BitCast:
       return getValPB(CE->getOperand(0));
     case Instruction::GetElementPtr:
 

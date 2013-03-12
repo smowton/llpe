@@ -1001,6 +1001,7 @@ protected:
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void synthCommittedPointer(ShadowValue, BasicBlock* emitBB);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
+  void commitLoopInvariants(PeelAttempt*, uint32_t startIdx);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 

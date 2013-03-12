@@ -649,6 +649,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
 						       Intrinsic::memcpy, 
 						       Tys, 3);
+	Value *ReadBuffer = getCommittedValue(I->getCallArgOperand(1));
+	release_assert(ReadBuffer && "Committing read atop dead buffer?");
 	Value *DestCast = new BitCastInst(getCommittedValue(I->getCallArgOperand(1)), VoidPtrTy, "readcast", emitBB);
 
 	Value *CallArgs[] = {
@@ -902,7 +904,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     return;
   }
 
-  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1) {
+  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst()) {
     I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
     return;
   }
@@ -926,6 +928,49 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
 
 }
 
+void IntegrationAttempt::commitLoopInvariants(PeelAttempt* PA, uint32_t i) {
+
+  BasicBlock* invarEmitBB = getBB(PA->invarInfo->preheaderIdx)->committedTail;
+  // For simplicity remove the terminator for now and put it back when we're done:
+  Instruction* preheaderBranch = invarEmitBB->getTerminator();
+  preheaderBranch->removeFromParent();
+       
+  uint32_t invari = i;
+  while(invari < nBBs) {
+
+    ShadowBBInvar* InvarBBI = getBBInvar(invari + BBsOffset);
+    if(!PA->L->contains(InvarBBI->naturalScope))
+      break;
+
+    if(ShadowBB* InvarBB = BBs[invari]) {
+
+      for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
+
+	ShadowInstruction* InvarSI = &(InvarBB->insts[j]);
+	if(InvarSI->invar->scope == L) {
+
+	  if(Constant* C = getConstReplacement(InvarSI))
+	    InvarSI->committedVal = C;
+	  else if(InvarSI->i.PB.Type == ValSetTypePB && InvarSI->i.PB.Values.size() == 1 && InvarSI->i.PB.Values[0].Offset != LLONG_MAX) {
+
+	    synthCommittedPointer(InvarSI, invarEmitBB);
+
+	  }
+
+	}
+
+      }
+	    
+    }
+
+    ++invari;
+
+  }
+
+  invarEmitBB->getInstList().push_back(preheaderBranch);
+
+}
+
 void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
 
   uint32_t thisLoopHeaderIdx = i;
@@ -944,8 +989,17 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled()) {
+
+	// First create any synth'd pointers (and note synth'd constants) that
+	// may be used within the loop:
+
+	commitLoopInvariants(PA, i);
+
+	// Now commit the individual iterations:
+
 	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
 	  PA->Iterations[j]->commitInstructions();
+
       }
       
       // If the loop has terminated, skip populating the blocks in this context.

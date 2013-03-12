@@ -476,6 +476,10 @@ bool IntegrationAttempt::instResolvedAsInvariant(ShadowInstruction* SI) {
 
     if(getConstReplacement(SI2))
       return true;
+    ShadowValue Ign1;
+    int64_t Ign2;
+    if(getBaseAndConstantOffset(ShadowValue(SI2), Ign1, Ign2))
+      return true;
 
   }
 

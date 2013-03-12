@@ -427,7 +427,6 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
     return false;
 
   bool flip;
-  bool exists;
   ConstantInt* CmpInt = 0;
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
@@ -436,12 +435,10 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   if(op0I && Ops[0].first == ValSetTypeFD) {
     flip = false;
-    exists = op0I->parent->IA->openCallSucceeds(op0I->invar->I);
     CmpInt = dyn_cast_or_null<ConstantInt>(op1.getVal());
   }
   else if(op1I && Ops[1].first == ValSetTypeFD) {
     flip = true;
-    exists = op1I->parent->IA->openCallSucceeds(op1I->invar->I);
     CmpInt = dyn_cast_or_null<ConstantInt>(op0.getVal());
   }
   else {
@@ -450,28 +447,13 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   if(CmpInt) {
     
-    if(!exists) {
-
-      ConstantInt *Arg0, *Arg1;
-      Arg0 = ConstantInt::getSigned(CmpInt->getType(), -1);
-      Arg1 = CmpInt;
-      if(flip)
-	std::swap(Arg0, Arg1);
-      Improved.V = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), Arg0, Arg1, GlobalTD));
-      ImpType = ValSetTypeScalar;
-
+    Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
+    ImpType = ValSetTypeScalar;
+    if(!Improved.V.isInval()) {
+      LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
     }
     else {
-
-      Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
-      ImpType = ValSetTypeScalar;
-      if(!Improved.V.isInval()) {
-	LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
-      }
-      else {
-	LPDEBUG("Comparison against file descriptor inconclusive\n");
-      }
-
+      LPDEBUG("Comparison against file descriptor inconclusive\n");
     }
 
   }

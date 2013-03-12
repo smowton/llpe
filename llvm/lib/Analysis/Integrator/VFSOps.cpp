@@ -136,9 +136,11 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  bool exists = sys::Path(Filename).exists();
 	  forwardableOpenCalls[CI] = new OpenStatus(Filename, exists, FDEscapes);
 	  if(exists) {
+	    SI->i.PB = PointerBase::get(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
 	  }
 	  else {
+	    setReplacement(SI, ConstantInt::get(SI->invar->I->getType(), (uint64_t)-1, true));
 	    LPDEBUG("Open of " << Filename << " returning ENOENT\n");
 	  }
 
