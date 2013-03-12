@@ -102,43 +102,49 @@ void IntegrationAttempt::queueUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
 
 }
 
+void IntegrationAttempt::queueUsersUpdatePBLocal(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
+
+  ShadowInstruction* SI = getInst(I);
+  if(!SI)
+    return;
+
+  if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
+
+    if(InlineAttempt* IA = getInlineAttempt(CI)) {
+
+      Function* F = &(IA->getFunction());
+      for(uint32_t i = 0; i < F->arg_size(); ++i) {
+	  
+	if(I->I == CI->getArgOperand(i))
+	  queueUpdatePB(ShadowValue(&(IA->argShadows[i])), LPBA);
+
+      }
+
+    }
+
+  }
+  else if(inst_is<StoreInst>(SI)) {
+
+    for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->indirectUsers.begin(), it2 = SI->indirectUsers.end(); it != it2; ++it) {
+
+      queueUpdatePB(*it, LPBA);
+
+    }
+
+  }
+  else {
+
+    queueUpdatePB(SI, LPBA);
+
+  }
+
+}
+
 void IntegrationAttempt::queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
 
   if(I->scope == L) {
 
-    ShadowInstruction* SI = getInst(I);
-    if(!SI)
-      return;
-
-    if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
-
-      if(InlineAttempt* IA = getInlineAttempt(CI)) {
-
-	Function* F = &(IA->getFunction());
-	for(uint32_t i = 0; i < F->arg_size(); ++i) {
-	  
-	  if(I->I == CI->getArgOperand(i))
-	    queueUpdatePB(ShadowValue(&(IA->argShadows[i])), LPBA);
-
-	}
-
-      }
-
-    }
-    else if(inst_is<StoreInst>(SI)) {
-
-      for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->indirectUsers.begin(), it2 = SI->indirectUsers.end(); it != it2; ++it) {
-
-	queueUpdatePB(*it, LPBA);
-
-      }
-
-    }
-    else {
-
-      queueUpdatePB(SI, LPBA);
-
-    }
+    queueUsersUpdatePBLocal(I, LPBA);
 
   }
   else {
@@ -172,7 +178,7 @@ void IntegrationAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, Loo
   }
 
   if(investigateHere)
-    queueUsersUpdatePBFalling(I, LPBA);
+    queueUsersUpdatePBLocal(I, LPBA);
 
 }
 
@@ -243,7 +249,6 @@ void IntegrationAttempt::queuePBUpdateIfUnresolved(ShadowValue V, LoopPBAnalyser
   if(shouldCheckPB(V)) {
     
     LPBA->addVal(V);
-    //errs() << "Queue " << itcache(make_vc(V, this)) << "\n";
     if(ShadowInstruction* SI = V.getInst()) {
       SI->i.PB = PointerBase();
     }
@@ -351,11 +356,17 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
+      errs() << "Try eval " << it->getCtx()->itcache(*it) << "\n";
       if(it->getCtx()->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVals) {
 	  modifiedVals->push_back(*it);
 	}
       }
+      PointerBase NewPB;
+      getPointerBase(*it, NewPB);
+      errs() << "Result ";
+      it->getCtx()->printPB(errs(), NewPB);
+      errs() << "\n";
 
       //++(considerCount[*it]);
 

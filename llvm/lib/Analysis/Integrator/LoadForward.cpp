@@ -1060,7 +1060,7 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result, std::string& error) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -1097,14 +1097,16 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	uint64_t FromSize = (GlobalTD->getTypeSizeInBits(FromType) + 7) / 8;
 
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
-	  Result = PointerBase();
+	  error = "Const out of range";
+	  Result = PointerBase::getOverdef();
 	  return true;
 	}
 
 	Constant* ExVal = extractAggregateMemberAt(GV->getInitializer(), PtrOffset, LoadI->getType(), LoadSize, GlobalTD);
 
 	if(!ExVal) {
-	  Result = PointerBase();
+	  error = "Const can't extract";
+	  Result = PointerBase::getOverdef();
 	  return true;
 	}
       
@@ -1116,7 +1118,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	if(CSize < PtrOffset) {
 	  
 	  LPDEBUG("Can't forward from constant: read from global out of range\n");
-	  Result = PointerBase();
+	  error = "Const out of range 2";
+	  Result = PointerBase::getOverdef();
 	  return true;
 	    
 	}
@@ -1132,7 +1135,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	else {
 
 	  LPDEBUG("ReadDataFromGlobal failed\n");
-	  Result = PointerBase();
+	  error = "Const RDFG failed";
+	  Result = PointerBase::getOverdef();
 	  return true;
 
 	}
@@ -1162,7 +1166,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
       if(!foundNonConst) {
 
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
-	Result = PointerBase();
+	error = "Const pointer vague";
+	Result = PointerBase::getOverdef();
 	return true;
 
       }
@@ -1291,8 +1296,15 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
   PointerBase ConstResult;
-  if(tryResolveLoadFromConstant(LI, ConstResult)) {
+  std::string error;
+  if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
     NewPB = ConstResult;
+    if(NewPB.Overdef) {
+      if(!finalise)
+	optimisticForwardStatus[LI->invar->I] = error;
+      else
+	pessimisticForwardStatus[LI->invar->I] = error;
+    }
     return NewPB.isInitialised();
   }
 

@@ -1251,9 +1251,14 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
   PointerBase OldPB;
   bool OldPBValid = getPointerBase(V, OldPB);
 
-  // Getting no worse:
-  if(finalise && LPBA && ((!OldPBValid) || OldPB.Overdef))
-    return false;
+  // In the optimistic phase it can only get worse; if we've found no information at all
+  // in the optimistic phase that can't improve in the pessimistic final check.
+  if(LPBA) {
+    if(OldPB.Overdef)
+      return false;
+    if(finalise && !OldPBValid)
+      return false;
+  }
 
   PointerBase NewPB;
   bool NewPBValid;

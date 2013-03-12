@@ -824,7 +824,7 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result, std::string& error);
   bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
@@ -897,6 +897,7 @@ protected:
   void queueUserUpdatePB(ShadowInstructionInvar*, LoopPBAnalyser*);
   void queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser*);
   void queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser*);
+  void queueUsersUpdatePBLocal(ShadowInstructionInvar* I, LoopPBAnalyser*);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
   void queuePBUpdateIfUnresolved(ShadowValue, LoopPBAnalyser*);
   void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
