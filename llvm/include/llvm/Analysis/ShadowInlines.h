@@ -102,6 +102,8 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   const Loop* getNaturalScope();
   bool isIDObject();
   InstArgImprovement* getIAI();
+  LLVMContext& getLLVMContext();
+  void setCommittedVal(Value* V);
 
 };
 
@@ -475,6 +477,7 @@ struct ShadowArg {
   ShadowArgInvar* invar;
   IntegrationAttempt* IA;
   InstArgImprovement i;  
+  Value* committedVal;
 
   const Type* getType() {
     return invar->A->getType();
@@ -666,6 +669,30 @@ inline InstArgImprovement* ShadowValue::getIAI() {
     return 0;
   }
 
+}
+
+inline LLVMContext& ShadowValue::getLLVMContext() {
+  switch(t) {
+  case SHADOWVAL_INST:
+    return u.I->invar->I->getContext();
+  case SHADOWVAL_ARG:
+    return u.A->invar->A->getContext();
+  default:
+    return u.V->getContext();
+  }
+}
+
+inline void ShadowValue::setCommittedVal(Value* V) {
+  switch(t) {
+  case SHADOWVAL_INST:
+    u.I->committedVal = V;
+    break;
+  case SHADOWVAL_ARG:
+    u.A->committedVal = V;
+    break;
+  default:
+    release_assert(0 && "Can't replace a value");
+  }
 }
 
 template<class X> inline bool val_is(ShadowValue V) {

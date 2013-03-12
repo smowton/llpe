@@ -490,7 +490,9 @@ ShadowInstruction* IntegrationAttempt::getMostLocalInst(uint32_t blockIdx, uint3
   if(!inScope) {
 
     // Access to parent context.
-    return getMostLocalInst(blockIdx, instIdx);
+    if(!parent)
+      return 0;
+    return parent->getMostLocalInst(blockIdx, instIdx);
 
   }
   else if(!OpBB) {

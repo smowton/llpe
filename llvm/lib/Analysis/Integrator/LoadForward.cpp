@@ -502,7 +502,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
   // For now, forbid using pursuing several different subqueries because a partial defn had multiple values.
   if(PB.Values.size() >= 1) {
 
-    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty()) {
+    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && PB.Values[0].V.getType() == originalType) {
 
       addPBDefn(PB, cacheAllowed);
       return !PB.Overdef;
@@ -1101,7 +1101,14 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	  return true;
 	}
 
-	getPointerBase(ShadowValue(extractAggregateMemberAt(GV->getInitializer(), PtrOffset, LoadI->getType(), LoadSize, GlobalTD)), Result);
+	Constant* ExVal = extractAggregateMemberAt(GV->getInitializer(), PtrOffset, LoadI->getType(), LoadSize, GlobalTD);
+
+	if(!ExVal) {
+	  Result = PointerBase();
+	  return true;
+	}
+      
+	getPointerBase(ShadowValue(ExVal), Result);
 	if((!Result.Overdef) && Result.Values.size() > 0)
 	  return true;
 

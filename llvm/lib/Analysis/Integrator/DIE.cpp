@@ -17,7 +17,7 @@
 using namespace llvm;
 
 static uint32_t DIEProgressN = 0;
-const uint32_t DIEProgressLimit = 1000;
+const uint32_t DIEProgressLimit = 10000;
 
 static void DIEProgress() {
 
@@ -126,8 +126,9 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
 
-    if(VI->scope == L)
+    if(VI->scope == L) {
       Visitor.visit((*it)->getInst(VI));
+    }
     else
       (*it)->visitVariant(VI, Visitor);
 
@@ -281,6 +282,10 @@ public:
   DIVisitor(ShadowValue _V) : V(_V), maybeLive(false) { }
 
   virtual void visit(ShadowInstruction* UserI) {
+
+    // Null instruction means we found a user in a dead block.
+    if(!UserI)
+      return;
 
     if(CallInst* CI = dyn_cast_inst<CallInst>(UserI)) {
 
@@ -459,30 +464,31 @@ void IntegrationAttempt::runDIE() {
 
       if(!shouldDIE(SI))
 	continue;
-      if(willBeReplacedWithConstantOrDeleted(ShadowValue(SI)))
-	continue;
 
-      CallInst* CI = dyn_cast_inst<CallInst>(SI);
+      bool delOrConst = willBeReplacedWithConstantOrDeleted(ShadowValue(SI));
 
-      if(SI->invar->I->mayHaveSideEffects() && !CI) {
+      if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
-	continue;
-
-      }
-
-      if(valueIsDead(ShadowValue(SI))) {
-
-	SI->i.dieStatus |= INSTSTATUS_DEAD;
-
-      }
-
-      if(CI) {
+	if((!delOrConst) && valueIsDead(ShadowValue(SI)))
+	  SI->i.dieStatus |= INSTSTATUS_DEAD; 
 
 	if(InlineAttempt* IA = getInlineAttempt(CI)) {
 
 	  IA->runDIE();
 
 	}
+
+      }
+      else {
+
+	if(delOrConst)
+	  continue;
+
+	if(SI->invar->I->mayHaveSideEffects())
+	  continue;
+
+	if(valueIsDead(ShadowValue(SI)))
+	  SI->i.dieStatus |= INSTSTATUS_DEAD;
 
       }
 

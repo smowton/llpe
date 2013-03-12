@@ -998,7 +998,7 @@ protected:
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  void synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB);
+  void synthCommittedPointer(ShadowValue, BasicBlock* emitBB);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
@@ -1274,6 +1274,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
   Value* getArgCommittedValue(ShadowArg* SA);
+  void commitArgsAndInstructions();
 
 };
 

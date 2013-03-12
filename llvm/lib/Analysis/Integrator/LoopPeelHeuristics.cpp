@@ -1383,7 +1383,7 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->CommitF = cloneEmptyFunction(&(RootIA->F), RootIA->F.getLinkage(), Name);
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
-  RootIA->commitInstructions();
+  RootIA->commitArgsAndInstructions();
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
   // Also exchange names so that external users will use this new version:
 

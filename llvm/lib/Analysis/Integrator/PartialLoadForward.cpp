@@ -322,7 +322,7 @@ bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, ui
 
 }
 
-bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
+bool llvm::getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error) {
 
   // memset(P, 'x', 1234) -> splat('x'), even if x is a variable, and
   // independently of what the offset is.

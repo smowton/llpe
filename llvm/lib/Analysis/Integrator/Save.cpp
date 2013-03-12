@@ -74,16 +74,22 @@ void IntegrationAttempt::localPrepareCommit() {
 
 std::string InlineAttempt::getCommittedBlockPrefix() {
 
-  return getShortHeader();
+  std::string ret;
+  {
+    raw_string_ostream RSO(ret);
+    RSO << F.getName() << "-" << SeqNumber << " ";
+  }
+  return ret;
 
 }
 
 std::string PeelIteration::getCommittedBlockPrefix() {
 
   std::string ret;
-  raw_string_ostream RSO(ret);
-  RSO << parentPA->getShortHeader() << " iteration " << iterationCount << " ";
-  RSO.flush();
+  {
+    raw_string_ostream RSO(ret);
+    RSO << F.getName() << "-L" << L->getHeader()->getName() << "-I" << iterationCount << "-" << SeqNumber << " ";
+  }
   return ret;
 
 }
@@ -141,7 +147,7 @@ void IntegrationAttempt::commitCFG() {
     std::string Name;
     {
       raw_string_ostream RSO(Name);
-      RSO << getCommittedBlockPrefix() << "." << BB->invar->BB->getName();
+      RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
     BB->committedTail = BB->committedHead = BasicBlock::Create(F.getContext(), Name, CF);
 
@@ -160,7 +166,7 @@ void IntegrationAttempt::commitCFG() {
 	      std::string Name;
 	      {
 		raw_string_ostream RSO(Name);
-		RSO << IA->getCommittedBlockPrefix() << ".callexit";
+		RSO << IA->getCommittedBlockPrefix() << "callexit";
 	      }
 	      BB->committedTail = IA->returnBlock = BasicBlock::Create(F.getContext(), Name, CF);
 	      IA->CommitF = CF;
@@ -172,7 +178,7 @@ void IntegrationAttempt::commitCFG() {
 	      std::string Name;
 	      {
 		raw_string_ostream RSO(Name);
-		RSO << IA->getCommittedBlockPrefix() << ".clone";
+		RSO << IA->getCommittedBlockPrefix() << "clone";
 	      }
 	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::PrivateLinkage, Name);
 	      IA->returnBlock = 0;
@@ -204,7 +210,7 @@ static Value* getCommittedValue(ShadowValue SV) {
     return SI->committedVal;
   else {
     ShadowArg* SA = SV.getArg();
-    return SA->IA->getFunctionRoot()->getArgCommittedValue(SA);
+    return SA->committedVal;
   }
   
 }
@@ -767,7 +773,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
       }
       
-      IA->commitInstructions();
+      IA->commitArgsAndInstructions();
     
       // TODO: what if the target function has no live return instructions?
       // I think this ought to be worked out in the main solver, killing future code.
@@ -808,12 +814,12 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
 }
 
-void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock* emitBB) {
+void IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
 
   ShadowValue Base;
   int64_t Offset;
-  getBaseAndConstantOffset(ShadowValue(I), Base, Offset);
-  const Type* Int8Ptr = Type::getInt8PtrTy(I->invar->I->getContext());
+  getBaseAndConstantOffset(I, Base, Offset);
+  const Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
 
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
 
@@ -829,16 +835,16 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
     if(Offset == 0)
       OffsetGV = CastGV;
     else {
-      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
+      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
       OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &Offset, 1);
     }
     
     // Cast to proper type:
-    if(I->getType() != Int8Ptr) {
-      I->committedVal = ConstantExpr::getBitCast(OffsetGV, I->getType());
+    if(I.getType() != Int8Ptr) {
+      I.setCommittedVal(ConstantExpr::getBitCast(OffsetGV, I.getType()));
     }
     else {
-      I->committedVal = OffsetGV;
+      I.setCommittedVal(OffsetGV);
     }
 
   }
@@ -860,16 +866,16 @@ void IntegrationAttempt::synthCommittedPointer(ShadowInstruction* I, BasicBlock*
     if(Offset == 0)
       OffsetI = CastI;
     else {
-      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(I->invar->I->getContext()), (uint64_t)Offset, true);
+      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
       OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
     }
 
     // Cast back:
-    if(I->getType() == Int8Ptr) {
-      I->committedVal = OffsetI;
+    if(I.getType() == Int8Ptr) {
+      I.setCommittedVal(OffsetI);
     }
     else {
-      I->committedVal = CastInst::CreatePointerCast(OffsetI, I->getType(), "synthcastback", emitBB);
+      I.setCommittedVal(CastInst::CreatePointerCast(OffsetI, I.getType(), "synthcastback", emitBB));
     }
 
   }
@@ -902,7 +908,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
   }
       
   else if((!inst_is<AllocaInst>(I)) && I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
-    synthCommittedPointer(I, emitBB);
+    synthCommittedPointer(ShadowValue(I), emitBB);
     return;
   }
 
@@ -974,6 +980,34 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
   
   if(ScopeL != L)
     fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
+
+}
+
+void InlineAttempt::commitArgsAndInstructions() {
+  
+  BasicBlock* emitBB = BBs[0]->committedHead;
+  for(uint32_t i = 0; i < F.arg_size(); ++i) {
+
+    ShadowArg* SA = &(argShadows[i]);
+    if(SA->i.dieStatus != INSTSTATUS_ALIVE)
+      continue;
+
+    if(Constant* C = getConstReplacement(SA)) {
+      SA->committedVal = C;
+      continue;
+    }
+    
+    if(SA->i.PB.Type == ValSetTypePB && SA->i.PB.Values.size() == 1 && SA->i.PB.Values[0].Offset != LLONG_MAX) {
+      synthCommittedPointer(ShadowValue(SA), emitBB);
+      continue;
+    }
+
+    // Finally just proxy whatever literal argument we're passed:
+    SA->committedVal = getArgCommittedValue(SA);
+
+  }
+
+  commitInstructions();
 
 }
 
