@@ -835,8 +835,8 @@ void IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
     if(Offset == 0)
       OffsetGV = CastGV;
     else {
-      Constant* Offset = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
-      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &Offset, 1);
+      Constant* OffC = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
+      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &OffC, 1);
     }
     
     // Cast to proper type:

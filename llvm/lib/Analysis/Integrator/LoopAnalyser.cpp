@@ -356,17 +356,11 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
-      errs() << "Try eval " << it->getCtx()->itcache(*it) << "\n";
       if(it->getCtx()->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVals) {
 	  modifiedVals->push_back(*it);
 	}
       }
-      PointerBase NewPB;
-      getPointerBase(*it, NewPB);
-      errs() << "Result ";
-      it->getCtx()->printPB(errs(), NewPB);
-      errs() << "\n";
 
       //++(considerCount[*it]);
 

@@ -743,7 +743,9 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
   
   if(BOp->getOpcode() == Instruction::Sub) {
 
-    if(Op0Ptr) {
+    if(!Op0Ptr)
+      return false;
+    if(!Op1Ptr) {
 
       ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
 
@@ -757,8 +759,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       return true;
 
     }
-
-    else if(Op0Ptr && Op1Ptr && Ops[0].second.V == Ops[1].second.V) {
+    else if(Ops[0].second.V == Ops[1].second.V) {
 
       // Subtracting pointers with a common base.
       if(Ops[0].second.Offset != LLONG_MAX && Ops[1].second.Offset != LLONG_MAX) {
