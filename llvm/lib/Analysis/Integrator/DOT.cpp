@@ -238,7 +238,7 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 
   // Handle exits from this loop / this loop's latch specially:
   if(!getSpecialEdgeDescription(BBI, SBI, rso))
-    rso << "Node" << SB->invar->BB;
+    rso << "Node" << SBI->BB;
 
   if(edgeIsDead(BBI, SBI)) {
     rso << "[color=gray]";
@@ -357,7 +357,8 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
 
       ShadowBBInvar* SuccBBI = getBBInvar(BBI->succIdxs[i]);
-      ShadowBB* SuccBB = getBB(*SuccBBI);
+      IntegrationAttempt* IA = getIAForScope(SuccBBI->naturalScope);
+      ShadowBB* SuccBB = IA->getBB(*SuccBBI);
 
       printOutgoingEdge(BBI, BB, SuccBBI, SuccBB, i, useLabels, deferEdgesOutside, deferredEdges, Out, brief);
 
