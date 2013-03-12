@@ -536,11 +536,11 @@ const ShadowValue BasicAliasAnalysis::DecomposeGEPExpression(ShadowValue FirstV,
     
     // Walk the indices of the GEP, accumulating them into BaseOff/VarIndices.
     gep_type_iterator GTI = gep_type_begin(GEPOp);
-    for(unsigned i = 0; i < GEPOp->getNumOperands() - 1; ++i, ++GTI) {
+    for(unsigned i = 0; i < GEPOp->getNumOperands() - 1; ++i) {
       ShadowValue Index = tryGetConstReplacement(getValOperand(V, i+1));
       
       // Compute the (potentially symbolic) offset in bytes for this index.
-      if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+      if (const StructType *STy = dyn_cast<StructType>(*GTI++)) {
         // For a struct, add the member offset.
         unsigned FieldNo = cast_val<ConstantInt>(Index)->getZExtValue();
         if (FieldNo == 0) continue;
