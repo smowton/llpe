@@ -372,6 +372,7 @@ bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNo
       
 	Constant* C = GV->getInitializer();
 	NewPV = PartialVal::getPartial(C, ReadOffset + Offset);
+	return true;
 
       }
 

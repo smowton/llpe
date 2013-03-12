@@ -781,7 +781,7 @@ protected:
 
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
   bool tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-  bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
+  bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   bool tryEvaluateResult(ShadowInstruction* SI, 
@@ -825,7 +825,7 @@ protected:
   // Load forwarding:
 
   bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result, std::string& error);
-  bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
+  bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:

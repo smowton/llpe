@@ -65,10 +65,11 @@ public:
   IntegrationAttempt* usedCacheEntryIA;
   LFCacheKey usedCacheEntryKey;
   bool isVarargTainted;
+  bool inLoopAnalyser;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false), inLoopAnalyser(iLA) { }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false), inLoopAnalyser(iLA) { }
 
   virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
@@ -534,7 +535,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
   if(!valSoFar.isComplete()) {
 
     // Disallow complex queries when solving for loop invariants:
-    if(maySubquery && cacheAllowed) {
+    if(maySubquery && (cacheAllowed || !inLoopAnalyser)) {
 
       NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error);
 
@@ -836,18 +837,20 @@ bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void
 
   bool cacheAllowed = *((bool*)Ctx);
 
+  // Memory intrinsics are dealt with in the direct effects path.
+  if(inst_is<MemIntrinsic>(I))
+    return false;
+
   if(OptimisticMode && !cacheAllowed) {
 
     bool ignore = true;
 
-    if(!inst_is<MemIntrinsic>(I)) {
-      Function* CF = getCalledFunction(I);
-      if(!CF)
+    Function* CF = getCalledFunction(I);
+    if(!CF)
+      ignore = false;
+    else {
+      if(!functionIsBlacklisted(CF))
 	ignore = false;
-      else {
-	if(!functionIsBlacklisted(CF))
-	  ignore = false;
-      }
     }
 
     if(ignore)
@@ -1107,15 +1110,17 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	Constant* ExVal = extractAggregateMemberAt(GV->getInitializer(), PtrOffset, LoadI->getType(), LoadSize, GlobalTD);
 
-	if(!ExVal) {
-	  error = "Const can't extract";
-	  Result = PointerBase::getOverdef();
-	  return true;
-	}
+	if(ExVal) {
       
-	getPointerBase(ShadowValue(ExVal), Result);
-	if((!Result.Overdef) && Result.Values.size() > 0)
+	  getPointerBase(ShadowValue(ExVal), Result);
+	  if(!((!Result.Overdef) && Result.Values.size() > 0)) {
+	    error = "No PB for ExVal";
+	    Result = PointerBase::getOverdef();
+	  }
+
 	  return true;
+
+	}
 
 	int64_t CSize = GlobalTD->getTypeAllocSize(GV->getInitializer()->getType());
 	if(CSize < PtrOffset) {
@@ -1189,7 +1194,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
   *disableCaching = false;
 
   if(LoadPtr.isInval()) {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar);
+    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false);
     Walker.walk();
     
     if(Walker.Result.Overdef) {
@@ -1203,7 +1208,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
     return Walker.Result;
   }
   else {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar);
+    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false);
     Walker.walk();
     
     if(Walker.Result.Overdef) {
@@ -1226,7 +1231,7 @@ PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowV
   PartialVal emptyPV;
   bool* disableCaching = new bool;
   *disableCaching = false;
-  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, false, 0, 0, disableCaching, emptyPV);
+  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, false, 0, 0, disableCaching, emptyPV, false);
 
   if(alreadyValidBytes) {
     bool* validBytes = Walker.getValidBuf();
@@ -1296,7 +1301,7 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // to be compatible with anything, the same as the mergepoint logic above
 // when finalise is false. When finalise = true this is just like normal load
 // forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser) {
 
   PointerBase ConstResult;
   std::string error;
@@ -1314,7 +1319,6 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   // Freed by the walker:
   bool* initialCtx = new bool;
   // Per-block context records whether we've passed the cache threshold.
-  // Always start with 0, might immediately flip and cache in the starting block.
   // When we're outside the cache threshold we also switch to pessimistic mode
   // since everything before that point is a fixed certainty.
   *initialCtx = 0;
@@ -1326,7 +1330,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 				 GlobalAA->getTypeStoreSize(TargetType), TargetType,
 				 !finalise,
 				 CacheThresholdBB, CacheThresholdIA, initialCtx,
-				 emptyPV);
+				 emptyPV,
+				 inLoopAnalyser);
 
   if(TargetType->isStructTy() || TargetType->isArrayTy()) {
     bool* validBytes = Walker.getValidBuf();

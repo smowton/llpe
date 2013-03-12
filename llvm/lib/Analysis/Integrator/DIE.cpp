@@ -289,6 +289,9 @@ public:
 
     if(CallInst* CI = dyn_cast_inst<CallInst>(UserI)) {
 
+      if(isa<MemIntrinsic>(CI) && willBeDeleted(ShadowValue(UserI)))
+	return;
+
       if(UserI->parent->IA->isResolvedVFSCall(CI)) {
 
 	// FD arguments to resolved calls are not needed.

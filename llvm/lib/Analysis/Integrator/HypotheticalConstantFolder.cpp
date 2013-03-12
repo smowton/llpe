@@ -745,6 +745,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
     if(!Op0Ptr)
       return false;
+
     if(!Op1Ptr) {
 
       ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
@@ -1180,7 +1181,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -1188,7 +1189,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
-    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
+    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, inLoopAnalyser);
   case Instruction::PHI:
     {
       bool Valid;
@@ -1273,7 +1274,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
   else {
 
     ShadowInstruction* SI = V.getInst();
-    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA);
+    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, !!LPBA);
 
   }
 
