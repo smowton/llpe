@@ -502,9 +502,11 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
   // For now, forbid using pursuing several different subqueries because a partial defn had multiple values.
   if(PB.Values.size() >= 1) {
 
-    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && PB.Values[0].V.getType() == originalType) {
+    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && (PB.Type == ValSetTypePB || PB.Values[0].V.getType() == originalType)) {
 
       addPBDefn(PB, cacheAllowed);
+      if(PB.Overdef)
+	error = "OD";
       return !PB.Overdef;
 
     }
@@ -516,6 +518,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
     }
     else {
 
+      error = "PMV";
       return false;
 
     }
@@ -539,9 +542,9 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
     else {
 
       if(maySubquery)
-	error = "Requery in loop";
+	error = "RQL";
       else
-	error = "Reached top";
+	error = "RT";
       return false;
 
     }
@@ -615,7 +618,7 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
 
 
 
-#define NLFWFail(Code) do { std::string failureText; { raw_string_ostream RSO(failureText); RSO << Code << " " << (I); }  setPBOverdef(failureText, cacheAllowed); if(!cacheAllowed) { cancelCache(); } return WIRStopWholeWalk; } while(0);
+#define NLFWFail(Code) do { std::string failureText; { raw_string_ostream RSO(failureText); RSO << Code << " " << I->parent->IA->itcache(I); }  setPBOverdef(failureText, cacheAllowed); if(!cacheAllowed) { cancelCache(); } return WIRStopWholeWalk; } while(0);
 
 WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) { 
 
@@ -629,6 +632,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
+  errs() << "hA " << I->parent->IA->itcache(I) << " " << R << "\n";
+ 
   bool cacheAllowed = *((bool*)Ctx);
 
   if(OptimisticMode && !cacheAllowed) {
@@ -661,6 +666,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	// Defined by store with no value
 	NLFWFail("DNS");
       }
+
+      I->parent->IA->printPB(errs(), NewPB);
 
     }
     else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
