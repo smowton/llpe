@@ -632,8 +632,6 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
-  errs() << "hA " << I->parent->IA->itcache(I) << " " << R << "\n";
- 
   bool cacheAllowed = *((bool*)Ctx);
 
   if(OptimisticMode && !cacheAllowed) {
@@ -666,8 +664,6 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	// Defined by store with no value
 	NLFWFail("DNS");
       }
-
-      I->parent->IA->printPB(errs(), NewPB);
 
     }
     else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
@@ -1428,9 +1424,9 @@ SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, Point
 	return SVMayAlias;
 	   
       if(!((V2Size != AliasAnalysis::UnknownSize && 
-	    PB1.Values[i].Offset > (PB2.Values[j].Offset + V2Size)) || 
+	    PB1.Values[i].Offset >= (PB2.Values[j].Offset + V2Size)) || 
 	   (V1Size != AliasAnalysis::UnknownSize && 
-	    (PB1.Values[i].Offset + V1Size) < PB2.Values[j].Offset)))
+	    (PB1.Values[i].Offset + V1Size) <= PB2.Values[j].Offset)))
 	return SVMayAlias;
 
     }
