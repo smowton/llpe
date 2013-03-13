@@ -1279,6 +1279,8 @@ class InlineAttempt : public IntegrationAttempt {
   Value* getArgCommittedValue(ShadowArg* SA);
   void commitArgsAndInstructions();
 
+  void resetDeadArgsAndInstructions();
+
 };
 
  Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);

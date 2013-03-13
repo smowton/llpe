@@ -1373,14 +1373,15 @@ static Value* getWrittenPointer(Instruction* I) {
 */
 
 void IntegrationHeuristicsPass::commit() {
+
   if(mustRecomputeDIE)
     rerunDSEAndDIE();
+
   std::string Name;
   {
     raw_string_ostream RSO(Name);
     RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
   }
-  RootIA->prepareCommit();
   RootIA->CommitF = cloneEmptyFunction(&(RootIA->F), RootIA->F.getLinkage(), Name);
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
@@ -1861,11 +1862,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "\n";
   }
 
+  IA->disableVarargsContexts();
+
+  IA->prepareCommit();
+
   rerunDSEAndDIE();
 
   IA->collectStats();
-  
-  IA->disableVarargsContexts();
 
   if(!GraphOutputDirectory.empty()) {
 

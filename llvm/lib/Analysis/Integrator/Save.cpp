@@ -40,6 +40,8 @@ void IntegrationAttempt::prepareCommit() {
 
       if(it->second->isTerminated()) {
 
+	pass->mustRecomputeDIE = true;
+
 	// Create the loop's ShadowBBs with no information to make synthesising an unmodified
 	// version simpler.
 	for(uint32_t i = it->second->invarInfo->headerIdx; i < invarInfo->BBs.size() && it->first->contains(getBBInvar(i)->naturalScope); ++i) {

@@ -9,6 +9,15 @@
 
 using namespace llvm;
 
+void InlineAttempt::resetDeadArgsAndInstructions() {
+
+  for(uint32_t i = 0; i < F.arg_size(); ++i)
+    argShadows[i].i.dieStatus = INSTSTATUS_ALIVE;
+
+  resetDeadInstructions();
+
+}
+
 void IntegrationAttempt::resetDeadInstructions() {
 
   for(uint32_t i = 0; i < nBBs; ++i) {
@@ -28,7 +37,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
-    it->second->resetDeadInstructions();
+    it->second->resetDeadArgsAndInstructions();
 
   }
 
@@ -46,7 +55,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
 void IntegrationHeuristicsPass::rerunDSEAndDIE() {
 
-  RootIA->resetDeadInstructions();
+  RootIA->resetDeadArgsAndInstructions();
 
   runDSEAndDIE();
 
