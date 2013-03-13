@@ -346,6 +346,7 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
   //DenseMap<ShadowValue, int> considerCount;
 
   SmallVector<ShadowValue, 64>* ConsumeQ = (PBProduceQ == &PBQueue1) ? &PBQueue2 : &PBQueue1;
+  bool verbose = false;
 
   while(PBQueue1.size() || PBQueue2.size()) {
 
@@ -356,10 +357,19 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
+      if(verbose)
+	errs() << "TE " << it->getCtx()->itcache(*it) << " "  << finalise  << "\n";
       if(it->getCtx()->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVals) {
 	  modifiedVals->push_back(*it);
 	}
+      }
+
+      if(verbose) {
+	PointerBase NewPB;
+	getPointerBase(*it, NewPB);
+	it->getCtx()->printPB(errs(), NewPB);
+	errs() << "\n";
       }
 
       //++(considerCount[*it]);

@@ -636,6 +636,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
+  UsedInstructions.push_back(I);
+
   bool cacheAllowed = *((bool*)Ctx);
 
   if(OptimisticMode && !cacheAllowed) {
@@ -752,8 +754,6 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
     }
 
   }
-
-  UsedInstructions.push_back(I);
 
   std::string error;
   if(!addPartialVal(NewPV, NewPB, error, I, FirstDef, FirstNotDef, cacheAllowed, true)) {
