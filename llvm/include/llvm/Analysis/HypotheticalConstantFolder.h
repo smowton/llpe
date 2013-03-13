@@ -156,8 +156,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    Constant* loadEnvironment(Module&, std::string&);
    void loadArgv(Function*, std::string&, unsigned argvidx, unsigned& argc);
-   void setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val);
-   void parseArgs(InlineAttempt* RootIA, Function& F);
+   void setParam(InlineAttempt* IA, long Idx, Constant* Val);
+   void parseArgs(Function& F, std::vector<Constant*>&);
 
    void estimateIntegrationBenefit();
 

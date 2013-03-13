@@ -1567,9 +1567,9 @@ static void parseFBI(const char* paramName, const std::string& arg, Module& M, F
 
 }
 
-void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, long Idx, Constant* Val) {
+void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* Val) {
 
-  const Type* Target = F.getFunctionType()->getParamType(Idx);
+  const Type* Target = IA->F.getFunctionType()->getParamType(Idx);
 
   if(Val->getType() != Target) {
 
@@ -1578,13 +1578,20 @@ void IntegrationHeuristicsPass::setParam(IntegrationAttempt* IA, Function& F, lo
 
   }
 
-  if((unsigned)Idx < F.arg_size())
-    setReplacement(&(RootIA->argShadows[Idx]), Val);
-  // Else it's varargs, which are discovered through LF rather than direct propagation
+  PointerBase ArgPB;
+  getPointerBase(ShadowValue(Val), ArgPB);
+  if(ArgPB.Overdef || ArgPB.Values.size() != 1) {
+
+    errs() << "Couldn't get a PB for " << *Val << "\n";
+    exit(1);
+
+  }
+
+  IA->argShadows[Idx].i.PB = ArgPB;
 
 }
 
-void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
+void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants) {
 
   this->mallocAlignment = MallocAlignment;
   
@@ -1596,7 +1603,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       dieEnvUsage();   
 
     Constant* Env = loadEnvironment(*(F.getParent()), EnvFile);
-    setParam(RootIA, F, idx, Env);
+    argConstants[idx] = Env;
 
   }
 
@@ -1613,7 +1620,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 
     unsigned argc;
     loadArgv(&F, ArgvFile, argvIdx, argc);
-    setParam(RootIA, F, argcIdx, ConstantInt::get(Type::getInt32Ty(F.getContext()), argc));
+    argConstants[argcIdx] = ConstantInt::get(Type::getInt32Ty(F.getContext()), argc);
 
   }
 
@@ -1638,7 +1645,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
       }
 
       Constant* ArgC = ConstantInt::getSigned(ArgTy, arg);
-      setParam(RootIA, F, idx, ArgC);
+      argConstants[idx] = ArgC;
 
     }
     else if(const PointerType* ArgTyP = dyn_cast<PointerType>(ArgTy)) {
@@ -1653,7 +1660,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
 	Constant* GEPArgs[] = { Zero, Zero };
 	Constant* StrPtr = ConstantExpr::getGetElementPtr(GStr, GEPArgs, 2);
-	setParam(RootIA, F, idx, StrPtr);
+	argConstants[idx] = StrPtr;
 
       }
       else if(ElemTy->isFunctionTy()) {
@@ -1677,7 +1684,7 @@ void IntegrationHeuristicsPass::parseArgs(InlineAttempt* RootIA, Function& F) {
 
 	}
 
-	setParam(RootIA, F, idx, Found);
+	argConstants[idx] = Found;
 
       }
       else {
@@ -1835,11 +1842,19 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
 
+  std::vector<Constant*> argConstants(F.arg_size(), 0);
+  parseArgs(F, argConstants);
+
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 
-  RootIA = IA;
+  for(unsigned i = 0; i < F.arg_size(); ++i) {
 
-  parseArgs(IA, F);
+    if(argConstants[i])
+      setParam(IA, i, argConstants[i]);
+
+  }
+
+  RootIA = IA;
 
   errs() << "Interpreting";
   IA->analyse();
