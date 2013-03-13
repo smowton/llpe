@@ -304,6 +304,7 @@ bool* PartialVal::getValidArray(uint64_t nbytes) {
 
   if(!partialValidBuf) {
     partialValidBuf = new bool[nbytes];
+    partialBufBytes = nbytes;
   }
 
   return partialValidBuf;

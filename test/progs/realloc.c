@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
   int res2 = *(int*)(a2 + 9);
   int res3 = *(int*)(a2 + 12);
 
-  printf("%d %d %d\n", res1, res2, res3);
+  printf("%x %x %x\n", res1, res2, res3);
 
   return (res1+res2+res3);
 

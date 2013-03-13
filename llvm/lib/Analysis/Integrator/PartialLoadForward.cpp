@@ -316,7 +316,7 @@ bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, ui
   }
 
   // Requery starting at copyInst (the memcpy or va_copy).
-  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[ReadOffset]): 0, error);
+  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[FirstDef]) : 0, error);
 
   return (NewPB.Values.size() > 0 && !NewPB.Overdef);
 
