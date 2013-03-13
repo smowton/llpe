@@ -267,6 +267,18 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     return Overdef || Values.size() > 0;
   }
   
+  void removeValsWithBase(ShadowValue Base) {
+
+    for(SmallVector<ImprovedVal, 1>::iterator it = Values.end(), endit = Values.begin(); it != endit; --it) {
+
+      ImprovedVal& ThisV = *(it - 1);
+      if(ThisV.V == Base)
+	Values.erase(it);
+      
+    }
+
+  }
+
   virtual PointerBase& insert(ImprovedVal V) {
 
     if(Overdef)
@@ -274,60 +286,67 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     if(std::count(Values.begin(), Values.end(), V))
       return *this;
 
-    // Pointer merge: if either the new val or any of our own are vague pointers
-    // to object X, any exact pointers to X should be merged in.
-    // Further, if we're about to become oversized and we contain more than one exact
-    // pointer to X, merge them into a vague one.
-
+    // Do a few tricks to generalise pointers rather than go overdef:
     if(Type == ValSetTypePB) {
 
-      bool doMerge = false;
-
-      if(Values.size() + 1 > PBMAX)
-	doMerge = true;
-    
-      if(V.Offset == LLONG_MAX)
-	doMerge = true;
-
-      if(!doMerge) {
-
-	for(unsigned i = 0; i < Values.size(); ++i) {
-
-	  if(Values[i].V == V.V && Values[i].Offset == LLONG_MAX)
-	    doMerge = true;
-
-	}
-
-      }
-
-      if(doMerge) {
-
-	for(SmallVector<ImprovedVal, 1>::iterator it = Values.end(), endit = Values.begin(); it != endit; --it) {
-
-	  ImprovedVal& ThisV = *(it - 1);
-	  if(ThisV.V == V.V)
-	    Values.erase(it);
-
-	}
-
-	if(Values.size() + 1 > PBMAX)
-	  setOverdef();
-	else
-	  Values.push_back(ImprovedVal(V.V, LLONG_MAX));
-
+      // 1. If there's already a vague version of this pointer, don't add:
+      ImprovedVal VaguePtr(V.V, LLONG_MAX);
+      if(std::count(Values.begin(), Values.end(), VaguePtr))
 	return *this;
 
+      // 2. If this is a vague pointer, nuke any precise ones that exist:
+      if(V.Offset == LLONG_MAX)
+	removeValsWithBase(V.V);
+
+      Values.push_back(V);
+
+      // 3. If that made us oversized, try to find merge victims:
+      if(Values.size() > PBMAX) {
+
+	SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX> BaseCounts;
+	
+	for(uint32_t i = 0; i < Values.size(); ++i) {
+
+	  bool found = false;
+	  for(SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX>::iterator it = BaseCounts.begin(), it2 = BaseCounts.end(); it != it2; ++it) {
+
+	    if(it->first == Values[i].V) {
+	      ++it->second;
+	      found = true;
+	      break;
+	    }
+
+	  }
+
+	  if(!found)
+	    BaseCounts.push_back(std::make_pair(Values[i].V, 1));
+
+	}
+
+	// Merge everything we can to avoid more of these walks.
+	for(SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX>::iterator it = BaseCounts.begin(), it2 = BaseCounts.end(); it != it2; ++it) {
+
+	  if(it->second >= 2) {
+
+	    removeValsWithBase(it->first);
+	    Values.push_back(ImprovedVal(it->first, LLONG_MAX));
+
+	  }
+
+	}
+
       }
 
     }
-
-    if(Values.size() + 1 > PBMAX) {
-      setOverdef();
-    }
     else {
+
       Values.push_back(V);
+
     }
 
+    if(Values.size() > PBMAX)
+      setOverdef();
+    
     return *this;
 
   }

@@ -849,6 +849,7 @@ protected:
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
   bool isResolvedVFSCall(const Instruction*);
+  bool VFSCallWillUseFD(const Instruction*);
   bool isSuccessfulVFSCall(const Instruction*);
   bool isUnusedReadCall(ShadowInstruction*);
   bool isCloseCall(CallInst*);

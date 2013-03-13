@@ -503,7 +503,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
   // For now, forbid using pursuing several different subqueries because a partial defn had multiple values.
   if(PB.Values.size() >= 1) {
 
-    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && (PB.Type == ValSetTypePB || PB.Values[0].V.getType() == originalType)) {
+    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && (PB.Type == ValSetTypeFD || PB.Type == ValSetTypeVarArg || PB.Type == ValSetTypePB || PB.Values[0].V.getType() == originalType)) {
 
       addPBDefn(PB, cacheAllowed);
       if(PB.Overdef)
@@ -519,6 +519,9 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
     }
     else {
 
+      errs() << "Defn is ";
+      I->parent->IA->printPB(errs(), PB);
+      errs() << "\n";
       error = "PMV";
       return false;
 

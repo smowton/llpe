@@ -606,6 +606,33 @@ bool IntegrationAttempt::isResolvedVFSCall(const Instruction* I) {
 
 }
 
+bool IntegrationAttempt::VFSCallWillUseFD(const Instruction* I) {
+
+  CallInst* CI = cast<CallInst>(const_cast<Instruction*>(I));
+
+  {
+    DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
+    if(it != resolvedReadCalls.end())
+      return false;
+  }
+
+  {
+    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
+    if(it != resolvedSeekCalls.end())
+      return !it->second.MayDelete;
+  }
+
+  {
+    DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.find(CI);
+    if(it != resolvedCloseCalls.end())
+      return !(it->second.MayDelete && it->second.openArg->MayDelete && 
+	       it->second.openInst->i.dieStatus == INSTSTATUS_DEAD);
+  }
+
+  return true;
+
+}
+
 bool IntegrationAttempt::isSuccessfulVFSCall(const Instruction* I) {
   
   if(CallInst* CI = dyn_cast<CallInst>(const_cast<Instruction*>(I))) {

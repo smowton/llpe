@@ -294,8 +294,7 @@ public:
 
       if(UserI->parent->IA->isResolvedVFSCall(CI)) {
 
-	// FD arguments to resolved calls are not needed.
-	if(V == UserI->getCallArgOperand(0))
+	if(V == UserI->getCallArgOperand(0) && !UserI->parent->IA->VFSCallWillUseFD(CI))
 	  return;
 	
 	// The buffer argument isn't needed if the read call will be deleted.
