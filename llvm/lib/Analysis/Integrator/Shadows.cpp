@@ -94,9 +94,9 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 }
 
-ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
+ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
 
-  DenseMap<Function*, ShadowFunctionInvar>::iterator findit = functionInfo.find(&F);
+  DenseMap<Function*, ShadowFunctionInvar*>::iterator findit = functionInfo.find(&F);
   if(findit != functionInfo.end())
     return findit->second;
 
@@ -105,7 +105,9 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
   LoopInfo* LI = LIs[&F];
 
-  ShadowFunctionInvar& RetInfo = functionInfo[&F];
+  ShadowFunctionInvar* RetInfoP = new ShadowFunctionInvar();
+  functionInfo[&F] = RetInfoP;
+  ShadowFunctionInvar& RetInfo = *RetInfoP;
 
   std::vector<BasicBlock*> TopOrderedBlocks;
   SmallSet<BasicBlock*, 8> VisitedBlocks;
@@ -301,7 +303,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
     getLoopInfo(RetInfo.LInfo, BBIndices, *it);
 
-  return RetInfo;
+  return RetInfoP;
 
 }
 
@@ -310,7 +312,7 @@ ShadowFunctionInvar& IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
 void InlineAttempt::prepareShadows() {
 
-  invarInfo = &pass->getFunctionInvarInfo(F);
+  invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = F.size();
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
@@ -339,7 +341,7 @@ void PeelAttempt::getShadowInfo() {
 
 void PeelIteration::prepareShadows() {
 
-  invarInfo = &pass->getFunctionInvarInfo(F);
+  invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = L->getBlocks().size();
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)

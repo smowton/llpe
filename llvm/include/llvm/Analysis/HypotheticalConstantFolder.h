@@ -92,7 +92,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<Instruction*, const Loop*>* > invariantInstScopes;
    DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* > invariantEdgeScopes;
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
-   DenseMap<Function*, ShadowFunctionInvar> functionInfo;
+   DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
 
    DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
 
@@ -199,7 +199,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    unsigned getMallocAlignment();
 
-   ShadowFunctionInvar& getFunctionInvarInfo(Function& F);
+   ShadowFunctionInvar* getFunctionInvarInfo(Function& F);
    void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
 		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 		    const Loop* L);
