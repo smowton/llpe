@@ -1380,6 +1380,7 @@ void IntegrationHeuristicsPass::commit() {
     raw_string_ostream RSO(Name);
     RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
   }
+  RootIA->prepareCommit();
   RootIA->CommitF = cloneEmptyFunction(&(RootIA->F), RootIA->F.getLinkage(), Name);
   RootIA->returnBlock = 0;
   RootIA->commitCFG();

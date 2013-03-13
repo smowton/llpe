@@ -36,8 +36,23 @@ void IntegrationAttempt::prepareCommit() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
-    if(ignorePAs.count(it->first))
+    if(ignorePAs.count(it->first)) {
+
+      if(it->second->isTerminated()) {
+
+	// Create the loop's ShadowBBs with no information to make synthesising an unmodified
+	// version simpler.
+	for(uint32_t i = it->second->invarInfo->headerIdx; i < invarInfo->BBs.size() && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
+
+	  if(!getBB(i))
+	    createBB(i);
+
+	}
+
+      }
+
       continue;
+    }
 
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
@@ -62,9 +77,11 @@ void IntegrationAttempt::localPrepareCommit() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
+      /*
       ShadowInstruction* SI = &(BB->insts[j]);
       if(mayBeReplaced(SI) && !willBeReplacedOrDeleted(ShadowValue(SI)))
 	SI->i.PB = PointerBase();
+      */
 
     }
 
