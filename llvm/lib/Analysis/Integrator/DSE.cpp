@@ -554,7 +554,7 @@ void IntegrationAttempt::tryKillAllAllocs() {
 
       ShadowInstruction* I = &(BB->insts[j]);
 
-      if(inst_is<AllocaInst>(I) || isMalloc(I->invar->I)) {
+      if(inst_is<AllocaInst>(I)) {
       
 	tryKillAlloc(I);
 

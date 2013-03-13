@@ -910,7 +910,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     // Else fall through to fill in a committed value:
   }
 
-  if(I->i.dieStatus != INSTSTATUS_ALIVE && !inst_is<TerminatorInst>(I))
+  if(willBeDeleted(ShadowValue(I)) && !inst_is<TerminatorInst>(I))
     return;
 
   if(instResolvedAsInvariant(I))

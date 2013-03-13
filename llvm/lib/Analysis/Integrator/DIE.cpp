@@ -224,15 +224,22 @@ void IntegrationAttempt::visitUsers(ShadowValue V, VisitorContext& Visitor) {
 
 bool llvm::willBeDeleted(ShadowValue V) {
 
+  uint32_t dieStatus;
+
   if(ShadowInstruction* SI = V.getInst()) {
-    return SI->i.dieStatus != INSTSTATUS_ALIVE;
+    dieStatus = SI->i.dieStatus;
   }
   else if(ShadowArg* SA = V.getArg()) {
-    return SA->i.dieStatus != INSTSTATUS_ALIVE;
+    dieStatus = SA->i.dieStatus;
   }
   else {
     return false;
   }
+
+  if(val_is<AllocaInst>(V))
+    return dieStatus == (INSTSTATUS_DEAD | INSTSTATUS_UNUSED_WRITER);
+  else
+    return dieStatus != INSTSTATUS_ALIVE;
 
 }
 
