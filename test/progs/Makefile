@@ -65,7 +65,7 @@ fakestdio.bc: fakestdioclient.bc fakestdiolib.bc
 	as $< -o $@
 
 %-opt.bc: %.bc
-	opt -load $(PLUGINS_PATH)/IntegratorAnalyses.so -load $(PLUGINS_PATH)/IntegratorTransforms.so -loop-rotate -instcombine -jump-threading -loopsimplify -lcssa -integrator -jump-threading $< -o $@
+	opt -load $(PLUGINS_PATH)/IntegratorAnalyses.so -load $(PLUGINS_PATH)/IntegratorTransforms.so -loop-rotate -instcombine -jump-threading -loopsimplify -lcssa -integrator -integrator-accept-all -jump-threading $< -o $@
 
 clean:
 	-rm -f $(TARGETS)

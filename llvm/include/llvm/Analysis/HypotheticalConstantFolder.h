@@ -775,7 +775,7 @@ protected:
   void analyse();
   void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
   void analyseBlock(uint32_t& BBIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, const Loop* BBCreationLimit);
+  void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, bool skipSuccessorCreation);
 
   // Constant propagation:
 
@@ -802,7 +802,7 @@ protected:
 
   void createEntryBlock();
   void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
-  void tryEvaluateTerminator(ShadowInstruction* SI, const Loop*);
+  void tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation);
   void tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
   IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);

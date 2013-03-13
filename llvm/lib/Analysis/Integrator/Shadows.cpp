@@ -420,7 +420,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
       ShadowBB* parentBB = parent->createBB(blockIdx);
       BasicBlock* DummyCacheBB = 0;
       IntegrationAttempt* DummyCacheIA = 0;
-      parent->analyseBlockInstructions(parentBB, true, DummyCacheBB, DummyCacheIA, parentBB->invar->naturalScope);
+      parent->analyseBlockInstructions(parentBB, true, DummyCacheBB, DummyCacheIA, true);
     }
 
   }

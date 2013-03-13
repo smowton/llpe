@@ -242,10 +242,13 @@ void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newSta
 
 }
 
-void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, const Loop* BBCreationLimit) {
+void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation) {
 
   // Clarify branch target if possible:
   tryEvaluateTerminatorInst(SI);
+
+  if(skipSuccessorCreation)
+    return;
 
   ShadowBB* BB = SI->parent;
   ShadowBBInvar* BBI = BB->invar;
@@ -271,10 +274,6 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, const Loop
       continue;
 
     ShadowBBInvar* SBBI = getBBInvar(BB->invar->succIdxs[i]);
-
-    // Don't create loop exit blocks during invariant exploration
-    if(BBCreationLimit && !BBCreationLimit->contains(SBBI->naturalScope))
-      continue;
 
     IntegrationAttempt* IA = getIAForScope(SBBI->naturalScope);
 
