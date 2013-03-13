@@ -414,6 +414,17 @@ ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
 
 ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
+  if(L) {
+
+    if(!parent->getBB(blockIdx)) {
+      ShadowBB* parentBB = parent->createBB(blockIdx);
+      BasicBlock* DummyCacheBB = 0;
+      IntegrationAttempt* DummyCacheIA = 0;
+      parent->analyseBlockInstructions(parentBB, true, DummyCacheBB, DummyCacheIA, parentBB->invar->naturalScope);
+    }
+
+  }
+
   release_assert((!BBs[blockIdx - BBsOffset]) && "Creating block for the second time");
   ShadowBB* newBB = new ShadowBB();
   newBB->invar = &(invarInfo->BBs[blockIdx]);

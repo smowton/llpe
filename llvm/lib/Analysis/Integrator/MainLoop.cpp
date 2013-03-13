@@ -92,25 +92,9 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     // By construction of our top-ordering, must be a loop entry block.
     release_assert(BBL && "Walked into root context?");
 
-    // This works because loop blocks are all topologically before any loop exit blocks, because by 
-    // definition of a loop block there's a path back to the header and then to the exit block.
-    // Therefore we can scan blockIdx forwards until we leave the loop BBL.
+    // Loop invariants used to be found here, but are now explored on demand whenever a block
+    // gets created that doesn't yet exist in parent scope.
    
-    // First, examine each block in the loop to discover invariants, including invariant dead blocks.
-    uint32_t i;
-    for(i = blockIdx; i < invarInfo->BBs.size() && BBL->contains(invarInfo->BBs[i].naturalScope); ++i) {
-      
-      // Thresholds should not be modified due to withinUnboundedLoop = true,
-      // but just to be safe...
-      
-      BasicBlock* InvarCTBB = CacheThresholdBB;
-      IntegrationAttempt* InvarCTIA = CacheThresholdIA;
-      
-      if(ShadowBB* LoopBB = getBB(i))
-	analyseBlockInstructions(LoopBB, true, InvarCTBB, InvarCTIA, BBL);
-      
-    }
-
     BasicBlock* LThresholdBB = CacheThresholdBB;
     IntegrationAttempt* LThresholdIA = CacheThresholdIA;
     
@@ -135,8 +119,10 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       LPDEBUG("Accept loop threshold adv -> " << CacheThresholdBB->getName() << "\n");
     }
 
-    // Advance the main loop past this loop.
-    blockIdx = i - 1;
+    // Advance the main loop past this loop. Loop blocks are always contiguous in the topo ordering.
+    while(BBL->contains(getBBInvar(blockIdx)->naturalScope))
+      ++blockIdx;
+    --blockIdx;
 
   }
   else {
