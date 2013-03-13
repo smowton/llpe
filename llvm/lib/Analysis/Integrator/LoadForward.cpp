@@ -636,6 +636,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
+  errs() << "Handle alias " << (R == SVMustAlias ? "(must)" : "(may)") << "\n";
+
   UsedInstructions.push_back(I);
 
   bool cacheAllowed = *((bool*)Ctx);
@@ -927,6 +929,10 @@ WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void*
   bool cacheAllowed = *((bool*)Ctx);
 
   if(!cacheAllowed) {
+
+    // Don't cache if we're not certain what location we're addressing.
+    if(LoadPtrBase.isInval())
+      return WIRContinue;
 
     // See if we're walking from the first block that is cache-eligible
     if(BB->invar->BB == optimisticBB && BB->IA == optimisticIA) {
