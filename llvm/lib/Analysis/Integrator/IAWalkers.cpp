@@ -172,6 +172,8 @@ void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAW
 
 void IAWalker::queueWalkFrom(uint32_t idx, ShadowBB* BB, void* Ctx, bool shouldCopyContext) {
 
+  release_assert(BB && "Queue walk from null BB");
+
   WLItem wl = makeWL(idx, BB);
 
   if(Visited.insert(wl).second) {

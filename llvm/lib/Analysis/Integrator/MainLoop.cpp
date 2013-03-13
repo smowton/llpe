@@ -106,6 +106,10 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 
     // Analyse for invariants if we didn't establish that the loop terminates.
     if((!LPA) || !LPA->isTerminated()) {
+      for(uint32_t i = blockIdx; i < nBBs && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
+	if(ShadowBB* InvarBB = getBB(i))
+	  analyseBlockInstructions(InvarBB, true, CacheThresholdBB, CacheThresholdIA, false);
+      }
       analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
     }
     else {
