@@ -107,7 +107,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       IntegrationAttempt* InvarCTIA = CacheThresholdIA;
       
       if(ShadowBB* LoopBB = getBB(i))
-	analyseBlockInstructions(LoopBB, true, InvarCTBB, InvarCTIA);
+	analyseBlockInstructions(LoopBB, true, InvarCTBB, InvarCTIA, BBL);
       
     }
 
@@ -150,13 +150,13 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     }
     
     // Else we should just analyse this block here.
-    analyseBlockInstructions(BB, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+    analyseBlockInstructions(BB, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA, 0);
 
   }
 
 }
 
-void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, const Loop* BBCreationLimit) {
 
   const Loop* MyL = L;
 
@@ -168,7 +168,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     if(inst_is<TerminatorInst>(SI)) {
       // Call tryEvalTerminator regardless of scope.
-      tryEvaluateTerminator(SI);
+      tryEvaluateTerminator(SI, BBCreationLimit);
       continue;
     }
 

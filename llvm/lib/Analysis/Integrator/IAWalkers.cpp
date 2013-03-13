@@ -32,7 +32,7 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
     return;
 
   const Loop* MyL = L;
-  const Loop* ExitingBBL = ExitingBB->scope;
+  const Loop* ExitingBBL = ExitingBB->outerScope;
   if(MyL == ExitingBBL) {
 
     Walker->queueWalkFrom(ExitingBB->insts.size(), getBB(*ExitingBB), Ctx, !firstPred);
@@ -120,7 +120,7 @@ void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAW
   bool firstPred = true;
 
   const Loop* CtxLoop = L;
-  const Loop* FromBBLoop = FromBB->invar->scope;
+  const Loop* FromBBLoop = FromBB->invar->outerScope;
 
   ShadowBBInvar* FromBBI = FromBB->invar;
 
@@ -143,7 +143,7 @@ void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAW
     }
     else {
 
-      const Loop* BBLoop = BBI->scope;
+      const Loop* BBLoop = BBI->outerScope;
       if(BBLoop == CtxLoop) {
 
 	queueHere = true;
@@ -406,7 +406,7 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB*
 
 void IntegrationAttempt::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
-  if(BB->scope == L) {
+  if(BB->outerScope == L) {
 
     Walker->queueWalkFrom(0, getBB(*BB), Ctx, !firstSucc);
     firstSucc = false;
@@ -482,7 +482,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
   bool firstSucc = true;
 
   const Loop* MyLoop = L;
-  const Loop* BBLoop = BB->invar->scope;
+  const Loop* BBLoop = BB->invar->outerScope;
 
   for(uint32_t i = 0, ilim = BB->invar->succIdxs.size(); i != ilim; ++i) { 
 
@@ -504,7 +504,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
     }
     else {
 
-      const Loop* SuccLoop = SB->scope;
+      const Loop* SuccLoop = SB->outerScope;
       if(SuccLoop != MyLoop) {
 
 	if((!MyLoop) || MyLoop->contains(SuccLoop)) {

@@ -775,7 +775,7 @@ protected:
   void analyse();
   void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
   void analyseBlock(uint32_t& BBIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+  void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, const Loop* BBCreationLimit);
 
   // Constant propagation:
 
@@ -802,7 +802,7 @@ protected:
 
   void createEntryBlock();
   void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
-  void tryEvaluateTerminator(ShadowInstruction* SI);
+  void tryEvaluateTerminator(ShadowInstruction* SI, const Loop*);
   void tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
   IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
@@ -940,7 +940,7 @@ protected:
 
   void printRHS(ShadowValue, raw_ostream& Out);
   void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
-  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBB*, 4>* forceSuccessors, bool brief);
+  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief);
   void describeLoopAsDOT(const Loop* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
   void describeAsDOT(raw_ostream& Out, bool brief);
   std::string getValueColour(ShadowValue);
