@@ -1194,9 +1194,13 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
       }
     }
     break;
-  case Instruction::Call:
-    tryMerge = true;
-    break;
+  case Instruction::Call: 
+    {
+      CallInst* CI = cast_inst<CallInst>(SI);
+      if(inlineChildren.count(CI) || !isNoAliasCall(CI))
+	tryMerge = true;
+      break;
+    }
   case Instruction::Br:
   case Instruction::Switch:
     // Normally these are filtered, but the loop solver can queue them:

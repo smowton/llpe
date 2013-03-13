@@ -1157,7 +1157,7 @@ void IntegrationHeuristicsPass::createInvariantScopes(Function* F, DenseMap<Inst
 	// Skip instructions that can't be evaluated in any case, and loads because we'd need to do a bunch more analysis to establish that they're really invariant.
 	// Also skip PHIs for now, since their invariance depends upon edge invariance.
 	// TODO: fix this to interleave instruction invariance and edge invariance.
-	if(I->mayReadFromMemory() || I->mayWriteToMemory() || isa<PHINode>(I))
+	if(I->mayReadFromMemory() || I->mayWriteToMemory() || isa<PHINode>(I) || isa<AllocaInst>(I))
 	  continue;
 	if(BranchInst* BI = dyn_cast<BranchInst>(I)) {
 	  if(!BI->isConditional())
