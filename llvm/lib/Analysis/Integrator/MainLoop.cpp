@@ -129,7 +129,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     }
 
     // Advance the main loop past this loop. Loop blocks are always contiguous in the topo ordering.
-    while(BBL->contains(getBBInvar(blockIdx)->naturalScope))
+    while(blockIdx < invarInfo->BBs.size() && BBL->contains(getBBInvar(blockIdx)->naturalScope))
       ++blockIdx;
     --blockIdx;
 
