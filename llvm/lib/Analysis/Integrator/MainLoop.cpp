@@ -84,16 +84,21 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 
   // Use natural scope rather than scope because even if a loop is
   // ignored we want to notice that it exists so we can call analyseLoopPBs.
-  const Loop* BBL = BB->invar->naturalScope;
-  const Loop* MyL = L;
-    
-  if(BBL != MyL) {
+  ShadowBBInvar* BBI = BB->invar;
+  const Loop* BBL = BBI->naturalScope;
+   
+  if(BBL != L) {
 
     // By construction of our top-ordering, must be a loop entry block.
     release_assert(BBL && "Walked into root context?");
 
     // Loop invariants used to be found here, but are now explored on demand whenever a block
     // gets created that doesn't yet exist in parent scope.
+
+    // Calculate invariants for the header block, which uniquely is created in its invariant scope
+    // before being created in any child loops.
+
+    analyseBlockInstructions(BB, true, CacheThresholdBB, CacheThresholdIA, true);
    
     BasicBlock* LThresholdBB = CacheThresholdBB;
     IntegrationAttempt* LThresholdIA = CacheThresholdIA;
