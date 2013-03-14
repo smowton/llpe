@@ -678,6 +678,9 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	// Defined by store with no value
 	NLFWFail("DNS");
       }
+      else if(NewPB.Overdef) {
+	NLFWFail("DO");
+      }
 
     }
     else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
@@ -964,6 +967,14 @@ WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void*
   if(PointerBase* CachedPB = BB->IA->getLFPBCacheEntry(Key)) {
       
     LPDEBUG("Use cache entry at " << BB->getName() << "\n");
+    if(CachedPB->Overdef) {
+      std::string cacheODReason;
+      {
+	raw_string_ostream RSO(cacheODReason);
+	RSO << "COD " << BB->invar->BB->getName() << "/" << BB->IA->F.getName();
+      }
+      OverdefReasons.push_back(cacheODReason);
+    }
     addPBDefn(*CachedPB, true);
     
     usedCacheEntryIA = BB->IA;
@@ -1015,8 +1026,10 @@ PointerBase NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& 
     return PointerBase();
 
   PointerBase NewPB;
-  if(!getPointerBase(NewSV, NewPB))
+  if(!getPointerBase(NewSV, NewPB)) {
+    RSO << "PVToPB";
     return PointerBase();
+  }
 
   return NewPB;
 
@@ -1272,24 +1285,26 @@ PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowV
 std::string llvm::describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt* IA) {
   
   std::string out;
-  raw_string_ostream RSO(out);
+  {
+    raw_string_ostream RSO(out);
   
-  if(Walker.Result.Overdef) {
-    for(unsigned i = 0; i < Walker.OverdefReasons.size(); ++i) {
-      if(i != 0)
-	RSO << ", ";
-      RSO << Walker.OverdefReasons[i];
+    if(Walker.Result.Overdef) {
+      for(unsigned i = 0; i < Walker.OverdefReasons.size(); ++i) {
+	if(i != 0)
+	  RSO << ", ";
+	RSO << Walker.OverdefReasons[i];
+      }
+    }  
+    else if(Walker.Result.Values.size() == 0) {
+    
+      RSO << "No defn";
+    
     }
-  }  
-  else if(Walker.Result.Values.size() == 0) {
+    else {
     
-    RSO << "No defn";
+      IA->printPB(RSO, Walker.Result, true);
     
-  }
-  else {
-    
-    IA->printPB(RSO, Walker.Result, true);
-    
+    }
   }
     
   return out;

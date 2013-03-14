@@ -451,7 +451,7 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     ShadowBBInvar* OE1 = getBBInvar(OE.first);
     ShadowBBInvar* OE2 = getBBInvar(OE.second);
     ShadowBBInvar* latchBB = getBBInvar(parentPA->invarInfo->latchIdx);
-    ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->latchIdx);
+    ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->headerIdx);
     willIterate = edgeIsDead(OE1, OE2) && !edgeIsDead(latchBB, headerBB);
   }
 

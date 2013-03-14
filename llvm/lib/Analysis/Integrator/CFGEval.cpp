@@ -290,7 +290,7 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
       
       if(BB->status != BBSTATUS_UNKNOWN && uniqueSucc != 0xffffffff)
 	newStatus = BB->status;
-      else if(shouldAssumeEdge(BB->invar->BB, BBI->BB))
+      else if(shouldAssumeEdge(BBI->BB, SBBI->BB))
 	newStatus = BBSTATUS_ASSUMED;
 
       IA->createBBAndPostDoms(BB->invar->succIdxs[i], newStatus);
