@@ -194,10 +194,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       SI.I = I;
       DenseMap<Instruction*, const Loop*>::iterator it = instScopes.find(I);
       if(it != instScopes.end())
-	SI.scope = it->second;
+	SI.naturalScope = it->second;
       else
-	SI.scope = SBB.naturalScope;
-      SI.scope = applyIgnoreLoops(SI.scope);
+	SI.naturalScope = SBB.naturalScope;
+      SI.scope = applyIgnoreLoops(SI.naturalScope);
       
       // Get operands indices:
       ShadowInstIdx* operandIdxs = new ShadowInstIdx[I->getNumOperands()];

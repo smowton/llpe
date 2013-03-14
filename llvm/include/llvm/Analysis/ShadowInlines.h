@@ -400,6 +400,7 @@ struct ShadowInstructionInvar {
   Instruction* I;
   ShadowBBInvar* parent;
   const Loop* scope;
+  const Loop* naturalScope;
   ImmutableArray<ShadowInstIdx> operandIdxs;
   ImmutableArray<ShadowInstIdx> userIdxs;
 
