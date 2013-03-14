@@ -130,11 +130,14 @@ bool PeelIteration::entryBlockAssumed() {
 
 void IntegrationAttempt::createEntryBlock() {
 
-  ShadowBB* BB = createBB(BBsOffset);
+  ShadowBBStatus newStatus = BBSTATUS_UNKNOWN;
+
   if(entryBlockIsCertain())
-    BB->status = BBSTATUS_CERTAIN;
+    newStatus = BBSTATUS_CERTAIN;
   else if(entryBlockAssumed())
-    BB->status = BBSTATUS_ASSUMED;
+    newStatus = BBSTATUS_ASSUMED;
+
+  createBBAndPostDoms(BBsOffset, newStatus);
 
 }
 
@@ -220,11 +223,12 @@ IntegrationAttempt* IntegrationAttempt::getIAForScopeFalling(const Loop* Scope) 
 
 void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus) {
 
-  ShadowBB* SBB = createBB(idx);
+  ShadowBBInvar* SBB = getBBInvar(idx);
+  setBlockStatus(SBB, newStatus);
   
   if(newStatus != BBSTATUS_UNKNOWN) {
 
-    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB->invar, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 	
       const BBWrapper* BW = DTN->getBlock();
       if(BW->BB) {

@@ -50,8 +50,13 @@ LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : F(_F), L(_L) {
     // Lowest BB index we need is the loop's header:
     
     uint32_t LowestIdx = LInfo->headerIdx;
-    uint32_t HighestIdx = LInfo->latchIdx;
-  
+    uint32_t HighestIdx = LInfo->headerIdx;
+
+    while(HighestIdx < F.BBs.size() && L->contains(F.BBs[HighestIdx].naturalScope))
+      ++HighestIdx;
+      
+    --HighestIdx;
+
     // These exit blocks must be topo > all blocks in the loop, so only consider them.
     for(std::vector<uint32_t>::iterator it = LInfo->exitBlocks.begin(), it2 = LInfo->exitBlocks.end(); it != it2; ++it) {  
 
@@ -65,7 +70,7 @@ LoopWrapper(const Loop* _L, ShadowFunctionInvar& _F) : F(_F), L(_L) {
     // One extra space for the dummy next iter node.
     BBs.resize((HighestIdx - LowestIdx) + 2);
 
-    for(uint32_t i = LowestIdx; (i < HighestIdx) && (L->contains(F.BBs[i].naturalScope)); ++i) {
+    for(uint32_t i = LowestIdx; (i <= HighestIdx) && (L->contains(F.BBs[i].naturalScope)); ++i) {
       ShadowBBInvar* SBB = &(F.BBs[i]);
       BBs[SBB->idx - LowestIdx] = new BBWrapper(SBB, /* hide successors = */ false, this);
     }
@@ -202,14 +207,19 @@ public:
 
   inline pointer operator*() const {
    
+    pointer ret;
+
     if(!isNextIter) {
       assert(nextPred < ThisBB->BB->preds_size() && "pred_iterator out of range!");
-      return ThisBB->get(ThisBB->BB->getPred(nextPred));
+      ret = ThisBB->get(ThisBB->BB->getPred(nextPred));
     }
     else {
       assert(!isEnd);
-      return ThisBB->L->BBs[ThisBB->L->LInfo->latchIdx - ThisBB->L->LInfo->headerIdx];
+      ret = ThisBB->L->BBs[ThisBB->L->LInfo->latchIdx - ThisBB->L->LInfo->headerIdx];
     }
+
+    release_assert(ret);
+    return ret;
 
   }
   inline pointer *operator->() const { return &operator*(); }
