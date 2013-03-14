@@ -1070,7 +1070,8 @@ void InlineAttempt::commitArgsAndInstructions() {
       continue;
     }
     
-    if(SA->i.PB.Type == ValSetTypePB && SA->i.PB.Values.size() == 1 && SA->i.PB.Values[0].Offset != LLONG_MAX) {
+    // The last condition here accommodates argv, which is a global identified object.
+    if(SA->i.PB.Type == ValSetTypePB && SA->i.PB.Values.size() == 1 && SA->i.PB.Values[0].Offset != LLONG_MAX && !SA->i.PB.Values[0].V.isArg()) {
       synthCommittedPointer(ShadowValue(SA), emitBB);
       continue;
     }

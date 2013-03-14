@@ -1488,11 +1488,9 @@ SVAAResult llvm::aliasSVs(ShadowValue V1, unsigned V1Size,
 			  ShadowValue V2, unsigned V2Size,
 			  bool usePBKnowledge) {
   
-  if((!V1.isVal()) || (!V2.isVal())) {
-    SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
-    if(Alias != SVMayAlias)
-      return Alias;
-  }
+  SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
+  if(Alias != SVMayAlias)
+    return Alias;
 
   switch(GlobalAA->aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge)) {
   case AliasAnalysis::NoAlias: return SVNoAlias;
@@ -1511,6 +1509,13 @@ bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
       return false;
     else
       return V1.getVal() == V2.getVal();
+
+  }
+  else if(V1.isArg()) {
+
+    if(!V2.isArg())
+      return false;
+    return V1.getArg() == V2.getArg();
 
   }
   else {

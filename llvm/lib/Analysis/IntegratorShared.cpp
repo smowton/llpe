@@ -3,6 +3,7 @@
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/GlobalValue.h"
+#include "llvm/Function.h"
 
 using namespace llvm;
 
@@ -135,7 +136,15 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
   }
   else if(isa<GlobalValue>(C)) {
+
+    if(isa<Function>(C))
+      return std::make_pair(ValSetTypeScalar, ImprovedVal(ShadowValue(C)));
     
+    return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
+
+  }
+  else if(C->getType()->isPointerTy() && C->isNullValue()) {
+
     return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
 
   }

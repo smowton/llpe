@@ -1591,7 +1591,7 @@ void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* 
 
 }
 
-void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants) {
+void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
   
@@ -1621,6 +1621,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     unsigned argc;
     loadArgv(&F, ArgvFile, argvIdx, argc);
     argConstants[argcIdx] = ConstantInt::get(Type::getInt32Ty(F.getContext()), argc);
+    argvIdxOut = argvIdx;
 
   }
 
@@ -1831,8 +1832,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   Function& F = *FoundF;
 
-  populateGVCaches(&M);
-
   // Mark realloc as an identified object if the function is defined:
   if(Function* Realloc = M.getFunction("realloc")) {
 
@@ -1843,7 +1842,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
 
   std::vector<Constant*> argConstants(F.arg_size(), 0);
-  parseArgs(F, argConstants);
+  uint32_t argvIdx = 0xffffffff;
+  parseArgs(F, argConstants, argvIdx);
+
+  populateGVCaches(&M);
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 
@@ -1851,6 +1853,12 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
     if(argConstants[i])
       setParam(IA, i, argConstants[i]);
+
+  }
+
+  if(argvIdx != 0xffffffff) {
+
+    IA->argShadows[argvIdx].i.PB = PointerBase::get(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
 
   }
 
