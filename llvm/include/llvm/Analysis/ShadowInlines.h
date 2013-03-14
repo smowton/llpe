@@ -279,6 +279,37 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   }
 
+
+  bool onlyContainsNulls() {
+
+    if(Type == ValSetTypePB && Values.size() == 1) {
+      
+      if(Constant* C = dyn_cast_or_null<Constant>(Values[0].V.getVal()))
+	return C->isNullValue();
+      
+    }
+    
+    return false;
+    
+  }
+
+  bool onlyContainsFunctions() {
+
+    if(Type != ValSetTypeScalar)
+      return false;
+    
+    for(uint32_t i = 0; i < Values.size(); ++i) {
+      
+      Function* F = dyn_cast_or_null<Function>(Values[i].V.getVal());
+      if(!F)
+	return false;
+      
+    }
+    
+    return true;
+
+  }
+
   virtual PointerBase& insert(ImprovedVal V) {
 
     if(Overdef)
@@ -356,7 +387,25 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
       setOverdef();
     }
     else if(isInitialised() && OtherPB.Type != Type) {
+
+      // Special case: functions may permissibly merge with null pointers. In this case
+      // reclassify the null as a scalar.
+      if(onlyContainsFunctions() && OtherPB.onlyContainsNulls()) {
+
+	insert(OtherPB.Values[0]);
+	return *this;
+
+      }
+      else if(onlyContainsNulls() && OtherPB.onlyContainsFunctions()) {
+
+	Type = ValSetTypeScalar;
+	// Try again:
+	return merge(OtherPB);
+
+      }
+
       setOverdef();
+
     }
     else {
       Type = OtherPB.Type;

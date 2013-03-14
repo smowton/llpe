@@ -1095,6 +1095,20 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
   unsigned MaxLookup = 10;
   if (!VIn.getType()->isPointerTy())
     return VIn;
+
+  if(!VIn.isVal()) {
+    
+    ShadowValue VBase;
+    int64_t VOffset;
+    if(getBaseAndOffset(VIn, VBase, VOffset)) {
+
+      isOffset = (VOffset != 0);
+      return VBase;
+
+    }
+
+  }
+  
   ShadowValue V = VIn;
   for (unsigned Count = 0; MaxLookup == 0 || Count < MaxLookup; ++Count) {
 
