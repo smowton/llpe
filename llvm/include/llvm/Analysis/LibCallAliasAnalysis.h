@@ -35,7 +35,7 @@ namespace llvm {
     }
     ~LibCallAliasAnalysis();
     
-    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
     
     virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       // TODO: Could compare two direct calls against each other if we cared to.
@@ -63,7 +63,7 @@ namespace llvm {
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
 				       ShadowValue CS,
                                        ShadowValue P, unsigned Size,
-				       bool usePBKnowledge);
+				       bool usePBKnowledge, int64_t, IntAAProxy*);
   };
 }  // End of llvm namespace
 

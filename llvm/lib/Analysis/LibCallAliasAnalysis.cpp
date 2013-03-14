@@ -45,7 +45,8 @@ void LibCallAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
 					    ShadowValue CS, ShadowValue P,
-                                            unsigned Size, bool usePBKnowledge) {
+                                            unsigned Size, bool usePBKnowledge,
+					    int64_t POffset, IntAAProxy* AACB) {
   // If we have a function, check to see what kind of mod/ref effects it
   // has.  Start by including any info globally known about the function.
   AliasAnalysis::ModRefResult MRInfo = FI->UniversalBehavior;
@@ -72,7 +73,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
     for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
       const LibCallLocationInfo &Loc =
       LCI->getLocationInfo(Details[i].LocationID);
-      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, usePBKnowledge);
+      LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, usePBKnowledge, POffset, AACB);
       if (Res != LibCallLocationInfo::Yes) continue;
       
       // If we find a match against a location that we 'do not' interact with,
@@ -93,7 +94,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   for (unsigned i = 0; Details[i].LocationID != ~0U && MRInfo != ModRef; ++i) {
     const LibCallLocationInfo &Loc =
     LCI->getLocationInfo(Details[i].LocationID);
-    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, usePBKnowledge);
+    LibCallLocationInfo::LocResult Res = Loc.isLocation(CS, P, Size, usePBKnowledge, POffset, AACB);
     if (Res == LibCallLocationInfo::No) continue;
     
     // If we don't know if this pointer points to the location, then we have to
@@ -117,7 +118,7 @@ static Function* getValCalledFunction(ShadowValue V) {
 // specified memory object.
 //
 AliasAnalysis::ModRefResult
-LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the
@@ -125,12 +126,12 @@ LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Si
   if (LCI) {
     if (Function *F = getValCalledFunction(CS)) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
-        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, usePBKnowledge));
+        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, usePBKnowledge, POffset, AACB));
         if (MRInfo == NoModRef) return NoModRef;
       }
     }
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo & AliasAnalysis::getCSModRefInfo(CS, P, Size, usePBKnowledge));
+  return (ModRefResult)(MRInfo & AliasAnalysis::getCSModRefInfo(CS, P, Size, usePBKnowledge, POffset, AACB));
 }

@@ -18,7 +18,7 @@ using namespace llvm;
 // 1. errno, modelled here as __errno_location, which is likely to be pretty brittle.
 // 2. an abstract location representing the buffer that's passed to a read call.
 
-static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge, int64_t Ptr1Offset, IntAAProxy* AACB) {
 
   if(CS.getCtx() && CS.getCtx()->isSuccessfulVFSCall(CS.getInst()->invar->I)) {
 
@@ -44,16 +44,20 @@ static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowV
 
   ShadowValue Base;
   int64_t Offset;
-  if(getBaseAndOffset(P, Base, Offset))
+  if(Ptr1Offset != LLONG_MAX || getBaseAndOffset(P, Base, Offset))
     return LibCallLocationInfo::No;
   
   return LibCallLocationInfo::Unknown;
 
 }
 
-static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size, bool usePBKnowledge, int64_t Ptr1Offset, IntAAProxy* AACB) {
 
-  SVAAResult AR = aliasSVs(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
+  SVAAResult AR;
+  if(Ptr1Offset != LLONG_MAX)
+    AR = tryResolvePointerBases(Ptr1, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true);
+  else
+    AR = aliasSVs(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
 
   switch(AR) {
   case SVMustAlias:
@@ -66,80 +70,80 @@ static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t
 
 }
 
-static LibCallLocationInfo::LocResult isReadBuf(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isReadBuf(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   ConstantInt* ReadSize = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 2)));
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
 
 }
 
-static LibCallLocationInfo::LocResult isArg0(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isArg0(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isArg0Size24(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isArg0Size24(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), 24, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), 24, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isArg1(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isArg1(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isArg2(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isArg2(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isArg3(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isArg3(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 3), AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 3), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isReturnVal(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isReturnVal(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, CS, AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, CS, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isTermios(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isTermios(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), sizeof(struct termios), usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), sizeof(struct termios), usePBKnowledge, POffset, AACB);
 
 }
 
-static LibCallLocationInfo::LocResult isStdOut(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isStdOut(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   Module& M = CS.getCtx()->getModule();
   GlobalVariable* Stdout = M.getNamedGlobal("_stdio_streams");
   assert(Stdout);
-  return aliasCheckAsLCI(Ptr, Size, Stdout, AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, Stdout, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
 
 }
 
-static LibCallLocationInfo::LocResult isStdErr(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isStdErr(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   Module& M = CS.getCtx()->getModule();
   GlobalVariable* Stderr = M.getNamedGlobal("_stdio_streams");
   assert(Stderr);
-  return aliasCheckAsLCI(Ptr, Size, Stderr, AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, Stderr, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
 
 }
 
-static LibCallLocationInfo::LocResult isStdBufs(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge) {
+static LibCallLocationInfo::LocResult isStdBufs(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   Module& M = CS.getCtx()->getModule();
   GlobalVariable* Stdbufs = M.getNamedGlobal("_fixed_buffers");
   assert(Stdbufs);
-  return aliasCheckAsLCI(Ptr, Size, Stdbufs, AliasAnalysis::UnknownSize, usePBKnowledge);
+  return aliasCheckAsLCI(Ptr, Size, Stdbufs, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
 
 }
 

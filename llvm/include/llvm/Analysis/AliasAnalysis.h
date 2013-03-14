@@ -119,8 +119,11 @@ public:
 
   /// isNoAlias - A trivial helper function to check to see if the specified
   /// pointers are no-alias.
-  bool isNoAlias(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true) {
-    return aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge) == NoAlias;
+  bool isNoAlias(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true, int64_t V1Offset = 0, IntAAProxy* AACB = 0) {
+    if(AACB && V1Offset != LLONG_MAX)
+      return AACB->isNoAliasPBs(V1, V1Offset, V1Size, V2, V2Size);
+    else
+      return aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge) == NoAlias;
   }
 
   bool isNoAlias(const Value* V1, unsigned V1Size, const Value* V2, unsigned V2Size) {
@@ -240,7 +243,9 @@ public:
   /// a particular call site modifies or reads the memory specified by the
   /// pointer.
   ///
-  virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true);
+  virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
+
+  ModRefResult getCSModRefInfoWithOffset(ShadowValue CS, ShadowValue PBase, int64_t POffset, unsigned PSize, IntAAProxy& AACB);
 
   ModRefResult getModRefInfo(ImmutableCallSite CS,
 			     const Value *P, unsigned Size, 

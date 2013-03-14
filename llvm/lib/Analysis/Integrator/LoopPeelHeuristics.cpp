@@ -278,7 +278,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "isatty" ||
 	  F->getName() == "__libc_sigaction" ||
 	  F->getName() == "socket" || F->getName() == "bind" ||
-	  F->getName() == "listen" || F->getName() == "setsockopt");
+	  F->getName() == "listen" || F->getName() == "setsockopt" ||
+	  F->getName() == "_exit");
 
 }
 

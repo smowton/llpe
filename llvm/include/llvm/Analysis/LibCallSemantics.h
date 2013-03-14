@@ -20,6 +20,7 @@
 namespace llvm {
 
   class IntegrationAttempt;
+  class IntAAProxy;
 
   /// LibCallLocationInfo - This struct describes a set of memory locations that
   /// are accessed by libcalls.  Identification of a location is doing with a
@@ -49,7 +50,7 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    LocResult (*isLocation)(ShadowValue CS, ShadowValue P, unsigned Size, bool);
+    LocResult (*isLocation)(ShadowValue CS, ShadowValue P, unsigned Size, bool, int64_t, IntAAProxy*);
 
   };
   

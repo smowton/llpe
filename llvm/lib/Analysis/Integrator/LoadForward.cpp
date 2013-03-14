@@ -102,30 +102,37 @@ public:
 
 }
 
+bool IntAAProxy::isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size) {
+
+  return (tryResolvePointerBases(Ptr1Base, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true) == SVNoAlias);
+
+}
+
 //// Implement generic LF
 
 bool LoadForwardWalker::shouldEnterCall(ShadowInstruction* SI) {
 
-  if(!LoadedPtr.isInval()) {
-    switch(GlobalAA->getCSModRefInfo(SI, LoadedPtr, LoadSize, true)) {
-      
-    case AliasAnalysis::NoModRef:
-    case AliasAnalysis::Ref:
-      return false;
-    default:
-      return true;
-    }
+  AliasAnalysis::ModRefResult Res;
+
+  if(LoadPtrBase.isInval()) {
+
+    Res = GlobalAA->getCSModRefInfo(SI, LoadedPtr, LoadSize, true);
+
   }
   else {
 
-    // Less ambitious check when we don't have a real instruction to hand to AA
-    AliasAnalysis::ModRefBehavior MRB = GlobalAA->getModRefBehavior(ImmutableCallSite(cast<CallInst>(SI->invar->I)));
-    if (MRB == AliasAnalysis::DoesNotAccessMemory)
-      return false;
-    else if (MRB == AliasAnalysis::OnlyReadsMemory)
-      return false;
-    return true;
+    IntAAProxy AACB;
+    Res = GlobalAA->getCSModRefInfoWithOffset(SI, LoadPtrBase, LoadPtrOffset, LoadSize, AACB);
 
+  }
+
+  switch(Res) {
+    
+  case AliasAnalysis::NoModRef:
+  case AliasAnalysis::Ref:
+    return false;
+  default:
+    return true;
   }
 
 }

@@ -75,7 +75,14 @@ void AliasAnalysis::copyValue(Value *From, Value *To) {
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge) {
+AliasAnalysis::getCSModRefInfoWithOffset(ShadowValue CSV, ShadowValue P, int64_t POffset, unsigned PSize, IntAAProxy& AACB) {
+
+  return getCSModRefInfo(CSV, P, PSize, true, POffset, &AACB);
+
+}
+
+AliasAnalysis::ModRefResult
+AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   assert(!!CSV.getCtx() == !!P.getCtx());
 
@@ -94,7 +101,7 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bo
   else if (MRB == AliasAnalysis::AccessesArguments) {
     bool doesAlias = false;
     for(unsigned i = 0; i < CS.arg_size() && !doesAlias; ++i) {
-      if (!isNoAlias(getValArgOperand(CSV, 0), ~0U, P, Size, usePBKnowledge))
+      if (!isNoAlias(getValArgOperand(CSV, 0), ~0U, P, Size, usePBKnowledge, POffset, AACB))
         doesAlias = true;
     }
     
@@ -112,7 +119,7 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bo
 
   // Otherwise, fall back to the next AA in the chain. But we can merge
   // in any mask we've managed to compute.
-  return ModRefResult(AA->getCSModRefInfo(CSV, P, Size, usePBKnowledge) & Mask);
+  return ModRefResult(AA->getCSModRefInfo(CSV, P, Size, usePBKnowledge, POffset, AACB) & Mask);
 }
 
 AliasAnalysis::ModRefResult
