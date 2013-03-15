@@ -263,24 +263,30 @@ BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
 }
 
-ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
+ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   if(BB->invar->idx == parentPA->invarInfo->latchIdx && succIdx == parentPA->invarInfo->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
       return PI->getBB(succIdx);
     else {
-      release_assert(iterStatus != IterationStatusFinal && "Branch to header in final iteration?");
-      return parent->getBB(succIdx);
+      if(iterStatus == IterationStatusFinal) {
+	release_assert(pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)
+		       && "Branch to header in final iteration?");
+	markUnreachable = true;
+	return 0;
+      }
+      else
+	return parent->getBB(succIdx);
     }
 
   }
 
-  return IntegrationAttempt::getSuccessorBB(BB, succIdx);
+  return IntegrationAttempt::getSuccessorBB(BB, succIdx, markUnreachable);
 
 }
 
-ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx) {
+ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   ShadowBBInvar* BBI = getBBInvar(succIdx);
 
@@ -615,9 +621,13 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
   if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
-    ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
-    release_assert(SBB && "Failed to get successor BB");
-    BranchInst::Create(SBB->committedHead, emitBB);
+    bool markUnreachable = false;
+    ShadowBB* SBB = getSuccessorBB(BB, knownSucc, markUnreachable);
+    release_assert((SBB || markUnreachable) && "Failed to get successor BB");
+    if(markUnreachable)
+      new UnreachableInst(emitBB->getContext(), emitBB);
+    else
+      BranchInst::Create(SBB->committedHead, emitBB);
 
   }
   else {
@@ -633,9 +643,17 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       if(I->invar->operandIdxs[i].instIdx == INVALID_INSTRUCTION_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
 
 	// Argument is a BB.
-	ShadowBB* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx);
-	release_assert(SBB && "Failed to get successor BB (2)");
-	newTerm->setOperand(i, SBB->committedHead);
+	bool markUnreachable = false;
+	ShadowBB* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx, markUnreachable);
+	release_assert((SBB || markUnreachable) && "Failed to get successor BB (2)");
+	if(markUnreachable) {
+	  // Create an unreachable BB to branch to:
+	  BasicBlock* UBB = BasicBlock::Create(emitBB->getContext(), "LoopAssumeSink", emitBB->getParent());
+	  new UnreachableInst(UBB->getContext(), UBB);
+	  newTerm->setOperand(i, UBB);
+	}
+	else
+	  newTerm->setOperand(i, SBB->committedHead);
 
       }
       else { 

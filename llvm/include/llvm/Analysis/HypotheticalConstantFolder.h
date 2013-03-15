@@ -998,7 +998,7 @@ protected:
   void localPrepareCommit();
   virtual std::string getCommittedBlockPrefix() = 0;
   void commitCFG();
-  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
+  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
   ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
@@ -1108,7 +1108,7 @@ public:
 
   void prepareShadows();
   virtual std::string getCommittedBlockPrefix();
-  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx);
+  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
