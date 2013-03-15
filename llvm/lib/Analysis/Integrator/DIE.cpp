@@ -138,13 +138,14 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
   
 void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
 
-  assert(0 && "Tried to visit exit PHI in non-loop context");
+  release_assert(UserI->parent->naturalScope == 0 && "Reached bottom visiting exit PHI");
+  Visitor.visit(getInst(UserI));
 
 }
 
 void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
 
-  if(parentPA->Iterations.back()->iterStatus == IterationStatusFinal) {
+  if(parentPA->isTerminated()) {
     assert(isa<PHINode>(UserI));
     if(UserI->parent->naturalScope != L)
       parent->visitExitPHI(UserI, Visitor);
