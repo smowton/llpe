@@ -332,6 +332,21 @@ static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) 
 
 }
 
+static PHINode* makePHI(const Type* Ty, const Twine& Name, BasicBlock* emitBB) {
+
+  // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
+
+  BasicBlock::iterator it = emitBB->begin();
+  while(it != emitBB->end() && isa<PHINode>(it))
+    ++it;
+  
+  if(it != emitBB->end())
+    return PHINode::Create(Ty, Name, it);
+  else
+    return PHINode::Create(Ty, Name, emitBB);
+
+}
+
 void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Special case: emitting own header PHI. Emit a unary PHI drawing on either the preheader
@@ -342,8 +357,9 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
   if(BB->invar->idx == parentPA->invarInfo->headerIdx) {
     
     ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
+
     PHINode* NewPN;
-    I->committedVal = NewPN = PHINode::Create(I->invar->I->getType(), "header", emitBB);
+    I->committedVal = NewPN = makePHI(I->invar->I->getType(), "header", emitBB);
     ShadowBB* SourceBB;
 
     if(iterationCount == 0) {
@@ -511,7 +527,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   PHINode* NewPN;
-  I->committedVal = NewPN = PHINode::Create(I->invar->I->getType(), "", emitBB);
+  I->committedVal = NewPN = makePHI(I->invar->I->getType(), "", emitBB);
 
   // Special case: emitting the header PHI of a residualised loop.
   // Make an empty node for the time being; this will be revisted once the loop body is emitted
@@ -777,7 +793,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	  createRetPHI = false;
 	
 	if(createRetPHI)
-	  I->committedVal = IA->returnPHI = PHINode::Create(IA->F.getFunctionType()->getReturnType(), "retval", IA->returnBlock);
+	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), "retval", IA->returnBlock);
 	else {
 	  I->committedVal = 0;
 	  IA->returnPHI = 0;
