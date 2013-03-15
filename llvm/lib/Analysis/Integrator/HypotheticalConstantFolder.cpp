@@ -639,6 +639,9 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   Constant* op0C = dyn_cast_or_null<Constant>(op0.getVal());
   Constant* op1C = dyn_cast_or_null<Constant>(op1.getVal());
 
+  bool op0Fun = (op0C && isa<Function>(op0C->stripPointerCasts()));
+  bool op1Fun = (op1C && isa<Function>(op1C->stripPointerCasts()));
+
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
   // against an integer null. The code for case 1 works for these; all other cases require that both
   // values resolved to pointers.
@@ -652,12 +655,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0.getType()->isPointerTy() && isGlobalIdentifiedObject(op0))
+  else if(op0.getType()->isPointerTy() && (isGlobalIdentifiedObject(op0) || op0Fun))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1.getType()->isPointerTy() && isGlobalIdentifiedObject(op1))
+  else if(op1.getType()->isPointerTy() && (isGlobalIdentifiedObject(op1) || op1Fun))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
