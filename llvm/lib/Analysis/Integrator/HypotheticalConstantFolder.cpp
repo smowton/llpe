@@ -844,11 +844,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
     break;
   }
 
-  if(Ops[0].first != ValSetTypeScalar || Ops[1].first != ValSetTypeScalar)
-    return false;
-
-  Constant* Op0C = cast<Constant>(Ops[0].second.V.getVal());
-  Constant* Op1C = cast<Constant>(Ops[1].second.V.getVal());
+  Constant* Op0C = cast_or_null<Constant>(Ops[0].second.V.getVal());
+  Constant* Op1C = cast_or_null<Constant>(Ops[1].second.V.getVal());
 
   if(BOp->getOpcode() == Instruction::And) {
 
