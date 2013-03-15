@@ -564,10 +564,15 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(!IA->returnBlock) {
 
-      if(I->i.dieStatus != INSTSTATUS_ALIVE)
-	return;
-      // Normal return (vararg function or root function)
-      emitInst(BB, I, emitBB);
+      if((!F.getReturnType()->isVoidTy()) && I->i.dieStatus != INSTSTATUS_ALIVE) {
+	// Return a null value, since this isn't used:
+	Constant* retVal = Constant::getNullValue(F.getReturnType());
+	ReturnInst::Create(emitBB->getContext(), retVal, emitBB);
+      }
+      else {
+	// Normal return (vararg function or root function)
+	emitInst(BB, I, emitBB);
+      }
 
     }
     else {
