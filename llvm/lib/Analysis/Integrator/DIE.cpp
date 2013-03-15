@@ -423,10 +423,16 @@ void InlineAttempt::runDIE() {
   // First try to kill our instructions:
   IntegrationAttempt::runDIE();
 
+  // Don't eliminate 
+  if(!parent)
+    return;
+  
   // And then our formal arguments:
   for(uint32_t i = 0; i < F.arg_size(); ++i) {
     ShadowArg* SA = &(argShadows[i]);
     if(willBeReplacedWithConstantOrDeleted(ShadowValue(SA)))
+      continue;
+    if((!parent) && SA->invar->A->hasNoAliasAttr())
       continue;
     if(valueIsDead(ShadowValue(SA))) {
       SA->i.dieStatus |= INSTSTATUS_DEAD;

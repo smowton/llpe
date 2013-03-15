@@ -871,19 +871,18 @@ void IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   }
   else {
 
-    ShadowInstruction* BaseSI = Base.getInst();
-    Instruction* BaseI = cast<Instruction>(BaseSI->committedVal);
+    Value* BaseI = getCommittedValue(Base);
     release_assert(BaseI && "Synthing pointer atop uncommitted allocation");
 
     // Get byte ptr:
-    Instruction* CastI;
+    Value* CastI;
     if(BaseI->getType() != Int8Ptr)
       CastI = new BitCastInst(BaseI, Int8Ptr, "synthcast", emitBB);
     else
       CastI = BaseI;
 
     // Offset:
-    Instruction* OffsetI;
+    Value* OffsetI;
     if(Offset == 0)
       OffsetI = CastI;
     else {
