@@ -316,7 +316,7 @@ public:
       }
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(CI);
-      if((!IA) || !IA->isEnabled()) {
+      if((!IA) || (!IA->isEnabled()) || IA->isVararg()) {
 	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(*CI) << "\n");
 	maybeLive = true;
 	return;
