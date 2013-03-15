@@ -577,8 +577,8 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     if(BB->succsAlive[i]) {
 
       if(knownSucc == 0xffffffff)
-	knownSucc = i;
-      else if(knownSucc == i)
+	knownSucc = BB->invar->succIdxs[i];
+      else if(knownSucc == BB->invar->succIdxs[i])
 	continue;
       else {
 
@@ -594,7 +594,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
   if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
-    ShadowBB* SBB = getSuccessorBB(BB, BB->invar->succIdxs[knownSucc]);
+    ShadowBB* SBB = getSuccessorBB(BB, knownSucc);
     release_assert(SBB && "Failed to get successor BB");
     BranchInst::Create(SBB->committedHead, emitBB);
 
