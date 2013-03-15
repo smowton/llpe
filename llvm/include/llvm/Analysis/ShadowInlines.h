@@ -315,55 +315,16 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
     if(Overdef)
       return *this;
-    if(std::count(Values.begin(), Values.end(), V))
-      return *this;
 
-    // Do a few tricks to generalise pointers rather than go overdef:
     if(Type == ValSetTypePB) {
 
-      // 1. If there's already a vague version of this pointer, don't add:
-      ImprovedVal VaguePtr(V.V, LLONG_MAX);
-      if(std::count(Values.begin(), Values.end(), VaguePtr))
-	return *this;
+      for(SmallVector<ImprovedVal, 1>::iterator it = Values.begin(), endit = Values.end(); it != endit; ++it) {
 
-      // 2. If this is a vague pointer, nuke any precise ones that exist:
-      if(V.Offset == LLONG_MAX)
-	removeValsWithBase(V.V);
+	if(it->V == V.V) {
 
-      Values.push_back(V);
-
-      // 3. If that made us oversized, try to find merge victims:
-      if(Values.size() > PBMAX) {
-
-	SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX> BaseCounts;
-	
-	for(uint32_t i = 0; i < Values.size(); ++i) {
-
-	  bool found = false;
-	  for(SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX>::iterator it = BaseCounts.begin(), it2 = BaseCounts.end(); it != it2; ++it) {
-
-	    if(it->first == Values[i].V) {
-	      ++it->second;
-	      found = true;
-	      break;
-	    }
-
-	  }
-
-	  if(!found)
-	    BaseCounts.push_back(std::make_pair(Values[i].V, 1));
-
-	}
-
-	// Merge everything we can to avoid more of these walks.
-	for(SmallVector<std::pair<ShadowValue, uint32_t>, PBMAX>::iterator it = BaseCounts.begin(), it2 = BaseCounts.end(); it != it2; ++it) {
-
-	  if(it->second >= 2) {
-
-	    removeValsWithBase(it->first);
-	    Values.push_back(ImprovedVal(it->first, LLONG_MAX));
-
-	  }
+	  if(it->Offset != V.Offset)
+	    it->Offset = LLONG_MAX;
+	  return *this;
 
 	}
 
@@ -372,9 +333,12 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     }
     else {
 
-      Values.push_back(V);
+      if(std::count(Values.begin(), Values.end(), V))
+	return *this;
 
     }
+
+    Values.push_back(V);
 
     if(Values.size() > PBMAX)
       setOverdef();
