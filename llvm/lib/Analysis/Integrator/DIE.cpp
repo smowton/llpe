@@ -465,7 +465,7 @@ void IntegrationAttempt::runDIE() {
       }
 
       // Skip loop blocks regardless of whether we entered the loop:
-      while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && EnterL->contains(BBs[i-1]->invar->naturalScope))
+      while(i > 0 && ((!BBs[i-1]) || EnterL->contains(BBs[i-1]->invar->naturalScope)))
 	--i;
       ++i;
       continue;

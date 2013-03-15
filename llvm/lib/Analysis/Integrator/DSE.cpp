@@ -447,8 +447,9 @@ void IntegrationAttempt::tryKillAllMTIs() {
 	}
 
 	// Skip loop blocks:
-	while(i > 0 && BBs[i-1] && BBs[i-1]->invar->naturalScope && enterLoop->contains(BBs[i-1]->invar->naturalScope))
+	while(i > 0 && ((!BBs[i-1]) || enterLoop->contains(BBs[i-1]->invar->naturalScope)))
 	  --i;
+	++i;
 	continue;
 
       }
