@@ -874,11 +874,19 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
 }
 
-void IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
+bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
 
   ShadowValue Base;
   int64_t Offset;
-  getBaseAndConstantOffset(I, Base, Offset);
+  if(!getBaseAndConstantOffset(I, Base, Offset))
+    return false;
+  
+  if(Base == I)
+    return false;
+
+  if(!Base.isAvailableFromCtx(this))
+    return false;
+
   const Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
 
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
@@ -939,6 +947,8 @@ void IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
 
   }
 
+  return true;
+
 }
 
 void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB) {
@@ -961,15 +971,13 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     return;
   }
 
-  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst()) {
+  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst() && I->i.PB.Values[0].V.isAvailableFromCtx(this)) {
     I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
     return;
   }
       
-  else if((!inst_is<AllocaInst>(I)) && I->i.PB.Type == ValSetTypePB && I->i.PB.Values.size() == 1 && I->i.PB.Values[0].Offset != LLONG_MAX) {
-    synthCommittedPointer(ShadowValue(I), emitBB);
+  else if(synthCommittedPointer(ShadowValue(I), emitBB))
     return;
-  }
 
   // Already emitted calls above:
   if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
@@ -1008,11 +1016,8 @@ void IntegrationAttempt::commitLoopInvariants(PeelAttempt* PA, uint32_t i) {
 
 	  if(Constant* C = getConstReplacement(InvarSI))
 	    InvarSI->committedVal = C;
-	  else if(InvarSI->i.PB.Type == ValSetTypePB && InvarSI->i.PB.Values.size() == 1 && InvarSI->i.PB.Values[0].Offset != LLONG_MAX) {
-
+	  else 
 	    synthCommittedPointer(InvarSI, invarEmitBB);
-
-	  }
 
 	}
 
@@ -1108,11 +1113,8 @@ void InlineAttempt::commitArgsAndInstructions() {
       continue;
     }
     
-    // The last condition here accommodates argv, which is a global identified object.
-    if(SA->i.PB.Type == ValSetTypePB && SA->i.PB.Values.size() == 1 && SA->i.PB.Values[0].Offset != LLONG_MAX && !SA->i.PB.Values[0].V.isArg()) {
-      synthCommittedPointer(ShadowValue(SA), emitBB);
+    if(synthCommittedPointer(ShadowValue(SA), emitBB))
       continue;
-    }
 
     // Finally just proxy whatever literal argument we're passed:
     SA->committedVal = getArgCommittedValue(SA);

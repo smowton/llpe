@@ -675,3 +675,12 @@ bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
   return BB->status == BBSTATUS_CERTAIN;
 
 }
+
+bool ShadowValue::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
+
+  if(IntegrationAttempt* IA = getCtx())
+    return IA->isAvailableFromCtx(OtherIA);
+  else
+    return true;
+
+}
