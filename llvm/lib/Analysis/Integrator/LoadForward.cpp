@@ -644,7 +644,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
   // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
   // Don't behave optimistically if we're outside the loop subject to consideration.
 
-  UsedInstructions.push_back(I);
+  if(R == SVMustAlias)
+    UsedInstructions.push_back(I);
 
   bool cacheAllowed = *((bool*)Ctx);
 
@@ -958,8 +959,9 @@ WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void*
 
   }
 
-  // No point either looking for cache entries or making them if the block isn't a certainty.
-  if(BB->status != BBSTATUS_CERTAIN)
+  // No point either looking for cache entries or making them if the block isn't a certainty
+  // or the cache threshold (an uncertain threshold indicates a temporary cachepoint)
+  if(BB->status != BBSTATUS_CERTAIN && BB->invar->BB != optimisticBB)
     return WIRContinue;
 
   // See if this block has a cache entry for us:
@@ -1331,7 +1333,7 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // to be compatible with anything, the same as the mergepoint logic above
 // when finalise is false. When finalise = true this is just like normal load
 // forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser) {
+bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
 
   PointerBase ConstResult;
   std::string error;
@@ -1361,7 +1363,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 				 !finalise,
 				 CacheThresholdBB, CacheThresholdIA, initialCtx,
 				 emptyPV,
-				 inLoopAnalyser);
+				 !!LPBA);
 
   if(TargetType->isStructTy() || TargetType->isArrayTy()) {
     bool* validBytes = Walker.getValidBuf();
@@ -1398,7 +1400,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
   }
 
-  if(Walker.activeCacheEntry && Walker.usedCacheEntryIA) {
+  if(Walker.activeCacheEntry && Walker.usedCacheEntryIA && ((!LPBA) || !LPBA->cachePointIsTemporary)) {
 
     LPDEBUG("Delete cache entry\n");
     // Our new cache entry subsumes this old one, since we walk the program in topological order.
@@ -1409,6 +1411,9 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   if(!finalise) {
 
     for(std::vector<ShadowInstruction*>::iterator it = Walker.UsedInstructions.begin(), it2 = Walker.UsedInstructions.end(); it != it2; ++it) {
+
+      if(!LPBA->isConsidered(ShadowValue(*it)))
+	continue;
 
       // Register our dependency on various instructions:
       // This is only useful during loop invariant analysis.

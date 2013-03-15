@@ -174,7 +174,8 @@ enum ValSetType {
   ValSetTypePB, // Pointers; the Offset member is set
   ValSetTypeScalar, // Ordinary constants
   ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
-  ValSetTypeVarArg // Special tokens representing a vararg or VA-related cookie
+  ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie
+  ValSetTypeOverdef // Useful for disambiguating empty PB from Overdef; never actually used in PB.
 
 };
 

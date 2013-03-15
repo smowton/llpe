@@ -428,6 +428,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   bool flip;
   ConstantInt* CmpInt = 0;
+  ValSetType CmpIntType;
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
   ShadowInstruction* op0I = op0.getInst();
@@ -436,10 +437,12 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
   if(op0I && Ops[0].first == ValSetTypeFD) {
     flip = false;
     CmpInt = dyn_cast_or_null<ConstantInt>(op1.getVal());
+    CmpIntType = Ops[1].first;
   }
   else if(op1I && Ops[1].first == ValSetTypeFD) {
     flip = true;
     CmpInt = dyn_cast_or_null<ConstantInt>(op0.getVal());
+    CmpIntType = Ops[0].first;
   }
   else {
     return false;
@@ -448,13 +451,19 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
   if(CmpInt) {
     
     Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
-    ImpType = ValSetTypeScalar;
     if(!Improved.V.isInval()) {
       LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
+      ImpType = ValSetTypeScalar;
     }
     else {
       LPDEBUG("Comparison against file descriptor inconclusive\n");
+      ImpType = ValSetTypeOverdef;
     }
+
+  }
+  else {
+
+    ImpType = CmpIntType == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef;
 
   }
 
@@ -886,7 +895,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
-bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
+void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
 					   ValSetType& ImpType, ImprovedVal& Improved) {
   
@@ -897,7 +906,7 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     ImpType = ValSetTypePB;
     Improved.V = ShadowValue(SI);
     Improved.Offset = 0;
-    return true;
+    return;
       
   }
 
@@ -913,7 +922,8 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       if(!((SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) &&
 	   (DestTy->isIntegerTy(32) || DestTy->isIntegerTy(64) || DestTy->isPointerTy()))) {
 
-	return false;
+	ImpType = ValSetTypeOverdef;
+	return;
 
       }
     }
@@ -923,7 +933,7 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       // Pass FDs, pointers, vararg cookies through. This includes ptrtoint and inttoptr.
       ImpType = Ops[0].first;
       Improved = Ops[0].second;
-      return ImpType != ValSetTypeUnknown;
+      return;
 
     }
 
@@ -934,11 +944,11 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   if(inst_is<CmpInst>(SI)) {
 
     if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
-      return ImpType != ValSetTypeUnknown;
+      return;
     if(tryFoldPointerCmp(SI, Ops, ImpType, Improved))
-      return ImpType != ValSetTypeUnknown;
+      return;
     if(tryFoldNonConstCmp(SI, Ops, ImpType, Improved))
-      return ImpType != ValSetTypeUnknown;
+      return;
 
     // Otherwise fall through to normal const folding.
 
@@ -977,15 +987,18 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
       }
 
-      return true;
+      return;
 
     }
     else if(Ops[0].first == ValSetTypeVarArg) {
 	
       if(SI->getNumOperands() == 2) {
 
-	if(Ops[1].first != ValSetTypeScalar)
-	  return false;
+	if(Ops[1].first != ValSetTypeScalar) {
+	  ImpType = Ops[1].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef;
+	  return;
+	}
+
 	ConstantInt* CI = cast_val<ConstantInt>(Ops[1].second.V);
 
 	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->IA->getFunctionRoot();
@@ -1025,24 +1038,25 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	  ImpType = ValSetTypeVarArg;
 	  Improved.V = Ops[0].second.V;
 	  Improved.Offset = newVaArg;
-	  return true;
+	  return;
 	}
 
       }
 
     }
-
-    // Else GEP off an unknown value, or off a constant of some sort, or a failure above...
-    return false;
+    else {
+      ImpType = (Ops[0].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef);
+    }
+    return;
 	  
   }
 
   else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
 
     if(tryFoldPtrAsIntOp(SI, Ops, ImpType, Improved))
-      return true;
+      return;
     if(tryFoldBitwiseOp(SI, Ops, ImpType, Improved))
-      return true;
+      return;
 	    
   }
 
@@ -1050,11 +1064,28 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   SmallVector<Constant*, 4> instOperands;
 
+  bool allOpsAvailable = true;
+
   for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
 
-    if(Ops[i].first != ValSetTypeScalar)
-      return false;
+    if(Ops[i].first != ValSetTypeScalar) {
+      if(Ops[i].first == ValSetTypeUnknown)
+	allOpsAvailable = false;
+      else {
+	ImpType = ValSetTypeOverdef;
+	return;
+      }
+    }
+
     instOperands.push_back(cast<Constant>(Ops[i].second.V.getVal()));
+
+  }
+
+  if(!allOpsAvailable) {
+
+    // Need more information
+    ImpType = ValSetTypeUnknown;
+    return;
 
   }
 
@@ -1072,9 +1103,10 @@ bool IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     ImpType = ValSetTypeScalar;
     Improved.V = ShadowValue(newConst);
   }
+  else {
+    ImpType = ValSetTypeOverdef;
+  }
   
-  return !!newConst;
-
 }
 
 static bool containsPtrAsInt(ConstantExpr* CE) {
@@ -1101,11 +1133,12 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
 
     ValSetType ThisVST;
     ImprovedVal ThisV;
-    if(!tryEvaluateResult(SI, Ops, ThisVST, ThisV)) {
-
+    tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+    if(ThisVST == ValSetTypeUnknown)
+      return false;
+    else if(ThisVST == ValSetTypeOverdef) {
       NewPB.setOverdef();
       return true;
-
     }
     else {
 
@@ -1132,7 +1165,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
     PointerBase ArgPB;
     bool ArgPBValid = getPointerBase(OpV, ArgPB);
     if((!ArgPBValid) || ArgPB.Overdef) {
-      Ops[OpIdx].first = ValSetTypeUnknown;
+      Ops[OpIdx].first = ArgPB.Overdef ? ValSetTypeOverdef : ValSetTypeUnknown;
       Ops[OpIdx].second.V = ShadowValue();
       return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
     }
@@ -1163,7 +1196,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser) {
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -1171,7 +1204,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
-    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, inLoopAnalyser);
+    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA);
   case Instruction::PHI:
     {
       bool Valid;
@@ -1218,6 +1251,8 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   else {
 
     tryEvaluateOrdinaryInst(SI, NewPB);
+    if(finalise && !NewPB.isInitialised())
+      NewPB.setOverdef();
 
   }
 
@@ -1260,7 +1295,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
   else {
 
     ShadowInstruction* SI = V.getInst();
-    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, !!LPBA);
+    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA);
 
   }
 
@@ -1300,8 +1335,10 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
       errs() << "\n";
     }
   
-    if(LPBA)
+    if(LPBA) {
+      //errs() << "QUEUE\n";
       queueUsersUpdatePB(V, LPBA);
+    }
 
     return true;
 

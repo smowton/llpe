@@ -459,6 +459,9 @@ public:
 
 inline bool operator==(PointerBase& PB1, PointerBase& PB2) {
 
+  if(PB1.Type != PB2.Type)
+    return false;
+
   if(PB1.Overdef != PB2.Overdef)
     return false;
 
@@ -520,8 +523,9 @@ public:
 
   BasicBlock* CacheThresholdBB;
   IntegrationAttempt* CacheThresholdIA;
+  bool cachePointIsTemporary;
   
-  LoopPBAnalyser(BasicBlock* CTBB, IntegrationAttempt* CTIA) : CacheThresholdBB(CTBB), CacheThresholdIA(CTIA) {
+ LoopPBAnalyser(BasicBlock* CTBB, IntegrationAttempt* CTIA, bool cPIT) : CacheThresholdBB(CTBB), CacheThresholdIA(CTIA), cachePointIsTemporary(cPIT) {
     PBProduceQ = &PBQueue1;
   }
 
@@ -532,6 +536,10 @@ public:
   void queueIfConsidered(ShadowValue VC) {
     if(inLoopVCs.count(VC))
       queueUpdatePB(VC);
+  }
+
+  bool isConsidered(ShadowValue VC) {
+    return inLoopVCs.count(VC);
   }
 
   void addVal(ShadowValue V) {
@@ -781,10 +789,10 @@ protected:
 
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result);
   bool tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-  bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser);
+  bool getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser*);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
-  bool tryEvaluateResult(ShadowInstruction* SI, 
+  void tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
 			 ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
@@ -825,7 +833,7 @@ protected:
   // Load forwarding:
 
   bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result, std::string& error);
-  bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, bool inLoopAnalyser);
+  bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser*);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:

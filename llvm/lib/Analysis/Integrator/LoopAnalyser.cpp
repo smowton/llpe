@@ -21,7 +21,7 @@
 
 using namespace llvm;
 
-/*
+
 static double time_diff(struct timespec& start, struct timespec& end) {
 
   timespec temp;
@@ -36,7 +36,6 @@ static double time_diff(struct timespec& start, struct timespec& end) {
   return (temp.tv_sec) + (((double)temp.tv_nsec) / 1000000000.0);
 
 }
-*/
 
 void InlineAttempt::queueUpdateCall(LoopPBAnalyser* LPBA) {
 
@@ -126,7 +125,8 @@ void IntegrationAttempt::queueUsersUpdatePBLocal(ShadowInstructionInvar* I, Loop
   else if(inst_is<StoreInst>(SI)) {
 
     for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->indirectUsers.begin(), it2 = SI->indirectUsers.end(); it != it2; ++it) {
-
+      
+      //errs() << "QUEUE LOAD " << itcache(*it) << "\n";
       queueUpdatePB(*it, LPBA);
 
     }
@@ -357,8 +357,15 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
 
       assert(inLoopVCs.count(*it));
 
-      if(verbose)
+      if(verbose) {
+	PointerBase NewPB;
+	getPointerBase(*it, NewPB);
+	errs() << "OLD ";
+	it->getCtx()->printPB(errs(), NewPB);
+	errs() << "\n";
 	errs() << "TE " << it->getCtx()->itcache(*it) << " "  << finalise  << "\n";
+      }
+
       if(it->getCtx()->tryEvaluate(*it, finalise, this, CacheThresholdBB, CacheThresholdIA)) {
 	if(modifiedVals) {
 	  modifiedVals->push_back(*it);
@@ -368,6 +375,7 @@ void LoopPBAnalyser::runPointerBaseSolver(bool finalise, std::vector<ShadowValue
       if(verbose) {
 	PointerBase NewPB;
 	getPointerBase(*it, NewPB);
+	errs() << "NEW ";
 	it->getCtx()->printPB(errs(), NewPB);
 	errs() << "\n";
       }
@@ -418,13 +426,32 @@ void LoopPBAnalyser::run() {
 
   runPointerBaseSolver(true, 0);
 
+  // Remove any indirectUsers data, which will only be useful again if this loop is reanalysed
+  // in the context of an outer loop.
+
+  for(DenseSet<ShadowValue>::iterator it = inLoopVCs.begin(), it2 = inLoopVCs.end(); it != it2; ++it) {
+
+    if(ShadowInstruction* SI = it->getInst())
+      SI->indirectUsers.clear();
+
+  }
+
 }
 
 void IntegrationAttempt::analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
 
+  //errs() << "Start solver for " << getShortHeader() << " / " << L->getHeader() << "\n";
+
+  struct timespec start;
+  clock_gettime(CLOCK_REALTIME, &start);
+  
   // L is an immediate child of this context.
 
-  LoopPBAnalyser LPBA(CacheThresholdBB, CacheThresholdIA);
+  bool makeTemporaryCachepoint = (CacheThresholdBB != L->getLoopPreheader() || CacheThresholdIA != this);
+  bool cacheWasEmpty = LFPBCache.size() == 0;
+
+  // If we don't already have a cachepoint available at the preheader, make a temporary one:
+  LoopPBAnalyser LPBA(L->getLoopPreheader(), this, makeTemporaryCachepoint);
 
   // Step 1: queue VCs falling within this loop.
 
@@ -438,6 +465,31 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L, BasicBlock* CacheThreshol
   // and undefined == overdefined.
 
   LPBA.run();
+
+  struct timespec end;
+  clock_gettime(CLOCK_REALTIME, &end);
+
+  if(time_diff(start, end) > 1) {
+    errs() << "Solver for " <<  getShortHeader() << " / " << L->getHeader()->getName() << " took " << time_diff(start, end) << "s\n";
+  }
+
+  // If the cachepoint was temporary, nuke any entries that are newly created.
+  if(makeTemporaryCachepoint) {
+
+    if(cacheWasEmpty)
+      LFPBCache.clear();
+    else {
+
+      for(DenseMap<LFCacheKey, PointerBase>::iterator it = LFPBCache.begin(), it2 = LFPBCache.end(); it != it2; ++it) {
+	
+	if(it->first.first.first.first == L->getLoopPreheader())
+	  LFPBCache.erase(it);
+
+      }
+
+    }
+
+  }
 
 }
 
