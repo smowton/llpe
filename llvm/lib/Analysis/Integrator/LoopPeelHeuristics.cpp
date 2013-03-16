@@ -1658,7 +1658,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       if(ArgTyP == StrTy) {
 
 	Constant* Str = ConstantArray::get(F.getContext(), Param);
-	Constant* GStr = new GlobalVariable(Str->getType(), true, GlobalValue::PrivateLinkage, Str, "specstr");
+	Constant* GStr = new GlobalVariable(Str->getType(), true, GlobalValue::InternalLinkage, Str, "specstr");
 	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
 	Constant* GEPArgs[] = { Zero, Zero };
 	Constant* StrPtr = ConstantExpr::getGetElementPtr(GStr, GEPArgs, 2);

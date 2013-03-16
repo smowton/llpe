@@ -199,7 +199,7 @@ void IntegrationAttempt::commitCFG() {
 		raw_string_ostream RSO(Name);
 		RSO << IA->getCommittedBlockPrefix() << "clone";
 	      }
-	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::PrivateLinkage, Name);
+	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name);
 	      IA->returnBlock = 0;
 
 	    }
@@ -692,7 +692,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
 	// Create a const global for the array:
 
-	GlobalVariable *ArrayGlobal = new GlobalVariable(*(CI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::PrivateLinkage, ByteArray, "");
+	GlobalVariable *ArrayGlobal = new GlobalVariable(*(CI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
 
 	const Type* Int64Ty = IntegerType::get(Context, 64);
 	const Type *VoidPtrTy = Type::getInt8PtrTy(Context);
