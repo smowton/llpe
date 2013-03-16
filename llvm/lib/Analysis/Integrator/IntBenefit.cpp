@@ -58,7 +58,7 @@ int64_t IntegrationAttempt::getResidualInstructions() {
     return residualInstructions;
 
   // Total excluding explored child loops:
-  int64_t totalInstructions = getTotalInstructions() - getElimdInstructions();
+  int64_t totalInstructions = ((int)getTotalInstructions()) - ((int)getElimdInstructions());
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 

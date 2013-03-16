@@ -1878,6 +1878,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   }
 
+  IA->collectStats();
+
   if(!SkipBenefitAnalysis) {
     errs() << "Picking integration candidates";
     estimateIntegrationBenefit();
@@ -1889,8 +1891,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   IA->prepareCommit();
 
   rerunDSEAndDIE();
-
-  IA->collectStats();
 
   if(!GraphOutputDirectory.empty()) {
 
