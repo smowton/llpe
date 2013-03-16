@@ -1360,8 +1360,6 @@ class InlineAttempt : public IntegrationAttempt {
 
  Constant* getGVOffset(GlobalVariable* GV, int64_t Offset, const Type* targetType);
 
- extern bool mainDIE;
-
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);

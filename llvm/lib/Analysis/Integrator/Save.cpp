@@ -18,6 +18,21 @@
 
 using namespace llvm;
 
+static uint32_t SaveProgressN = 0;
+const uint32_t SaveProgressLimit = 1000;
+
+static void SaveProgress() {
+
+  SaveProgressN++;
+  if(SaveProgressN == SaveProgressLimit) {
+
+    errs() << ".";
+    SaveProgressN = 0;
+
+  }
+
+}
+
 // Prepare for the commit: remove instruction mappings that are (a) invalid to write to the final program
 // and (b) difficult to reason about once the loop structures start to be modified by unrolling and so on.
 
@@ -129,6 +144,8 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 }
 
 void IntegrationAttempt::commitCFG() {
+
+  SaveProgress();
 
   Function* CF = getFunctionRoot()->CommitF;
   const Loop* currentLoop = L;
@@ -1135,6 +1152,8 @@ void InlineAttempt::commitArgsAndInstructions() {
 }
 
 void IntegrationAttempt::commitInstructions() {
+
+  SaveProgress();
 
   uint32_t i = 0;
   commitLoopInstructions(L, i);

@@ -21,9 +21,6 @@ const uint32_t DIEProgressLimit = 10000;
 
 static void DIEProgress() {
 
-  if(!mainDIE)
-    return;
-
   DIEProgressN++;
   if(DIEProgressN == DIEProgressLimit) {
 

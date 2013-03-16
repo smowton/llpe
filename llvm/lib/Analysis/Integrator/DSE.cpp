@@ -253,15 +253,10 @@ bool WriterUsedWalker::blockedByUnexpandedCall(ShadowInstruction*, void*) {
 
 }
 
-bool llvm::mainDIE = false;
-
 static uint32_t DSEProgressN = 0;
 const uint32_t DSEProgressLimit = 1000;
 
 static void DSEProgress() {
-
-  if(!mainDIE)
-    return;
 
   DSEProgressN++;
   if(DSEProgressN == DSEProgressLimit) {

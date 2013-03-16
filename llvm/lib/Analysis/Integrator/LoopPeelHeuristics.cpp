@@ -1378,6 +1378,8 @@ void IntegrationHeuristicsPass::commit() {
   if(mustRecomputeDIE)
     rerunDSEAndDIE();
 
+  errs() << "Writing specialised module";
+
   std::string Name;
   {
     raw_string_ostream RSO(Name);
@@ -1398,6 +1400,9 @@ void IntegrationHeuristicsPass::commit() {
 
   RootIA->CommitF->takeName(&(RootIA->F));
   RootIA->F.setName(oldFName);
+
+  errs() << "\n";
+
 }
 
 static void dieEnvUsage() {
@@ -1778,6 +1783,8 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
 void IntegrationHeuristicsPass::runDSEAndDIE() {
 
+  errs() << "Killing memory instructions";
+
   DEBUG(dbgs() << "Finding dead MTIs\n");
   RootIA->tryKillAllMTIs();
 
@@ -1792,15 +1799,11 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 
   DEBUG(dbgs() << "Finding remaining dead instructions\n");
   
-  if(mainDIE) {
-    errs() << "\nKilling other instructions";
-  }
+  errs() << "\nKilling other instructions";
   
   RootIA->runDIE();
   
-  if(mainDIE) {
-    errs() << "\n";
-  }
+  errs() << "\n";
 
 }
 
@@ -1871,12 +1874,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   if(!SkipDIE) {
 
-    errs() << "Killing memory instructions";
-    mainDIE = true;
-
     runDSEAndDIE();
-
-    mainDIE = false;
 
   }
 
