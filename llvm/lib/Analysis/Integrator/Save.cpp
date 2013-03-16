@@ -876,6 +876,34 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
 }
 
+Constant* llvm::getGVOffset(GlobalVariable* GV, int64_t Offset, const Type* targetType) {
+
+  const Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
+  Constant* CastGV;
+  
+  if(GV->getType() != Int8Ptr)
+    CastGV = ConstantExpr::getBitCast(GV, Int8Ptr);
+  else
+    CastGV = GV;
+
+  Constant* OffsetGV;
+  if(Offset == 0)
+    OffsetGV = CastGV;
+  else {
+    Constant* OffC = ConstantInt::get(Type::getInt64Ty(GV->getContext()), (uint64_t)Offset, true);
+    OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &OffC, 1);
+  }
+    
+  // Cast to proper type:
+  if(targetType != Int8Ptr) {
+    return ConstantExpr::getBitCast(OffsetGV, targetType);
+  }
+  else {
+    return OffsetGV;
+  }
+
+}
+
 bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
 
   ShadowValue Base;
@@ -894,28 +922,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
 
     // Rep as a constant expression:
-    Constant* CastGV;
-
-    if(GV->getType() != Int8Ptr)
-      CastGV = ConstantExpr::getBitCast(GV, Int8Ptr);
-    else
-      CastGV = GV;
-
-    Constant* OffsetGV;
-    if(Offset == 0)
-      OffsetGV = CastGV;
-    else {
-      Constant* OffC = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
-      OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &OffC, 1);
-    }
-    
-    // Cast to proper type:
-    if(I.getType() != Int8Ptr) {
-      I.setCommittedVal(ConstantExpr::getBitCast(OffsetGV, I.getType()));
-    }
-    else {
-      I.setCommittedVal(OffsetGV);
-    }
+    I.setCommittedVal(getGVOffset(GV, Offset, I.getType()));
 
   }
   else {

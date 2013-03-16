@@ -33,6 +33,16 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   if(!getBaseAndConstantOffset(Ptr, StrBase, StrOffset))
     return false;
 
+  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(StrBase.getVal())) {
+      
+    if(GV->isConstant()) {
+      const Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
+      Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
+      return GetConstantStringInfo(QueryCE, Result);
+    }
+
+  }
+
   Result = "";
   
   // Try to LF one character at a time until we get null or a failure.
@@ -474,7 +484,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   else {
 
     // It's a seek call, with SEEK_CUR.
-    Constant* newOffset = getConstReplacement(CI->getArgOperand(1));
+    Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
     int64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
     intOffset += Walk.uniqueIncomingOffset;
 

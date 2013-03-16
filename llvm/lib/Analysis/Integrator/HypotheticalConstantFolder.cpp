@@ -1306,6 +1306,19 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
 
   if((!OldPBValid) || OldPB != NewPB) {
 
+    if(NewPB.Type == ValSetTypeFD) {
+
+      for(uint32_t i = 0; i < NewPB.Values.size(); ++i) {
+
+	ShadowInstruction* OpenCall = NewPB.Values[i].V.getInst();
+	if(std::find(OpenCall->indirectDIEUsers.begin(), OpenCall->indirectDIEUsers.end(), V) 
+	   == OpenCall->indirectDIEUsers.end())
+	  OpenCall->indirectDIEUsers.push_back(V);
+
+      }
+
+    }
+
     if(ShadowInstruction* I = V.getInst()) {
       if(!inst_is<LoadInst>(I)) {
 	std::string RStr;

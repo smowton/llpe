@@ -409,6 +409,15 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
   else {
 
     DIVisitor DIV(V);
+
+    // At the moment only FDs have indirect users like this. Check that each is dead:
+    if(ShadowInstruction* I = V.getInst()) {
+      for(uint32_t i = 0; i < I->indirectDIEUsers.size(); ++i) {
+	if(!willBeDeleted(I->indirectDIEUsers[i]))
+	  return false;
+      }
+    }
+
     visitUsers(V, DIV);
 
     return !DIV.maybeLive;

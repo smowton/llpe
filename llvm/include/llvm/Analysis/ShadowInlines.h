@@ -454,6 +454,7 @@ struct ShadowInstruction {
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
   SmallVector<ShadowInstruction*, 1> indirectUsers;
+  SmallVector<ShadowValue, 1> indirectDIEUsers;
   Value* committedVal;
 
   uint32_t getNumOperands() {
