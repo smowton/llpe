@@ -64,12 +64,11 @@ public:
   PointerBase* activeCacheEntry;
   IntegrationAttempt* usedCacheEntryIA;
   LFCacheKey usedCacheEntryKey;
-  bool isVarargTainted;
   bool inLoopAnalyser;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false), inLoopAnalyser(iLA) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, Ptr, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA) { }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), isVarargTainted(false), inLoopAnalyser(iLA) { }
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, bool* firstCtx, PartialVal& iPV, bool iLA) : LoadForwardWalker(Start, PtrBase, PtrOffset, Size, firstCtx), originalType(OT), OptimisticMode(OM), optimisticBB(optBB), optimisticIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA) { }
 
   virtual WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
   virtual bool reachedTop();
@@ -243,7 +242,7 @@ void PartialVal::initByteArray(uint64_t nbytes) {
 
 }
 
-PartialVal::PartialVal(uint64_t nbytes) : isVarargTainted(false), TotalIV(), C(0), ReadOffset(0), partialValidBuf(0)  {
+PartialVal::PartialVal(uint64_t nbytes) : TotalIV(), C(0), ReadOffset(0), partialValidBuf(0)  {
 
   initByteArray(nbytes);
 
@@ -261,7 +260,6 @@ PartialVal& PartialVal::operator=(const PartialVal& Other) {
   }
 
   type = Other.type;
-  isVarargTainted = Other.isVarargTainted;
   TotalIV = Other.TotalIV;
   TotalIVType = Other.TotalIVType;
   C = Other.C;
@@ -387,9 +385,6 @@ bool PartialVal::convertToBytes(uint64_t size, TargetData* TD, std::string& erro
 }
 
 bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error) {
-
-  if(Other.isVarargTainted)
-    isVarargTainted = true;
 
   if(isEmpty()) {
 
@@ -584,7 +579,6 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
 
 bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase& NewPB, std::string& error) {
 
-  bool newValTainted = false;
   bool ret;
 
   if (inst_is<MemIntrinsic>(I)) {
@@ -593,7 +587,7 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
       ret = getMemsetPV(I, FirstNotDef - FirstDef, NewPV, error);
     else {
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPV, NewPB, error, &newValTainted);
+      ret = getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPV, NewPB, error);
     }
 
   }
@@ -608,28 +602,23 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
     else if(F->getName() == "llvm.va_start") {
 
       ret = getVaStartPV(I, ReadOffset, NewPV, error);
-      if(NewPV.isVarargTainted)
-	newValTainted = true;
 
     }
     else if(F->getName() == "realloc") {
 
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, &newValTainted);
+      ret = getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
 
     }
     else {
 
       assert(F->getName() == "llvm.va_copy");
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, &newValTainted);
+      ret = getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
 
     }
 
   }
-
-  if(newValTainted)
-    isVarargTainted = true;
 
   return ret;
 
@@ -1263,7 +1252,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
 
   // Like normal load forwarding, but using a base+offset instead of a pointer.
   // This is used when forwarding through a copy instruction. 
-PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, bool* isVarargTainted) {
+PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error) {
 
   PartialVal emptyPV;
   bool* disableCaching = new bool;
@@ -1285,8 +1274,6 @@ PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowV
 
   }
 
-  if(isVarargTainted)
-    *isVarargTainted = Walker.isVarargTainted;
   return Walker.Result;
 
 }
@@ -1444,7 +1431,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   if(Walker.Result.Values.size() == 0 && !Walker.Result.Overdef)
     return false;
 
-  if(Walker.isVarargTainted)
+  if(Walker.Result.Type == ValSetTypeVarArg)
     contextTaintedByVarargs = true;
 
   NewPB = Walker.Result;
