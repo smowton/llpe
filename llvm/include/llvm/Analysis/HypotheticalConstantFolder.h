@@ -1313,19 +1313,19 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialFPBytesOnStack(Function& F);
 
  PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
- PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error);
+ PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, bool* newValTainted);
  std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
 		      ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 		      uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
 
- bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
+ bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, bool* newValTainted);
  bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error);
- bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error);
+ bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error, bool* newValTainted);
  bool getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
- bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
- bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error);
+ bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, bool* newValTainted);
+ bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, bool* newValTainted);
  bool getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
  enum SVAAResult {

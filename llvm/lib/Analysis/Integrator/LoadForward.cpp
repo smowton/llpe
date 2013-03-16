@@ -584,13 +584,16 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
 
 bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase& NewPB, std::string& error) {
 
+  bool newValTainted = false;
+  bool ret;
+
   if (inst_is<MemIntrinsic>(I)) {
 
     if(inst_is<MemSetInst>(I))
-      return getMemsetPV(I, FirstNotDef - FirstDef, NewPV, error);
+      ret = getMemsetPV(I, FirstNotDef - FirstDef, NewPV, error);
     else {
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPV, NewPB, error);
+      ret = getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPV, NewPB, error, &newValTainted);
     }
 
   }
@@ -599,32 +602,36 @@ bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t Fi
     Function* F = getCalledFunction(I);
     if(F->getName() == "read") {
       
-      return getReadPV(I, FirstNotDef - FirstDef, ReadOffset, NewPV, error);
+      ret = getReadPV(I, FirstNotDef - FirstDef, ReadOffset, NewPV, error);
 
     }
     else if(F->getName() == "llvm.va_start") {
 
-      bool ret = getVaStartPV(I, ReadOffset, NewPV, error);
+      ret = getVaStartPV(I, ReadOffset, NewPV, error);
       if(NewPV.isVarargTainted)
-	isVarargTainted = true;
-      return ret;
+	newValTainted = true;
 
     }
     else if(F->getName() == "realloc") {
 
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
+      ret = getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, &newValTainted);
 
     }
     else {
 
       assert(F->getName() == "llvm.va_copy");
       bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      return getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error);
+      ret = getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, &newValTainted);
 
     }
 
   }
+
+  if(newValTainted)
+    isVarargTainted = true;
+
+  return ret;
 
 }
 
@@ -1256,7 +1263,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
 
   // Like normal load forwarding, but using a base+offset instead of a pointer.
   // This is used when forwarding through a copy instruction. 
-PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error) {
+PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, bool* isVarargTainted) {
 
   PartialVal emptyPV;
   bool* disableCaching = new bool;
@@ -1278,6 +1285,8 @@ PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowV
 
   }
 
+  if(isVarargTainted)
+    *isVarargTainted = Walker.isVarargTainted;
   return Walker.Result;
 
 }

@@ -131,9 +131,6 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(inst_is<MemTransferInst>(I)) {
 
-      if(!isEnabled())
-	return WIRStopWholeWalk;
-
       if(!(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
@@ -177,18 +174,14 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
   }
   else if(inst_is<LoadInst>(I)) {
 
-    if(!isEnabled())
-      return WIRStopWholeWalk;
-
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());
 
-    if(mayBeReplaced(I)) {
+    if(mayBeReplaced(I) && isAvailable()) {
 
-      if(I->i.PB.Type == ValSetTypePB) {
+      if(I->i.PB.Type == ValSetTypePB || I->i.PB.Type == ValSetTypeFD) {
 
-	ShadowValue Base;
-	getBaseObject(Pointer, Base);
+	ShadowValue Base = I->i.PB.Values[0].V;
 	if((!Base.getCtx()) || Base.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))
 	  return WIRContinue;
 
