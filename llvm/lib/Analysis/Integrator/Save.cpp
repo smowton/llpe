@@ -835,9 +835,11 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
       
       IA->commitArgsAndInstructions();
     
-      // TODO: what if the target function has no live return instructions?
-      // I think this ought to be worked out in the main solver, killing future code.
-      // The remaining instructions in the block should be skipped too.
+      if((!IA->isVararg()) && IA->returnPHI && IA->returnPHI->getNumIncomingValues() == 0) {
+	IA->returnPHI->eraseFromParent();
+	IA->returnPHI = 0;
+	I->committedVal = UndefValue::get(IA->F.getFunctionType()->getReturnType());
+      }
 
       return;
     
