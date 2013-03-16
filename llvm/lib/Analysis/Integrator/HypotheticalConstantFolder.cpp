@@ -945,7 +945,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
     if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
       return;
-    if(tryFoldPointerCmp(SI, Ops, ImpType, Improved))
+    if(inst_is<ICmpInst>(SI) && tryFoldPointerCmp(SI, Ops, ImpType, Improved))
       return;
     if(tryFoldNonConstCmp(SI, Ops, ImpType, Improved))
       return;

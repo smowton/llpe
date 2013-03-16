@@ -1375,7 +1375,7 @@ static Value* getWrittenPointer(Instruction* I) {
 
 void IntegrationHeuristicsPass::commit() {
 
-  if(mustRecomputeDIE)
+  if(mustRecomputeDIE && !SkipDIE)
     rerunDSEAndDIE();
 
   errs() << "Writing specialised module";
@@ -1890,7 +1890,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   IA->prepareCommit();
 
-  rerunDSEAndDIE();
+  if(!SkipDIE)
+    rerunDSEAndDIE();
 
   if(!GraphOutputDirectory.empty()) {
 
