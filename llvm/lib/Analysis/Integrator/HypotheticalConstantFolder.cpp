@@ -1068,6 +1068,21 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
 
+    if(Ops[i].first == ValSetTypePB) {
+      
+      if(Constant* OpBase = dyn_cast_or_null<Constant>(Ops[i].second.V.getVal())) {
+
+	if(OpBase->isNullValue()) {
+
+	  instOperands.push_back(getGVOffset(OpBase, Ops[i].second.Offset, OpBase->getType()));
+	  continue;
+
+	}
+
+      }
+
+    }
+      
     if(Ops[i].first != ValSetTypeScalar) {
       if(Ops[i].first == ValSetTypeUnknown)
 	allOpsAvailable = false;

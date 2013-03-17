@@ -893,12 +893,12 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
 }
 
-Constant* llvm::getGVOffset(GlobalVariable* GV, int64_t Offset, const Type* targetType) {
+Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, const Type* targetType) {
 
   const Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
   Constant* CastGV;
   
-  if(GV->getType() != Int8Ptr)
+  if(Offset != 0 && GV->getType() != Int8Ptr)
     CastGV = ConstantExpr::getBitCast(GV, Int8Ptr);
   else
     CastGV = GV;
@@ -912,7 +912,7 @@ Constant* llvm::getGVOffset(GlobalVariable* GV, int64_t Offset, const Type* targ
   }
     
   // Cast to proper type:
-  if(targetType != Int8Ptr) {
+  if(targetType != OffsetGV->getType()) {
     return ConstantExpr::getBitCast(OffsetGV, targetType);
   }
   else {

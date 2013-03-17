@@ -1358,7 +1358,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name);
 
- Constant* getGVOffset(GlobalVariable* GV, int64_t Offset, const Type* targetType);
+ Constant* getGVOffset(Constant* GV, int64_t Offset, const Type* targetType);
 
  struct IntAAProxy {
 
