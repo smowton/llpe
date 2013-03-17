@@ -316,7 +316,7 @@ bool IntegrationAttempt::DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, 
   
   uint64_t Offset, FirstDef, FirstNotDef;
 
-  if(R == SVMayAlias) {
+  if(R == SVMayAlias || R == SVPartialAlias) {
 
     if(!GetDefinedRange(StoreBase, StoreOffset, Size,
 			WriteBase, WriteOffset, WriteSize,

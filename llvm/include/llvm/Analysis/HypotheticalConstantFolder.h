@@ -1329,6 +1329,7 @@ class InlineAttempt : public IntegrationAttempt {
  enum SVAAResult {
    SVNoAlias,
    SVMayAlias,
+   SVPartialAlias,
    SVMustAlias
  };
 

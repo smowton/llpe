@@ -1013,6 +1013,16 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 	  ShadowBBInvar* PHIBB = SI->parent->invar;
 	  ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
 	  ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
+
+	  if(PredBB->idx >= PHIBB->idx) {
+
+	    // This indicates we're trying to read the latch input of a loop header phi,
+	    // which isn't valid as it might not have been calculated yet, and/or would
+	    // return the argument in this iteration rather than the previous.
+	    return MayAlias;
+
+	  }
+
 	  if(SI->parent->IA->edgeIsDead(PredBB, PHIBB))
 	    continue;
 	  ShadowInstruction* SI2 = V2.getInst();
@@ -1050,8 +1060,26 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 
   SmallVector<ShadowValue, 4> V1Srcs;
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
+    
+    if(ShadowInstruction* SI = V1.getInst()) {
+
+      ShadowBBInvar* PHIBB = SI->parent->invar;
+      ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
+      ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
+
+      if(PredBB->idx >= PHIBB->idx) {
+
+	// As above in the 2-phi case, we're attempting an illegal read around
+	// a loop latch.
+	return MayAlias;
+
+      } 
+
+    }
+    
     // Get incoming value for predecessor i:
     ShadowValue PV1 = getValOperand(V1, i*2);
+
     if(PV1.isInval()) // Operand comes from a dead block
       continue;
     if (val_is<PHINode>(PV1))

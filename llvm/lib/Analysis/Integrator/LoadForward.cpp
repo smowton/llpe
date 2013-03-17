@@ -1331,6 +1331,12 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
 
+  if(F.getName() == "xmlDocGetRootElement" && L && parent->parent->F.getName() == "xsltApplyStylesheetInternal") {
+
+    errs() << "HIT!\n";
+
+  }
+
   PointerBase ConstResult;
   std::string error;
   if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
@@ -1457,13 +1463,13 @@ SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, Point
 	continue;
 
       if(PB1.Values[i].Offset == LLONG_MAX || PB2.Values[j].Offset == LLONG_MAX)
-	return SVMayAlias;
+	return SVPartialAlias;
 	   
       if(!((V2Size != AliasAnalysis::UnknownSize && 
 	    PB1.Values[i].Offset >= (PB2.Values[j].Offset + V2Size)) || 
 	   (V1Size != AliasAnalysis::UnknownSize && 
 	    (PB1.Values[i].Offset + V1Size) <= PB2.Values[j].Offset)))
-	return SVMayAlias;
+	return SVPartialAlias;
 
     }
 
