@@ -19,8 +19,36 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
     switch(CE->getOpcode()) {
 
-    case Instruction::PtrToInt:
     case Instruction::IntToPtr:
+      {
+	std::pair<ValSetType, ImprovedVal> CastVal = getValPB(CE->getOperand(0));
+	if(CastVal.first == ValSetTypePB)
+	  return CastVal;
+	else if(CastVal.first == ValSetTypeScalar) {
+	  if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CastVal.second.V.getVal())) {
+	    if(SubCE->getOpcode() == Instruction::PtrToInt)
+	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
+	  }
+	  return std::make_pair(ValSetTypeScalar, ConstantExpr::getIntToPtr(CE->getOperand(0), CE->getType()));
+	}
+	else
+	  return std::make_pair(ValSetTypeUnknown, ImprovedVal());
+      }
+    case Instruction::PtrToInt:
+      {
+	std::pair<ValSetType, ImprovedVal> CastVal = getValPB(CE->getOperand(0));
+	if(CastVal.first == ValSetTypePB)
+	  return CastVal;
+	else if(CastVal.first == ValSetTypeScalar) {
+	  if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CastVal.second.V.getVal())) {
+	    if(SubCE->getOpcode() == Instruction::IntToPtr)
+	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
+	  }
+	  return std::make_pair(ValSetTypeScalar, ConstantExpr::getPtrToInt(CE->getOperand(0), CE->getType()));
+	}
+	else
+	  return std::make_pair(ValSetTypeUnknown, ImprovedVal());
+      }
     case Instruction::SExt:
     case Instruction::ZExt:
     case Instruction::BitCast:
