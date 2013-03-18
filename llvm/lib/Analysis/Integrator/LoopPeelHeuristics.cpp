@@ -57,6 +57,7 @@ static cl::opt<unsigned> MallocAlignment("int-malloc-alignment", cl::init(0));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysIterLoops("int-always-iterate", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
@@ -446,14 +447,20 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
   std::pair<uint32_t, uint32_t>& OE = parentPA->invarInfo->optimisticEdge;
 
-  bool willIterate = false;
+  bool willIterate = parentPA->invarInfo->alwaysIterate;
 
-  if(OE.first != 0xffffffff) {
+  if((!willIterate) && OE.first != 0xffffffff) {
     ShadowBBInvar* OE1 = getBBInvar(OE.first);
     ShadowBBInvar* OE2 = getBBInvar(OE.second);
+    willIterate = edgeIsDead(OE1, OE2);
+  }
+
+  // Cancel optimistic iteration if the latch edge is outright killed.
+  if(willIterate) {
     ShadowBBInvar* latchBB = getBBInvar(parentPA->invarInfo->latchIdx);
     ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->headerIdx);
-    willIterate = edgeIsDead(OE1, OE2) && !edgeIsDead(latchBB, headerBB);
+    if(edgeIsDead(latchBB, headerBB))
+      return 0;
   }
 
   if(!willIterate)
@@ -1748,6 +1755,23 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     }
     
     optimisticLoopMap[L] = std::make_pair(BB1, BB2);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = AlwaysIterLoops.begin(), ArgE = AlwaysIterLoops.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* LoopF;
+    BasicBlock *BB;
+
+    parseFB("int-always-iterate", *ArgI, *(F.getParent()), LoopF, BB);
+
+    const Loop* L = LIs[LoopF]->getLoopFor(BB);
+    if(!L || (L->getHeader() != BB)) {
+      errs() << "Block " << BB->getName() << " in " << LoopF->getName() << " not a loop header\n";
+      exit(1);
+    }
+    
+    alwaysIterLoops.insert(L);
 
   }
 

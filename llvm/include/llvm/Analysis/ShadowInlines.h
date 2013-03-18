@@ -591,6 +591,7 @@ struct ShadowLoopInvar {
   std::vector<uint32_t> exitingBlocks;
   std::vector<uint32_t> exitBlocks;
   std::vector<std::pair<uint32_t, uint32_t> > exitEdges;
+  bool alwaysIterate;
   
 };
 

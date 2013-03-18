@@ -99,6 +99,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<Function*, 4> alwaysInline;
    SmallSet<Function*, 4> alwaysExplore;
    DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
+   DenseSet<const Loop*> alwaysIterLoops;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
@@ -174,6 +175,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    
    std::pair<BasicBlock*, BasicBlock*> getOptimisticEdge(const Loop* L) {
      return optimisticLoopMap.lookup(L);
+   }
+
+   bool shouldAlwaysIterate(const Loop* L) {
+     return alwaysIterLoops.count(L);
    }
    
    bool shouldAssumeEdge(Function* F, BasicBlock* BB1, BasicBlock* BB2) {

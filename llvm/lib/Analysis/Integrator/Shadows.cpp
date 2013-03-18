@@ -60,6 +60,8 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
   else
     LInfo->optimisticEdge = std::make_pair(0xffffffff, 0xffffffff);
 
+  LInfo->alwaysIterate = shouldAlwaysIterate(L);
+
   {
     SmallVector<BasicBlock*, 4> temp;
     L->getExitingBlocks(temp);
