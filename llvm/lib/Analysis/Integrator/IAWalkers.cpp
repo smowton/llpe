@@ -498,47 +498,43 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 
     bool queueHere = false;
 
-    if(MyLoop != BBLoop) {
+    const Loop* SuccLoop = SB->outerScope;
+    if(SuccLoop != MyLoop) {
 
-      // Already running in "wrong" context, don't rise.
-      queueHere = true;
+      if((!MyLoop) || MyLoop->contains(SuccLoop)) {
 
-    }
-    else {
+	if(MyLoop != BBLoop) {
 
-      const Loop* SuccLoop = SB->outerScope;
-      if(SuccLoop != MyLoop) {
-
-	if((!MyLoop) || MyLoop->contains(SuccLoop)) {
-
-	  if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
-
-	    assert(SuccLoop->getHeader() == SB->BB);
-	    Walker->queueWalkFrom(0, LPA->Iterations[0]->getBB(*SB), Ctx, !firstSucc);
-	    firstSucc = false;
-
-	  }
-	  else {
-
-	    // Otherwise we're entering an unexpanded loop, just walk it here.
-	    queueHere = true;
-
-	  }
-
+	  // We're emitting a residual loop, don't rise into it.
+	  queueHere = true;
+	  
+	}
+	else if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
+	  
+	  assert(SuccLoop->getHeader() == SB->BB);
+	  Walker->queueWalkFrom(0, LPA->Iterations[0]->getBB(*SB), Ctx, !firstSucc);
+	  firstSucc = false;
+	  
 	}
 	else {
 
-	  // Loop exit edge. Find the context for the outside block:
-	  queueSuccessorsFWFalling(SB, Walker, Ctx, firstSucc);
+	  // Otherwise we're entering an unexpanded loop, just walk it here.
+	  queueHere = true;
 
 	}
 
       }
       else {
 
-	queueHere = true;
+	// Loop exit edge. Find the context for the outside block:
+	queueSuccessorsFWFalling(SB, Walker, Ctx, firstSucc);
 
       }
+
+    }
+    else {
+
+      queueHere = true;
 
     }
 

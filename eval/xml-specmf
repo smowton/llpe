@@ -1,0 +1,52 @@
+TARGET_PROGS = xml
+PRE_BCS = $(patsubst %,%-pre.bc,$(TARGET_PROGS))
+TARGET_BCS = $(patsubst %,%.bc,$(TARGET_PROGS))
+OPT_PROGS = $(patsubst %,%-opt,$(TARGET_PROGS))
+TIMED_PROGS = $(patsubst %,%-orig-timed,$(TARGET_PROGS))
+TIMED_OPT_PROGS = $(patsubst %,%-opt-timed,$(TARGET_PROGS))
+STRIPPED_PROGS = $(patsubst %,%-orig-stripped,$(TARGET_PROGS))
+STRIPPED_OPT_PROGS = $(patsubst %,%-opt-stripped,$(TARGET_PROGS))
+
+OPT_MODS = opt -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorAnalyses.so -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorTransforms.so
+
+.PHONY: allbase allopt clean
+
+allbase: $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(STRIPPED_PROGS)
+
+allopt: $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_OPT_PROGS)
+
+xml xml.bc: src/trans.o src/xml.o src/xml_C14N.o src/xml_depyx.o src/xml_edit.o src/xml_elem.o src/xml_escape.o src/xml_format.o src/xml_ls.o src/xml_pyx.o src/xml_select.o src/xml_trans.o src/xml_validate.o src/usage.o src/c14n-usage.o src/depyx-usage.o src/edit-usage.o src/elem-usage.o src/escape-usage.o src/format-usage.o src/ls-usage.o src/pyx-usage.o src/select-usage.o src/trans-usage.o src/unescape-usage.o src/validate-usage.o /home/chris/integ-examples/libs/libxslt-1.1.28/libexslt/.libs/libexslt.a /home/chris/integ-examples/libs/libxslt-1.1.28/libxslt/.libs/libxslt.a /home/chris/integ-examples/libs/libxml2-2.9.0/.libs/libxml2.a
+	/usr/bin/llvm-gcc-uclibc -Wall -pedantic -ansi -g -O2 -L/home/chris/integ-examples/libs/libxslt-1.1.28/libexslt/.libs -L/home/chris/integ-examples/libs/libxslt-1.1.28/libxslt/.libs -L/home/chris/integ-examples/libs/libxml2-2.9.0/.libs  -o xml $^ -lz -lm -Wl,--plugin-opt,also-emit-llvm,-u,__uClibc_main_timed
+
+%.bc %: %.o timeprogram.o
+	/usr/bin/llvm-gcc-uclibc -std=gnu99   -g -O2 -Wl,--as-needed  -o $@ $^ libver.a ../lib/libcoreutils.a  ../lib/libcoreutils.a -Wl,--plugin-opt,also-emit-llvm,-u,__uClibc_main_timed
+
+%-elim.bc: %.bc
+	~/integrator/scripts/opt-with-mods.sh -define-exts -null-symbol __h_errno_location $^ -null-symbol __pthread_initialize_minimal -null-symbol __preinit_array_start -null-symbol __preinit_array_end -null-symbol __init_array_start -null-symbol __init_array_end -o $@
+
+%-pre.bc: %-elim.bc
+	~/integrator/scripts/prepare-int.sh $^ -o $@
+
+%-opt-int.bc: %-opt.bc
+	$(OPT_MODS) -internalize -internalize-public-api-list=__uClibc_main -simplify-libcalls -libcalls-allow-internal -globalopt-allow-internal-malloc -globaldce-assume-asm-does-not-call -std-compile-opts -malloc-elim -globalopt -globaldce -malloc-elim -globalopt -globaldce $^ -o $@
+
+%-opt-timed-int.bc: %-opt.bc
+	$(OPT_MODS) -internalize -internalize-public-api-list=__uClibc_main_timed -libcalls-allow-internal -globalopt-allow-internal-malloc -std-compile-opts -globalopt -malloc-elim -globalopt $^ -o $@
+
+%-opt: %-opt-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspec.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-opt-timed: %-opt-timed-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspectime.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-orig-timed: %.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crt1time.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-stripped: %
+	strip $^ -o $@
+
+%-orig-stripped: %
+	strip $^ -o $@
+
+clean:
+	-rm -f $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_PROGS) $(STRIPPED_OPT_PROGS)

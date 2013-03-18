@@ -1376,7 +1376,7 @@ static Value* getWrittenPointer(Instruction* I) {
 
 void IntegrationHeuristicsPass::commit() {
 
-  if(mustRecomputeDIE && !SkipDIE)
+  if(!SkipDIE)
     rerunDSEAndDIE();
 
   errs() << "Writing specialised module";

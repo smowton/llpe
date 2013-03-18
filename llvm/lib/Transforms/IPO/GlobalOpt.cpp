@@ -57,6 +57,7 @@ STATISTIC(NumAliasesResolved, "Number of global aliases resolved");
 STATISTIC(NumAliasesRemoved, "Number of global aliases eliminated");
 
 static cl::opt<bool> AllowInternalCalls("globalopt-allow-internal-malloc");
+static cl::opt<bool> GlobalOptVerbose("globalopt-verbose");
 
 namespace {
   struct GlobalOpt : public ModulePass {
@@ -187,6 +188,8 @@ bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
       if(CI && isFreeCall(CI, AllowInternalCalls)) {
 	continue;
       } else if (const LoadInst *LI = dyn_cast<LoadInst>(I)) {
+	if(GlobalOptVerbose)
+	  errs() << (*LI) << " loads " << (*V) << "\n";
         GS.isLoaded = true;
 	if (HasNonFreeUsers(LI)) {
 	  GS.isLoadedExceptToFree = true;
@@ -194,7 +197,11 @@ bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
         if (LI->isVolatile()) return true;  // Don't hack on volatile loads.
       } else if (const StoreInst *SI = dyn_cast<StoreInst>(I)) {
         // Don't allow a store OF the address, only stores TO the address.
-        if (SI->getOperand(0) == V) return true;
+        if (SI->getOperand(0) == V) {
+	  if(GlobalOptVerbose)
+	    errs() << (*SI) << " stores address of " << (*V) << "\n";
+	  return true;
+	}
 
         if (SI->isVolatile()) return true;  // Don't hack on volatile stores.
 
@@ -243,13 +250,18 @@ bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
         const MemTransferInst *MTI = cast<MemTransferInst>(I);
         if (MTI->getArgOperand(0) == V)
           GS.StoredType = GlobalStatus::isStored;
-        if (MTI->getArgOperand(1) == V)
+        if (MTI->getArgOperand(1) == V) {
+	  if(GlobalOptVerbose)
+	    errs() << (*MTI) << " loads " << (*V) << "\n";
           GS.isLoaded = true;
+	}
       } else if (isa<MemSetInst>(I)) {
         assert(cast<MemSetInst>(I)->getArgOperand(0) == V &&
                "Memset only takes one pointer!");
         GS.StoredType = GlobalStatus::isStored;
       } else {
+	if(GlobalOptVerbose)
+	  errs() << (*I) << " unknown user of " << (*V) << "\n";
         return true;  // Any other non-load instruction might take address!
       }
     } else if (const Constant *C = dyn_cast<Constant>(U)) {

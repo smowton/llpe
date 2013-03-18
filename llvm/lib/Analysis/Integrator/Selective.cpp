@@ -55,9 +55,11 @@ void IntegrationAttempt::resetDeadInstructions() {
 
 void IntegrationHeuristicsPass::rerunDSEAndDIE() {
 
-  RootIA->resetDeadArgsAndInstructions();
-
-  runDSEAndDIE();
+  if(mustRecomputeDIE) {
+    RootIA->resetDeadArgsAndInstructions();
+    runDSEAndDIE();
+    mustRecomputeDIE = false;
+  }
 
 }
 
