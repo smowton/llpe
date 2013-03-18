@@ -49,7 +49,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
   LPDEBUG("forwarding off " << itcache(Ptr) << "\n");
 
-  const Type* byteType = Type::getInt8PtrTy(SearchFrom->invar->I->getContext());
+  const Type* byteType = Type::getInt8Ty(SearchFrom->invar->I->getContext());
 
   bool success = true;
 
@@ -62,7 +62,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0);
     if(byte.Overdef || byte.Type != ValSetTypeScalar || byte.Values.size() != 1) {
 
-      LPDEBUG("Open forwarding error: " << fwdError << "\n");
+      DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
       success = false;
       
     }
