@@ -293,7 +293,7 @@ void PeelAttempt::disableVarargsContexts() {
 
 }
 
-bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
+bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA) {
 
   ShadowValue copyBase;
   int64_t copyOffset;
@@ -316,7 +316,11 @@ bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, ui
   }
 
   // Requery starting at copyInst (the memcpy or va_copy).
-  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[FirstDef]) : 0, error);
+  // The new query may create cache entries so long as it won't intentionally leave some bytes unfulfilled:
+  BasicBlock* ThresholdBB = validBytes ? 0 : cacheThresholdBB;
+  IntegrationAttempt* ThresholdIA = validBytes ? 0 : cacheThresholdIA;
+
+  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[FirstDef]) : 0, error, ThresholdBB, ThresholdIA);
 
   return (NewPB.Values.size() > 0 && !NewPB.Overdef);
 
@@ -352,7 +356,7 @@ bool llvm::getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewP
 
 }
 
-bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error) {
+bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA) {
 
   // If it's a memcpy from a constant source, resolve here and now.
   // Otherwise issue a subquery to find out what happens to the source buffer before it's copied.
@@ -380,7 +384,7 @@ bool llvm::getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNo
 
   }
 
-  return getPBFromCopy(I->getCallArgOperand(1), I, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
+  return getPBFromCopy(I->getCallArgOperand(1), I, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error, cacheThresholdBB, cacheThresholdIA);
 
 }
 
@@ -428,17 +432,17 @@ bool llvm::getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& N
 
 }
 
-bool llvm::getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
+bool llvm::getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA) {
 
   // Handling an alias against the result of a realloc, try investigating as an alias against the original
   // allocation, passed as arg0.
-  return getPBFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
+  return getPBFromCopy(CI->getCallArgOperand(0), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error, cacheThresholdBB, cacheThresholdIA);
 
 }
 
-bool llvm::getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error) {
+bool llvm::getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA) {
 
-  return getPBFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error);
+  return getPBFromCopy(CI->getCallArgOperand(1), CI, ReadOffset, FirstDef, FirstNotDef, LoadSize, originalType, validBytes, NewPB, error, cacheThresholdBB, cacheThresholdIA);
 
 }
 

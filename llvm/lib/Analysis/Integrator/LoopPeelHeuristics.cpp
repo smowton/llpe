@@ -59,6 +59,7 @@ static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::Zero
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
@@ -1719,6 +1720,17 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       exit(1);
     }
     alwaysInline.insert(AlwaysF);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = AlwaysExploreFunctions.begin(), ArgE = AlwaysExploreFunctions.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* AlwaysF = F.getParent()->getFunction(*ArgI);
+    if(!AlwaysF) {
+      errs() << "No such function " << *ArgI << "\n";
+      exit(1);
+    }
+    alwaysExplore.insert(AlwaysF);
 
   }
 

@@ -81,7 +81,7 @@ public:
   WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, int64_t SO, uint64_t SS) : ForwardIAWalker(StartInst->invar->idx, StartInst->parent, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context);
-  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool shouldEnterCall(ShadowInstruction*, void*);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
   virtual void freeContext(void*);
   virtual void* copyContext(void*);
@@ -240,7 +240,7 @@ bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ShadowValue StorePtr
 
 }
 
-bool WriterUsedWalker::shouldEnterCall(ShadowInstruction* CI) {
+bool WriterUsedWalker::shouldEnterCall(ShadowInstruction* CI, void*) {
 
   return CI->parent->IA->callUsesPtr(CI, StorePtr, StoreSize);
 

@@ -59,7 +59,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     std::string fwdError;
 
-    PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError);
+    PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0);
     if(byte.Overdef || byte.Type != ValSetTypeScalar || byte.Values.size() != 1) {
 
       LPDEBUG("Open forwarding error: " << fwdError << "\n");
@@ -204,7 +204,7 @@ public:
     IA = SourceOp->parent->IA;
   }
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool shouldEnterCall(ShadowInstruction*, void*);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
@@ -321,7 +321,7 @@ static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
 
 }
 
-bool FindVFSPredecessorWalker::shouldEnterCall(ShadowInstruction* SI) {
+bool FindVFSPredecessorWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
 
   return callMayUseFD(SI, FD);
 	    
@@ -695,12 +695,12 @@ public:
   OpenInstructionUnusedWalker(ShadowInstruction* I) : ForwardIAWalker(I->invar->idx, I->parent, true), OpenInst(I), residualUserFound(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool shouldEnterCall(ShadowInstruction*, void*);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
 
-bool OpenInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI) {
+bool OpenInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
 
   return callMayUseFD(SI, OpenInst);
 
@@ -775,12 +775,12 @@ public:
   SeekInstructionUnusedWalker(ShadowInstruction* _FD, ShadowInstruction* Start) : ForwardIAWalker(Start->invar->idx, Start->parent, true), FD(_FD), seekNeeded(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*);
+  virtual bool shouldEnterCall(ShadowInstruction*, void*);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
 
-bool SeekInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI) {
+bool SeekInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
 
   return callMayUseFD(SI, FD);
 

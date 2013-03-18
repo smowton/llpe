@@ -280,7 +280,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB
 
     if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
 
-      if(!shouldEnterCall(SI))
+      if(!shouldEnterCall(SI, Ctx))
 	continue;
 
       if(!BB->IA->getInlineAttempt(CI)) {
@@ -392,7 +392,7 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB*
 
     if(inst_is<CallInst>(I)) {
 
-      if(!shouldEnterCall(I))
+      if(!shouldEnterCall(I, Ctx))
 	continue;
 
       StoppedCI = I;

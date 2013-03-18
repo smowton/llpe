@@ -117,7 +117,12 @@ bool InlineAttempt::entryBlockAssumed() {
 
   if(!parent)
     return true;
-  return blockAssumedToExecute(CI->parent);
+  if(blockAssumedToExecute(CI->parent))
+    return true;
+  if(pass->shouldAlwaysExplore(&F))
+    return true;
+
+  return false;
 
 }
 
