@@ -416,7 +416,15 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
   Out << "subgraph \"cluster_" << DOT::EscapeString(DescribeL->getHeader()->getName()) << "\" {";
 
-  if(brief) {
+  bool loopIsIgnored = pass->shouldIgnoreLoop(DescribeL->getHeader()->getParent(), DescribeL->getHeader());
+
+  if(loopIsIgnored) {
+
+    // Print the loop blocks including sub-clustering:
+    describeScopeAsDOT(DescribeL, headerIdx, Out, brief, &deferredEdges);
+
+  }
+  else if(brief) {
 
     // Draw the header branching to all exiting blocks, to each exit block.
     std::vector<uint32_t>& exitingIdxs = LInfo.exitingBlocks;
@@ -475,7 +483,12 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
   Out << "label = \"Loop " << DOT::EscapeString(DescribeL->getHeader()->getName()) << " (";
 
   DenseMap<const Loop*, PeelAttempt*>::iterator InlIt = peelChildren.find(DescribeL);
-  if(InlIt == peelChildren.end()) {
+  if(loopIsIgnored) {
+
+    Out << "Ignored";
+
+  }
+  else if(InlIt == peelChildren.end()) {
 
     Out << "Not explored";
 
@@ -504,6 +517,34 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
 }
 
+void IntegrationAttempt::describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges) {
+
+  ShadowBBInvar* BBI;
+  uint32_t i;
+
+  for(i = headerIdx, BBI = getBBInvar(headerIdx + BBsOffset); i < nBBs && ((!DescribeL) || DescribeL->contains(BBI->naturalScope)); ++i, BBI = getBBInvar(i + BBsOffset)) {
+
+    ShadowBBInvar* BBI = getBBInvar(i + BBsOffset);
+    ShadowBB* BB = BBs[i];
+    
+    if(BBI->naturalScope != DescribeL) {
+
+      describeLoopAsDOT(BBI->naturalScope, i, Out, brief);
+	
+      // Advance past the loop:
+      while(i < nBBs && BBI->naturalScope->contains(getBBInvar(i + BBsOffset)->naturalScope))
+	++i;
+      --i;
+      continue;
+
+    }
+
+    describeBlockAsDOT(BBI, BB, DescribeL, deferredEdges, Out, 0, brief);
+
+  }
+
+}
+
 void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
 
   std::string escapedName;
@@ -511,33 +552,7 @@ void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
   printHeader(RSO);
   Out << "digraph \"Toplevel\" {\n\tlabel = \"" << DOT::EscapeString(RSO.str()) << "\"\n";
 
-  for(uint32_t i = 0; i < nBBs; ++i) {
-
-    ShadowBBInvar* BBI = getBBInvar(i + BBsOffset);
-    ShadowBB* BB = BBs[i];
-    
-    if(BBI->naturalScope != L) {
-
-      const Loop* enterL = immediateChildLoop(L, BBI->naturalScope);
-      if(!pass->shouldIgnoreLoop(enterL->getHeader()->getParent(), enterL->getHeader())) {
-
-	describeLoopAsDOT(enterL, i, Out, brief);
-	
-	// Advance past the loop:
-	while(i < nBBs && enterL->contains(getBBInvar(i + BBsOffset)->naturalScope))
-	  ++i;
-	--i;
-	continue;
-
-      }
-
-      // Else fall through:
-
-    }
-
-    describeBlockAsDOT(BBI, BB, 0, 0, Out, 0, brief);
-
-  }
+  describeScopeAsDOT(L, 0, Out, brief, 0);
 
   // Finally terminate the block.
   Out << "}\n";
