@@ -313,7 +313,7 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, boo
   // Else, BBI is further in than this block: we must be entering exactly one loop.
   // Only enter if we're emitting the loop in its proper scope: otherwise we're
   // writing the residual version of a loop.
-  if(BB->invar->scope == L) {
+  if(BB->invar->outerScope == L) {
     if(PeelAttempt* PA = getPeelAttempt(BBI->naturalScope)) {
       if(PA->isEnabled())
 	return PA->Iterations[0]->getBB(*BBI);

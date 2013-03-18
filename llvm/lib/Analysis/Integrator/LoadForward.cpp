@@ -1352,12 +1352,6 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 // forwarding operating in PB mode.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
 
-  if(F.getName() == "xmlDocGetRootElement" && L && parent->parent->F.getName() == "xsltApplyStylesheetInternal") {
-
-    errs() << "HIT!\n";
-
-  }
-
   PointerBase ConstResult;
   std::string error;
   if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
