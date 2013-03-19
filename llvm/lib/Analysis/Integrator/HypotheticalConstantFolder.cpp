@@ -1114,6 +1114,18 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), GlobalTD, /* preserveGEPSign = */ true);
 
   if(newConst) {
+
+    // Filter out cases that have just wrapped a ConstantExpr around the operands.
+    // Acceptable cases here: inttoptr(const)
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(newConst)) {
+
+      if(CE->getOpcode() != Instruction::IntToPtr) {
+	ImpType = ValSetTypeOverdef;
+	return;
+      }
+
+    }
+
     LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
     ImpType = ValSetTypeScalar;
     Improved.V = ShadowValue(newConst);

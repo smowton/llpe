@@ -102,6 +102,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseSet<const Loop*> alwaysIterLoops;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
+   DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
 
    TargetData* TD;
@@ -191,6 +192,13 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool shouldIgnoreLoop(Function* F, BasicBlock* HBB) {
      DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = ignoreLoops.find(F);
      if(it == ignoreLoops.end())
+       return false;
+     return it->second.count(HBB);
+   }
+
+   bool shouldExpandLoopCalls(Function* F, BasicBlock* HBB) {
+     DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = expandCallsLoops.find(F);
+     if(it == expandCallsLoops.end())
        return false;
      return it->second.count(HBB);
    }
@@ -833,7 +841,7 @@ protected:
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope = false);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);

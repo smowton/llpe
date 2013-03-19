@@ -60,6 +60,7 @@ static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMo
 static cl::list<std::string> AlwaysIterLoops("int-always-iterate", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
+static cl::list<std::string> ExpandCallsLoops("int-expand-loop-calls", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoopsWithChildren("int-ignore-loop-children", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
@@ -283,7 +284,36 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "socket" || F->getName() == "bind" ||
 	  F->getName() == "listen" || F->getName() == "setsockopt" ||
 	  F->getName() == "_exit" || F->getName() == "__libc_accept" ||
-	  F->getName() == "poll" || F->getName() == "shutdown");
+	  F->getName() == "poll" || F->getName() == "shutdown" ||
+	  F->getName() == "mkdir" ||
+	  F->getName() == "__libc_nanosleep" ||
+	  F->getName() == "rename" ||
+	  F->getName() == "setgid" ||
+	  F->getName() == "setuid" ||
+	  F->getName() == "__fcntl_nocancel" ||
+	  F->getName() == "closedir" ||
+	  F->getName() == "opendir" ||
+	  F->getName() == "getsockname" ||
+	  F->getName() == "__libc_recvfrom" ||
+	  F->getName() == "__libc_sendto" ||
+	  F->getName() == "mmap" ||
+	  F->getName() == "munmap" ||
+	  F->getName() == "mremap" ||
+	  F->getName() == "clock_getres" ||
+	  F->getName() == "fstat" ||
+	  F->getName() == "getegid" ||
+	  F->getName() == "geteuid" ||
+	  F->getName() == "getgid" ||
+	  F->getName() == "getrlimit" ||
+	  F->getName() == "getuid" ||
+	  F->getName() == "rmdir" ||
+	  F->getName() == "sigprocmask" ||
+	  F->getName() == "unlink" ||
+	  F->getName() == "__getdents64" ||
+	  F->getName() == "brk" ||
+	  F->getName() == "getpid" ||
+	  F->getName() == "kill" ||
+	  F->getName() == "uname");
 
 }
 
@@ -320,7 +350,7 @@ bool IntegrationAttempt::shouldInlineFunction(ShadowInstruction* SI, Function* F
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope) {
 
   CallInst* CI = cast_inst<CallInst>(SI);
 
@@ -349,7 +379,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     return 0;
   }
 
-  if(L != SI->invar->scope) {
+  if(L != SI->invar->scope && !ignoreScope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
@@ -1806,6 +1836,17 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoops[LF].insert(HBB);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = ExpandCallsLoops.begin(), ArgE = ExpandCallsLoops.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* LF;
+    BasicBlock* HBB;
+
+    parseFB("int-expand-loop-calls", *ArgI, *(F.getParent()), LF, HBB);
+
+    expandCallsLoops[LF].insert(HBB);
 
   }
 

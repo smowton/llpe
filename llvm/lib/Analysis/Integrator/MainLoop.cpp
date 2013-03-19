@@ -26,8 +26,11 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
+
+static cl::opt<bool> NoInnerLoopSolver("int-no-inner-loop-solver");
 
 void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
 
@@ -117,7 +120,11 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       }
 
       // If the non-creation was because this loop is ignored, create child contexts:
-      if((!LPA) && pass->shouldIgnoreLoop(&F, BBL->getHeader())) {
+      /*
+      if((!LPA) && (pass->shouldIgnoreLoop(&F, BBL->getHeader()) || 
+      pass->shouldExpandLoopCalls(&F, BBL->getHeader()))) {*/
+      // For now create invariant functions whenever a peel attempt is not available.
+      if(!LPA) {
 
 	for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
 
@@ -128,7 +135,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 	      ShadowInstruction* SI = &(InvarBB->insts[j]);
 	      if(inst_is<CallInst>(SI)) {
 
-		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
+		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, true))
 		  IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
 
 	      }
@@ -142,7 +149,8 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       }
 
       // Finally, analyse everything in loop context together:
-      analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
+      if((!withinUnboundedLoop) || (!NoInnerLoopSolver))
+	analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
 
     }
     else {
