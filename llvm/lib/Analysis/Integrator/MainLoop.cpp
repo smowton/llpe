@@ -111,20 +111,27 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 
     // Analyse for invariants if we didn't establish that the loop terminates.
     if((!LPA) || !LPA->isTerminated()) {
-      for(uint32_t i = blockIdx; i < nBBs && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
+      for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
 	if(ShadowBB* InvarBB = getBB(i))
 	  analyseBlockInstructions(InvarBB, true, CacheThresholdBB, CacheThresholdIA, false);
       }
 
-      for(uint32_t i = blockIdx; i < nBBs && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
-	if(ShadowBB* InvarBB = getBB(i)) {
-	  for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
+      // If the non-creation was because this loop is ignored, create child contexts:
+      if((!LPA) && pass->shouldIgnoreLoop(&F, BBL->getHeader())) {
 
-	    ShadowInstruction* SI = &(InvarBB->insts[j]);
-	    if(inst_is<CallInst>(SI)) {
+	for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
 
-	      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
-		IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
+	  if(ShadowBB* InvarBB = getBB(i)) {
+
+	    for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
+
+	      ShadowInstruction* SI = &(InvarBB->insts[j]);
+	      if(inst_is<CallInst>(SI)) {
+
+		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
+		  IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
+
+	      }
 
 	    }
 

@@ -349,12 +349,10 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     return 0;
   }
 
-  /*
   if(L != SI->invar->scope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
-  */
 
   if(functionIsBlacklisted(FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
@@ -459,7 +457,9 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     willIterate = edgeIsDead(OE1, OE2);
   }
 
-  // Cancel optimistic iteration if the latch edge is outright killed.
+  // Cancel iteration if the latch edge is outright killed.
+  // Usually this is case due to optimistic edges and such, but could also result from
+  // executing unreachable within the loop.
   if(willIterate) {
     ShadowBBInvar* latchBB = getBBInvar(parentPA->invarInfo->latchIdx);
     ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->headerIdx);
