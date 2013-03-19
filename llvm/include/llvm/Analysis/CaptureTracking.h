@@ -26,7 +26,8 @@ namespace llvm {
   /// automatically counts as capturing it or not.
   bool PointerMayBeCaptured(const Value *V,
                             bool ReturnCaptures,
-                            bool StoreCaptures);
+                            bool StoreCaptures,
+			    bool PHISelectCaptures = false);
 
 } // end namespace llvm
 

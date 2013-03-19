@@ -783,7 +783,7 @@ protected:
   ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
   ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
-  ShadowInstruction* getInst(ShadowInstructionInvar* SII);
+  virtual ShadowInstruction* getInst(ShadowInstructionInvar* SII);
   bool instResolvedAsInvariant(ShadowInstruction* SI);
   ShadowInstruction* getMostLocalInst(uint32_t blockIdx, uint32_t instIdx);
 

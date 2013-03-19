@@ -116,23 +116,20 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 	  analyseBlockInstructions(InvarBB, true, CacheThresholdBB, CacheThresholdIA, false);
       }
 
-      // If the non-creation was because this loop is ignored, create child contexts:
-      if((!LPA) && pass->shouldIgnoreLoop(&F, BBL->getHeader())) {
+      for(uint32_t i = blockIdx; i < nBBs && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
+	if(ShadowBB* InvarBB = getBB(i)) {
+	  for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
 
-	for(uint32_t i = blockIdx; i < nBBs && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
-	  if(ShadowBB* InvarBB = getBB(i)) {
-	    for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
+	    ShadowInstruction* SI = &(InvarBB->insts[j]);
+	    if(inst_is<CallInst>(SI)) {
 
-	      ShadowInstruction* SI = &(InvarBB->insts[j]);
-	      if(inst_is<CallInst>(SI)) {
-
-		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
-		  IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
-
-	      }
+	      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
+		IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
 
 	    }
+
 	  }
+
 	}
 
       }

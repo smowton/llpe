@@ -348,11 +348,13 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return 0;
   }
-  
+
+  /*
   if(L != SI->invar->scope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
     return 0;
   }
+  */
 
   if(functionIsBlacklisted(FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");

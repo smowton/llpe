@@ -60,7 +60,7 @@ static bool isKnownNonNull(const Value *V) {
 
 /// isNonEscapingLocalObject - Return true if the pointer is to a function-local
 /// object that never escapes from the function.
-static bool isNonEscapingLocalObject(const Value *V) {
+static bool isNonEscapingLocalObject(const Value *V, bool PHISelectCaptures = false) {
   // If this is a local allocation, check to see if it escapes.
   if (isa<AllocaInst>(V) || isNoAliasCall(V))
     // Set StoreCaptures to True so that we can assume in our callers that the
@@ -68,7 +68,7 @@ static bool isNonEscapingLocalObject(const Value *V) {
     // PointerMayBeCaptured doesn't have any special analysis for the
     // StoreCaptures=false case; if it did, our callers could be refined to be
     // more precise.
-    return !PointerMayBeCaptured(V, false, /*StoreCaptures=*/true);
+    return !PointerMayBeCaptured(V, false, /*StoreCaptures=*/true, PHISelectCaptures);
 
   // If this is an argument that corresponds to a byval or noalias argument,
   // then it has not escaped before entering the function.  Check if it escapes
@@ -78,9 +78,15 @@ static bool isNonEscapingLocalObject(const Value *V) {
       // Don't bother analyzing arguments already known not to escape.
       if (A->hasNoCaptureAttr())
         return true;
-      return !PointerMayBeCaptured(V, false, /*StoreCaptures=*/true);
+      return !PointerMayBeCaptured(V, false, /*StoreCaptures=*/true, PHISelectCaptures);
     }
   return false;
+}
+
+static bool pointerNeverUsedIndirectly(const Value* V) {
+
+  return isNonEscapingLocalObject(V, true);
+
 }
 
 /// isEscapeSource - Return true if the pointer is one which would have
@@ -96,6 +102,12 @@ static bool isEscapeSource(const Value *V) {
     return true;
 
   return false;
+}
+
+static bool isIndirectUser(const Value* V) {
+
+  return isEscapeSource(V) || isa<PHINode>(V) || isa<SelectInst>(V);
+
 }
 
 /// isObjectSmallerThan - Return true if we can prove that the object specified
@@ -1005,7 +1017,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
        SI->parent->IA->L == SI->parent->invar->naturalScope && 
        SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
 
-      V1 = SI->parent->IA->getFunctionRoot()->getInst(SI->invar);
+      V1 = SI->parent->IA->parent->getInst(SI->invar);
 
     }
   }
@@ -1016,7 +1028,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 	 SI->parent->IA->L == SI->parent->invar->naturalScope && 
 	 SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
 
-	V2 = SI->parent->IA->getFunctionRoot()->getInst(SI->invar);
+	V2 = SI->parent->IA->parent->getInst(SI->invar);
 
       }
     }
@@ -1287,10 +1299,19 @@ BasicAliasAnalysis::aliasCheck(ShadowValue V1, unsigned V1Size,
     // temporary store the nocapture argument's value in a temporary memory
     // location if that memory location doesn't escape. Or it may pass a
     // nocapture value to other functions as long as they don't capture it.
-    if (isEscapeSource(O1) && isNonEscapingLocalObject(O2) && UO1.getCtx() == UO2.getCtx())
-      return NoAlias;
-    if (isEscapeSource(O2) && isNonEscapingLocalObject(O1) && UO1.getCtx() == UO2.getCtx())
-      return NoAlias;
+    if(UO1.getCtx() == UO2.getCtx()) {
+
+      if (isEscapeSource(O1) && isNonEscapingLocalObject(O2))
+	return NoAlias;
+      if (isIndirectUser(O1) && pointerNeverUsedIndirectly(O2))
+	return NoAlias;
+
+      if (isEscapeSource(O2) && isNonEscapingLocalObject(O1))
+	return NoAlias;
+      if (isIndirectUser(O2) && pointerNeverUsedIndirectly(O1))
+	return NoAlias;
+
+    }
   }
 
   // If the size of one access is larger than the entire object on the other
