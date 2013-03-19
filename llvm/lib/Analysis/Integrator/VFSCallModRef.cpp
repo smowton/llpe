@@ -3,6 +3,7 @@
 
 #include <llvm/Module.h>
 #include <llvm/Function.h>
+#include <llvm/Constants.h>
 
 #include <llvm/Analysis/AliasAnalysis.h>
 #include <llvm/Analysis/LibCallSemantics.h>
@@ -11,6 +12,9 @@
 // For TCGETS et al
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <poll.h>
 
 using namespace llvm;
 
@@ -90,6 +94,15 @@ static LibCallLocationInfo::LocResult isArg0Size24(ShadowValue CS, ShadowValue P
   
 }
 
+static LibCallLocationInfo::LocResult isPollFds(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+
+  ConstantInt* nFDs = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)));
+  uint64_t fdArraySize = nFDs ? (nFDs->getLimitedValue() * sizeof(struct pollfd)) : AliasAnalysis::UnknownSize;
+
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), fdArraySize, usePBKnowledge, POffset, AACB);
+  
+}
+
 static LibCallLocationInfo::LocResult isArg1(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
@@ -99,6 +112,12 @@ static LibCallLocationInfo::LocResult isArg1(ShadowValue CS, ShadowValue Ptr, un
 static LibCallLocationInfo::LocResult isArg2(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
 
   return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
+  
+}
+
+static LibCallLocationInfo::LocResult isArg2SockLen(ShadowValue CS, ShadowValue Ptr, unsigned Size, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+
+  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), sizeof(socklen_t), usePBKnowledge, POffset, AACB);
   
 }
 
@@ -159,13 +178,15 @@ static LibCallLocationInfo VFSCallLocations[] = {
   { isArg0Size24 },
   { isStdOut },
   { isStdErr },
-  { isStdBufs }
+  { isStdBufs },
+  { isArg2SockLen },
+  { isPollFds },
 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
   Array = VFSCallLocations;
-  return 12;
+  return 14;
     
 }
   
@@ -321,6 +342,23 @@ static LibCallFunctionInfo::LocationMRInfo SigactionMR[] = {
 
 };
 
+static LibCallFunctionInfo::LocationMRInfo AcceptMR[] = {
+
+  { 0, AliasAnalysis::Mod },
+  { 5, AliasAnalysis::Mod },
+  { 12, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
+static LibCallFunctionInfo::LocationMRInfo PollMR[] = {
+
+  { 0, AliasAnalysis::Mod },
+  { 13, AliasAnalysis::Mod },
+  { ~0U, AliasAnalysis::ModRef }
+
+};
+
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)))) {
@@ -364,6 +402,9 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "bind", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "listen", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "setsockopt", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "__libc_accept", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, AcceptMR, 0 },
+  { "poll", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, PollMR, 0 },
+  { "shutdown", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

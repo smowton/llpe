@@ -28,6 +28,7 @@
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -994,6 +995,33 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
   if (!Visited.insert(PN))
     return MayAlias;
 
+  // If we're checking a header PHI, check the general case of the header rather than that
+  // from this particular iteration of a loop. This is necessary so that e.g. iteration 2 doesn't
+  // use the iteration 1 header input and conclude that the latch input is dead (in fact it's not
+  // yet created).
+
+  if(ShadowInstruction* SI = V1.getInst()) {
+    if(SI->parent->IA->L && 
+       SI->parent->IA->L == SI->parent->invar->naturalScope && 
+       SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
+
+      V1 = SI->parent->IA->getFunctionRoot()->getInst(SI->invar);
+
+    }
+  }
+
+  if(ShadowInstruction* SI = V2.getInst()) {
+    if(inst_is<PHINode>(SI)) {
+      if(SI->parent->IA->L && 
+	 SI->parent->IA->L == SI->parent->invar->naturalScope && 
+	 SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
+
+	V2 = SI->parent->IA->getFunctionRoot()->getInst(SI->invar);
+
+      }
+    }
+  }
+
   // If the values are PHIs in the same block, we can do a more precise
   // as well as efficient check: just check for aliases between the values
   // on corresponding edges.
@@ -1013,15 +1041,6 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 	  ShadowBBInvar* PHIBB = SI->parent->invar;
 	  ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
 	  ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
-
-	  if(PredBB->idx >= PHIBB->idx) {
-
-	    // This indicates we're trying to read the latch input of a loop header phi,
-	    // which isn't valid as it might not have been calculated yet, and/or would
-	    // return the argument in this iteration rather than the previous.
-	    return MayAlias;
-
-	  }
 
 	  if(SI->parent->IA->edgeIsDead(PredBB, PHIBB))
 	    continue;
@@ -1060,22 +1079,6 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, unsigned PNSize,
 
   SmallVector<ShadowValue, 4> V1Srcs;
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
-    
-    if(ShadowInstruction* SI = V1.getInst()) {
-
-      ShadowBBInvar* PHIBB = SI->parent->invar;
-      ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
-      ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
-
-      if(PredBB->idx >= PHIBB->idx) {
-
-	// As above in the 2-phi case, we're attempting an illegal read around
-	// a loop latch.
-	return MayAlias;
-
-      } 
-
-    }
     
     // Get incoming value for predecessor i:
     ShadowValue PV1 = getValOperand(V1, i*2);

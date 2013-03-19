@@ -60,6 +60,7 @@ static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMo
 static cl::list<std::string> AlwaysIterLoops("int-always-iterate", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreLoopsWithChildren("int-ignore-loop-children", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
@@ -281,7 +282,8 @@ bool llvm::functionIsBlacklisted(Function* F) {
 	  F->getName() == "__libc_sigaction" ||
 	  F->getName() == "socket" || F->getName() == "bind" ||
 	  F->getName() == "listen" || F->getName() == "setsockopt" ||
-	  F->getName() == "_exit");
+	  F->getName() == "_exit" || F->getName() == "__libc_accept" ||
+	  F->getName() == "poll" || F->getName() == "shutdown");
 
 }
 
@@ -1605,6 +1607,14 @@ void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* 
 
 }
 
+static void ignoreAllLoops(SmallSet<BasicBlock*, 1>& IgnHeaders, const Loop* L) {
+
+  IgnHeaders.insert(L->getHeader());
+  for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it)
+    ignoreAllLoops(IgnHeaders, *it);
+
+}
+
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
@@ -1794,6 +1804,22 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoops[LF].insert(HBB);
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = IgnoreLoopsWithChildren.begin(), ArgE = IgnoreLoopsWithChildren.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* LF;
+    BasicBlock* HBB;
+
+    parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
+    const Loop* L = LIs[LF]->getLoopFor(HBB);
+    if(!L || (L->getHeader() != HBB)) {
+      errs() << "Block " << HBB->getName() << " in " << LF->getName() << " not a loop header\n";
+      exit(1);
+    }
+    
+    ignoreAllLoops(ignoreLoops[LF], L);
 
   }
 

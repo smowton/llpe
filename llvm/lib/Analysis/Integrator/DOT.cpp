@@ -539,7 +539,7 @@ void IntegrationAttempt::describeScopeAsDOT(const Loop* DescribeL, uint32_t head
 
     }
 
-    describeBlockAsDOT(BBI, BB, DescribeL, deferredEdges, Out, 0, brief);
+    describeBlockAsDOT(BBI, BB, deferredEdges ? DescribeL : 0, deferredEdges, Out, 0, brief);
 
   }
 
