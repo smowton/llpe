@@ -883,6 +883,24 @@ bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void
 	ignore = false;
     }
 
+    // Grim hack: usually a function maybe-modifying a pointer is a sign that the function's
+    // arguments need to be better resolved -- e.g. read(2) modifying some buffer, and we should
+    // look past it. In other cases the function is known to clobber for certain and always will,
+    // but modrefinfo isn't expressive enough to tell us that.
+    // A particular case is errno: it's easily recognised, and frequently clobbered. Don't ignore
+    // for that case, but TODO make modrefinfo capable of describe *WILL* clobber vs. *MAY* clobber.
+    
+    if(!LoadPtrBase.isInval()) {
+
+      if(GlobalVariable* GV = dyn_cast_val<GlobalVariable>(LoadPtrBase)) {
+
+	if(GV->getName() == "errno")
+	  ignore = false;
+
+      }
+
+    }
+
     if(ignore)
       return false;
 
@@ -1380,6 +1398,13 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 				 CacheThresholdBB, CacheThresholdIA, initialCtx,
 				 emptyPV,
 				 !!LPBA);
+
+  if(LPBA && (!finalise) && Walker.LoadPtrBase.isInval()) {
+
+    // Wait and see if we can better describe this pointer:
+    return false;
+
+  }
 
   if(TargetType->isStructTy() || TargetType->isArrayTy()) {
     bool* validBytes = Walker.getValidBuf();
