@@ -472,6 +472,8 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "uname", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
   // TEMPORARY HACKS FOR MONGOOSE:
   { "sscanf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, SscanfMR, 0 },
+  { "snprintf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
+  { "vsnprintf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

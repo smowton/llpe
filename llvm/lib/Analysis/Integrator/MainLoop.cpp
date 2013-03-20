@@ -135,7 +135,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
 	      ShadowInstruction* SI = &(InvarBB->insts[j]);
 	      if(inst_is<CallInst>(SI)) {
 
-		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, true))
+		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, true, true))
 		  IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
 
 	      }
@@ -213,7 +213,7 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 	continue;
       if(tryResolveVFSCall(SI))
 	continue;
-      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI))
+      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, withinUnboundedLoop))
 	IA->analyseWithArgs(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
 
       // Fall through to try to get the call's return value

@@ -64,7 +64,7 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
     if(SII.blockIdx != INVALID_BLOCK_IDX && SII.instIdx != INVALID_INSTRUCTION_IDX) {
 
       ShadowInstructionInvar* UserI = getInstInvar(SII.blockIdx, SII.instIdx);
-      queueUserUpdatePB(UserI, LPBA);
+      queueUserUpdatePB(UserI, V, LPBA);
 
     }
 
@@ -72,7 +72,7 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
 
 }
 
- void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
 
   if(inst_is<ReturnInst>(UserI)) {
 	
@@ -84,12 +84,12 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
 
   if((!L) || (UserL && L->contains(UserL))) {
 	  
-    queueUsersUpdatePBRising(UserI, LPBA);
+    queueUserUpdatePBRising(UserI, UsedV, LPBA);
 	
   }
   else {
 	
-    queueUsersUpdatePBFalling(UserI, LPBA);
+    queueUserUpdatePBFalling(UserI, UsedV, LPBA);
 
   }
   
@@ -101,7 +101,7 @@ void IntegrationAttempt::queueUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBLocal(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
 
   ShadowInstruction* SI = getInst(I);
   if(!SI)
@@ -114,7 +114,7 @@ void IntegrationAttempt::queueUsersUpdatePBLocal(ShadowInstructionInvar* I, Loop
       Function* F = &(IA->getFunction());
       for(uint32_t i = 0; i < F->arg_size(); ++i) {
 	  
-	if(I->I == CI->getArgOperand(i))
+	if(UsedV.getBareVal() == CI->getArgOperand(i))
 	  queueUpdatePB(ShadowValue(&(IA->argShadows[i])), LPBA);
 
       }
@@ -140,28 +140,28 @@ void IntegrationAttempt::queueUsersUpdatePBLocal(ShadowInstructionInvar* I, Loop
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
 
   if(I->scope == L) {
 
-    queueUsersUpdatePBLocal(I, LPBA);
+    queueUserUpdatePBLocal(I, UsedV, LPBA);
 
   }
   else {
     if(parent)
-      parent->queueUsersUpdatePBFalling(I, LPBA);
+      parent->queueUserUpdatePBFalling(I, UsedV, LPBA);
   }
 
 }
 
-void PeelAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
+void PeelAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->queueUsersUpdatePBRising(I, LPBA);
+    Iterations[i]->queueUserUpdatePBRising(I, UsedV, LPBA);
 
 }
 
-void IntegrationAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
 
   const Loop* MyL = L;
   const Loop* NextL = I->scope == MyL ? I->scope : immediateChildLoop(MyL, I->scope);
@@ -172,13 +172,13 @@ void IntegrationAttempt::queueUsersUpdatePBRising(ShadowInstructionInvar* I, Loo
     if(PeelAttempt* PA = getPeelAttempt(NextL)) {
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
 	investigateHere = false;
-      PA->queueUsersUpdatePBRising(I, LPBA);
+      PA->queueUserUpdatePBRising(I, UsedV, LPBA);
     }
 
   }
 
   if(investigateHere)
-    queueUsersUpdatePBLocal(I, LPBA);
+    queueUserUpdatePBLocal(I, UsedV, LPBA);
 
 }
 

@@ -70,6 +70,7 @@ class MemTransferInst;
 class ShadowLoopInvar;
 
 bool functionIsBlacklisted(Function*);
+bool functionBlacklistedWithinLoops(Function*);
 
 inline void release_assert_fail(const char* str) {
 
@@ -841,7 +842,7 @@ protected:
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope = false);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool inUnboundedLoop);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -919,10 +920,10 @@ protected:
   // Pointer base analysis
   void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
   void queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser*);
-  void queueUserUpdatePB(ShadowInstructionInvar*, LoopPBAnalyser*);
-  void queueUsersUpdatePBFalling(ShadowInstructionInvar* I, LoopPBAnalyser*);
-  void queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser*);
-  void queueUsersUpdatePBLocal(ShadowInstructionInvar* I, LoopPBAnalyser*);
+  void queueUserUpdatePB(ShadowInstructionInvar*, ShadowValue Used, LoopPBAnalyser*);
+  void queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
+  void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
+  void queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
   void queuePBUpdateIfUnresolved(ShadowValue, LoopPBAnalyser*);
   void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
@@ -1196,7 +1197,7 @@ class PeelAttempt {
    bool isEnabled(); 
    void setEnabled(bool); 
    
-   void queueUsersUpdatePBRising(ShadowInstructionInvar* I, LoopPBAnalyser*); 
+   void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser*); 
 
    void reduceDependentLoads(int64_t); 
 

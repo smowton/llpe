@@ -317,6 +317,14 @@ bool llvm::functionIsBlacklisted(Function* F) {
 
 }
 
+bool llvm::functionBlacklistedWithinLoops(Function* F) {
+
+  return (F->getName() == "sscanf" ||
+	  F->getName() == "snprintf" ||
+	  F->getName() == "vsnprintf");
+
+}
+
 bool PeelIteration::stackIncludesCallTo(Function* FCalled) {
 
   return parent->stackIncludesCallTo(FCalled);
@@ -350,7 +358,7 @@ bool IntegrationAttempt::shouldInlineFunction(ShadowInstruction* SI, Function* F
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool inUnboundedLoop) {
 
   CallInst* CI = cast_inst<CallInst>(SI);
 
@@ -386,6 +394,10 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   if(functionIsBlacklisted(FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
+    return 0;
+  }
+
+  if(inUnboundedLoop && functionBlacklistedWithinLoops(FCalled)) {
     return 0;
   }
 
