@@ -829,18 +829,48 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
 }
 
-inline bool getBaseAndOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset) {
+inline bool getBaseAndOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset, bool ignoreNull = false) {
 
   PointerBase SVPB;
   if(!getPointerBase(SV, SVPB))
     return false;
 
-  if(SVPB.Type != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() != 1)
+  if(SVPB.Type != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() == 0)
     return false;
 
-  Base = SVPB.Values[0].V;
-  Offset = SVPB.Values[0].Offset;
-  return true;
+  if(!ignoreNull) {
+    if(SVPB.Values.size() != 1)
+      return false;
+
+    Base = SVPB.Values[0].V;
+    Offset = SVPB.Values[0].Offset;
+    return true;
+  }
+  else {
+
+    bool setAlready = false;
+
+    // Search for a unique non-null value:
+    for(uint32_t i = 0, ilim = SVPB.Values.size(); i != ilim; ++i) {
+
+      if(SVPB.Values[i].V.isVal() && isa<ConstantPointerNull>(SVPB.Values[i].V.getVal()))
+	continue;
+
+      if(!setAlready) {
+	setAlready = true;
+	Base = SVPB.Values[i].V;
+	Offset = SVPB.Values[i].Offset;
+      }
+      else {
+	Base = ShadowValue();
+	return false;
+      }
+
+    }
+
+    return setAlready;
+
+  }
 
 }
 
@@ -851,10 +881,10 @@ inline bool getBaseObject(ShadowValue SV, ShadowValue& Base) {
 
 }
 
-inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset) {
+inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset, bool ignoreNull = false) {
 
   Offset = 0;
-  bool ret = getBaseAndOffset(SV, Base, Offset);
+  bool ret = getBaseAndOffset(SV, Base, Offset, ignoreNull);
   if(Offset == LLONG_MAX)
     return false;
   return ret;

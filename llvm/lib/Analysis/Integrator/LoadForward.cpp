@@ -53,7 +53,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
   NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA) { 
 
     LoadPtrOffset = 0;
-    if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset)) {
+    if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset, /* ignoreNull = */ true)) {
       LoadPtrBase = ShadowValue();
       LoadPtrOffset = 0;
     }
