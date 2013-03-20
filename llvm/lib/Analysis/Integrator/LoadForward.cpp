@@ -676,6 +676,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	ShadowValue StoredVal = I->getOperand(0);
 	if(StoredVal.isVal() || getPointerBase(StoredVal, ResPB))
 	  ignore = false;
+	else
+	  return WIRStopThisPath;
       }
     }
       
@@ -706,7 +708,8 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 	defType = AI->getAllocatedType();
       else
 	defType = Type::getIntNTy(I->invar->I->getContext(), 8 * LoadSize);
-      NewPV = PartialVal::getTotal(ValSetTypeScalar, ImprovedVal(ShadowValue(Constant::getNullValue(defType))));
+      
+      NewPV = PartialVal::getTotal(defType->isPointerTy() ? ValSetTypePB : ValSetTypeScalar, ImprovedVal(ShadowValue(Constant::getNullValue(defType))));
 
     }
     else {

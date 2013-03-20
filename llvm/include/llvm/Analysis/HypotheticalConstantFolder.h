@@ -691,9 +691,10 @@ protected:
   std::string nestingIndent() const;
 
   int nesting_depth;
-  uint64_t SeqNumber;
 
  public:
+
+  uint64_t SeqNumber;
 
   Function& F;
   const Loop* L;
