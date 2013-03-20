@@ -560,7 +560,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
   if(!valSoFar.isComplete()) {
 
     // Disallow complex queries when solving for loop invariants:
-    if(maySubquery && (cacheAllowed || !inLoopAnalyser)) {
+    if(maySubquery && !inLoopAnalyser) {
 
       NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error);
 
@@ -1231,7 +1231,12 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
       bool foundNonConst = false;
       for(unsigned i = 0; i < SI->i.PB.Values.size(); ++i) {
 
-	GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(SI->i.PB.Values[i].V.getVal());
+	Value* BaseV = SI->i.PB.Values[i].V.getVal();
+
+	if(BaseV && isa<ConstantPointerNull>(BaseV))
+	  continue;
+
+	GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(BaseV);
 	if((!GV) || !GV->isConstant())
 	  foundNonConst = true;
 
