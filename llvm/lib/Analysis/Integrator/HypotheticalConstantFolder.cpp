@@ -1119,7 +1119,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     // Acceptable cases here: inttoptr(const)
     if(ConstantExpr* CE = dyn_cast<ConstantExpr>(newConst)) {
 
-      if(CE->getOpcode() != Instruction::IntToPtr) {
+      if(CE->getOpcode() != Instruction::IntToPtr && CE->getOpcode() != Instruction::BitCast) {
 	ImpType = ValSetTypeOverdef;
 	return;
       }

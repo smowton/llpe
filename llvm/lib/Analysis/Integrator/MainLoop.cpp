@@ -124,7 +124,7 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
       if((!LPA) && (pass->shouldIgnoreLoop(&F, BBL->getHeader()) || 
       pass->shouldExpandLoopCalls(&F, BBL->getHeader()))) {*/
       // For now create invariant functions whenever a peel attempt is not available.
-      if(!LPA) {
+      if((!LPA) || !LPA->isTerminated()) {
 
 	for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
 
