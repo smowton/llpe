@@ -128,6 +128,12 @@ bool NormalLoadForwardWalker::shouldEnterCall(ShadowInstruction* SI, void* conte
 
   }
 
+  if(walkVerbose) {
+
+    errs() << "Mod-ref " << SI->parent->IA->itcache(SI) << ": " << Res << "\n";
+
+  }
+
   switch(Res) {
     
   case AliasAnalysis::NoModRef:

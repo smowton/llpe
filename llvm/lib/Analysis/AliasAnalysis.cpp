@@ -101,7 +101,7 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, bo
   else if (MRB == AliasAnalysis::AccessesArguments) {
     bool doesAlias = false;
     for(unsigned i = 0; i < CS.arg_size() && !doesAlias; ++i) {
-      if (!isNoAlias(getValArgOperand(CSV, 0), ~0U, P, Size, usePBKnowledge, POffset, AACB))
+      if (!isNoAlias(P, Size, getValArgOperand(CSV, 0), ~0U, usePBKnowledge, POffset, AACB))
         doesAlias = true;
     }
     

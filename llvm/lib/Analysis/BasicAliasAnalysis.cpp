@@ -732,7 +732,7 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
 	// is impossible to alias the pointer we're checking.  If not, we have to
 	// assume that the call could touch the pointer, even though it doesn't
 	// escape.
-	if (!isNoAlias(getValOperand(CSV, ArgNo), UnknownSize, P, UnknownSize, usePBKnowledge, POffset, AACB)) {
+	if (!isNoAlias(P, UnknownSize, getValOperand(CSV, ArgNo), UnknownSize, usePBKnowledge, POffset, AACB)) {
 	  PassedAsArg = true;
 	  break;
 	}
@@ -756,8 +756,8 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
         Len = LenCI->getZExtValue();
       ShadowValue Dest = getValArgOperand(CSV, 0);
       ShadowValue Src = getValArgOperand(CSV, 1);
-      if (isNoAlias(Dest, Len, P, Size, usePBKnowledge, POffset, AACB)) {
-        if (isNoAlias(Src, Len, P, Size, usePBKnowledge, POffset, AACB))
+      if (isNoAlias(P, Size, Dest, Len, usePBKnowledge, POffset, AACB)) {
+        if (isNoAlias(P, Size, Src, Len, usePBKnowledge, POffset, AACB))
           return NoModRef;
         return Ref;
       }
@@ -769,7 +769,7 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
       if (ConstantInt *LenCI = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CSV, 2)))) {
         unsigned Len = LenCI->getZExtValue();
         ShadowValue Dest = getValArgOperand(CSV, 0);
-        if (isNoAlias(Dest, Len, P, Size, usePBKnowledge, POffset, AACB))
+        if (isNoAlias(P, Size, Dest, Len, usePBKnowledge, POffset, AACB))
           return NoModRef;
       }
       break;
@@ -788,7 +788,7 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
       if (TD) {
         ShadowValue Op1 = getValArgOperand(CSV, 0);
         unsigned Op1Size = TD->getTypeStoreSize(Op1.getType());
-        if (isNoAlias(Op1, Op1Size, P, Size, usePBKnowledge, POffset, AACB))
+        if (isNoAlias(P, Size, Op1, Op1Size, usePBKnowledge, POffset, AACB))
           return NoModRef;
       }
       break;
@@ -797,14 +797,14 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
     case Intrinsic::invariant_start: {
       unsigned PtrSize =
         (cast_val<ConstantInt>(getValArgOperand(CSV, 0)))->getZExtValue();
-      if (isNoAlias(getValArgOperand(CSV, 1), PtrSize, P, Size, usePBKnowledge, POffset, AACB))
+      if (isNoAlias(P, Size, getValArgOperand(CSV, 1), PtrSize, usePBKnowledge, POffset, AACB))
         return NoModRef;
       break;
     }
     case Intrinsic::invariant_end: {
       unsigned PtrSize =
         cast_val<ConstantInt>(getValArgOperand(CSV, 1))->getZExtValue();
-      if (isNoAlias(getValArgOperand(CSV, 2), PtrSize, P, Size, usePBKnowledge, POffset, AACB))
+      if (isNoAlias(P, Size, getValArgOperand(CSV, 2), PtrSize, usePBKnowledge, POffset, AACB))
         return NoModRef;
       break;
     }

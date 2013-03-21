@@ -51,26 +51,6 @@ void IntegrationAttempt::prepareCommit() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
-    if(ignorePAs.count(it->first)) {
-
-      if(it->second->isTerminated()) {
-
-	pass->mustRecomputeDIE = true;
-
-	// Create the loop's ShadowBBs with no information to make synthesising an unmodified
-	// version simpler.
-	for(uint32_t i = it->second->invarInfo->headerIdx; i < invarInfo->BBs.size() && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
-
-	  if(!getBB(i))
-	    createBB(i);
-
-	}
-
-      }
-
-      continue;
-    }
-
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
 
@@ -305,23 +285,40 @@ ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& ma
 
 ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
-  ShadowBBInvar* BBI = getBBInvar(succIdx);
+  ShadowBBInvar* SuccBBI = getBBInvar(succIdx);
 
-  if((!BBI->naturalScope) || BBI->naturalScope->contains(L))
-    return getBBFalling(BBI);
+  ShadowBB* SuccBB;
+  if((!SuccBBI->naturalScope) || SuccBBI->naturalScope->contains(L))
+    SuccBB = getBBFalling(SuccBBI);
+  else {
 
-  // Else, BBI is further in than this block: we must be entering exactly one loop.
-  // Only enter if we're emitting the loop in its proper scope: otherwise we're
-  // writing the residual version of a loop.
-  if(BB->invar->outerScope == L) {
-    if(PeelAttempt* PA = getPeelAttempt(BBI->naturalScope)) {
-      if(PA->isEnabled())
-	return PA->Iterations[0]->getBB(*BBI);
+    // Else, BBI is further in than this block: we must be entering exactly one loop.
+    // Only enter if we're emitting the loop in its proper scope: otherwise we're
+    // writing the residual version of a loop.
+    if(BB->invar->outerScope == L) {
+      if(PeelAttempt* PA = getPeelAttempt(SuccBBI->naturalScope)) {
+	if(PA->isEnabled())
+	  return PA->Iterations[0]->getBB(*SuccBBI);
+      }
     }
+
+    // Otherwise loop unexpanded or disabled: jump direct to the residual loop.
+    SuccBB = getBB(*SuccBBI);
+
   }
 
-  // Otherwise loop unexpanded or disabled: jump direct to the residual loop.
-  return getBB(*BBI);
+  if(!SuccBB) {
+    // This is a BB which is guaranteed not reachable,
+    // but the loop which will never branch to it is not being committed.
+    // Emit unreachable instead.
+    // This is only excusable if the immediate child of BB (not the successor) is present but disabled,
+    // otherwise we should have explored the loop properly in this scope.
+    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, BB->invar->naturalScope))) {
+      if(!PA->isEnabled())
+	markUnreachable = true;
+    }
+  }
+  return SuccBB;
 
 }
 
