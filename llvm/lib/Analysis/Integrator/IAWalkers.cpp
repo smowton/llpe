@@ -60,34 +60,36 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
 
 }
 
-bool InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
+WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB->invar->BB == &(F.getEntryBlock())) {
 
     if(!parent)
       return Walker->reachedTop();
-    if(!Walker->mayAscendFromContext(this, Ctx))
-      return false;
+    WalkInstructionResult WIR = Walker->mayAscendFromContext(this, Ctx);
+    if(WIR != WIRContinue)
+      return WIR;
 
     Walker->queueWalkFrom(CI->invar->idx, CI->parent, Ctx, false);
-    return true;
 
   }
   else {
 
     queueNormalPredecessorsBW(FromBB, Walker, Ctx);
-    return true;
 
   }
 
+  return WIRContinue;
+
 }
 
-bool PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
+WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB->invar->BB == L->getHeader()) {
 
-    if(!Walker->mayAscendFromContext(this, Ctx))
-      return false;
+    WalkInstructionResult WIR = Walker->mayAscendFromContext(this, Ctx);
+    if(WIR != WIRContinue)
+      return WIR;
 
     if(iterationCount == 0) {
 
@@ -109,7 +111,7 @@ bool PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walk
 
   }
 
-  return true;
+  return WIRContinue;
 
 }
 
@@ -243,7 +245,7 @@ void BackwardIAWalker::walkInternal() {
 	  return;
 
 	// OK, queue predecessors.
-	if(!BB->IA->queuePredecessorsBW(BB, this, Ctx))
+	if(BB->IA->queuePredecessorsBW(BB, this, Ctx) == WIRStopWholeWalk)
 	  return;
 
       }

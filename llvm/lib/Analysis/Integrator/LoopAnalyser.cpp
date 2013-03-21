@@ -49,6 +49,9 @@ void InlineAttempt::queueUpdateCall(LoopPBAnalyser* LPBA) {
 // (since our new invariant information might be useful at many scopes).
 void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
 
+  PointerBase NewPB;
+  getPointerBase(V, NewPB);
+
   ImmutableArray<ShadowInstIdx>* Users;
   if(ShadowInstruction* SI = V.getInst()) {
     Users = &(SI->invar->userIdxs);
@@ -64,7 +67,7 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
     if(SII.blockIdx != INVALID_BLOCK_IDX && SII.instIdx != INVALID_INSTRUCTION_IDX) {
 
       ShadowInstructionInvar* UserI = getInstInvar(SII.blockIdx, SII.instIdx);
-      queueUserUpdatePB(UserI, V, LPBA);
+      queueUserUpdatePB(UserI, V, LPBA, NewPB.Overdef);
 
     }
 
@@ -72,7 +75,7 @@ void IntegrationAttempt::queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA)
 
 }
 
-void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, ShadowValue UsedV, LoopPBAnalyser* LPBA, bool UsedOverdef) {
 
   if(inst_is<ReturnInst>(UserI)) {
 	
@@ -84,12 +87,12 @@ void IntegrationAttempt::queueUserUpdatePB(ShadowInstructionInvar* UserI, Shadow
 
   if((!L) || (UserL && L->contains(UserL))) {
 	  
-    queueUserUpdatePBRising(UserI, UsedV, LPBA);
+    queueUserUpdatePBRising(UserI, UsedV, LPBA, UsedOverdef);
 	
   }
   else {
 	
-    queueUserUpdatePBFalling(UserI, UsedV, LPBA);
+    queueUserUpdatePBFalling(UserI, UsedV, LPBA, UsedOverdef);
 
   }
   
@@ -101,7 +104,7 @@ void IntegrationAttempt::queueUpdatePB(ShadowValue V, LoopPBAnalyser* LPBA) {
 
 }
 
-void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA, bool UsedOverdef) {
 
   ShadowInstruction* SI = getInst(I);
   if(!SI)
@@ -124,6 +127,12 @@ void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, Shado
   }
   else if(inst_is<StoreInst>(SI)) {
 
+    if(UsedOverdef && SI->getOperand(1) == UsedV) {
+
+      errs() << "Warning: " << itcache(UsedV) << " went overdef but used as pointer operand by " << itcache(SI) << "; likely to cause knock-on problems\n";
+
+    }
+
     for(SmallVector<ShadowInstruction*, 1>::iterator it = SI->indirectUsers.begin(), it2 = SI->indirectUsers.end(); it != it2; ++it) {
       
       //errs() << "QUEUE LOAD " << itcache(*it) << "\n";
@@ -140,28 +149,28 @@ void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, Shado
 
 }
 
-void IntegrationAttempt::queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA, bool UsedOverdef) {
 
   if(I->scope == L) {
 
-    queueUserUpdatePBLocal(I, UsedV, LPBA);
+    queueUserUpdatePBLocal(I, UsedV, LPBA, UsedOverdef);
 
   }
   else {
     if(parent)
-      parent->queueUserUpdatePBFalling(I, UsedV, LPBA);
+      parent->queueUserUpdatePBFalling(I, UsedV, LPBA, UsedOverdef);
   }
 
 }
 
-void PeelAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
+void PeelAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA, bool UsedOverdef) {
 
   for(unsigned i = 0; i < Iterations.size(); ++i)
-    Iterations[i]->queueUserUpdatePBRising(I, UsedV, LPBA);
+    Iterations[i]->queueUserUpdatePBRising(I, UsedV, LPBA, UsedOverdef);
 
 }
 
-void IntegrationAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA) {
+void IntegrationAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser* LPBA, bool UsedOverdef) {
 
   const Loop* MyL = L;
   const Loop* NextL = I->scope == MyL ? I->scope : immediateChildLoop(MyL, I->scope);
@@ -172,13 +181,13 @@ void IntegrationAttempt::queueUserUpdatePBRising(ShadowInstructionInvar* I, Shad
     if(PeelAttempt* PA = getPeelAttempt(NextL)) {
       if(PA->Iterations.back()->iterStatus == IterationStatusFinal)
 	investigateHere = false;
-      PA->queueUserUpdatePBRising(I, UsedV, LPBA);
+      PA->queueUserUpdatePBRising(I, UsedV, LPBA, UsedOverdef);
     }
 
   }
 
   if(investigateHere)
-    queueUserUpdatePBLocal(I, UsedV, LPBA);
+    queueUserUpdatePBLocal(I, UsedV, LPBA, UsedOverdef);
 
 }
 
@@ -317,9 +326,66 @@ void IntegrationAttempt::queueUpdatePBWholeLoop(const Loop* L, LoopPBAnalyser* L
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
-    if(L->contains(it->first) && it->second->Iterations.back()->iterStatus == IterationStatusFinal) {
+    if(L->contains(it->first) && it->second->isTerminated()) {
       for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
 	it->second->Iterations[i]->queueUpdatePBWholeLoop(it->first, LPBA);
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::checkInstsInScope(const Loop* CheckL) {
+
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    ShadowBB* BB = BBs[i];
+    if(!BB)
+      continue;
+
+    const Loop* BBL = BB->invar->naturalScope;
+
+    if((!CheckL) || (BBL && CheckL->contains(BBL))) {
+
+      for(uint32_t j = 0; j < BB->insts.size(); ++j) {
+
+	ShadowInstruction* I = &(BB->insts[j]);
+	if(inst_is<StoreInst>(I)) {
+
+	  PointerBase PB;
+	  bool PBValid = getPointerBase(I->getOperand(1), PB);
+	  if((!PBValid) || PB.Overdef) {
+
+	    errs() << "After opt, " << itcache(I) << " stored through overdef/undef\n";
+
+	  }
+
+	}
+
+      }
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::checkWholeLoop(const Loop* L) {
+
+  checkInstsInScope(L);
+
+  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+
+    if((!L) || L->contains(it->first->getParent()))
+      it->second->checkInstsInScope(0);
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+
+    if(L->contains(it->first) && it->second->isTerminated()) {
+      for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
+	it->second->Iterations[i]->checkInstsInScope(it->first);
     }
 
   }
@@ -414,6 +480,10 @@ void LoopPBAnalyser::run() {
   std::vector<ShadowValue> updatedVals;
   runPointerBaseSolver(false, &updatedVals);
 
+  errs() << "MIDPOINT CHECK FOR " << L->getHeader()->getName() << " " << CacheThresholdIA->getShortHeader() << "\n";
+  CacheThresholdIA->checkWholeLoop(L);
+  errs() << "END CHECK\n";
+
   std::sort(updatedVals.begin(), updatedVals.end());
   std::vector<ShadowValue>::iterator startit, endit;
   endit = std::unique(updatedVals.begin(), updatedVals.end());
@@ -451,7 +521,7 @@ void IntegrationAttempt::analyseLoopPBs(const Loop* L, BasicBlock* CacheThreshol
   bool cacheWasEmpty = LFPBCache.size() == 0;
 
   // If we don't already have a cachepoint available at the preheader, make a temporary one:
-  LoopPBAnalyser LPBA(L->getLoopPreheader(), this, makeTemporaryCachepoint);
+  LoopPBAnalyser LPBA(L->getLoopPreheader(), this, makeTemporaryCachepoint, L);
 
   // Step 1: queue VCs falling within this loop.
 

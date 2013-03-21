@@ -322,7 +322,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     raw_string_ostream RSO(RHSStr);
     printRHS(*VI, RSO);
     RSO.flush();
-    Out << escapeHTML(TruncStr(RSO.str(), 200));
+    Out << escapeHTML(TruncStr(RSO.str(), 400));
     Out << "</td></tr>\n";
 
   }

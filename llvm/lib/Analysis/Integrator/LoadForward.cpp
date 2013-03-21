@@ -68,8 +68,8 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
   virtual bool shouldEnterCall(ShadowInstruction*, void*);
 
   WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
-  virtual bool reachedTop();
-  virtual bool mayAscendFromContext(IntegrationAttempt* IA, void*);
+  virtual WalkInstructionResult reachedTop();
+  virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt* IA, void*);
   bool addPartialVal(PartialVal& PV, PointerBase& PB, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool cacheAllowed, bool maySubquery);
   bool getMIOrReadValue(ShadowInstruction* SI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase&, std::string& error);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
@@ -795,7 +795,7 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
 
 }
 
-bool NormalLoadForwardWalker::reachedTop() {
+WalkInstructionResult NormalLoadForwardWalker::reachedTop() {
 
   if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(LoadPtrBase.getVal())) {
 	    
@@ -813,14 +813,22 @@ bool NormalLoadForwardWalker::reachedTop() {
       std::string error;
       
       PointerBase NoPB;
-      return addPartialVal(GPV, NoPB, error, 0, 0, FirstNotDef, true, false);
+      if(!addPartialVal(GPV, NoPB, error, 0, 0, FirstNotDef, true, false))
+	return WIRStopWholeWalk;
+      else
+	return WIRStopThisPath;
 
     }
 
   }
-
-  setPBOverdef("Reached top", true);
-  return false;
+  
+  if(!OptimisticMode) {
+    setPBOverdef("Reached top", true);
+    return WIRStopWholeWalk;
+  }
+  else {
+    return WIRStopThisPath;
+  }
 
 }
 
@@ -922,7 +930,7 @@ bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void
 
 }
 
-bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
+WalkInstructionResult NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
 
   bool cacheAllowed = ((struct LFPathContext*)Ctx)->cacheAllowed;
 
@@ -930,21 +938,21 @@ bool NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void*
 
     if(IA == SI->parent->IA) {
     
-      setPBOverdef("Scope", cacheAllowed);
-      if(!cacheAllowed)
-	cancelCache();
-      return false;
+      if(!OptimisticMode) {
+	setPBOverdef("Scope", cacheAllowed);
+	if(!cacheAllowed)
+	  cancelCache();
+	return WIRStopWholeWalk;
+      }
+      else {
+	return WIRStopThisPath;
+      }
 
     }
     
-    return true;
-
   }
-  else {
 
-    return true;
-
-  }
+  return WIRContinue;
 
 }
 
@@ -1135,7 +1143,7 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result, std::string& error) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result, std::string& error, bool finalise) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -1249,7 +1257,10 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
 	error = "Const pointer vague";
-	Result = PointerBase::getOverdef();
+	if(finalise)
+	  Result = PointerBase::getOverdef();
+	else
+	  Result = PointerBase();
 	return true;
 
       }
@@ -1380,7 +1391,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
   PointerBase ConstResult;
   std::string error;
-  if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
+  if(tryResolveLoadFromConstant(LI, ConstResult, error, finalise)) {
     NewPB = ConstResult;
     if(NewPB.Overdef) {
       if(!finalise)

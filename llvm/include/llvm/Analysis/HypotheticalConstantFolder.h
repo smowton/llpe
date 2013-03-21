@@ -541,8 +541,9 @@ public:
   BasicBlock* CacheThresholdBB;
   IntegrationAttempt* CacheThresholdIA;
   bool cachePointIsTemporary;
+  const Loop* L;
   
- LoopPBAnalyser(BasicBlock* CTBB, IntegrationAttempt* CTIA, bool cPIT) : CacheThresholdBB(CTBB), CacheThresholdIA(CTIA), cachePointIsTemporary(cPIT) {
+ LoopPBAnalyser(BasicBlock* CTBB, IntegrationAttempt* CTIA, bool cPIT, const Loop* _L) : CacheThresholdBB(CTBB), CacheThresholdIA(CTIA), cachePointIsTemporary(cPIT), L(_L) {
     PBProduceQ = &PBQueue1;
   }
 
@@ -628,8 +629,8 @@ class BackwardIAWalker : public IAWalker {
 
  public:
 
-  virtual bool reachedTop() { return true; }
-  virtual bool mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return true; }
+  virtual WalkInstructionResult reachedTop() { return WIRStopThisPath; }
+  virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return WIRContinue; }
 
   BackwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0);
   
@@ -850,13 +851,13 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result, std::string& error);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, PointerBase& Result, std::string& error, bool finalise);
   bool tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser*);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
   void queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
-  virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
+  virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
   void queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx);
   void queueReturnBlocks(BackwardIAWalker* Walker, void*);
   void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
@@ -921,12 +922,14 @@ protected:
   // Pointer base analysis
   void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
   void queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser*);
-  void queueUserUpdatePB(ShadowInstructionInvar*, ShadowValue Used, LoopPBAnalyser*);
-  void queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
-  void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
-  void queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*);
+  void queueUserUpdatePB(ShadowInstructionInvar*, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
+  void queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
+  void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
+  void queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
   void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
   void queuePBUpdateIfUnresolved(ShadowValue, LoopPBAnalyser*);
+  void checkInstsInScope(const Loop* CheckL);
+  void checkWholeLoop(const Loop* L);
   void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
   void printPB(raw_ostream& out, PointerBase PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
@@ -1112,7 +1115,7 @@ public:
 
   virtual void reduceDependentLoads(int64_t); 
 
-  virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx); 
+  virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx); 
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc); 
 
   virtual bool entryBlockIsCertain(); 
@@ -1198,7 +1201,7 @@ class PeelAttempt {
    bool isEnabled(); 
    void setEnabled(bool); 
    
-   void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser*); 
+   void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser*, bool usedOverdef); 
 
    void reduceDependentLoads(int64_t); 
 
@@ -1285,7 +1288,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&); 
   virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&); 
 
-  virtual bool queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx);
+  virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx);
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
