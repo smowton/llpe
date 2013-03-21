@@ -1350,12 +1350,12 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
 
   // Like normal load forwarding, but using a base+offset instead of a pointer.
   // This is used when forwarding through a copy instruction. 
-PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA) {
+PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA, bool inLoopAnalyser, bool optimisticMode) {
 
   PartialVal emptyPV;
   struct LFPathContext* firstCtx = new LFPathContext();
   
-  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, false, cacheThresholdBB, cacheThresholdIA, firstCtx, emptyPV, false);
+  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, optimisticMode, cacheThresholdBB, cacheThresholdIA, firstCtx, emptyPV, inLoopAnalyser);
 
   if(alreadyValidBytes) {
     bool* validBytes = Walker.getValidBuf();
@@ -1422,6 +1422,89 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 
 }
 
+static bool multiLoadEnabled = true;
+
+static bool shouldMultiload(PointerBase& PB) {
+
+  if(PB.Overdef || PB.Values.size() == 0)
+    return false;
+
+  if(PB.Type != ValSetTypePB)
+    return false;
+
+  uint32_t numNonNulls = 0;
+
+  for(uint32_t i = 0, ilim = PB.Values.size(); i != ilim; ++i) {
+
+    if(Value* V = PB.Values[i].V.getVal()) {
+      if(isa<ConstantPointerNull>(V))
+	continue;      
+    }
+
+    if(PB.Values[i].Offset == LLONG_MAX)
+      return false;
+
+    ++numNonNulls;
+
+  }
+
+  return numNonNulls > 1;
+
+}
+
+static bool tryMultiload(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA, std::string& report) {
+
+  uint32_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
+
+  // We already know that LI's PB is made up entirely of nulls and definite pointers.
+  NewPB = PointerBase();
+  PointerBase LIPB;
+  getPointerBase(LI->getOperand(0), LIPB);
+
+  raw_string_ostream RSO(report);
+  RSO << "ML! ";
+
+  std::string thisError;
+
+  for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB.Overdef; ++i) {
+
+    if(Value* V = LIPB.Values[i].V.getVal()) {
+      if(isa<ConstantPointerNull>(V)) {
+
+	const Type* defType = LI->getType();
+	Constant* nullVal = Constant::getNullValue(defType);
+	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
+	PointerBase NullPB = PointerBase::get(ResultIV.second, ResultIV.first);
+	NewPB.merge(NullPB);
+	continue;
+
+      }
+    }
+
+    PointerBase ThisPB = tryForwardLoadArtificial(LI, LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->getType(), /* alreadyValidBytes = */ 0, thisError, CacheThresholdBB, CacheThresholdIA, !!LPBA, !finalise);
+
+    NewPB.merge(ThisPB);
+
+    if(ThisPB.Overdef) {
+	
+      RSO << LI->parent->IA->itcache(LIPB.Values[i].V, true) << ": " << thisError;
+
+    }
+    else {
+	
+      RSO << LI->parent->IA->itcache(LIPB.Values[i].V, true) << ": ";
+      LI->parent->IA->printPB(RSO, ThisPB, true);
+
+    }
+
+    RSO << ", ";
+
+  }
+
+  return NewPB.isInitialised();
+
+}
+
 // Do load forwarding, possibly in optimistic mode: this means that
 // stores that def but which have no associated PB are optimistically assumed
 // to be compatible with anything, the same as the mergepoint logic above
@@ -1440,6 +1523,27 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 	pessimisticForwardStatus[LI->invar->I] = error;
     }
     return NewPB.isInitialised();
+  }
+
+  if(multiLoadEnabled) {
+
+    PointerBase LoadPtrPB;
+    getPointerBase(LI->getOperand(0), LoadPtrPB);
+    if(shouldMultiload(LoadPtrPB)) {
+
+      std::string report;
+
+      bool ret = tryMultiload(LI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA, report);
+
+      if(!finalise)
+	optimisticForwardStatus[LI->invar->I] = report;
+      else
+	pessimisticForwardStatus[LI->invar->I] = report;
+
+      return ret;
+
+    }
+
   }
 
   bool walkVerbose = false;

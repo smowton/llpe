@@ -320,7 +320,7 @@ bool llvm::getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, ui
   BasicBlock* ThresholdBB = validBytes ? 0 : cacheThresholdBB;
   IntegrationAttempt* ThresholdIA = validBytes ? 0 : cacheThresholdIA;
 
-  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[FirstDef]) : 0, error, ThresholdBB, ThresholdIA);
+  NewPB = tryForwardLoadArtificial(copyInst, copyBase, copyOffset + ReadOffset, FirstNotDef - FirstDef, subTargetType, validBytes ? &(validBytes[FirstDef]) : 0, error, ThresholdBB, ThresholdIA, /* inLoopAnalyser = */ false,  /* optimisticMode = */ false);
 
   return (NewPB.Values.size() > 0 && !NewPB.Overdef);
 

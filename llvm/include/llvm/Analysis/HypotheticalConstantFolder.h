@@ -1335,7 +1335,7 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialFPBytesOnStack(Function& F);
 
  PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
- PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
+ PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA, bool inAnalyser, bool optimistic);
  std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,

@@ -59,7 +59,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     std::string fwdError;
 
-    PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0);
+    PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0, false, false);
     if(byte.Overdef || byte.Type != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
