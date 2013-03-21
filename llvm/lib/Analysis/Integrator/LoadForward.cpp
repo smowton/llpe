@@ -50,7 +50,9 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
   LFCacheKey usedCacheEntryKey;
   bool inLoopAnalyser;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA) { 
+  bool walkVerbose;
+
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
 
     LoadPtrOffset = 0;
     if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset, /* ignoreNull = */ true)) {
@@ -60,7 +62,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
 
   }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA) { 
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
 
   }
 
@@ -685,6 +687,12 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
       return WIRContinue;
 
   }
+
+  if(walkVerbose) {
+
+    errs() << "alias " << I->parent->IA->itcache(I) << "\n";
+    
+  }
   
   if(R == SVMustAlias) {
 
@@ -782,6 +790,16 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
       NLFWFail("C");
 
     }
+
+  }
+
+  if(walkVerbose) {
+
+    errs() << "Merge ";
+    I->parent->IA->printPB(errs(), Result);
+    errs() << " with ";
+    I->parent->IA->printPB(errs(), NewPB);
+    errs() << "\n";
 
   }
 
@@ -1015,7 +1033,15 @@ WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void*
   LFCacheKey Key = LFCK(BB->invar->BB, LoadPtrBase, LoadPtrOffset, LoadSize);
   if(PointerBase* CachedPB = BB->IA->getLFPBCacheEntry(Key)) {
       
-    LPDEBUG("Use cache entry at " << BB->getName() << "\n");
+    if(walkVerbose) {
+
+      errs() << "Use cache entry at " << BB->invar->BB->getName() << "\n";
+      errs() << "Entry = ";
+      BB->IA->printPB(errs(), *CachedPB);
+      errs() << "\n";
+
+    }
+    LPDEBUG("Use cache entry at " << BB->invar->BB->getName() << "\n");
     if(CachedPB->Overdef) {
       std::string cacheODReason;
       {
@@ -1292,7 +1318,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
     return Walker.Result;
   }
   else {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false);
+    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, false);
     Walker.walk();
     
     if(Walker.Result.Overdef) {
@@ -1402,6 +1428,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
     return NewPB.isInitialised();
   }
 
+  bool walkVerbose = false;
+
   // Freed by the walker:
   struct LFPathContext* initialCtx = new LFPathContext();
   // Per-block context records whether we've passed the cache threshold.
@@ -1416,7 +1444,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 				 !finalise,
 				 CacheThresholdBB, CacheThresholdIA, initialCtx,
 				 emptyPV,
-				 !!LPBA);
+				 !!LPBA,
+				 walkVerbose);
 
   if(LPBA && (!finalise) && Walker.LoadPtrBase.isInval()) {
 
@@ -1503,14 +1532,46 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 
 }
 
+static ImprovedVal* getUniqueNonNullIV(PointerBase& PB) {
+
+  ImprovedVal* uniqueVal = 0;
+  
+  for(uint32_t i = 0, ilim = PB.Values.size(); i != ilim; ++i) {
+
+    if(Value* V = PB.Values[i].V.getVal()) {
+      if(isa<ConstantPointerNull>(V))
+	continue;
+    }
+    
+    if(uniqueVal)
+      return 0;
+    else
+      uniqueVal = &(PB.Values[i]);
+
+  }
+
+  return uniqueVal;
+
+}
+
+// Potentially dubious: report a must-alias relationship even if either of them may be null.
+// The theory is that either a store-through or read-from a null pointer will kill the program,
+// so we can safely assume they alias since either they do or the resulting code is not executed.
+static bool PBsMustAliasIfStoredAndLoaded(PointerBase& PB1, PointerBase& PB2) {
+
+  ImprovedVal* IV1;
+  ImprovedVal* IV2;
+
+  if((!(IV1 = getUniqueNonNullIV(PB1))) || (!(IV2 = getUniqueNonNullIV(PB2))))
+    return false;
+  
+  return (IV1->Offset != LLONG_MAX && IV1->Offset == IV2->Offset && IV1->V == IV2->V);
+
+}
 
 SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
 
-  if(PB1.Values.size() == 1 && 
-     PB2.Values.size() == 1 && 
-     PB1.Values[0].Offset != LLONG_MAX && 
-     PB1.Values[0].Offset == PB2.Values[0].Offset && 
-     PB1.Values[0].V == PB2.Values[0].V)
+  if(V1Size == V2Size && PBsMustAliasIfStoredAndLoaded(PB1, PB2))
     return SVMustAlias;
 
   for(unsigned i = 0; i < PB1.Values.size(); ++i) {

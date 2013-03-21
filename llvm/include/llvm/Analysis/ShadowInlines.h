@@ -349,6 +349,8 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   }
 
   PointerBase& merge(PointerBase& OtherPB) {
+    if(!OtherPB.isInitialised())
+      return *this;
     if(OtherPB.Overdef) {
       setOverdef();
     }
