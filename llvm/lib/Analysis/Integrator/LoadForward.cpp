@@ -1265,6 +1265,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
     if(SI->i.PB.Values.size() > 0 && SI->i.PB.Type == ValSetTypePB) {
 
+      bool foundNonNull = false;
       bool foundNonConst = false;
       for(unsigned i = 0; i < SI->i.PB.Values.size(); ++i) {
 
@@ -1273,13 +1274,26 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	if(BaseV && isa<ConstantPointerNull>(BaseV))
 	  continue;
 
+	foundNonNull = true;
+
 	GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(BaseV);
 	if((!GV) || !GV->isConstant())
 	  foundNonConst = true;
 
       }
 
-      if(!foundNonConst) {
+      if(!foundNonNull) {
+
+	// Suppose that loading from a known null returns a null result.
+	// TODO: convert this to undef, and thus rationalise the multi-load path.
+	const Type* defType = LoadI->getType();
+	Constant* nullVal = Constant::getNullValue(defType);
+	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
+	Result = PointerBase::get(ResultIV.second, ResultIV.first);
+	return true;
+
+      }
+      else if(!foundNonConst) {
 
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
 	error = "Const pointer vague";
