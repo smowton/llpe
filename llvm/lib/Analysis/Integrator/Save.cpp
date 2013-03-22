@@ -817,7 +817,14 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
     if(IA->isEnabled()) {
 
+      CallInst* SavedPtr = 0;
+
       if(!IA->isVararg()) {
+
+	// Save the current stack pointer (for scoped allocas)
+	Module *M = emitBB->getParent()->getParent();
+	Function *StackSave = Intrinsic::getDeclaration(M, Intrinsic::stacksave);
+	SavedPtr = CallInst::Create(StackSave, "savedstack", emitBB);		
 
 	// Branch from the current write BB to the call's entry block:
 	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
@@ -849,10 +856,18 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
       
       IA->commitArgsAndInstructions();
     
-      if((!IA->isVararg()) && IA->returnPHI && IA->returnPHI->getNumIncomingValues() == 0) {
-	IA->returnPHI->eraseFromParent();
-	IA->returnPHI = 0;
-	I->committedVal = UndefValue::get(IA->F.getFunctionType()->getReturnType());
+      if(!IA->isVararg()) {
+
+	Module *M = emitBB->getParent()->getParent();
+	Function *StackRestore=Intrinsic::getDeclaration(M,Intrinsic::stackrestore);
+	CallInst::Create(StackRestore, SavedPtr, "", IA->returnBlock);
+
+	if(IA->returnPHI && IA->returnPHI->getNumIncomingValues() == 0) {
+	  IA->returnPHI->eraseFromParent();
+	  IA->returnPHI = 0;
+	  I->committedVal = UndefValue::get(IA->F.getFunctionType()->getReturnType());
+	}
+
       }
 
       return;

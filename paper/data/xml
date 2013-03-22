@@ -1,0 +1,31 @@
+xml-opt:
+
+17.487s
+17.502s
+17.557s
+17.424s
+17.518s
+
+(10,000 runs each)
+
+xml:
+
+24.537s
+24.275s
+24.510s
+24.178s
+23.911s
+
+
+Sizes:
+
+size xml
+   text	   data	    bss	    dec	    hex	filename
+1740806	   2988	  33840	1777634	 1b1fe2	xml
+complete 4467888
+
+size xml-opt
+   text	   data	    bss	    dec	    hex	filename
+ 257767	    576	  13472	 271815	  425c7	xml-opt
+complete 264304
+

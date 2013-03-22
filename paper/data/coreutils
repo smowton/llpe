@@ -1,0 +1,18 @@
+date-orig: Got 10000 results, mean 236900.4923 sd 10488.0543365
+date-opt: Got 10000 results, mean 130699.3759 sd 9469.36314064
+
+printf-orig: Got 10000 results, mean 159135.8285 sd 16181.5007493
+printf-opt: Got 10000 results, mean 85586.9664 sd 8004.08358587
+
+md5sum-orig: Got 10000 results, mean 213454.7457 sd 11929.009631
+md5sum-opt: Got 10000 results, mean 98274.1494 sd 8646.44760694
+
+Sizes:
+
+Detail already in paper. 
+
+Whole binaries:
+
+date 357872 / 296856
+printf 333488 / 326800
+md5sum 287568 / 251560
