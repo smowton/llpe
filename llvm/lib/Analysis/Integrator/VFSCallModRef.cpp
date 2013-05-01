@@ -387,14 +387,6 @@ static LibCallFunctionInfo::LocationMRInfo UnameMR[] = {
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo SscanfMR[] = {
-
-  { 0, AliasAnalysis::Mod },
-  { 14, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
-
-};
-
 static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)))) {
@@ -470,10 +462,6 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "getpid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "kill", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "uname", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
-  // TEMPORARY HACKS FOR MONGOOSE:
-  { "sscanf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, SscanfMR, 0 },
-  { "snprintf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
-  { "vsnprintf", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

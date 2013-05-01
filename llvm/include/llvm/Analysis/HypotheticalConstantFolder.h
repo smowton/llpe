@@ -844,7 +844,7 @@ protected:
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool inUnboundedLoop);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
