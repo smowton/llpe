@@ -19,6 +19,9 @@
 
 namespace llvm {
 
+  class IntegrationAttempt;
+  class IntAAProxy;
+
   /// LibCallLocationInfo - This struct describes a set of memory locations that
   /// are accessed by libcalls.  Identification of a location is doing with a
   /// simple callback function.
@@ -47,8 +50,7 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    LocResult (*isLocation)(ImmutableCallSite CS,
-                            const AliasAnalysis::Location &Loc);
+    LocResult (*isLocation)(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool, int64_t, IntAAProxy*);
   };
   
   /// LibCallFunctionInfo - Each record in the array of FunctionInfo structs
@@ -117,6 +119,9 @@ namespace llvm {
     /// If this pointer is null, no details are known.
     ///
     const LocationMRInfo *LocationDetails;
+
+    const LocationMRInfo* (*getLocationDetailsFor)(ShadowValue);
+
   };
   
   

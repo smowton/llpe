@@ -22,33 +22,31 @@ namespace llvm {
   struct LibCallFunctionInfo;
   
   /// LibCallAliasAnalysis - Alias analysis driven from LibCallInfo.
-  struct LibCallAliasAnalysis : public FunctionPass, public AliasAnalysis {
+  struct LibCallAliasAnalysis : public ModulePass, public AliasAnalysis {
     static char ID; // Class identification
     
     LibCallInfo *LCI;
     
     explicit LibCallAliasAnalysis(LibCallInfo *LC = 0)
-        : FunctionPass(ID), LCI(LC) {
+        : ModulePass(ID), LCI(LC) {
       initializeLibCallAliasAnalysisPass(*PassRegistry::getPassRegistry());
     }
     explicit LibCallAliasAnalysis(char &ID, LibCallInfo *LC)
-        : FunctionPass(ID), LCI(LC) {
+        : ModulePass(ID), LCI(LC) {
       initializeLibCallAliasAnalysisPass(*PassRegistry::getPassRegistry());
     }
     ~LibCallAliasAnalysis();
     
-    ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Location &Loc);
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
     
-    ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
+    virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
       // TODO: Could compare two direct calls against each other if we cared to.
-      return AliasAnalysis::getModRefInfo(CS1, CS2);
+      return AliasAnalysis::get2CSModRefInfo(CS1, CS2, usePBKnowledge);
     }
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
     
-    virtual bool runOnFunction(Function &F) {
+    virtual bool runOnModule(Module&) {
       InitializeAliasAnalysis(this);                 // set up super class
       return false;
     }
@@ -65,8 +63,10 @@ namespace llvm {
     
   private:
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
-                                       ImmutableCallSite CS,
-                                       const Location &Loc);
+				       ShadowValue CS,
+                                       ShadowValue P, uint64_t Size, const MDNode*,
+				       bool usePBKnowledge, int64_t, IntAAProxy*);
+
   };
 }  // End of llvm namespace
 
