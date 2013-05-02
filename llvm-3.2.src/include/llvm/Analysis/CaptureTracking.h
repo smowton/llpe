@@ -29,7 +29,8 @@ namespace llvm {
   /// automatically counts as capturing it or not.
   bool PointerMayBeCaptured(const Value *V,
                             bool ReturnCaptures,
-                            bool StoreCaptures);
+                            bool StoreCaptures,
+			    bool PHISelectCaptures = false);
 
   /// This callback is used in conjunction with PointerMayBeCaptured. In
   /// addition to the interface here, you'll need to provide your own getters

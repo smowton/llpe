@@ -107,10 +107,10 @@ namespace {
     AliasResult alias(const Location &LocA, const Location &LocB);
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Location &Loc);
+                               const Location &Loc, bool usePBKnowledge = true);
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
-      return AliasAnalysis::getModRefInfo(CS1,CS2);
+                               ImmutableCallSite CS2, bool usePBKnowledge = true) {
+      return AliasAnalysis::getModRefInfo(CS1,CS2, usePBKnowledge);
     }
   };
 }
@@ -150,8 +150,9 @@ AliasAnalysisCounter::alias(const Location &LocA, const Location &LocB) {
 
 AliasAnalysis::ModRefResult
 AliasAnalysisCounter::getModRefInfo(ImmutableCallSite CS,
-                                    const Location &Loc) {
-  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, Loc);
+                                    const Location &Loc,
+				    bool usePBKnowledge) {
+  ModRefResult R = getAnalysis<AliasAnalysis>().getModRefInfo(CS, Loc, usePBKnowledge);
 
   const char *MRString = 0;
   switch (R) {

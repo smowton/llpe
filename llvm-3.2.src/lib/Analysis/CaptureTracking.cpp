@@ -54,7 +54,7 @@ namespace {
 /// storing the value (or part of it) into memory anywhere automatically
 /// counts as capturing it or not.
 bool llvm::PointerMayBeCaptured(const Value *V,
-                                bool ReturnCaptures, bool StoreCaptures) {
+                                bool ReturnCaptures, bool StoreCaptures, bool PHISelectCaptures) {
   assert(!isa<GlobalValue>(V) &&
          "It doesn't make sense to ask whether a global is captured.");
 
@@ -136,10 +136,12 @@ void llvm::PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker) {
           return;
       // Storing to the pointee does not cause the pointer to be captured.
       break;
-    case Instruction::BitCast:
-    case Instruction::GetElementPtr:
     case Instruction::PHI:
     case Instruction::Select:
+      if(PHISelectCaptures)
+	return true;
+    case Instruction::BitCast:
+    case Instruction::GetElementPtr:
       // The original value is not captured via this if the new value isn't.
       for (Instruction::use_iterator UI = I->use_begin(), UE = I->use_end();
            UI != UE; ++UI) {

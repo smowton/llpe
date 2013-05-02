@@ -194,6 +194,12 @@ ModulePass *createMetaRenamerPass();
 /// manager.
 ModulePass *createBarrierNoopPass();
 
+Pass* createDefineExtsPass();
+
+Pass *createIntegratorPass();
+
+FunctionPass *createMallocElimPass();
+
 } // End llvm namespace
 
 #endif

@@ -112,10 +112,12 @@ namespace {
     //
     AliasResult alias(const Location &LocA, const Location &LocB);
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Location &Loc);
+                               const Location &Loc,
+			       bool usePBKnowledge = true);
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
-      return AliasAnalysis::getModRefInfo(CS1, CS2);
+                               ImmutableCallSite CS2,
+			       bool usePBKnowledge = true) {
+      return AliasAnalysis::getModRefInfo(CS1, CS2, usePBKnowledge);
     }
 
     /// getModRefBehavior - Return the behavior of the specified function if
@@ -543,7 +545,8 @@ GlobalsModRef::alias(const Location &LocA,
 
 AliasAnalysis::ModRefResult
 GlobalsModRef::getModRefInfo(ImmutableCallSite CS,
-                             const Location &Loc) {
+                             const Location &Loc,
+			     bool usePBKnowledge) {
   unsigned Known = ModRef;
 
   // If we are asking for mod/ref info of a direct call with a pointer to a
@@ -558,7 +561,7 @@ GlobalsModRef::getModRefInfo(ImmutableCallSite CS,
 
   if (Known == NoModRef)
     return NoModRef; // No need to query other mod/ref analyses
-  return ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, Loc));
+  return ModRefResult(Known & AliasAnalysis::getModRefInfo(CS, Loc, usePBKnowledge));
 }
 
 

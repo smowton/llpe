@@ -18,9 +18,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/CFGPrinter.h"
+#include "llvm/Support/CommandLine.h"
 
 #include "llvm/Pass.h"
 using namespace llvm;
+
+cl::list<std::string> PrintFunctions("dot-print-fn", cl::ZeroOrMore);
 
 namespace {
   struct CFGViewer : public FunctionPass {
@@ -77,6 +80,17 @@ namespace {
     }
 
     virtual bool runOnFunction(Function &F) {
+
+      if(PrintFunctions.size() > 0) {
+
+       std::string fName = F.getName();
+       std::vector<std::string>::iterator found = std::find(PrintFunctions.begin(), PrintFunctions.end(), fName);
+       if(found == PrintFunctions.end())
+         return false;
+
+      }
+
+
       std::string Filename = "cfg." + F.getName().str() + ".dot";
       errs() << "Writing '" << Filename << "'...";
       

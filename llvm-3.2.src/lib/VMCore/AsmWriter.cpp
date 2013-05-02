@@ -38,6 +38,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cctype>
 using namespace llvm;
@@ -1187,12 +1188,12 @@ public:
   void writeAllMDNodes();
 
   void printTypeIdentities();
-  void printGlobal(const GlobalVariable *GV);
+  void printGlobal(const GlobalVariable *GV, bool nameOnly = false);
   void printAlias(const GlobalAlias *GV);
   void printFunction(const Function *F);
   void printArgument(const Argument *FA, Attributes Attrs);
   void printBasicBlock(const BasicBlock *BB);
-  void printInstruction(const Instruction &I);
+  void printInstruction(const Instruction &I, bool nameOnly = false);
 
 private:
   // printInfoComment - Print a little comment after the instruction indicating
@@ -1425,7 +1426,15 @@ static void PrintThreadLocalModel(GlobalVariable::ThreadLocalMode TLM,
   }
 }
 
-void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
+void AssemblyWriter::printGlobal(const GlobalVariable *GV, bool nameOnly) {
+
+  if(nameOnly) {
+
+    Out << "@" << GV->getName();
+    return;
+
+  }
+
   if (GV->isMaterializable())
     Out << "; Materializable\n";
 
@@ -1706,24 +1715,33 @@ void AssemblyWriter::printInfoComment(const Value &V) {
 }
 
 // This member is called for each Instruction in a function..
-void AssemblyWriter::printInstruction(const Instruction &I) {
-  if (AnnotationWriter) AnnotationWriter->emitInstructionAnnot(&I, Out);
+void AssemblyWriter::printInstruction(const Instruction &I, bool nameOnly) {
+  if (AnnotationWriter && !nameOnly) AnnotationWriter->emitInstructionAnnot(&I, Out);
+
+  if(I.getType()->isVoidTy())
+    nameOnly = false;
 
   // Print out indentation for an instruction.
-  Out << "  ";
+  if(!nameOnly)
+    Out << "  ";
 
   // Print out name if it exists...
   if (I.hasName()) {
     PrintLLVMName(Out, &I);
-    Out << " = ";
   } else if (!I.getType()->isVoidTy()) {
     // Print out the def slot taken.
     int SlotNum = Machine.getLocalSlot(&I);
     if (SlotNum == -1)
-      Out << "<badref> = ";
+      Out << "<badref>";
     else
-      Out << '%' << SlotNum << " = ";
+      Out << '%' << SlotNum;
   }
+
+  if(nameOnly)
+    return;
+  
+  if(!I.getType()->isVoidTy())
+    Out << " = ";
 
   if (isa<CallInst>(I) && cast<CallInst>(I).isTailCall())
     Out << "tail ";
@@ -2098,6 +2116,61 @@ void Type::print(raw_ostream &OS) const {
     }
 }
 
+namespace llvm {
+
+  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, Den
+seMap<const Instruction*, std::string>& BriefIMap) {
+
+    SlotTracker SlotTable(IF);
+    formatted_raw_ostream FRSO;
+    AssemblyWriter W(FRSO, SlotTable, IF->getParent(), 0);
+
+    for(Function::const_iterator BI = IF->begin(), BE = IF->end(); BI != BE; ++BI) {
+
+      for(BasicBlock::const_iterator II = BI->begin(), IE = BI->end(); II != IE; ++II) {
+
+       std::string& IStr = IMap[II];
+       raw_string_ostream RSO(IStr);
+       FRSO.setStream(RSO);
+       W.printInstruction(*II);
+       FRSO.flush();
+       std::string& IStrBrief = BriefIMap[II];
+       raw_string_ostream RSOBrief(IStrBrief);
+       FRSO.setStream(RSOBrief);
+       W.printInstruction(*II, true);
+       FRSO.flush();
+           
+      }
+
+    }
+
+  }
+
+  void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
+
+    SlotTracker SlotTable(M);
+    formatted_raw_ostream FRSO;
+    AssemblyWriter W(FRSO, SlotTable, M, 0);
+
+    for(Module::const_global_iterator it = M->global_begin(), itend = M->global_end(); it != itend; ++it) {
+
+      std::string& GVStr = GVMap[it];
+      raw_string_ostream RSO(GVStr);
+      FRSO.setStream(RSO);
+      W.printGlobal(it);
+      FRSO.flush();
+      std::string& GVStrBrief = BriefGVMap[it];
+      raw_string_ostream RSOBrief(GVStrBrief);
+      FRSO.setStream(RSOBrief);
+      W.printGlobal(it, true);
+      FRSO.flush();
+
+    }
+
+  }
+
+}
+
 void Value::print(raw_ostream &ROS, AssemblyAnnotationWriter *AAW) const {
   if (this == 0) {
     ROS << "printing a <null> value\n";
@@ -2158,3 +2231,5 @@ void Module::dump() const { print(dbgs(), 0); }
 
 // NamedMDNode::dump() - Allow printing of NamedMDNodes from the debugger.
 void NamedMDNode::dump() const { print(dbgs(), 0); }
+
+

@@ -70,7 +70,9 @@ namespace llvm {
   /// about the semantics of a set of libcalls specified by LCI.  The newly
   /// constructed pass takes ownership of the pointer that is provided.
   ///
-  FunctionPass *createLibCallAliasAnalysisPass(LibCallInfo *LCI);
+  ModulePass *createLibCallAliasAnalysisPass(LibCallInfo *LCI);
+
+  ModulePass *createVFSCallAliasAnalysisPass();
 
   //===--------------------------------------------------------------------===//
   //
@@ -217,6 +219,9 @@ namespace llvm {
   // information and prints it with -analyze.
   //
   FunctionPass *createMemDepPrinter();
+
+  ModulePass *createIntegrationHeuristicsPass();
+
 }
 
 #endif

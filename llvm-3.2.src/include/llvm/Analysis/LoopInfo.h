@@ -600,6 +600,9 @@ public:
   ///
   virtual bool runOnFunction(Function &F);
 
+  // Run with a supplied instance of DT, to create multiple LIs in parallel
+  void runOnFunction(Function &F, DominatorTree*);
+
   virtual void verifyAnalysis() const;
 
   virtual void releaseMemory() { LI.releaseMemory(); }
@@ -638,6 +641,8 @@ public:
   void removeBlock(BasicBlock *BB) {
     LI.removeBlock(BB);
   }
+
+  void dump() const;
 
   /// updateUnloop - Update LoopInfo after removing the last backedge from a
   /// loop--now the "unloop". This updates the loop forest and parent loops for

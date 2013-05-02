@@ -103,14 +103,16 @@ namespace {
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS,
-                               const Location &Loc) {
+                               const Location &Loc,
+			       bool usePBKnowledge = true) {
       assert(Vals.find(Loc.Ptr) != Vals.end() && "Never seen value in AA before");
-      return AliasAnalysis::getModRefInfo(CS, Loc);
+      return AliasAnalysis::getModRefInfo(CS, Loc, usePBKnowledge);
     }
 
     ModRefResult getModRefInfo(ImmutableCallSite CS1,
-                               ImmutableCallSite CS2) {
-      return AliasAnalysis::getModRefInfo(CS1,CS2);
+                               ImmutableCallSite CS2,
+			       bool usePBKnowledge = true) {
+      return AliasAnalysis::getModRefInfo(CS1,CS2, usePBKnowledge);
     }
     
     bool pointsToConstantMemory(const Location &Loc, bool OrLocal) {

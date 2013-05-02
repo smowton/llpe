@@ -53,6 +53,10 @@ INITIALIZE_PASS_END(LoopInfo, "loops", "Natural Loop Information", true, true)
 // Loop implementation
 //
 
+void LoopInfo::dump() const {
+  LI.print(dbgs());
+}
+
 /// isLoopInvariant - Return true if the specified value is loop invariant
 ///
 bool Loop::isLoopInvariant(Value *V) const {
@@ -515,6 +519,12 @@ bool LoopInfo::runOnFunction(Function &) {
   releaseMemory();
   LI.Analyze(getAnalysis<DominatorTree>().getBase());
   return false;
+}
+
+void LoopInfo::runOnFunction(Function& F, DominatorTree* DT) {
+
+  LI.Analyze(DT->getBase());
+
 }
 
 /// updateUnloop - The last backedge has been removed from a loop--now the

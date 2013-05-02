@@ -20,6 +20,8 @@
 #ifndef LLVM_ANALYSIS_CONSTANTFOLDING_H
 #define LLVM_ANALYSIS_CONSTANTFOLDING_H
 
+#include <stdint.h>
+
 namespace llvm {
   class Constant;
   class ConstantExpr;
@@ -44,7 +46,8 @@ Constant *ConstantFoldInstruction(Instruction *I, const DataLayout *TD = 0,
 /// result is returned, if not, null is returned.
 Constant *ConstantFoldConstantExpression(const ConstantExpr *CE,
                                          const DataLayout *TD = 0,
-                                         const TargetLibraryInfo *TLI = 0);
+                                         const TargetLibraryInfo *TLI = 0,
+					 bool preserveGEPSign = false);
 
 /// ConstantFoldInstOperands - Attempt to constant fold an instruction with the
 /// specified operands.  If successful, the constant result is returned, if not,
@@ -55,7 +58,8 @@ Constant *ConstantFoldConstantExpression(const ConstantExpr *CE,
 Constant *ConstantFoldInstOperands(unsigned Opcode, Type *DestTy,
                                    ArrayRef<Constant *> Ops,
                                    const DataLayout *TD = 0,
-                                   const TargetLibraryInfo *TLI = 0);
+                                   const TargetLibraryInfo *TLI = 0,
+				   bool preserveGEPSign = false);
 
 /// ConstantFoldCompareInstOperands - Attempt to constant fold a compare
 /// instruction (icmp/fcmp) with the specified operands.  If it fails, it
@@ -98,5 +102,13 @@ bool canConstantFoldCallTo(const Function *F);
 Constant *ConstantFoldCall(Function *F, ArrayRef<Constant *> Operands,
                            const TargetLibraryInfo *TLI = 0);
 }
+
+
+// Useful functions exported for the integrator:
+
+bool ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
+                       unsigned char *CurPtr, unsigned BytesLeft,
+                       const DataLayout &TD);
+
 
 #endif
