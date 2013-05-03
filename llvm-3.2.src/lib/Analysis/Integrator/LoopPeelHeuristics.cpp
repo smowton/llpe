@@ -2011,8 +2011,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
 }
 
-  void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
-
+void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
+  
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();
   AU.addRequired<VFSCallAliasAnalysis>();

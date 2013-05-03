@@ -485,8 +485,10 @@ ModulePass *createVFSCallAliasAnalysisPass() {
 // Register this pass...
 char VFSCallAliasAnalysis::ID = 0;
 
-INITIALIZE_AG_PASS_BEGIN(VFSCallAliasAnalysis, AliasAnalysis, "vfscall-aa",
-			 "VFS Call Alias Analysis", false, true, false);
-INITIALIZE_AG_PASS_END(VFSCallAliasAnalysis, AliasAnalysis, "vfscall-aa",
-		       "VFS Call Alias Analysis", false, true, false)
+INITIALIZE_AG_PASS(VFSCallAliasAnalysis, AliasAnalysis, "vfscall-aa",
+		   "VFS Call Alias Analysis", false, true, false)
 
+
+static RegisterPass<VFSCallAliasAnalysis> X("vfscall-aa", "VFS Call Alias Analysis",
+					    false /* Only looks at CFG */,
+					    true /* Analysis Pass */);

@@ -421,6 +421,7 @@ struct ShadowInstructionInvar {
   const Loop* naturalScope;
   ImmutableArray<ShadowInstIdx> operandIdxs;
   ImmutableArray<ShadowInstIdx> userIdxs;
+  ImmutableArray<uint32_t> operandBBs;
 
 };
 

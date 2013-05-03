@@ -206,18 +206,21 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       ShadowInstIdx* operandIdxs;
       if(PHINode* PN = dyn_cast<PHINode>(I)) {
 
-	NumOperands = PN->getNumIncomingValues() * 2;
+	NumOperands = PN->getNumIncomingValues();
 	operandIdxs = new ShadowInstIdx[NumOperands];
+	uint32_t* incomingBBs = new uint32_t[NumOperands];
 
 	for(unsigned k = 0, kend = PN->getNumIncomingValues(); k != kend; ++k) {
 
-	  operandIdxs[k*2] = ShadowInstIdx(BBIndices[PN->getIncomingBlock(k)], INVALID_INSTRUCTION_IDX);
 	  if(Instruction* OpI = dyn_cast<Instruction>(PN->getIncomingValue(k)))
-	    operandIdxs[(k*2)+1] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
 	  else
-	    operandIdxs[(k*2)+1] = ShadowInstIdx();
+	    operandIdxs[k] = ShadowInstIdx();
+	  incomingBBs[k] = BBIndices[PN->getIncomingBlock(k)];
 
 	}
+
+	SI.operandBBs = ImmutableArray<uint32_t>(incomingBBs, NumOperands);
 
       }
       else {

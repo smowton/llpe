@@ -70,7 +70,6 @@ class ShadowLoopInvar;
 class TargetLibraryInfo;
 
 bool functionIsBlacklisted(Function*);
-bool functionBlacklistedWithinLoops(Function*);
 
 inline void release_assert_fail(const char* str) {
 

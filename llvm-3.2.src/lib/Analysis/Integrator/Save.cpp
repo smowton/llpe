@@ -458,11 +458,11 @@ void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint
   ShadowInstructionInvar* SII = SI->invar;
   ShadowBBInvar* BB = SII->parent;
   
-  ShadowInstIdx blockOp = SII->operandIdxs[valOpIdx+1];
+  uint32_t blockOp = SII->operandBBs[valOpIdx];
 
-  assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
+  assert(blockOp != INVALID_BLOCK_IDX);
 
-  ShadowBBInvar* OpBB = getBBInvar(blockOp.blockIdx);
+  ShadowBBInvar* OpBB = getBBInvar(blockOp);
 
   // SI->parent->invar->scope == L checks that we're not emitting a PHI for a residual loop body.
   if(SI->parent->invar->scope == L && OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
@@ -502,9 +502,9 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 
 	ShadowValue lastLatchOperand, generalLatchOperand;
 	
-	ShadowInstIdx& valIdx = I->invar->operandIdxs[latchOperand*2];
+	ShadowInstIdx& valIdx = I->invar->operandIdxs[latchOperand];
 	if(valIdx.blockIdx == INVALID_BLOCK_IDX || valIdx.instIdx == INVALID_INSTRUCTION_IDX) {
-	  lastLatchOperand = I->getOperand(latchOperand*2);
+	  lastLatchOperand = I->getOperand(latchOperand);
 	  generalLatchOperand = lastLatchOperand;
 	}
 	else {
@@ -529,7 +529,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
   }
 
   // Emit a normal PHI; all arguments have already been prepared.
-  for(uint32_t i = 0, ilim = I->invar->operandIdxs.size(); i != ilim; i+=2) {
+  for(uint32_t i = 0, ilim = I->invar->operandIdxs.size(); i != ilim; i++) {
       
     SmallVector<ShadowValue, 1> predValues;
     SmallVector<ShadowBB*, 1> predBBs;

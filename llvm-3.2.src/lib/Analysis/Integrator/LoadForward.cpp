@@ -914,7 +914,7 @@ bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void
     if(!CF)
       ignore = false;
     else {
-      if((!functionIsBlacklisted(CF)) && !functionBlacklistedWithinLoops(CF))
+      if(!functionIsBlacklisted(CF))
 	ignore = false;
     }
 

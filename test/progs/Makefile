@@ -44,7 +44,7 @@ fakestdio.bc: fakestdioclient.bc fakestdiolib.bc
 	$(LLVM_GCC) -std=c99 $< -o $@
 
 %.bc : %.ltemp
-	opt -mem2reg -loopsimplify -lcssa $< -o $@
+	opt -mem2reg -loop-simplify -lcssa $< -o $@
 
 %.bc : %.lls
 	llvm-as $< -o $@
@@ -65,7 +65,7 @@ fakestdio.bc: fakestdioclient.bc fakestdiolib.bc
 	as $< -o $@
 
 %-opt.bc: %.bc
-	opt -load $(PLUGINS_PATH)/IntegratorAnalyses.so -load $(PLUGINS_PATH)/IntegratorTransforms.so -loop-rotate -instcombine -jump-threading -loopsimplify -lcssa -integrator -integrator-accept-all -jump-threading $< -o $@
+	opt -load $(PLUGINS_PATH)/IntegratorAnalyses.so -load $(PLUGINS_PATH)/IntegratorTransforms.so -loop-rotate -instcombine -jump-threading -loop-simplify -lcssa -integrator -integrator-accept-all -jump-threading $< -o $@
 
 clean:
 	-rm -f $(TARGETS)

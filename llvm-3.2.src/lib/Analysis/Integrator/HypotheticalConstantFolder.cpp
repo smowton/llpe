@@ -162,7 +162,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
     // I is a PHI node, but not a header PHI.
     ShadowInstructionInvar* SII = I->invar;
 
-    for(uint32_t i = 0, ilim = SII->operandIdxs.size(); i != ilim; i+=2) {
+    for(uint32_t i = 0, ilim = SII->operandIdxs.size(); i != ilim; i++) {
 
       SmallVector<ShadowValue, 1> predValues;
       getExitPHIOperands(I, i, predValues);
@@ -232,7 +232,7 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
     // Can just use normal getOperand/replacement here.
     int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
     assert(predIdx >= 0 && "Failed to find preheader block");
-    return SI->getOperand(predIdx * 2);
+    return SI->getOperand(predIdx);
 
   }
   else {
@@ -242,11 +242,11 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
     assert(predIdx >= 0 && "Failed to find latch block");
     // Find equivalent instruction in previous iteration:
     IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
-    ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx * 2];
+    ShadowInstIdx& SII = SI->invar->operandIdxs[predIdx];
     if(SII.blockIdx != INVALID_BLOCK_IDX)
       return ShadowValue(prevIter->getInst(SII.blockIdx, SII.instIdx));
     else
-      return SI->getOperand(predIdx * 2);
+      return SI->getOperand(predIdx);
 
   }
 
@@ -326,11 +326,11 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   ShadowInstructionInvar* SII = SI->invar;
   ShadowBBInvar* BB = SII->parent;
   
-  ShadowInstIdx blockOp = SII->operandIdxs[valOpIdx+1];
+  uint32_t blockIdx = SII->operandBBs[valOpIdx];
 
-  assert(blockOp.blockIdx != INVALID_BLOCK_IDX);
+  assert(blockIdx != INVALID_BLOCK_IDX);
 
-  ShadowBBInvar* OpBB = getBBInvar(blockOp.blockIdx);
+  ShadowBBInvar* OpBB = getBBInvar(blockIdx);
 
   if(OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
     getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
