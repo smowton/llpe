@@ -8,6 +8,7 @@
 #include "llvm/Function.h"
 #include "llvm/Constants.h"
 #include "llvm/BasicBlock.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Instruction.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/ADT/DenseMap.h"
@@ -16,7 +17,6 @@
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/GlobalVariable.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 
 using namespace llvm;

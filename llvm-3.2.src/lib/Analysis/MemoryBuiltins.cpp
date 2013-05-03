@@ -304,7 +304,7 @@ const CallInst *llvm::isFreeCall(const Value *I, const TargetLibraryInfo *TLI, b
   const CallInst *CI = dyn_cast<CallInst>(I);
   if (!CI)
     return 0;
-  Function *Callee = CI->getCalledFunction(allowInternal);
+  Function *Callee = CI->getCalledFunction();
   if (Callee == 0 || !(allowInternal || Callee->isDeclaration()))
     return 0;
 

@@ -170,8 +170,9 @@ public:
 
   // A version of alias that assumes instructions have been replaced by constants
   // as specified.
-  virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size,
-					ShadowValue V2, unsigned V2Size, bool usePBKnowledge = true);
+  virtual AliasResult aliasHypothetical(ShadowValue V1, uint64_t V1Size, const MDNode*,
+					ShadowValue V2, uint64_t V2Size, const MDNode*,
+					bool usePBKnowledge = true);
 
   /// alias - The main low level interface to the alias analysis implementation.
   /// Returns an AliasResult indicating whether the two pointers are aliased to
@@ -190,12 +191,12 @@ public:
     return alias(V1, UnknownSize, V2, UnknownSize);
   }
 
-  bool isNoAlias(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, 
-		 bool usePBKnowledge = true, int64_t V1Offset = 0, IntAAProxy* AACB = 0) {
+  bool isNoAlias(ShadowValue V1, uint64_t V1Size, const MDNode* V1T, ShadowValue V2, uint64_t V2Size, 
+		 const MDNode* V2T, bool usePBKnowledge = true, int64_t V1Offset = 0, IntAAProxy* AACB = 0) {
     if(AACB && V1Offset != LLONG_MAX)
       return AACB->isNoAliasPBs(V1, V1Offset, V1Size, V2, V2Size);
     else
-      return aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge) == NoAlias;
+      return aliasHypothetical(V1, V1Size, V1T, V2, V2Size, V2T, usePBKnowledge) == NoAlias;
   }
 
   /// isNoAlias - A trivial helper function to check to see if the specified
@@ -366,7 +367,7 @@ public:
   /// getModRefInfo - Return information about whether or not an instruction may
   /// read or write the specified memory location.  An instruction
   /// that doesn't read or write memory may be trivially LICM'd for example.
-  ModRefResult getSVModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode* TBAA, bool usePBKnowledge = true) {
+  ModRefResult getSVModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode* TBAA, bool usePBKnowledge = true) {
     Instruction* I = IV.isInst() ? IV.getInst()->invar->I : cast<Instruction>(IV.getVal());
     switch (I->getOpcode()) {
     case Instruction::VAArg:  return getVAModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
@@ -375,37 +376,28 @@ public:
     case Instruction::Fence:  return getFenceModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
     case Instruction::AtomicCmpXchg: return getCmpXModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
     case Instruction::AtomicRMW:     return getRMWModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
-    case Instruction::Call:   return getCallModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
-    case Instruction::Invoke: return getInvokeModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
+    case Instruction::Call:   return getCSModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
+    case Instruction::Invoke: return getCSModRefInfo(IV, P, Size, TBAA, usePBKnowledge);
     default:                  return NoModRef;
     }
   }
 
-  virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
+  virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
 
-  ModRefResult getCSModRefInfoWithOffset(ShadowValue CS, ShadowValue PBase, int64_t POffset, unsigned PSize, const MDNode*, IntAAProxy& AACB);
+  ModRefResult getCSModRefInfoWithOffset(ShadowValue CS, ShadowValue PBase, int64_t POffset, uint64_t PSize, const MDNode*, IntAAProxy& AACB);
 
   ModRefResult getModRefInfo(ImmutableCallSite CS,
 			     const Location& Loc,
-			     bool usePBKnowledge = true) {
-    return getCSModRefInfo(ShadowValue(const_cast<Instruction*>(CS.getInstruction())), 
-			   ShadowValue(const_cast<Value*>(Loc.Ptr)), Loc.Size, Loc.TBAAInfo, usePBKnowledge);
-  }
+			     bool usePBKnowledge = true);
 
   virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true);
 
   /// getModRefInfo - A convenience wrapper.
   ModRefResult getModRefInfo(const Instruction *I,
-                             const Value *P, uint64_t Size) {
-    return getSVModRefInfo(ShadowValue(const_cast<Instruction*>(I)),
-			   ShadowValue(const_cast<Value*>(P)),
-			   Size);
-  }
+                             const Location&);
 
-  /// getModRefInfo (for call sites) - Return whether information about whether
-  /// a particular call site modifies or reads the specified memory location.
-  virtual ModRefResult getModRefInfo(ImmutableCallSite CS,
-                                     const Location &Loc);
+  ModRefResult getModRefInfo(const Instruction *I,
+                             const Value *P, uint64_t Size);
 
   /// getModRefInfo (for call sites) - A convenience wrapper.
   ModRefResult getModRefInfo(ImmutableCallSite CS,
@@ -439,13 +431,9 @@ public:
 
   /// getModRefInfo (for loads) - Return whether information about whether
   /// a particular load modifies or reads the specified memory location.
-  ModRefResult getLoadModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true);
+  ModRefResult getLoadModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true);
 
-  ModRefResult getModRefInfo(const LoadInst *L, const Location& Loc) {
-    return getLoadModRefInfo(ShadowValue(const_cast<Instruction*>(L)),
-			     ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			     Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const LoadInst *L, const Location& Loc);
 
   /// getModRefInfo (for loads) - A convenience wrapper.
   ModRefResult getModRefInfo(const LoadInst *L, const Value *P, uint64_t Size) {
@@ -454,79 +442,57 @@ public:
 
   /// getModRefInfo (for stores) - Return whether information about whether
   /// a particular store modifies or reads the specified memory location.
-  ModRefResult getStoreModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true);
+  ModRefResult getStoreModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true);
 
-  ModRefResult getModRefInfo(const StoreInst *S, const Location& Loc) {
-    return getStoreModRefInfo(ShadowValue(const_cast<Instruction*>(S)),
-			      ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			      Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const StoreInst *S, const Location& Loc);
 
   /// getModRefInfo (for stores) - A convenience wrapper.
   ModRefResult getModRefInfo(const StoreInst *S, const Value *P, uint64_t Size){
     return getModRefInfo(S, Location(P, Size));
   }
 
-  ModRefResult getFenceModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true) {
+  ModRefResult getFenceModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true) {
     return ModRef;
   }
 
   /// getModRefInfo (for fences) - Return whether information about whether
   /// a particular store modifies or reads the specified memory location.
-  ModRefResult getModRefInfo(const FenceInst *S, const Location &Loc) {
-    // Conservatively correct.  (We could possibly be a bit smarter if
-    // Loc is a alloca that doesn't escape.)
-    return getFenceModRefInfo(ShadowValue(const_cast<Instruction*>(S)),
-			      ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			      Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const FenceInst *S, const Location &Loc);
 
   /// getModRefInfo (for fences) - A convenience wrapper.
   ModRefResult getModRefInfo(const FenceInst *S, const Value *P, uint64_t Size){
     return getModRefInfo(S, Location(P, Size));
   }
 
-  ModRefResult getCmpXModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true);
+  ModRefResult getCmpXModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true);
 
   /// getModRefInfo (for cmpxchges) - Return whether information about whether
   /// a particular cmpxchg modifies or reads the specified memory location.
-  ModRefResult getModRefInfo(const AtomicCmpXchgInst *CX, const Location &Loc) {
-    return getCmpXModRefInfo(ShadowValue(const_cast<Instruction*>(CX)),
-			     ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			     Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const AtomicCmpXchgInst *CX, const Location &Loc);
 
   /// getModRefInfo (for cmpxchges) - A convenience wrapper.
   ModRefResult getModRefInfo(const AtomicCmpXchgInst *CX,
-                             const Value *P, unsigned Size) {
+                             const Value *P, uint64_t Size) {
     return getModRefInfo(CX, Location(P, Size));
   }
 
   /// getModRefInfo (for atomicrmws) - Return whether information about whether
   /// a particular atomicrmw modifies or reads the specified memory location.
-  ModRefResult getRMWModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true);
+  ModRefResult getRMWModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true);
 
-  ModRefResult getModRefInfo(const AtomicRMWInst *RMW, const Location &Loc) {
-    return getRMWModRefInfo(ShadowValue(const_cast<Instruction*>(CX)),
-			    ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			    Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const AtomicRMWInst *RMW, const Location &Loc);
 
   /// getModRefInfo (for atomicrmws) - A convenience wrapper.
   ModRefResult getModRefInfo(const AtomicRMWInst *RMW,
-                             const Value *P, unsigned Size) {
+                             const Value *P, uint64_t Size) {
     return getModRefInfo(RMW, Location(P, Size));
   }
 
   /// getModRefInfo (for va_args) - Return whether information about whether
   /// a particular va_arg modifies or reads the specified memory location.
-  ModRefResult getVAModRefInfo(ShadowValue IV, ShadowValue P, unsigned Size, const MDNode*, bool usePBKnowledge = true);
+  ModRefResult getVAModRefInfo(ShadowValue IV, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true);
   
-  ModRefResult getModRefInfo(const VAArgInst* I, const Location &Loc) {
-    return getVAModRefInfo(ShadowValue(const_cast<Instruction*>(CX)),
-			   ShadowValue(const_cast<Value*>(Loc.Ptr)),
-			   Loc.Size, Loc.TBAAInfo);
-  }
+  ModRefResult getModRefInfo(const VAArgInst* I, const Location &Loc);
 
   /// getModRefInfo (for va_args) - A convenience wrapper.
   ModRefResult getModRefInfo(const VAArgInst* I, const Value* P, uint64_t Size){
@@ -539,11 +505,7 @@ public:
   /// for details.
   ModRefResult getModRefInfo(ImmutableCallSite CS1,
 			     ImmutableCallSite CS2,
-			     bool usePBKnowledge = true) {
-
-    return get2CSModRefInfo(ShadowValue(const_cast<Instruction*>(CS1.getInstruction())), ShadowValue(const_cast<Instruction*>(CS2.getInstruction())), usePBKnowledge);
-    
-  }
+			     bool usePBKnowledge = true);
 
   /// callCapturesBefore - Return information about whether a particular call 
   /// site modifies or reads the specified memory location.

@@ -9,10 +9,10 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/DataLayout.h"
 
 #include <vector>
 
@@ -235,7 +235,7 @@ WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, vo
 
 bool IntegrationAttempt::callUsesPtr(ShadowInstruction* CI, ShadowValue StorePtr, uint64_t Size) {
 
-  AliasAnalysis::ModRefResult MR = GlobalAA->getCSModRefInfo(ShadowValue(CI), StorePtr, Size);
+  AliasAnalysis::ModRefResult MR = GlobalAA->getCSModRefInfo(ShadowValue(CI), StorePtr, Size, StorePtr.getTBAATag());
   return !!(MR & AliasAnalysis::Ref);
 
 }
@@ -390,9 +390,9 @@ bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) 
     }
 
   }
-  else if(isMalloc(Alloc.getBareVal())) {
+  else if(isMallocLikeFn(Alloc.getBareVal(), GlobalTLI, false, true)) {
 
-    const CallInst* Free = isFreeCall(I->invar->I);
+    const CallInst* Free = isFreeCall(I->invar->I, GlobalTLI, true);
     if(Free) {
 
       ShadowValue FreeBase;

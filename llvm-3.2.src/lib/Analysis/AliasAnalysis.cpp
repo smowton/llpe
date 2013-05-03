@@ -43,12 +43,84 @@ using namespace llvm;
 INITIALIZE_ANALYSIS_GROUP(AliasAnalysis, "Alias Analysis", NoAA)
 char AliasAnalysis::ID = 0;
 
+// Bare val -> ShadowValue helpers
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(ImmutableCallSite CS,
+					  const Location& Loc,
+					  bool usePBKnowledge) {
+  return getCSModRefInfo(ShadowValue(const_cast<Instruction*>(CS.getInstruction())), 
+			 ShadowValue(const_cast<Value*>(Loc.Ptr)), Loc.Size, Loc.TBAATag, usePBKnowledge);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const Instruction *I,
+							 const Location& Loc) {
+
+  return getSVModRefInfo(ShadowValue(const_cast<Instruction*>(I)),
+			 ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			 Loc.Size, Loc.TBAATag);
+
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const Instruction *I,
+					  const Value *P, uint64_t Size) {
+  return getSVModRefInfo(ShadowValue(const_cast<Instruction*>(I)),
+			 ShadowValue(const_cast<Value*>(P)),
+			 Size, 0);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const LoadInst *L, const Location& Loc) {
+  return getLoadModRefInfo(ShadowValue(const_cast<LoadInst*>(L)),
+			   ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			   Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const StoreInst *S, const Location& Loc) {
+  return getStoreModRefInfo(ShadowValue(const_cast<StoreInst*>(S)),
+			    ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			    Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const FenceInst *S, const Location &Loc) {
+  // Conservatively correct.  (We could possibly be a bit smarter if
+  // Loc is a alloca that doesn't escape.)
+  return getFenceModRefInfo(ShadowValue(const_cast<FenceInst*>(S)),
+			    ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			    Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const AtomicCmpXchgInst *CX, const Location &Loc) {
+  return getCmpXModRefInfo(ShadowValue(const_cast<AtomicCmpXchgInst*>(CX)),
+			   ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			   Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const AtomicRMWInst *RMW, const Location &Loc) {
+  return getRMWModRefInfo(ShadowValue(const_cast<AtomicRMWInst*>(RMW)),
+			  ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			  Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(const VAArgInst* I, const Location &Loc) {
+  return getVAModRefInfo(ShadowValue(const_cast<VAArgInst*>(I)),
+			 ShadowValue(const_cast<Value*>(Loc.Ptr)),
+			 Loc.Size, Loc.TBAATag);
+}
+
+AliasAnalysis::ModRefResult AliasAnalysis::getModRefInfo(ImmutableCallSite CS1,
+			   ImmutableCallSite CS2,
+			   bool usePBKnowledge) {
+  
+  return get2CSModRefInfo(ShadowValue(const_cast<Instruction*>(CS1.getInstruction())), ShadowValue(const_cast<Instruction*>(CS2.getInstruction())), usePBKnowledge);
+  
+}
+
 //===----------------------------------------------------------------------===//
 // Default chaining methods
 //===----------------------------------------------------------------------===//
 
-AliasAnalysis::aliasHypothetical(ShadowValue V1, unsigned V1Size, const MDNode* V1TB,
-				 ShadowValue V2, unsigned V2Size, const MDNode* V2TB, bool usePBKnowledge) {
+AliasAnalysis::AliasResult
+AliasAnalysis::aliasHypothetical(ShadowValue V1, uint64_t V1Size, const MDNode* V1TB,
+				 ShadowValue V2, uint64_t V2Size, const MDNode* V2TB, bool usePBKnowledge) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
   return AA->aliasHypothetical(V1, V1Size, V1TB, V2, V2Size, V2TB);
 }
@@ -80,14 +152,15 @@ void AliasAnalysis::addEscapingUse(Use &U) {
   AA->addEscapingUse(U);
 }
 
-AliasAnalysis::getCSModRefInfoWithOffset(ShadowValue CSV, ShadowValue P, int64_t POffset, unsigned PSize, const MDNode* PInfo, IntAAProxy& AACB) {
+AliasAnalysis::ModRefResult
+AliasAnalysis::getCSModRefInfoWithOffset(ShadowValue CSV, ShadowValue P, int64_t POffset, uint64_t PSize, const MDNode* PInfo, IntAAProxy& AACB) {
 
   return getCSModRefInfo(CSV, P, PSize, PInfo, true, POffset, &AACB);
 
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
   assert(AA && "AA didn't call InitializeAliasAnalysis in its run method!");
 
   assert(!!CSV.getCtx() == !!P.getCtx());
@@ -107,10 +180,10 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, co
     if (doesAccessArgPointees(MRB)) {
       MDNode *CSTag = CS.getInstruction()->getMetadata(LLVMContext::MD_tbaa);
       for(unsigned i = 0; i < CS.arg_size() && !doesAlias; ++i) {
-        const Value *Arg = *AI;
+        const Value *Arg = CS.getArgument(i);
         if (!Arg->getType()->isPointerTy())
           continue;
-	if (!isNoAlias(P, Size, PInfo, getValArgOperand(CSV, 0), ~0U, CSTag, usePBKnowledge, POffset, AACB))
+	if (!isNoAlias(P, Size, PInfo, getValArgOperand(CSV, i), ~0U, CSTag, usePBKnowledge, POffset, AACB))
 	  doesAlias = true;
       }
     }
@@ -167,7 +240,7 @@ AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKn
     if (doesAccessArgPointees(CS2B)) {
       MDNode *CS2Tag = CS2.getInstruction()->getMetadata(LLVMContext::MD_tbaa);
       for(unsigned i = 0; i < CS2.arg_size() && R != Mask; ++i) {
-        const Value *Arg = CS2.getArgOperand(i);
+        const Value *Arg = CS2.getArgument(i);
         if (!Arg->getType()->isPointerTy())
           continue;
         R = ModRefResult((R | getSVModRefInfo(CS1V, getValArgOperand(CS2V, i), UnknownSize, CS2Tag)) & Mask);
@@ -183,7 +256,7 @@ AliasAnalysis::get2CSModRefInfo(ShadowValue CS1V, ShadowValue CS2V, bool usePBKn
     if (doesAccessArgPointees(CS1B)) {
       MDNode *CS1Tag = CS1.getInstruction()->getMetadata(LLVMContext::MD_tbaa);
       for(unsigned i = 0; i < CS1.arg_size() && R != Mask; ++i) {
-        const Value *Arg = CS1.getArgOperand(i);
+        const Value *Arg = CS1.getArgument(i);
         if (!Arg->getType()->isPointerTy())
           continue;
         if (getSVModRefInfo(CS2V, getValArgOperand(CS1V, i), UnknownSize, CS1Tag, usePBKnowledge) != NoModRef) {
@@ -293,7 +366,7 @@ AliasAnalysis::getLocationForDest(const MemIntrinsic *MTI) {
 
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getLoadModRefInfo(ShadowValue LV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge) {
+AliasAnalysis::getLoadModRefInfo(ShadowValue LV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge) {
 
   assert(!!LV.getCtx() == !!P.getCtx());
   const LoadInst* L = cast_val<LoadInst>(LV);
@@ -312,7 +385,7 @@ AliasAnalysis::getLoadModRefInfo(ShadowValue LV, ShadowValue P, unsigned Size, c
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getStoreModRefInfo(ShadowValue SV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge) {
+AliasAnalysis::getStoreModRefInfo(ShadowValue SV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge) {
 
   assert(!!SV.getCtx() == !!P.getCtx());
   const StoreInst* S = cast_val<StoreInst>(SV);
@@ -323,12 +396,12 @@ AliasAnalysis::getStoreModRefInfo(ShadowValue SV, ShadowValue P, unsigned Size, 
 
   // If the store address cannot alias the pointer in question, then the
   // specified memory cannot be modified by the store.
-  if (!aliasHypothetical(getValOperand(SV, 1), getTypeStoreSize(getValOperand(S, 0).getType()), S->getMetadata(LLVMContext::MD_tbaa), P, Size, PInfo, usePBKnowledge))
+  if (!aliasHypothetical(getValOperand(SV, 1), getTypeStoreSize(getValOperand(SV, 0).getType()), S->getMetadata(LLVMContext::MD_tbaa), P, Size, PInfo, usePBKnowledge))
     return NoModRef;
 
   // If the pointer is a pointer to constant memory, then it could not have been
   // modified by this store.
-  const Location& Loc = getLocation(P.getBareVal());
+  const Location Loc(P.getBareVal(), Size, PInfo);
   if (pointsToConstantMemory(Loc))
     return NoModRef;
 
@@ -337,7 +410,7 @@ AliasAnalysis::getStoreModRefInfo(ShadowValue SV, ShadowValue P, unsigned Size, 
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getVAModRefInfo(ShadowValue VV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge) {
+AliasAnalysis::getVAModRefInfo(ShadowValue VV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge) {
 
   assert(!!VV.getCtx() == !!P.getCtx());
   const VAArgInst *V = cast_val<VAArgInst>(VV);
@@ -348,7 +421,7 @@ AliasAnalysis::getVAModRefInfo(ShadowValue VV, ShadowValue P, unsigned Size, con
 
   // If the pointer is a pointer to constant memory, then it could not have been
   // modified by this va_arg.
-  const Location& Loc = getLocation(P.getBareVal());
+  const Location Loc(P.getBareVal(), Size, PInfo);
   if (pointsToConstantMemory(Loc))
     return NoModRef;
 
@@ -357,7 +430,7 @@ AliasAnalysis::getVAModRefInfo(ShadowValue VV, ShadowValue P, unsigned Size, con
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getCmpXModRefInfo(ShadowValue CV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge) {
+AliasAnalysis::getCmpXModRefInfo(ShadowValue CV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge) {
 
   assert(!!CV.getCtx() == !!P.getCtx());
   const AtomicCmpXchgInst *CX = cast_val<AtomicCmpXchgInst>(CV);
@@ -373,7 +446,7 @@ AliasAnalysis::getCmpXModRefInfo(ShadowValue CV, ShadowValue P, unsigned Size, c
 }
 
 AliasAnalysis::ModRefResult
-AliasAnalysis::getRMWModRefInfo(ShadowValue RV, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge) {
+AliasAnalysis::getRMWModRefInfo(ShadowValue RV, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge) {
 
   assert(!!RV.getCtx() == !!P.getCtx());
   const AtomicRMWInst* RMW = cast_val<AtomicRMWInst>(RV);

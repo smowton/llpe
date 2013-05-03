@@ -4,10 +4,10 @@
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/IntrinsicInst.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/raw_ostream.h"
@@ -54,7 +54,7 @@ bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
   case Instruction::Br:
   case Instruction::IndirectBr:
   case Instruction::Switch:
-  case Instruction::Unwind:
+  case Instruction::Resume:
   case Instruction::Unreachable:
     return false;
   }

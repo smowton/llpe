@@ -15,16 +15,17 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/Attributes.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/system_error.h"
 
 using namespace llvm;
 
 static void readWholeFile(std::string& path, std::string& out, bool addnewline) {
 
-  std::string error;
-  MemoryBuffer* MB = MemoryBuffer::getFile(path, &error);
+  OwningPtr<MemoryBuffer> MB;
+  error_code err = MemoryBuffer::getFile(path, MB);
   if(!MB) {
 
-    errs() << "Failed to load from " << path << ": " << error << "\n";
+    errs() << "Failed to load from " << path << ": " << err.message() << "\n";
     exit(1);
 
   }
@@ -38,7 +39,7 @@ static void readWholeFile(std::string& path, std::string& out, bool addnewline) 
 
 static GlobalVariable* getStringArray(std::string& bytes, Module& M) {
 
-  Constant* EnvInit = ConstantArray::get(M.getContext(), bytes, false);  
+  Constant* EnvInit = ConstantDataArray::getString(M.getContext(), bytes, false);  
   return new GlobalVariable(M, EnvInit->getType(), true, GlobalValue::PrivateLinkage, EnvInit, "spec_env_str");
 
 }
@@ -49,7 +50,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
 
   // Build an array of GEPs into that string:
   std::vector<Constant*> lineStartConsts;
-  const Type* Int64 = Type::getInt64Ty(M.getContext());
+  Type* Int64 = Type::getInt64Ty(M.getContext());
   Constant* Zero = ConstantInt::get(Int64, 0);
 
   for(unsigned i = 0; i < lineStarts.size(); ++i) {
@@ -65,7 +66,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
   lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
   lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
 			    
-  const ArrayType* PtrArrT = ArrayType::get(lineStartConsts[0]->getType(), lineStartConsts.size());
+  ArrayType* PtrArrT = ArrayType::get(lineStartConsts[0]->getType(), lineStartConsts.size());
   Constant* PtrArray = ConstantArray::get(PtrArrT, lineStartConsts);
   GlobalVariable* EnvPtrsG = new GlobalVariable(M, PtrArray->getType(), true, GlobalValue::PrivateLinkage, PtrArray, "spec_env_ptrs");
   Constant* gepArgs[] = { Zero, Zero };
@@ -133,8 +134,8 @@ void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigne
   for(long i = 0; i < argvIdx; ++i)
     ++Arg;
 
-  const Type* Int64 = Type::getInt64Ty(F->getContext());
-  const Type* BytePtr = Type::getInt8PtrTy(F->getContext());
+  Type* Int64 = Type::getInt64Ty(F->getContext());
+  Type* BytePtr = Type::getInt8PtrTy(F->getContext());
   for(unsigned i = 0; i < argc; ++i) {
 
     if(lineStarts[i] != -1) {
@@ -158,7 +159,7 @@ void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigne
   Constant* nullPtr = Constant::getNullValue(BytePtr);
   new StoreInst(nullPtr, argvEndPtr, InsertBefore);
 
-  F->addAttribute(argvIdx+1, Attribute::NoAlias);
+  F->setDoesNotAlias(argvIdx+1);
 
 }
 

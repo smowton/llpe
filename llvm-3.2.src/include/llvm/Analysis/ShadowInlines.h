@@ -94,7 +94,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
     return t == SHADOWVAL_OTHER ? u.V : 0;
   }
 
-  const Type* getType();
+  Type* getType();
   ShadowValue stripPointerCasts();
   IntegrationAttempt* getCtx();
   Value* getBareVal();
@@ -105,6 +105,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   LLVMContext& getLLVMContext();
   void setCommittedVal(Value* V);
   bool isAvailableFromCtx(IntegrationAttempt* OtherIA);
+  const MDNode* getTBAATag();
 
 };
 
@@ -485,7 +486,7 @@ struct ShadowInstruction {
 
   ShadowInstruction* getUser(uint32_t i);
 
-  const Type* getType() {
+  Type* getType() {
     return invar->I->getType();
   }
 
@@ -517,7 +518,7 @@ struct ShadowArg {
   InstArgImprovement i;  
   Value* committedVal;
 
-  const Type* getType() {
+  Type* getType() {
     return invar->A->getType();
   }
 
@@ -621,7 +622,7 @@ uint32_t ShadowBBInvar::succs_size() {
   return succIdxs.size();
 }
 
-inline const Type* ShadowValue::getType() {
+inline Type* ShadowValue::getType() {
 
   switch(t) {
   case SHADOWVAL_ARG:
@@ -634,6 +635,17 @@ inline const Type* ShadowValue::getType() {
     return 0;
   default:
     release_assert(0 && "Bad SV type");
+    return 0;
+  }
+
+}
+
+inline const MDNode* ShadowValue::getTBAATag() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    return u.I->invar->I->getMetadata(LLVMContext::MD_tbaa);
+  default:
     return 0;
   }
 

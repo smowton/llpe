@@ -244,8 +244,8 @@ public:
 typedef LoopPredIterator<BBWrapper> loop_pred_iterator;
 typedef LoopPredIterator<const BBWrapper> const_loop_pred_iterator;
 
-inline const_loop_pred_iterator loop_pred_begin(const BBWrapper* BB) { return const_loop_pred_iterator(BB); }
-inline const_loop_pred_iterator loop_pred_end(const BBWrapper *BB) { return const_loop_pred_iterator(BB, true); }
+inline loop_pred_iterator loop_pred_begin(BBWrapper* BB) { return loop_pred_iterator(BB); }
+inline loop_pred_iterator loop_pred_end(BBWrapper *BB) { return loop_pred_iterator(BB, true); }
 
 template <class BB_>           // Successor Iterator
 class LoopSuccIterator : public std::iterator<std::bidirectional_iterator_tag,
@@ -374,17 +374,17 @@ public:
   }
 };
 
-typedef LoopSuccIterator<const BBWrapper> loop_succ_iterator;
+typedef LoopSuccIterator<BBWrapper> loop_succ_iterator;
 
-inline loop_succ_iterator loop_succ_begin(const BBWrapper* BB) {
+inline loop_succ_iterator loop_succ_begin(BBWrapper* BB) {
   return loop_succ_iterator(BB);
 }
-inline loop_succ_iterator loop_succ_end(const BBWrapper* BB) {
+inline loop_succ_iterator loop_succ_end(BBWrapper* BB) {
   return loop_succ_iterator(BB, true);
 }
 
-template <> struct GraphTraits<const BBWrapper*> {
-  typedef const BBWrapper NodeType;
+template <> struct GraphTraits<BBWrapper*> {
+  typedef BBWrapper NodeType;
   typedef loop_succ_iterator ChildIteratorType;
 
   static NodeType *getEntryNode(NodeType *BB) { return BB; }
@@ -401,10 +401,10 @@ template <> struct GraphTraits<const BBWrapper*> {
 // a function is considered to be when traversing the predecessor edges of a BB
 // instead of the successor edges.
 //
-template <> struct GraphTraits<Inverse<const BBWrapper*> > {
-  typedef const BBWrapper NodeType;
-  typedef const_loop_pred_iterator ChildIteratorType;
-  static NodeType *getEntryNode(Inverse<const BBWrapper*> G) { return G.Graph; }
+template <> struct GraphTraits<Inverse<BBWrapper*> > {
+  typedef BBWrapper NodeType;
+  typedef loop_pred_iterator ChildIteratorType;
+  static NodeType *getEntryNode(Inverse<BBWrapper*> G) { return G.Graph; }
   static inline ChildIteratorType child_begin(NodeType *N) {
     return loop_pred_begin(N);
   }
@@ -413,20 +413,42 @@ template <> struct GraphTraits<Inverse<const BBWrapper*> > {
   }
 };
 
+// Silly iterator wrapper to provide an implicit conversion to BBWrapper*
+
+ struct NodesItWrapper {
+
+   std::vector<BBWrapper*>::const_iterator wrapped;
+   typedef BBWrapper* convtype;
+
+ NodesItWrapper(std::vector<BBWrapper*>::const_iterator x) : wrapped(x) { }
+
+   operator convtype() {
+
+     return *wrapped;
+
+   }
+
+   inline NodesItWrapper& operator++() { ++wrapped; return *this; } // Preincrement
+   
+ };
+
 // Provide specializations of GraphTraits to be able to treat a function as a
 // graph of basic blocks... these are the same as the basic block iterators,
 // except that the root node is implicitly the first node of the function.
 //
-template <> struct GraphTraits<const LoopWrapper*> :
-  public GraphTraits<const BBWrapper*> {
+template <> struct GraphTraits<LoopWrapper*> :
+  public GraphTraits<BBWrapper*> {
   static NodeType *getEntryNode(const LoopWrapper *LW) { 
     return LW->BBs.front();
   }
 
   // nodes_iterator/begin/end - Allow iteration over all nodes in the graph
-  typedef std::vector<BBWrapper*>::const_iterator nodes_iterator;
-  static nodes_iterator nodes_begin(const LoopWrapper *LW) { return LW->BBs.begin(); }
-  static nodes_iterator nodes_end  (const LoopWrapper *LW) { return LW->BBs.end(); }
+  typedef NodesItWrapper nodes_iterator;
+  static nodes_iterator nodes_begin(const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.begin()); }
+  static nodes_iterator nodes_end  (const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.end()); }
+
+  static unsigned size(LoopWrapper* LW) { return LW->BBs.size(); }
+
 };
 
 
@@ -435,9 +457,9 @@ template <> struct GraphTraits<const LoopWrapper*> :
 // a function is considered to be when traversing the predecessor edges of a BB
 // instead of the successor edges.
 //
-template <> struct GraphTraits<Inverse<const LoopWrapper*> > :
-  public GraphTraits<Inverse<const BBWrapper*> > {
-  static NodeType *getEntryNode(Inverse<const LoopWrapper*> G) {
+template <> struct GraphTraits<Inverse<LoopWrapper*> > :
+  public GraphTraits<Inverse<BBWrapper*> > {
+  static NodeType *getEntryNode(Inverse<LoopWrapper*> G) {
     return G.Graph->BBs.front();
   }
 };

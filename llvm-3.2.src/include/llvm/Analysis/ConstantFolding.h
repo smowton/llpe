@@ -101,8 +101,6 @@ bool canConstantFoldCallTo(const Function *F);
 /// with the specified arguments, returning null if unsuccessful.
 Constant *ConstantFoldCall(Function *F, ArrayRef<Constant *> Operands,
                            const TargetLibraryInfo *TLI = 0);
-}
-
 
 // Useful functions exported for the integrator:
 
@@ -110,5 +108,6 @@ bool ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
                        unsigned char *CurPtr, unsigned BytesLeft,
                        const DataLayout &TD);
 
+}
 
 #endif

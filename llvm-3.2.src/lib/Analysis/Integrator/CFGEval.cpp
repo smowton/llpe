@@ -19,6 +19,7 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Assembly/Writer.h"
 
 #include "PostDoms.h"
 
@@ -50,9 +51,9 @@ namespace llvm {
 
 }
 
-DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, ShadowBBInvar* BB, ShadowFunctionInvar& invarInfo) {
+DomTreeNodeBase<BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, ShadowBBInvar* BB, ShadowFunctionInvar& invarInfo) {
 
-  std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> P;
+  std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> P;
 
   const Loop* Key = L;
   if(!Key) {
@@ -63,7 +64,7 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
 
   }
 
-  DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> >::iterator it = 
+  DenseMap<const Loop*, std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> >::iterator it = 
     LoopPDTs.find(Key);
 
   if(it != LoopPDTs.end()) {
@@ -73,8 +74,8 @@ DomTreeNodeBase<const BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(
   }
   else {
     
-    const LoopWrapper* LW = new LoopWrapper(L, invarInfo);
-    DominatorTreeBase <const BBWrapper>* LPDT = new DominatorTreeBase<const BBWrapper>(true);
+    LoopWrapper* LW = new LoopWrapper(L, invarInfo);
+    DominatorTreeBase <BBWrapper>* LPDT = new DominatorTreeBase<BBWrapper>(true);
     LPDT->recalculate(*LW);
 
     /*
@@ -178,8 +179,8 @@ void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
     }
     else {
       SwitchInst* SwI = cast_inst<SwitchInst>(SI);
-      unsigned targetidx = SwI->findCaseValue(ConstCondition);
-      takenTarget = SwI->getSuccessor(targetidx);
+      SwitchInst::CaseIt targetidx = SwI->findCaseValue(ConstCondition);
+      takenTarget = targetidx.getCaseSuccessor();
     }
     if(takenTarget) {
       // We know where the instruction is going -- remove this block as a predecessor for its other targets.
@@ -233,7 +234,7 @@ void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newSta
   
   if(newStatus != BBSTATUS_UNKNOWN) {
 
-    for(DomTreeNodeBase<const BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
+    for(DomTreeNodeBase<BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
 	
       const BBWrapper* BW = DTN->getBlock();
       if(BW->BB) {

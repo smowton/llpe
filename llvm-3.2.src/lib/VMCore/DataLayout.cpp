@@ -717,18 +717,18 @@ uint64_t DataLayout::getIndexedOffset(Type *ptrTy,
   return Result;
 }
 
-int64_t TargetData::getIndexedOffsetS(const Type *ptrTy, ArrayRef<Value *> Indices, bool& overflow) const {
+int64_t DataLayout::getIndexedOffsetS(Type *ptrTy, ArrayRef<Value *> Indices, bool& overflow) const {
 
   overflow = false;
 
-  const Type *Ty = ptrTy;
+  Type *Ty = ptrTy;
   assert(Ty->isPointerTy() && "Illegal argument for getIndexedOffset()");
   int64_t Result = 0;
 
   generic_gep_type_iterator<Value* const*>
     TI = gep_type_begin(ptrTy, Indices);
   for (unsigned CurIDX = 0, EndIDX = Indices.size(); CurIDX != EndIDX; ++CurIDX, ++TI) {
-    if (const StructType *STy = dyn_cast<StructType>(*TI)) {
+    if (StructType *STy = dyn_cast<StructType>(*TI)) {
       assert(Indices[CurIDX]->getType() ==
              Type::getInt32Ty(ptrTy->getContext()) &&
              "Illegal struct idx");

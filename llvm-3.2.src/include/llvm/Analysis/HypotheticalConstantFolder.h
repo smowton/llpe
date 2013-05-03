@@ -27,7 +27,6 @@ namespace llvm {
 class Function;
 class BasicBlock;
 class Instruction;
-class TargetData;
 class AliasAnalysis;
 class PHINode;
 class NonLocalDepResult;
@@ -47,7 +46,7 @@ class PeelAttempt;
 class IntegrationHeuristicsPass;
 class Function;
 class LoopInfo;
-class TargetData;
+class DataLayout;
 class AliasAnalysis;
 class Loop;
 class IntegrationAttempt;
@@ -68,6 +67,7 @@ class PBLoadForwardWalker;
 class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
+class TargetLibraryInfo;
 
 bool functionIsBlacklisted(Function*);
 bool functionBlacklistedWithinLoops(Function*);
@@ -84,8 +84,9 @@ inline void release_assert_fail(const char* str) {
 // Include structures and functions for working with instruction and argument shadows.
 #include "ShadowInlines.h"
 
-extern TargetData* GlobalTD;
+extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
+extern TargetLibraryInfo* GlobalTLI;
 
 class IntegrationHeuristicsPass : public ModulePass {
 
@@ -95,7 +96,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
    DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
 
-   DenseMap<const Loop*, std::pair<const LoopWrapper*, DominatorTreeBase<const BBWrapper>*> > LoopPDTs;
+   DenseMap<const Loop*, std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> > LoopPDTs;
 
    SmallSet<Function*, 4> alwaysInline;
    SmallSet<Function*, 4> alwaysExplore;
@@ -106,7 +107,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
 
-   TargetData* TD;
+   DataLayout* TD;
    AliasAnalysis* AA;
 
    InlineAttempt* RootIA;
@@ -147,7 +148,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
    DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
 
-   DomTreeNodeBase<const BBWrapper>* getPostDomTreeNode(const Loop*, ShadowBBInvar*, ShadowFunctionInvar&);
+   DomTreeNodeBase<BBWrapper>* getPostDomTreeNode(const Loop*, ShadowBBInvar*, ShadowFunctionInvar&);
 
    // Caching text representations of instructions:
 
@@ -326,13 +327,13 @@ struct PartialVal {
   uint64_t partialBufBytes;
   bool loadFinished;
 
-  uint64_t markPaddingBytes(const Type*);
+  uint64_t markPaddingBytes(Type*);
 
-  bool addPartialVal(PartialVal& PV, TargetData* TD, std::string& error);
+  bool addPartialVal(PartialVal& PV, DataLayout* TD, std::string& error);
   bool isComplete();
   bool* getValidArray(uint64_t);
-  bool convertToBytes(uint64_t, TargetData*, std::string& error);
-  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error);
+  bool convertToBytes(uint64_t, DataLayout*, std::string& error);
+  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string& error);
 
   void initByteArray(uint64_t);
   
@@ -1313,10 +1314,10 @@ class InlineAttempt : public IntegrationAttempt {
 
 };
 
- Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData*);
- Constant* constFromBytes(unsigned char*, const Type*, TargetData*);
- bool allowTotalDefnImplicitCast(const Type* From, const Type* To);
- bool allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData*);
+ Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout*);
+ Constant* constFromBytes(unsigned char*, Type*, DataLayout*);
+ bool allowTotalDefnImplicitCast(Type* From, Type* To);
+ bool allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout*);
  std::string ind(int i);
  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
@@ -1334,20 +1335,20 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
 
- PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
- PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA, bool inAnalyser, bool optimistic);
+ PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
+ PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA, bool inAnalyser, bool optimistic);
  std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
 		      ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 		      uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
 
- bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
+ bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
  bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error);
- bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
+ bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, PartialVal& NewPV, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
  bool getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
- bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
- bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, const Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
+ bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
+ bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, PointerBase& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
  bool getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
 
  enum SVAAResult {
@@ -1357,10 +1358,10 @@ class InlineAttempt : public IntegrationAttempt {
    SVMustAlias
  };
 
- SVAAResult aliasSVs(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
- SVAAResult tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge);
- SVAAResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
- SVAAResult tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge);
+ SVAAResult aliasSVs(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(PointerBase& PB1, uint64_t V1Size, PointerBase& PB2, uint64_t V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
+ SVAAResult tryResolvePointerBases(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
  
  bool basesAlias(ShadowValue, ShadowValue);
 
@@ -1383,7 +1384,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name);
 
- Constant* getGVOffset(Constant* GV, int64_t Offset, const Type* targetType);
+ Constant* getGVOffset(Constant* GV, int64_t Offset, Type* targetType);
 
  struct IntAAProxy {
 

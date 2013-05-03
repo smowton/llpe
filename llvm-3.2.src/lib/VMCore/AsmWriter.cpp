@@ -2118,8 +2118,7 @@ void Type::print(raw_ostream &OS) const {
 
 namespace llvm {
 
-  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, Den
-seMap<const Instruction*, std::string>& BriefIMap) {
+  void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefIMap) {
 
     SlotTracker SlotTable(IF);
     formatted_raw_ostream FRSO;

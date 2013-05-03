@@ -33,11 +33,11 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/PHITransAddr.h"
 #include "llvm/Analysis/VFSCallModRef.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/Target/TargetLibraryInfo.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/IRBuilder.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 
 #include <string>
@@ -72,7 +72,9 @@ ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
 }
 
-INITIALIZE_PASS(IntegrationHeuristicsPass, "intheuristics", "Score functions for pervasive integration benefit", false, false);
+static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functions for pervasive integration benefit",
+						 false /* Only looks at CFG */,
+						 true /* Analysis Pass */);
 
 // This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
 // we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
@@ -974,7 +976,7 @@ IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, Int
 
 }
 
-bool llvm::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
+bool llvm::allowTotalDefnImplicitCast(Type* From, Type* To) {
 
   if(From == To)
     return true;
@@ -986,15 +988,15 @@ bool llvm::allowTotalDefnImplicitCast(const Type* From, const Type* To) {
 
 }
 
-bool llvm::allowTotalDefnImplicitPtrToInt(const Type* From, const Type* To, TargetData* TD) {
+bool llvm::allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout* TD) {
 
   return From->isPointerTy() && To->isIntegerTy() && TD->getTypeSizeInBits(To) >= TD->getTypeSizeInBits(From);
 
 }
 
-Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const Type* Target, uint64_t TargetSize, TargetData* TD) {
+Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout* TD) {
 
-  const Type* FromType = FromC->getType();
+  Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
 
   if(Offset == 0 && TargetSize == FromSize) {
@@ -1027,7 +1029,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const 
 
     mightWork = true;
     
-    const Type* EType = CA->getType()->getElementType();
+    Type* EType = CA->getType()->getElementType();
     uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
     
     StartE = Offset / ESize;
@@ -1068,7 +1070,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, const 
 
 }
 
-Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData* TD) {
+Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, DataLayout* TD) {
 
   if(Ty->isVectorTy() || Ty->isFloatingPointTy() || Ty->isIntegerTy()) {
 
@@ -1109,7 +1111,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     return Constant::getNullValue(Ty);
 
   }
-  else if(const ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
+  else if(ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
 
     uint64_t ECount = ATy->getNumElements();
     if(ECount == 0) {
@@ -1118,7 +1120,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     }
 
     // I *think* arrays are always dense, i.e. it's for the child type to specify padding.
-    const Type* EType = ATy->getElementType();
+    Type* EType = ATy->getElementType();
     uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
     std::vector<Constant*> Elems;
     Elems.reserve(ECount);
@@ -1136,7 +1138,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     return ConstantArray::get(ATy, Elems);
     
   }
-  else if(const StructType* STy = dyn_cast<StructType>(Ty)) {
+  else if(StructType* STy = dyn_cast<StructType>(Ty)) {
 
     const StructLayout* SL = TD->getStructLayout(STy);
     if(!SL) {
@@ -1151,7 +1153,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, const Type* Ty, TargetData*
     uint64_t EIdx = 0;
     for(StructType::element_iterator EI = STy->element_begin(), EE = STy->element_end(); EI != EE; ++EI, ++EIdx) {
 
-      const Type* EType = *EI;
+      Type* EType = *EI;
       uint64_t EOffset = SL->getElementOffset(EIdx);
       Constant* NextE = constFromBytes(&(Bytes[EOffset]), EType, TD);
       if(!NextE)
@@ -1617,7 +1619,7 @@ static void parseFBI(const char* paramName, const std::string& arg, Module& M, F
 
 void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* Val) {
 
-  const Type* Target = IA->F.getFunctionType()->getParamType(Idx);
+  Type* Target = IA->F.getFunctionType()->getParamType(Idx);
 
   if(Val->getType() != Target) {
 
@@ -1688,7 +1690,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     if(!parseIntCommaString(*ArgI, idx, Param))
       dieSpecUsage();
 
-    const Type* ArgTy = F.getFunctionType()->getParamType(idx);
+    Type* ArgTy = F.getFunctionType()->getParamType(idx);
     
     if(ArgTy->isIntegerTy()) {
 
@@ -1705,14 +1707,14 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       argConstants[idx] = ArgC;
 
     }
-    else if(const PointerType* ArgTyP = dyn_cast<PointerType>(ArgTy)) {
+    else if(PointerType* ArgTyP = dyn_cast<PointerType>(ArgTy)) {
 
-      const Type* StrTy = Type::getInt8PtrTy(F.getContext());
-      const Type* ElemTy = ArgTyP->getElementType();
+      Type* StrTy = Type::getInt8PtrTy(F.getContext());
+      Type* ElemTy = ArgTyP->getElementType();
       
       if(ArgTyP == StrTy) {
 
-	Constant* Str = ConstantArray::get(F.getContext(), Param);
+	Constant* Str = ConstantDataArray::getString(F.getContext(), Param);
 	Constant* GStr = new GlobalVariable(Str->getType(), true, GlobalValue::InternalLinkage, Str, "specstr");
 	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
 	Constant* GEPArgs[] = { Zero, Zero };
@@ -1914,10 +1916,11 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
-  TD = getAnalysisIfAvailable<TargetData>();
+  TD = getAnalysisIfAvailable<DataLayout>();
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
+  GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 

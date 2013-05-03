@@ -64,7 +64,7 @@ static cl::opt<bool> AllowInternalCalls("globalopt-allow-internal-malloc");
 static cl::opt<bool> GlobalOptVerbose("globalopt-verbose");
 
 namespace {
-  struct GlobalStatus;
+
   struct GlobalOpt : public ModulePass {
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.addRequired<TargetLibraryInfo>();
@@ -102,8 +102,6 @@ INITIALIZE_PASS_END(GlobalOpt, "globalopt",
 
 ModulePass *llvm::createGlobalOptimizerPass() { return new GlobalOpt(); }
 
-namespace {
-
 /// StrongerOrdering - Return the stronger of the two ordering. If the two
 /// orderings are acquire and release, then return AcquireRelease.
 ///
@@ -129,20 +127,20 @@ static bool SafeToDestroyConstant(const Constant *C) {
   return true;
 }
 
-static bool HasNonFreeUsers(const Value* V) {
+static bool HasNonFreeUsers(const Value* V, const TargetLibraryInfo* TLI) {
 
   for (Value::const_use_iterator UI = V->use_begin(), E = V->use_end(); UI != E; ++UI) {
 
     const Value* User = *UI;
 
     if(const CallInst* CI = dyn_cast<CallInst>(User)) {
-      if(!isFreeCall(CI, AllowInternalCalls)) {
+      if(!isFreeCall(CI, TLI, AllowInternalCalls)) {
        //errs() << "Non-free user for " << (*V) << ": " << (*User) << "\n";
        return true;
       }
     }
     else if(const BitCastInst* BCI = dyn_cast<BitCastInst>(User)) {
-      if(HasNonFreeUsers(BCI))
+      if(HasNonFreeUsers(BCI, TLI))
        return true;
     }
     else {
@@ -192,9 +190,10 @@ static void DeleteFreeUsers(Value* V) {
 /// structure.  If the global has its address taken, return true to indicate we
 /// can't do anything with it.
 ///
-bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
-		   SmallPtrSet<const PHINode*, 16> &PHIUsers,
-		   bool allowFreeCalls) {
+bool llvm::AnalyzeGlobal(const Value *V, GlobalStatus &GS,
+			 SmallPtrSet<const PHINode*, 16> &PHIUsers,
+			 const TargetLibraryInfo* TLI,
+			 bool allowFreeCalls) {
   for (Value::const_use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;
        ++UI) {
     const User *U = *UI;
@@ -205,7 +204,7 @@ bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
       // know to expect it in various places.  Just reject early.
       if (!isa<PointerType>(CE->getType())) return true;
       
-      if (AnalyzeGlobal(CE, GS, PHIUsers)) return true;
+      if (AnalyzeGlobal(CE, GS, PHIUsers, TLI, allowFreeCalls)) return true;
     } else if (const Instruction *I = dyn_cast<Instruction>(U)) {
       if (!GS.HasMultipleAccessingFunctions) {
         const Function *F = I->getParent()->getParent();
@@ -215,13 +214,13 @@ bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
           GS.HasMultipleAccessingFunctions = true;
       }
       const CallInst* CI = dyn_cast<CallInst>(I);
-      if(CI && isFreeCall(CI, AllowInternalCalls)) {
+      if(CI && isFreeCall(CI, TLI, AllowInternalCalls)) {
 	continue;
       } else if (const LoadInst *LI = dyn_cast<LoadInst>(I)) {
 	if(GlobalOptVerbose)
 	  errs() << (*LI) << " loads " << (*V) << "\n";
         GS.isLoaded = true;
-	if (HasNonFreeUsers(LI)) {
+	if (HasNonFreeUsers(LI, TLI)) {
 	  GS.isLoadedExceptToFree = true;
 	}
         // Don't hack on volatile loads.
@@ -276,16 +275,16 @@ bool AnalyzeGlobal(const Value *V, GlobalStatus &GS,
           }
         }
       } else if (isa<BitCastInst>(I)) {
-        if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
+        if (AnalyzeGlobal(I, GS, PHIUsers, TLI, allowFreeCalls)) return true;
       } else if (isa<GetElementPtrInst>(I)) {
-        if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
+        if (AnalyzeGlobal(I, GS, PHIUsers, TLI, allowFreeCalls)) return true;
       } else if (isa<SelectInst>(I)) {
-        if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
+        if (AnalyzeGlobal(I, GS, PHIUsers, TLI, allowFreeCalls)) return true;
       } else if (const PHINode *PN = dyn_cast<PHINode>(I)) {
         // PHI nodes we can check just like select or GEP instructions, but we
         // have to be careful about infinite recursion.
         if (PHIUsers.insert(PN))  // Not already visited.
-          if (AnalyzeGlobal(I, GS, PHIUsers)) return true;
+          if (AnalyzeGlobal(I, GS, PHIUsers, TLI, allowFreeCalls)) return true;
         GS.HasPHIUser = true;
       } else if (isa<CmpInst>(I)) {
         GS.isCompared = true;
@@ -489,9 +488,9 @@ static bool CleanupPointerRootUsers(GlobalVariable *GV,
 /// users of the global, cleaning up the obvious ones.  This is largely just a
 /// quick scan over the use list to clean up the easy and obvious cruft.  This
 /// returns true if it made a change.
-bool CleanupConstantGlobalUsers(Value *V, Constant *Init,
-				DataLayout *TD, TargetLibraryInfo *TLI,
-				bool allowFreeCalls) {
+bool llvm::CleanupConstantGlobalUsers(Value *V, Constant *Init,
+				      const DataLayout *TD, const TargetLibraryInfo *TLI,
+				      bool allowFreeCalls) {
   bool Changed = false;
   for (Value::use_iterator UI = V->use_begin(), E = V->use_end(); UI != E;) {
     User *U = *UI++;
@@ -508,18 +507,18 @@ bool CleanupConstantGlobalUsers(Value *V, Constant *Init,
       SI->eraseFromParent();
       Changed = true;
     } else if (CallInst* CI = dyn_cast<CallInst>(U)) {
-      if(isFreeCall(CI, AllowInternalCalls))
+      if(isFreeCall(CI, TLI, AllowInternalCalls))
 	CI->eraseFromParent();
     } else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(U)) {
       if (CE->getOpcode() == Instruction::GetElementPtr) {
         Constant *SubInit = 0;
         if (Init)
           SubInit = ConstantFoldLoadThroughGEPConstantExpr(Init, CE);
-        Changed |= CleanupConstantGlobalUsers(CE, SubInit, TD, TLI);
+        Changed |= CleanupConstantGlobalUsers(CE, SubInit, TD, TLI, allowFreeCalls);
       } else if (CE->getOpcode() == Instruction::BitCast &&
                  CE->getType()->isPointerTy()) {
         // Pointer cast, delete any stores and memsets to the global.
-        Changed |= CleanupConstantGlobalUsers(CE, 0, TD, TLI);
+        Changed |= CleanupConstantGlobalUsers(CE, 0, TD, TLI, allowFreeCalls);
       }
 
       if (CE->use_empty()) {
@@ -543,14 +542,14 @@ bool CleanupConstantGlobalUsers(Value *V, Constant *Init,
         if (Init && isa<ConstantAggregateZero>(Init) && GEP->isInBounds())
           SubInit = Constant::getNullValue(GEP->getType()->getElementType());
       }
-      Changed |= CleanupConstantGlobalUsers(GEP, SubInit, TD, TLI);
+      Changed |= CleanupConstantGlobalUsers(GEP, SubInit, TD, TLI, allowFreeCalls);
 
       if (GEP->use_empty()) {
         GEP->eraseFromParent();
         Changed = true;
       }
     } else if (BitCastInst* BCI = dyn_cast<BitCastInst>(U)) {
-      Changed |= CleanupConstantGlobalUsers(BCI, Init);
+      Changed |= CleanupConstantGlobalUsers(BCI, Init, TD, TLI, allowFreeCalls);
       if(BCI->use_empty()) {
 	BCI->eraseFromParent();
 	Changed = true;
@@ -567,7 +566,7 @@ bool CleanupConstantGlobalUsers(Value *V, Constant *Init,
       if (SafeToDestroyConstant(C)) {
         C->destroyConstant();
         // This could have invalidated UI, start over from scratch.
-        CleanupConstantGlobalUsers(V, Init, TD, TLI);
+        CleanupConstantGlobalUsers(V, Init, TD, TLI, allowFreeCalls);
         return true;
       }
     }
@@ -1188,6 +1187,7 @@ static GlobalVariable *OptimizeGlobalAddressOfMalloc(GlobalVariable *GV,
 static bool ValueIsOnlyUsedLocallyOrStoredToOneGlobal(const Instruction *V,
                                                       const GlobalVariable *GV,
 						      SmallPtrSet<const PHINode*, 8> &PHIs,
+						      const TargetLibraryInfo* TLI,
 						      bool allowLoads = true,
 						      bool allowAnyGEP = false,
 						      bool allowFreeCalls = false) {
@@ -1213,7 +1213,7 @@ static bool ValueIsOnlyUsedLocallyOrStoredToOneGlobal(const Instruction *V,
 
     // Must index into the array and into the struct.
     if (isa<GetElementPtrInst>(Inst) && (allowAnyGEP || Inst->getNumOperands() >= 3)) {
-      if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(Inst, GV, PHIs, allowLoads, allowAnyGEP, allowFreeCalls))
+      if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(Inst, GV, PHIs, TLI, allowLoads, allowAnyGEP, allowFreeCalls))
         return false;
       continue;
     }
@@ -1222,19 +1222,19 @@ static bool ValueIsOnlyUsedLocallyOrStoredToOneGlobal(const Instruction *V,
       // PHIs are ok if all uses are ok.  Don't infinitely recurse through PHI
       // cycles.
       if (PHIs.insert(PN))
-        if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(PN, GV, PHIs, allowLoads, allowAnyGEP, allowFreeCalls))
+        if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(PN, GV, PHIs, TLI, allowLoads, allowAnyGEP, allowFreeCalls))
           return false;
       continue;
     }
 
     if (const BitCastInst *BCI = dyn_cast<BitCastInst>(Inst)) {
-      if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(BCI, GV, PHIs, allowLoads, allowAnyGEP, allowFreeCalls))
+      if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(BCI, GV, PHIs, TLI, allowLoads, allowAnyGEP, allowFreeCalls))
         return false;
       continue;
     }
 
     if (const CallInst *CI = dyn_cast<CallInst>(Inst)) {
-      if (isFreeCall(CI, AllowInternalCalls))
+      if (isFreeCall(CI, TLI, AllowInternalCalls))
 	continue;
     }
 
@@ -1702,14 +1702,14 @@ static GlobalVariable *PerformHeapAllocSRoA(GlobalVariable *GV, CallInst *CI,
   return cast<GlobalVariable>(FieldGlobals[0]);
 }
 
-static void EraseMallocAndFrees(CallInst* CI, GlobalVariable* GV) {
+static void EraseMallocAndFrees(CallInst* CI, GlobalVariable* GV, const DataLayout* TD, const TargetLibraryInfo* TLI) {
 
   // We know the malloc only gets used by casts, GEPs and stores through them.
   // CleanupConstant will nuke stores to do with CI -- even stores *of* it,
   // which is ok as those are stores of it into GV.
 
   //errs() << "Delete malloc users\n";
-  CleanupConstantGlobalUsers(CI, 0);
+  CleanupConstantGlobalUsers(CI, 0, TD, TLI);
   if(CI->use_empty()) {
     //errs() << "Delete malloc\n";
     CI->eraseFromParent();
@@ -1739,16 +1739,16 @@ static void EraseMallocAndFrees(CallInst* CI, GlobalVariable* GV) {
 
 }
 
-static bool TryDeleteFreedOnlyMalloc(CallInst* CI, GlobalVariable* GV) {
+static bool TryDeleteFreedOnlyMalloc(CallInst* CI, GlobalVariable* GV, const DataLayout* TD, const TargetLibraryInfo* TLI) {
 
   // Check the malloc isn't written to more than one global, or loaded.
   SmallPtrSet<const PHINode*, 8> PHIs;
-  if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(CI, GV, PHIs, /* allow loads = */ false, /* allow any GEP = */ true, /* allow free calls = */ true))
+  if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(CI, GV, PHIs, TLI, /* allow loads = */ false, /* allow any GEP = */ true, /* allow free calls = */ true))
     return false;
 
   errs() << "Will eliminate useless malloc stored to global: " << (*CI) << " -> " << (*GV);
 
-  EraseMallocAndFrees(CI, GV);
+  EraseMallocAndFrees(CI, GV, TD, TLI);
 
   return true;
 
@@ -1787,7 +1787,7 @@ static bool TryToOptimizeStoreOfMallocToGlobal(GlobalVariable *GV,
   // GEP'd.  These are all things we could transform to using the global
   // for.
   SmallPtrSet<const PHINode*, 8> PHIs;
-  if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(CI, GV, PHIs))
+  if (!ValueIsOnlyUsedLocallyOrStoredToOneGlobal(CI, GV, PHIs, TLI))
     return false;
 
   // If we have a global that is only initialized with a fixed size malloc,
@@ -1882,7 +1882,7 @@ static bool OptimizeOnceStoredGlobal(GlobalVariable *GV, Value *StoredOnceVal,
         return true;
     } else if (CallInst *CI = extractMallocCall(StoredOnceVal, TLI, AllowInternalCalls)) {
       if(!isLoadedExceptToFree)
-	return TryDeleteFreedOnlyMalloc(CI, GV);
+	return TryDeleteFreedOnlyMalloc(CI, GV, TD, TLI);
       else {
 	Type *MallocType = getMallocAllocatedType(CI, TLI);
 	if (MallocType &&
@@ -2019,7 +2019,7 @@ bool GlobalOpt::ProcessGlobal(GlobalVariable *GV,
   SmallPtrSet<const PHINode*, 16> PHIUsers;
   GlobalStatus GS;
 
-  if (AnalyzeGlobal(GV, GS, PHIUsers))
+  if (AnalyzeGlobal(GV, GS, PHIUsers, TLI, false))
     return false;
 
   if (!GS.isCompared && !GV->hasUnnamedAddr()) {
@@ -2037,7 +2037,7 @@ bool GlobalOpt::ProcessGlobal(GlobalVariable *GV,
 /// it if possible.  If we make a change, return true.
 bool GlobalOpt::ProcessInternalGlobal(GlobalVariable *GV,
                                       Module::global_iterator &GVI,
-                                const SmallPtrSet<const PHINode*, 16> &PHIUsers,
+				      const SmallPtrSet<const PHINode*, 16> &PHIUsers,
                                       const GlobalStatus &GS) {
   // If this is a first class global and has only one accessing function
   // and this function is main (which we know is not recursive we can make

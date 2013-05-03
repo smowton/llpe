@@ -28,8 +28,8 @@ namespace llvm {
   /// whether storing the value (or part of it) into memory anywhere
   /// automatically counts as capturing it or not.
   bool PointerMayBeCaptured(const Value *V,
-                            bool ReturnCaptures,
-                            bool StoreCaptures,
+			    bool ReturnCaptures, 
+			    bool StoreCaptures, 
 			    bool PHISelectCaptures = false);
 
   /// This callback is used in conjunction with PointerMayBeCaptured. In

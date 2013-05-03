@@ -4,10 +4,10 @@
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/GlobalVariable.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 
@@ -35,7 +35,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
   ShadowValue LoadPtrBase;
   int64_t LoadPtrOffset;
 
-  const Type* originalType;
+  Type* originalType;
   bool OptimisticMode;
   
   BasicBlock* cacheThresholdBB;
@@ -52,7 +52,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
 
   bool walkVerbose;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
 
     LoadPtrOffset = 0;
     if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset, /* ignoreNull = */ true)) {
@@ -62,7 +62,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
 
   }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, const Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
 
   }
 
@@ -118,13 +118,13 @@ bool NormalLoadForwardWalker::shouldEnterCall(ShadowInstruction* SI, void* conte
 
   if(LoadPtrBase.isInval()) {
 
-    Res = GlobalAA->getCSModRefInfo(SI, LoadedPtr, LoadSize, true);
+    Res = GlobalAA->getCSModRefInfo(SI, LoadedPtr, LoadSize, LoadedPtr.getTBAATag(), true);
 
   }
   else {
 
     IntAAProxy AACB;
-    Res = GlobalAA->getCSModRefInfoWithOffset(SI, LoadPtrBase, LoadPtrOffset, LoadSize, AACB);
+    Res = GlobalAA->getCSModRefInfoWithOffset(SI, LoadPtrBase, LoadPtrOffset, LoadSize, 0, AACB);
 
   }
 
@@ -175,7 +175,7 @@ WalkInstructionResult NormalLoadForwardWalker::walkInstruction(ShadowInstruction
     // Fall through to alias analysis
 
   }
-  else if (inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
+  else if (inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I, GlobalTLI, true))) {
     
     if(LoadPtrBase == I) {
       return handleAlias(I, SVMustAlias, ShadowValue(I), LoadSize, Ctx);
@@ -343,11 +343,11 @@ bool* PartialVal::getValidArray(uint64_t nbytes) {
 
 }
 
-static uint64_t markPaddingBytes(bool* pvb, const Type* Ty, TargetData* TD) {
+static uint64_t markPaddingBytes(bool* pvb, Type* Ty, DataLayout* TD) {
 
   uint64_t marked = 0;
 
-  if(const StructType* STy = dyn_cast<StructType>(Ty)) {
+  if(StructType* STy = dyn_cast<StructType>(Ty)) {
     
     const StructLayout* SL = TD->getStructLayout(STy);
     if(!SL) {
@@ -371,10 +371,10 @@ static uint64_t markPaddingBytes(bool* pvb, const Type* Ty, TargetData* TD) {
     }
 
   }
-  else if(const ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
+  else if(ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
 
     uint64_t ECount = ATy->getNumElements();
-    const Type* EType = ATy->getElementType();
+    Type* EType = ATy->getElementType();
     uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
 
     uint64_t Offset = 0;
@@ -396,7 +396,7 @@ bool PartialVal::isComplete() {
 
 }
 
-bool PartialVal::convertToBytes(uint64_t size, TargetData* TD, std::string& error) {
+bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string& error) {
 
   if(isByteArray())
     return true;
@@ -411,7 +411,7 @@ bool PartialVal::convertToBytes(uint64_t size, TargetData* TD, std::string& erro
 
 }
 
-bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, TargetData* TD, std::string& error) {
+bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string& error) {
 
   if(isEmpty()) {
 
@@ -507,7 +507,7 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
 //// Implement Normal LF:
 
-static bool containsPointerTypes(const Type* Ty) {
+static bool containsPointerTypes(Type* Ty) {
 
   if(Ty->isPointerTy())
     return true;
@@ -715,9 +715,9 @@ WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I,
       }
 
     }
-    else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I))) {
+    else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I, GlobalTLI, true))) {
 
-      const Type* defType;
+      Type* defType;
       if(AllocaInst* AI = dyn_cast_inst<AllocaInst>(I)) 
 	defType = AI->getAllocatedType();
       else
@@ -1095,7 +1095,7 @@ PointerBase NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& 
     if(PV.TotalIVType == ValSetTypeVarArg)
       return PointerBase::get(PV.TotalIV, PV.TotalIVType);
 
-    const Type* sourceType = PV.TotalIV.V.getType();
+    Type* sourceType = PV.TotalIV.V.getType();
 
     if(allowTotalDefnImplicitCast(sourceType, originalType) || allowTotalDefnImplicitPtrToInt(sourceType, originalType, GlobalTD))
       return PointerBase::get(PV.TotalIV, PV.TotalIVType);
@@ -1208,7 +1208,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
       if(GV->isConstant()) {
 
 	uint64_t LoadSize = (GlobalTD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
-	const Type* FromType = GV->getInitializer()->getType();
+	Type* FromType = GV->getInitializer()->getType();
 	uint64_t FromSize = (GlobalTD->getTypeSizeInBits(FromType) + 7) / 8;
 
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
@@ -1292,7 +1292,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	// Suppose that loading from a known null returns a null result.
 	// TODO: convert this to undef, and thus rationalise the multi-load path.
-	const Type* defType = LoadI->getType();
+	Type* defType = LoadI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
 	Result = PointerBase::get(ResultIV.second, ResultIV.first);
@@ -1319,7 +1319,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 }
 
-PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, const Type* originalType, PartialVal& ResolvedSoFar, std::string& error) {
+PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error) {
 
   struct LFPathContext* disableCaching = new LFPathContext();
 
@@ -1356,7 +1356,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
 
   // Like normal load forwarding, but using a base+offset instead of a pointer.
   // This is used when forwarding through a copy instruction. 
-PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, const Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA, bool inLoopAnalyser, bool optimisticMode) {
+PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA, bool inLoopAnalyser, bool optimisticMode) {
 
   PartialVal emptyPV;
   struct LFPathContext* firstCtx = new LFPathContext();
@@ -1477,7 +1477,7 @@ static bool tryMultiload(ShadowInstruction* LI, bool finalise, PointerBase& NewP
     if(Value* V = LIPB.Values[i].V.getVal()) {
       if(isa<ConstantPointerNull>(V)) {
 
-	const Type* defType = LI->getType();
+	Type* defType = LI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
 	PointerBase NullPB = PointerBase::get(ResultIV.second, ResultIV.first);
@@ -1560,7 +1560,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
   // When we're outside the cache threshold we also switch to pessimistic mode
   // since everything before that point is a fixed certainty.
 
-  const Type* TargetType = LI->getType();
+  Type* TargetType = LI->getType();
 
   PartialVal emptyPV;
   NormalLoadForwardWalker Walker(LI, LI->getOperand(0),
@@ -1693,7 +1693,7 @@ static bool PBsMustAliasIfStoredAndLoaded(PointerBase& PB1, PointerBase& PB2) {
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, PointerBase& PB2, unsigned V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, uint64_t V1Size, PointerBase& PB2, uint64_t V2Size, bool usePBKnowledge) {
 
   if(V1Size == V2Size && PBsMustAliasIfStoredAndLoaded(PB1, PB2))
     return SVMustAlias;
@@ -1709,9 +1709,9 @@ SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, Point
 	return SVPartialAlias;
 	   
       if(!((V2Size != AliasAnalysis::UnknownSize && 
-	    PB1.Values[i].Offset >= (PB2.Values[j].Offset + V2Size)) || 
+	    PB1.Values[i].Offset >= (int64_t)(PB2.Values[j].Offset + V2Size)) || 
 	   (V1Size != AliasAnalysis::UnknownSize && 
-	    (PB1.Values[i].Offset + V1Size) <= PB2.Values[j].Offset)))
+	    (int64_t)(PB1.Values[i].Offset + V1Size) <= PB2.Values[j].Offset)))
 	return SVPartialAlias;
 
     }
@@ -1722,7 +1722,7 @@ SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, unsigned V1Size, Point
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
       
   PointerBase PB1(ValSetTypePB);
   PB1.insert(ImprovedVal(V1Base, V1Offset));
@@ -1740,7 +1740,7 @@ SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, un
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowValue V2, unsigned V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
       
   PointerBase PB1, PB2;
   if((!getPointerBase(V1, PB1)) || (!getPointerBase(V2, PB2)))
@@ -1756,15 +1756,15 @@ SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, unsigned V1Size, ShadowV
        
 }
 
-SVAAResult llvm::aliasSVs(ShadowValue V1, unsigned V1Size,
-			  ShadowValue V2, unsigned V2Size,
+SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
+			  ShadowValue V2, uint64_t V2Size,
 			  bool usePBKnowledge) {
   
   SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
   if(Alias != SVMayAlias)
     return Alias;
 
-  switch(GlobalAA->aliasHypothetical(V1, V1Size, V2, V2Size, usePBKnowledge)) {
+  switch(GlobalAA->aliasHypothetical(V1, V1Size, V1.getTBAATag(), V2, V2Size, V2.getTBAATag(), usePBKnowledge)) {
   case AliasAnalysis::NoAlias: return SVNoAlias;
   case AliasAnalysis::MustAlias: return SVMustAlias;
   case AliasAnalysis::MayAlias: return SVMayAlias;

@@ -27,20 +27,23 @@ bool CaptureTracker::shouldExplore(Use *U) { return true; }
 
 namespace {
   struct SimpleCaptureTracker : public CaptureTracker {
-    explicit SimpleCaptureTracker(bool ReturnCaptures)
-      : ReturnCaptures(ReturnCaptures), Captured(false) {}
+    explicit SimpleCaptureTracker(bool ReturnCaptures, bool PSCap)
+      : ReturnCaptures(ReturnCaptures), PHISelectCaptures(PSCap), Captured(false) {}
 
     void tooManyUses() { Captured = true; }
 
     bool captured(Use *U) {
       if (isa<ReturnInst>(U->getUser()) && !ReturnCaptures)
         return false;
+      if ((isa<PHINode>(U->getUser()) || isa<SelectInst>(U->getUser())) && !PHISelectCaptures)
+	return false;
 
       Captured = true;
       return true;
     }
 
     bool ReturnCaptures;
+    bool PHISelectCaptures;
 
     bool Captured;
   };
@@ -64,7 +67,7 @@ bool llvm::PointerMayBeCaptured(const Value *V,
   // take advantage of this.
   (void)StoreCaptures;
 
-  SimpleCaptureTracker SCT(ReturnCaptures);
+  SimpleCaptureTracker SCT(ReturnCaptures, PHISelectCaptures);
   PointerMayBeCaptured(V, &SCT);
   return SCT.Captured;
 }
@@ -138,8 +141,8 @@ void llvm::PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker) {
       break;
     case Instruction::PHI:
     case Instruction::Select:
-      if(PHISelectCaptures)
-	return true;
+      if(Tracker->captured(U))
+	return;
     case Instruction::BitCast:
     case Instruction::GetElementPtr:
       // The original value is not captured via this if the new value isn't.

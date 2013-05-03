@@ -7,7 +7,7 @@
 
 #include "llvm/Pass.h"
 #include "llvm/Module.h"
-#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/IPO.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
@@ -32,11 +32,11 @@ static cl::opt<bool> AcceptAllInt("integrator-accept-all", cl::init(false));
 
 namespace {
 
-  class Integrator : public ModulePass {
+  class IntegratorPass : public ModulePass {
   public:
 
     static char ID;
-    Integrator() : ModulePass(ID) {}
+    IntegratorPass() : ModulePass(ID) {}
 
     bool runOnModule(Module& M);
 
@@ -46,10 +46,12 @@ namespace {
 
 }
 
-char Integrator::ID = 0;
-INITIALIZE_PASS(Integrator, "integrator", "Pervasive integration", false, false);
+char IntegratorPass::ID = 0;
+static RegisterPass<IntegratorPass> X("integrator", "Pervasive integration",
+				      false /* Only looks at CFG */,
+				      false /* Analysis Pass */);
 
-Pass* llvm::createIntegratorPass() { return new Integrator(); }
+Pass* llvm::createIntegratorPass() { return new IntegratorPass(); }
 
 // Implement a GUI for leafing through integration results
 
@@ -582,7 +584,7 @@ void IntegratorFrame::OnSearchFunctions(wxCommandEvent& event) {
 
 IMPLEMENT_APP_NO_MAIN(IntegratorApp)
 
-bool Integrator::runOnModule(Module& M) {
+bool IntegratorPass::runOnModule(Module& M) {
 
   IHP = &getAnalysis<IntegrationHeuristicsPass>();
 
@@ -606,7 +608,7 @@ bool Integrator::runOnModule(Module& M) {
 
 }
 
-void Integrator::getAnalysisUsage(AnalysisUsage& AU) const {
+void IntegratorPass::getAnalysisUsage(AnalysisUsage& AU) const {
 
   AU.addRequired<IntegrationHeuristicsPass>();
 

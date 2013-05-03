@@ -25,7 +25,8 @@ using namespace llvm;
 
 bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result) {
 
-  if(Ptr.isVal() && GetConstantStringInfo(cast<Constant>(Ptr.getVal()), Result))
+  StringRef RResult(Result);
+  if(Ptr.isVal() && getConstantStringInfo(cast<Constant>(Ptr.getVal()), RResult))
     return true;
 
   ShadowValue StrBase;
@@ -36,9 +37,9 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(StrBase.getVal())) {
       
     if(GV->isConstant()) {
-      const Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
+      Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
       Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
-      return GetConstantStringInfo(QueryCE, Result);
+      return getConstantStringInfo(QueryCE, RResult);
     }
 
   }
@@ -49,7 +50,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
   LPDEBUG("forwarding off " << itcache(Ptr) << "\n");
 
-  const Type* byteType = Type::getInt8Ty(SearchFrom->invar->I->getContext());
+  Type* byteType = Type::getInt8Ty(SearchFrom->invar->I->getContext());
 
   bool success = true;
 
@@ -555,6 +556,8 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
       return WIRContinue;
     case AliasAnalysis::MustAlias:
       return WIRStopThisPath;
+    case AliasAnalysis::PartialAlias:
+      return WIRStopWholeWalk;
     }
     
   }
@@ -578,6 +581,8 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
       return WIRContinue;
     case AliasAnalysis::MustAlias:
       return WIRStopThisPath;
+    case AliasAnalysis::PartialAlias:
+      return WIRStopWholeWalk;
     }
     
   }

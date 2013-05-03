@@ -1,11 +1,16 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/DataLayout.h"
 #include "llvm/GlobalValue.h"
 #include "llvm/Function.h"
+#include "llvm/Operator.h"
 
 using namespace llvm;
+
+namespace llvm {
+  class TargetLibraryInfo;
+}
 
 // Implement functions called from AA and so which must be linked into core LLVM.
 
@@ -74,7 +79,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	  if (OpC->isZero()) continue;
     
 	  // Handle a struct and array indices which add their offset to the pointer.
-	  if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	  if (StructType *STy = dyn_cast<StructType>(*GTI)) {
 	    Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
 	  } else {
 	    uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
@@ -243,5 +248,6 @@ Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
 }
 
-TargetData* llvm::GlobalTD;
+DataLayout* llvm::GlobalTD;
 AliasAnalysis* llvm::GlobalAA;
+TargetLibraryInfo* llvm::GlobalTLI;

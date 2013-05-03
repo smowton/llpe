@@ -16,6 +16,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Constants.h"
+#include "llvm/DataLayout.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Function.h"
 #include "llvm/GlobalAlias.h"
@@ -29,12 +30,13 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Target/TargetData.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/Target/TargetLibraryInfo.h"
+
 #include <algorithm>
 using namespace llvm;
 
@@ -143,7 +145,7 @@ namespace {
     int64_t Scale;
 
     bool operator==(const VariableGEPIndex &Other) const {
-      return V == Other.V && Extension == Other.Extension &&
+      return VC == Other.VC && Extension == Other.Extension &&
         Scale == Other.Scale;
     }
 
@@ -239,19 +241,19 @@ namespace {
 
     }
 
-    virtual AliasResult aliasHypothetical(ShadowValue V1, unsigned V1Size, const MDNode* V1TBAAInfo,
-					  ShadowValue V2, unsigned V2Size, const MDNode* V2TBAAInfo,
+    virtual AliasResult aliasHypothetical(ShadowValue V1, uint64_t V1Size, const MDNode* V1TBAAInfo,
+					  ShadowValue V2, uint64_t V2Size, const MDNode* V2TBAAInfo,
 					  bool usePBKnowledge) {
 
       // I think I can ignore the not-different assertion!
       assert(AliasCache.empty() && "AliasCache must be cleared after use!");
-      AliasResult Alias = aliasCheck(V1, V1Size, V2, V2Size);
+      AliasResult Alias = aliasCheck(V1, V1Size, V1TBAAInfo, V2, V2Size, V2TBAAInfo);
       AliasCache.shrink_and_clear();
       return Alias;
 
     }
 
-    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, const MDNode* PTBAAInfo,
+    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode* PTBAAInfo,
 					 bool usePBKnowledge = true, int64_t POffset = 0, IntAAProxy* AACB = 0);
 
     virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
@@ -290,33 +292,33 @@ namespace {
 
     // aliasGEP - Provide a bunch of ad-hoc rules to disambiguate a GEP
     // instruction against another.
-    AliasResult aliasGEP(ShadowValue V1, unsigned V1Size,
+    AliasResult aliasGEP(ShadowValue V1, uint64_t V1Size,
 			 const MDNode *V1TBAAInfo,
-                         ShadowValue V2, unsigned V2Size,
+                         ShadowValue V2, uint64_t V2Size,
 			 const MDNode *V2TBAAInfo,
                          ShadowValue UnderlyingV1, ShadowValue UnderlyingV2);
 
     // aliasPHI - Provide a bunch of ad-hoc rules to disambiguate a PHI
     // instruction against another.
-    AliasResult aliasPHI(ShadowValue PN, unsigned PNSize,
+    AliasResult aliasPHI(ShadowValue PN, uint64_t PNSize,
 			 const MDNode *PNTBAAInfo,
-                         ShadowValue V2, unsigned V2Size,
+                         ShadowValue V2, uint64_t V2Size,
 			 const MDNode *V2TBAAInfo);
 
     /// aliasSelect - Disambiguate a Select instruction against another value.
-    AliasResult aliasSelect(ShadowValue SI, unsigned SISize,
+    AliasResult aliasSelect(ShadowValue SI, uint64_t SISize,
 			    const MDNode *SITBAAInfo,
-                            ShadowValue V2, unsigned V2Size,
+                            ShadowValue V2, uint64_t V2Size,
 			    const MDNode *V2TBAAInfo);
 
-    AliasResult aliasCheck(ShadowValue V1, unsigned V1Size,
+    AliasResult aliasCheck(ShadowValue V1, uint64_t V1Size,
 			   const MDNode *V1TBAATag,
-                           ShadowValue V2, unsigned V2Size,
+                           ShadowValue V2, uint64_t V2Size,
 			   const MDNode *V2TBAATag);
 
     const ShadowValue DecomposeGEPExpression(const ShadowValue V, int64_t &BaseOffs,
 					SmallVectorImpl<VariableGEPIndex> &VarIndices,
-					const TargetData *TD);
+					const DataLayout *TD);
 
     bool GEPHasAllZeroIndices(ShadowValue GEPOp);
 
@@ -328,7 +330,7 @@ namespace {
 
     ShadowValue GetLinearExpression(ShadowValue, APInt &Scale, APInt &Offset,
 				    ExtensionKind &Extension,
-				    const TargetData &TD, unsigned Depth);
+				    const DataLayout &TD, unsigned Depth);
 
   };
 }  // End of anonymous namespace
@@ -687,13 +689,14 @@ BasicAliasAnalysis::getModRefBehavior(const Function *F) {
 /// function, we really can't say much about this query.  We do, however, use
 /// simple "address taken" analysis on local objects.
 AliasAnalysis::ModRefResult
-BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Size, const MDNode* PTBAAInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, uint64_t Size, const MDNode* PTBAAInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
   assert((notDifferentParent(CSV.getBareVal(), P.getBareVal()) || (CSV.getCtx() && P.getCtx())) &&
          "AliasAnalysis query involving multiple functions!");
 
   // Either both values have a context or neither one does.
   assert(!!CSV.getCtx() == !!P.getCtx());
 
+  ImmutableCallSite CS(CSV.getBareVal());
   ShadowValue PUO;
 
   if(POffset == LLONG_MAX) {
@@ -733,7 +736,6 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
 	isNonEscapingLocalObject(Object)) {
       bool PassedAsArg = false;
       unsigned ArgNo = 0;
-      ImmutableCallSite CS(CSV.getBareVal());
       for (ImmutableCallSite::arg_iterator CI = CS.arg_begin(), CE = CS.arg_end();
 	   CI != CE; ++CI, ++ArgNo) {
 	// Only look at the no-capture or byval pointer arguments. If this
@@ -870,7 +872,7 @@ BasicAliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, unsigned Siz
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return ModRefResult(AliasAnalysis::getCSModRefInfo(CSV, P, Size, usePBKnowledge, POffset, AACB) & Min);
+  return ModRefResult(AliasAnalysis::getCSModRefInfo(CSV, P, Size, PTBAAInfo, usePBKnowledge, POffset, AACB) & Min);
 }
 
 static bool areVarIndicesEqual(SmallVector<VariableGEPIndex, 4> &Indices1,
@@ -941,7 +943,7 @@ BasicAliasAnalysis::aliasGEP(ShadowValue V1, uint64_t V1Size,
     }
     
     // Do the base pointers alias?
-    AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize, 0
+    AliasResult BaseAlias = aliasCheck(UnderlyingV1, UnknownSize, 0,
                                        UnderlyingV2, UnknownSize, 0);
     
     // If we get a No or May, then return it immediately, no amount of analysis
@@ -1094,7 +1096,7 @@ BasicAliasAnalysis::aliasSelect(ShadowValue V1, uint64_t SISize,
   // If the values are Selects with the same condition, we can do a more precise
   // check: just check for aliases between the values on corresponding arms.
   if (val_is<SelectInst>(V2)) {
-    if (getValOperand(SI, 0) == getValOperand(V2, 0)) {
+    if (getValOperand(V1, 0) == getValOperand(V2, 0)) {
       AliasResult Alias = aliasCheck(getValOperand(V1, 1), SISize, SITBAAInfo, 
 				     getValOperand(V2, 1), V2Size, V2TBAAInfo);
       if (Alias == MayAlias)
@@ -1166,12 +1168,15 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
       // can't walk up the context tree and so introduce ambiguity and this map only
       // exists for the lifetime of one alias query.
       LocPair Locs(Location(PN, PNSize, PNTBAAInfo),
-                   Location(V2, V2Size, V2TBAAInfo));
+                   Location(PN2, V2Size, V2TBAAInfo));
       if (PN > V2)
         std::swap(Locs.first, Locs.second);
 
       bool AliasValid = false;
       AliasAnalysis::AliasResult Alias = MayAlias;
+      bool ArePhisAssumedNoAlias = false;
+      AliasResult OrigAliasResult = NoAlias;
+
       for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
 	
 	AliasResult ThisAlias = MayAlias;
@@ -1227,8 +1232,6 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
 	  //    ptr2_plus_one = gep ptr2_phi, 1
 	  // We assume for the recursion that the the phis (ptr_phi, ptr2_phi) do
 	  // not alias each other.
-	  bool ArePhisAssumedNoAlias = false;
-	  AliasResult OrigAliasResult = NoAlias;
 	  if (Alias == NoAlias) {
 	    // Pretend the phis do not alias.
 	    assert(AliasCache.count(Locs) &&
@@ -1242,7 +1245,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
         else {
 	  Alias = MergeAliasResults(ThisAlias, Alias);
 	  if (Alias == MayAlias)
-	    return break;
+	    break;
 	}
 
       }
@@ -1395,9 +1398,9 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
 // such as array references.
 //
 AliasAnalysis::AliasResult
-BasicAliasAnalysis::aliasCheck(ShadowValue V1, unsigned V1Size,
+BasicAliasAnalysis::aliasCheck(ShadowValue V1, uint64_t V1Size,
 			       const MDNode *V1TBAAInfo,
-                               ShadowValue V2, unsigned V2Size,
+                               ShadowValue V2, uint64_t V2Size,
 			       const MDNode *V2TBAAInfo) {
   // If either of the memory references is empty, it doesn't matter what the
   // pointer values are.
@@ -1539,7 +1542,6 @@ BasicAliasAnalysis::aliasCheck(ShadowValue V1, unsigned V1Size,
   
   AliasResult Result = AliasAnalysis::alias(V1.getBareVal(), V1Size, V2.getBareVal(), V2Size);
   return AliasCache[Locs] = Result;
+
 }
 
-// Make sure that anything that uses AliasAnalysis pulls in this file.
-DEFINING_FILE_FOR(BasicAliasAnalysis)

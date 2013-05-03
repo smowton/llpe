@@ -272,9 +272,9 @@ static bool IsConstantOffsetFromGlobal(Constant *C, GlobalValue *&GV,
 /// constant being copied out of. ByteOffset is an offset into C.  CurPtr is the
 /// pointer to copy results into and BytesLeft is the number of bytes left in
 /// the CurPtr buffer.  TD is the target data.
-bool ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
-			unsigned char *CurPtr, unsigned BytesLeft,
-			const DataLayout &TD) {
+bool llvm::ReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
+			      unsigned char *CurPtr, unsigned BytesLeft,
+			      const DataLayout &TD) {
   assert(ByteOffset <= TD.getTypeAllocSize(C->getType()) &&
          "Out of range access");
 

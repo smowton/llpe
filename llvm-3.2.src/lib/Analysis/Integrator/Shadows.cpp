@@ -81,11 +81,11 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
   }
 
   {
-    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
+    SmallVector<std::pair<const BasicBlock*, const BasicBlock*>, 4> exitEdges;
     L->getExitEdges(exitEdges);
     LInfo->exitEdges.reserve(exitEdges.size());
     for(unsigned i = 0; i < exitEdges.size(); ++i)
-      LInfo->exitEdges.push_back(std::make_pair(BBIndices[exitEdges[i].first], BBIndices[exitEdges[i].second]));
+      LInfo->exitEdges.push_back(std::make_pair(BBIndices[const_cast<BasicBlock*>(exitEdges[i].first)], BBIndices[const_cast<BasicBlock*>(exitEdges[i].second)]));
   }
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
@@ -202,29 +202,43 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       SI.scope = applyIgnoreLoops(SI.naturalScope);
       
       // Get operands indices:
-      ShadowInstIdx* operandIdxs = new ShadowInstIdx[I->getNumOperands()];
+      uint32_t NumOperands;
+      ShadowInstIdx* operandIdxs;
+      if(PHINode* PN = dyn_cast<PHINode>(I)) {
 
-      for(unsigned k = 0, kend = I->getNumOperands(); k != kend; ++k) {
+	NumOperands = PN->getNumIncomingValues() * 2;
+	operandIdxs = new ShadowInstIdx[NumOperands];
 
-	if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k))) {
+	for(unsigned k = 0, kend = PN->getNumIncomingValues(); k != kend; ++k) {
 
-	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	  operandIdxs[k*2] = ShadowInstIdx(BBIndices[PN->getIncomingBlock(k)], INVALID_INSTRUCTION_IDX);
+	  if(Instruction* OpI = dyn_cast<Instruction>(PN->getIncomingValue(k)))
+	    operandIdxs[(k*2)+1] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	  else
+	    operandIdxs[(k*2)+1] = ShadowInstIdx();
 
 	}
-	else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k))) {
 
-	  operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
+      }
+      else {
 
-	}
-	else {
+	NumOperands = I->getNumOperands();
+	operandIdxs = new ShadowInstIdx[NumOperands];
+
+	for(unsigned k = 0, kend = I->getNumOperands(); k != kend; ++k) {
 	  
-	  operandIdxs[k] = ShadowInstIdx();
+	  if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k)))
+	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	  else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k)))
+	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
+	  else
+	    operandIdxs[k] = ShadowInstIdx();
 
 	}
 
       }
 
-      SI.operandIdxs = ImmutableArray<ShadowInstIdx>(operandIdxs, I->getNumOperands());
+      SI.operandIdxs = ImmutableArray<ShadowInstIdx>(operandIdxs, NumOperands);
 
       // Get user indices:
       unsigned nUsers = std::distance(I->use_begin(), I->use_end());

@@ -118,7 +118,7 @@ static Function* getValCalledFunction(ShadowValue V) {
 // specified memory object.
 //
 AliasAnalysis::ModRefResult
-LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, unsigned Size, const MDNode* PInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the

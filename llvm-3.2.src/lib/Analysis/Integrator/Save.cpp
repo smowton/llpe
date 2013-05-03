@@ -341,7 +341,7 @@ ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
   
 }
 
-static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) {
+static Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
   if(Ty == V->getType())
     return V;
@@ -352,7 +352,7 @@ static Value* getValAsType(Value* V, const Type* Ty, Instruction* insertBefore) 
 
 }
 
-static PHINode* makePHI(const Type* Ty, const Twine& Name, BasicBlock* emitBB) {
+static PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
   // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
 
@@ -361,9 +361,9 @@ static PHINode* makePHI(const Type* Ty, const Twine& Name, BasicBlock* emitBB) {
     ++it;
   
   if(it != emitBB->end())
-    return PHINode::Create(Ty, Name, it);
+    return PHINode::Create(Ty, 0, Name, it);
   else
-    return PHINode::Create(Ty, Name, emitBB);
+    return PHINode::Create(Ty, 0, Name, emitBB);
 
 }
 
@@ -701,15 +701,15 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	std::string errors;
 	assert(getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors));
       
-	const ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
+	ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
 	Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
 
 	// Create a const global for the array:
 
 	GlobalVariable *ArrayGlobal = new GlobalVariable(*(CI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
 
-	const Type* Int64Ty = IntegerType::get(Context, 64);
-	const Type *VoidPtrTy = Type::getInt8PtrTy(Context);
+	Type* Int64Ty = IntegerType::get(Context, 64);
+	Type *VoidPtrTy = Type::getInt8PtrTy(Context);
 
 	Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
 	Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
@@ -717,10 +717,10 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
       
 	Constant* MemcpySize = ConstantInt::get(Int64Ty, constBytes.size());
 
-	const Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
+	Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
 	Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
 						       Intrinsic::memcpy, 
-						       Tys, 3);
+						       ArrayRef<Type*>(Tys, 3));
 	Value *ReadBuffer = getCommittedValue(I->getCallArgOperand(1));
 	release_assert(ReadBuffer && "Committing read atop dead buffer?");
 	Value *DestCast = new BitCastInst(getCommittedValue(I->getCallArgOperand(1)), VoidPtrTy, "readcast", emitBB);
@@ -731,22 +731,22 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	  ConstantInt::get(Type::getInt1Ty(Context), 0)
 	};
 	
-	CallInst::Create(MemCpyFn, CallArgs, CallArgs+5, "", emitBB);
+	CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
 
 	// Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
 	// used without an intervening SEEK_SET)
 	if(it->second.needsSeek) {
 
-	  const Type* Int64Ty = IntegerType::get(Context, 64);
+	  Type* Int64Ty = IntegerType::get(Context, 64);
 	  Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
-	  const Type* Int32Ty = IntegerType::get(Context, 32);
+	  Type* Int32Ty = IntegerType::get(Context, 32);
 	  Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
 
 	  Constant* SeekFn = F.getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
 
 	  Value* CallArgs[] = {getCommittedValue(I->getCallArgOperand(0)) /* The FD */, NewOffset, SeekSet};
 
-	  CallInst::Create(SeekFn, CallArgs, CallArgs+3, "", emitBB);
+	  CallInst::Create(SeekFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
 	  
 	}
 	
@@ -896,7 +896,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
     ShadowValue op = I->getCommittedOperand(i);
     Value* opV = getCommittedValue(op);
-    const Type* needTy = newI->getOperand(i)->getType();
+    Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
 
   }
@@ -905,9 +905,9 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
 }
 
-Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, const Type* targetType) {
+Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
 
-  const Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
+  Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
   Constant* CastGV;
   
   if(Offset != 0 && GV->getType() != Int8Ptr)
@@ -920,7 +920,7 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, const Type* targetType
     OffsetGV = CastGV;
   else {
     Constant* OffC = ConstantInt::get(Type::getInt64Ty(GV->getContext()), (uint64_t)Offset, true);
-    OffsetGV = ConstantExpr::getGetElementPtr(CastGV, &OffC, 1);
+    OffsetGV = ConstantExpr::getGetElementPtr(CastGV, OffC);
   }
     
   // Cast to proper type:
@@ -946,7 +946,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   if(!Base.isAvailableFromCtx(this))
     return false;
 
-  const Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
+  Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
 
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
 

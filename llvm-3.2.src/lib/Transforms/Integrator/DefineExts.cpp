@@ -35,7 +35,9 @@ namespace {
 }
 
 char DefineExtsPass::ID = 0;
-INITIALIZE_PASS(DefineExtsPass, "define-exts", "Define external symbols", false, false);
+static RegisterPass<DefineExtsPass> X("define-exts", "Define external symbols",
+				      false /* Only looks at CFG */,
+				      false /* Analysis Pass */);
 
 Pass* llvm::createDefineExtsPass() { return new DefineExtsPass(); }
 

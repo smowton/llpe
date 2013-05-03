@@ -32,7 +32,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
-#include "llvm/Target/TargetData.h"
+#include "llvm/DataLayout.h"
 
 #include <string>
 
@@ -646,7 +646,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   // against an integer null. The code for case 1 works for these; all other cases require that both
   // values resolved to pointers.
 
-  const Type* I64 = Type::getInt64Ty(CmpI->getContext());
+  Type* I64 = Type::getInt64Ty(CmpI->getContext());
   Constant* zero = ConstantInt::get(I64, 0);
   Constant* one = ConstantInt::get(I64, 1);
   
@@ -915,8 +915,8 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   else if(inst_is<CastInst>(SI)) {
 
     CastInst* CI = cast_inst<CastInst>(SI);
-    const Type* SrcTy = CI->getSrcTy();
-    const Type* DestTy = CI->getDestTy();
+    Type* SrcTy = CI->getSrcTy();
+    Type* DestTy = CI->getDestTy();
 	
     if(Ops[0].first == ValSetTypeFD) {
       if(!((SrcTy->isIntegerTy(32) || SrcTy->isIntegerTy(64) || SrcTy->isPointerTy()) &&
@@ -976,7 +976,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	    ConstantInt* OpC = cast<ConstantInt>(Ops[i].second.V.getVal());
 	    if (OpC->isZero()) continue;
 	    // Handle a struct and array indices which add their offset to the pointer.
-	    if (const StructType *STy = dyn_cast<StructType>(*GTI)) {
+	    if (StructType *STy = dyn_cast<StructType>(*GTI)) {
 	      Improved.Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
 	    } else {
 	      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
@@ -1111,7 +1111,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   else if(isa<LoadInst>(I))
     newConst = ConstantFoldLoadFromConstPtr(instOperands[0], GlobalTD);
   else
-    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands.data(), I->getNumOperands(), GlobalTD, /* preserveGEPSign = */ true);
+    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, GlobalTD, GlobalTLI, /* preserveGEPSign = */ true);
 
   if(newConst) {
 
