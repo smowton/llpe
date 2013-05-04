@@ -202,7 +202,7 @@ int64_t llvm::getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg) {
     }
     else {
 
-      assert(0 && "Unhandled vararg type");
+      release_assert(0 && "Unhandled vararg type");
 
     }
 

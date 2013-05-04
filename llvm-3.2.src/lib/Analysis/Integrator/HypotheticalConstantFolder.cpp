@@ -992,12 +992,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     }
     else if(Ops[0].first == ValSetTypeVarArg) {
 	
-      if(SI->getNumOperands() == 2) {
-
-	if(Ops[1].first != ValSetTypeScalar) {
-	  ImpType = Ops[1].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef;
-	  return;
-	}
+      if(SI->getNumOperands() == 2 && Ops[1].first == ValSetTypeScalar) {
 
 	ConstantInt* CI = cast_val<ConstantInt>(Ops[1].second.V);
 
@@ -1044,9 +1039,8 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       }
 
     }
-    else {
-      ImpType = (Ops[0].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef);
-    }
+
+    ImpType = (Ops[0].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef);
     return;
 	  
   }

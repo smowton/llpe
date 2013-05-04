@@ -418,9 +418,10 @@ template <> struct GraphTraits<Inverse<BBWrapper*> > {
  struct NodesItWrapper {
 
    std::vector<BBWrapper*>::const_iterator wrapped;
+   std::vector<BBWrapper*>::const_iterator endit;
    typedef BBWrapper* convtype;
 
- NodesItWrapper(std::vector<BBWrapper*>::const_iterator x) : wrapped(x) { }
+ NodesItWrapper(std::vector<BBWrapper*>::const_iterator x, std::vector<BBWrapper*>::const_iterator xend) : wrapped(x), endit(xend) { }
 
    operator convtype() {
 
@@ -428,7 +429,13 @@ template <> struct GraphTraits<Inverse<BBWrapper*> > {
 
    }
 
-   inline NodesItWrapper& operator++() { ++wrapped; return *this; } // Preincrement
+   // Preincrement operator needed by DominatorTreeBase::recalculate
+   inline NodesItWrapper& operator++() { 
+     ++wrapped;
+     while(wrapped != endit && (!*wrapped))
+       ++wrapped;
+     return *this; 
+   }
    
  };
 
@@ -444,8 +451,8 @@ template <> struct GraphTraits<LoopWrapper*> :
 
   // nodes_iterator/begin/end - Allow iteration over all nodes in the graph
   typedef NodesItWrapper nodes_iterator;
-  static nodes_iterator nodes_begin(const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.begin()); }
-  static nodes_iterator nodes_end  (const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.end()); }
+  static nodes_iterator nodes_begin(const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.begin(), LW->BBs.end()); }
+  static nodes_iterator nodes_end  (const LoopWrapper *LW) { return NodesItWrapper(LW->BBs.end(), LW->BBs.end()); }
 
   static unsigned size(LoopWrapper* LW) { return LW->BBs.size(); }
 

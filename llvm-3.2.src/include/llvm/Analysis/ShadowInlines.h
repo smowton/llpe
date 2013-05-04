@@ -315,6 +315,8 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   virtual PointerBase& insert(ImprovedVal V) {
 
+    release_assert(V.V.t != SHADOWVAL_INVAL);
+
     if(Overdef)
       return *this;
 
