@@ -25,9 +25,11 @@ using namespace llvm;
 
 bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result) {
 
-  StringRef RResult(Result);
-  if(Ptr.isVal() && getConstantStringInfo(cast<Constant>(Ptr.getVal()), RResult))
+  StringRef RResult;
+  if(Ptr.isVal() && getConstantStringInfo(cast<Constant>(Ptr.getVal()), RResult)) {
+    Result = RResult.str();
     return true;
+  }
 
   ShadowValue StrBase;
   int64_t StrOffset;
@@ -39,7 +41,10 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     if(GV->isConstant()) {
       Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
       Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
-      return getConstantStringInfo(QueryCE, RResult);
+      if(getConstantStringInfo(QueryCE, RResult)) {
+	Result = RResult.str();
+	return true;
+      }
     }
 
   }
@@ -627,8 +632,9 @@ bool IntegrationAttempt::VFSCallWillUseFD(const Instruction* I) {
 
   {
     DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-    if(it != resolvedReadCalls.end())
-      return false;
+    if(it != resolvedReadCalls.end()) {
+      return it->second.needsSeek;
+    }
   }
 
   {
