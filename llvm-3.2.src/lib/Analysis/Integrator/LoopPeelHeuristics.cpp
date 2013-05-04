@@ -2015,6 +2015,13 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();
+  const PassInfo* BAAInfo = lookupPassInfo(StringRef("basicaa"));
+  if(!BAAInfo) {
+    errs() << "Couldn't load Basic AA!";
+  }
+  else {
+    AU.addRequiredID(BAAInfo->getTypeInfo());
+  }
   AU.addRequired<VFSCallAliasAnalysis>();
   AU.setPreservesAll();
   

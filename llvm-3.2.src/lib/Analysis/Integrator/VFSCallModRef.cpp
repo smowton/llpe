@@ -21,6 +21,10 @@
 
 using namespace llvm;
 
+VFSCallAliasAnalysis::VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, new VFSCallModRef()) {
+  //initializeBasicAliasAnalysisPass(*PassRegistry::getPassRegistry());
+}
+
 // Two locations:
 // 1. errno, modelled here as __errno_location, which is likely to be pretty brittle.
 // 2. an abstract location representing the buffer that's passed to a read call.
@@ -485,10 +489,5 @@ ModulePass *createVFSCallAliasAnalysisPass() {
 // Register this pass...
 char VFSCallAliasAnalysis::ID = 0;
 
-INITIALIZE_AG_PASS(VFSCallAliasAnalysis, AliasAnalysis, "vfscall-aa",
-		   "VFS Call Alias Analysis", false, true, false)
-
-
-static RegisterPass<VFSCallAliasAnalysis> X("vfscall-aa", "VFS Call Alias Analysis",
-					    false /* Only looks at CFG */,
-					    true /* Analysis Pass */);
+static RegisterPass<VFSCallAliasAnalysis> X1("vfscall-aa", "VFS Call Alias Analysis", false /* Only looks at CFG */, true /* Analysis Pass */);
+static RegisterAGBase X2("vfscall-aa", &AliasAnalysis::ID, &VFSCallAliasAnalysis::ID);
