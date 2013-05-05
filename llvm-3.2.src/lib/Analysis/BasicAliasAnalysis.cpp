@@ -1184,8 +1184,8 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
 	if(ShadowInstruction* SI = V1.getInst()) {
 
 	  ShadowBBInvar* PHIBB = SI->parent->invar;
-	  ShadowInstIdx blockOp = SI->invar->operandIdxs[(i*2)+1];
-	  ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockOp.blockIdx);
+	  uint32_t blockIdx = SI->invar->operandBBs[i];
+	  ShadowBBInvar* PredBB = SI->parent->IA->getBBInvar(blockIdx);
 
 	  if(SI->parent->IA->edgeIsDead(PredBB, PHIBB))
 	    continue;
@@ -1193,10 +1193,10 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
 
 	  bool found = false;
   
-	  for(uint32_t j = 0; j < SI2->parent->invar->predIdxs.size() && !found; j += 2) {
+	  for(uint32_t j = 0; j < PN2->getNumIncomingValues() && !found; ++j) {
 	    
-	    if(SI2->invar->operandIdxs[j+1].blockIdx == blockOp.blockIdx) {
-	      ThisAlias = aliasCheck(SI->getOperand(i*2), PNSize, PNTBAAInfo, SI2->getOperand(j*2), V2Size, V2TBAAInfo);
+	    if(SI2->invar->operandBBs[j] == blockIdx) {
+	      ThisAlias = aliasCheck(SI->getOperand(i), PNSize, PNTBAAInfo, SI2->getOperand(j), V2Size, V2TBAAInfo);
 	      assert((!found) && "PHI predecessor named more than once?");
 	      found = true;
 	    }
@@ -1262,7 +1262,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
   for (unsigned i = 0, e = PN->getNumIncomingValues(); i != e; ++i) {
     
     // Get incoming value for predecessor i:
-    ShadowValue PV1 = getValOperand(V1, i*2);
+    ShadowValue PV1 = getValOperand(V1, i);
 
     if(PV1.isInval()) // Operand comes from a dead block
       continue;
@@ -1540,7 +1540,8 @@ BasicAliasAnalysis::aliasCheck(ShadowValue V1, uint64_t V1Size,
         (V2Size != UnknownSize && isObjectSize(O2, V2Size, *TD, *TLI)))
       return AliasCache[Locs] = PartialAlias;
   
-  AliasResult Result = AliasAnalysis::alias(V1.getBareVal(), V1Size, V2.getBareVal(), V2Size);
+  AliasResult Result = AliasAnalysis::alias(Location(V1.getBareVal(), V1Size, V1TBAAInfo),
+					    Location(V2.getBareVal(), V2Size, V2TBAAInfo));
   return AliasCache[Locs] = Result;
 
 }
