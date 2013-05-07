@@ -333,6 +333,7 @@ void InlineAttempt::prepareShadows() {
 
   invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = F.size();
+  release_assert(nBBs == invarInfo->BBs.size() && "Function contains unreachable blocks, run simplifycfg first!");
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;

@@ -1649,6 +1649,8 @@ static void ignoreAllLoops(SmallSet<BasicBlock*, 1>& IgnHeaders, const Loop* L) 
 
 }
 
+#define CHECK_ARG(i, c) if(((uint32_t)i) >= c.size()) { errs() << "Function " << F.getName() << " has does not have a (zero-based) argument #" << i << "\n"; exit(1); }
+
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
@@ -1658,8 +1660,9 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     long idx;
     std::string EnvFile;
     if(!parseIntCommaString(EnvFileAndIdx, idx, EnvFile))
-      dieEnvUsage();   
+      dieEnvUsage();
 
+    CHECK_ARG(idx, argConstants);
     Constant* Env = loadEnvironment(*(F.getParent()), EnvFile);
     argConstants[idx] = Env;
 
@@ -1678,6 +1681,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     unsigned argc;
     loadArgv(&F, ArgvFile, argvIdx, argc);
+    CHECK_ARG(argcIdx, argConstants);
     argConstants[argcIdx] = ConstantInt::get(Type::getInt32Ty(F.getContext()), argc);
     argvIdxOut = argvIdx;
 
@@ -1704,6 +1708,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       }
 
       Constant* ArgC = ConstantInt::getSigned(ArgTy, arg);
+      CHECK_ARG(idx, argConstants);
       argConstants[idx] = ArgC;
 
     }
@@ -1719,6 +1724,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
 	Constant* GEPArgs[] = { Zero, Zero };
 	Constant* StrPtr = ConstantExpr::getGetElementPtr(GStr, GEPArgs, 2);
+	CHECK_ARG(idx, argConstants);
 	argConstants[idx] = StrPtr;
 
       }
@@ -1743,6 +1749,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
 	}
 
+	CHECK_ARG(idx, argConstants);
 	argConstants[idx] = Found;
 
       }

@@ -266,6 +266,8 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
   if (!lto_module_is_object_file_in_memory(view, file->filesize))
     return LDPS_OK;
 
+  //(*message)(LDPL_ERROR, "Parsed %s %d", file->name, file->offset);
+
   M = lto_module_create_from_memory(view, file->filesize);
   if (!M) {
     if (const char* msg = lto_get_error_message()) {
@@ -339,6 +341,8 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
         (*message)(LDPL_ERROR, "Unknown definition attribute: %d", definition);
         return LDPS_ERR;
     }
+
+    //(*message)(LDPL_ERROR, "Add symbol %s %d %d", sym.name, sym.visibility, sym.def);
 
     sym.size = 0;
 

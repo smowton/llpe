@@ -1768,6 +1768,7 @@ SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
   case AliasAnalysis::NoAlias: return SVNoAlias;
   case AliasAnalysis::MustAlias: return SVMustAlias;
   case AliasAnalysis::MayAlias: return SVMayAlias;
+  case AliasAnalysis::PartialAlias: return SVPartialAlias;
   default: release_assert(0); return SVMayAlias;
   }
 

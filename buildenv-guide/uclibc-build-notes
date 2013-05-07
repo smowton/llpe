@@ -1,12 +1,13 @@
 To build uclibc as (mostly) bitcode, and build GNU coreutils against it:
 
-1. I created driver scripts for gcc, ld, as.
+1. I created driver scripts for gcc, ld, as and ar.
 
 gcc: 
 	llvm-gcc just runs gcc with the dragonegg plugin, and sets a -B (base directory) option to use the ld and as driver scripts in place of the real thing.
 	llvm-gcc-uclibc also includes -nostdinc and -nostdlib (as appropriate) and specifies some amended paths for uclibc.
 
 ld: this script just runs /usr/bin/gold (instead of ld) with the llvm gold plugin.
+ar: like ld. MUST include the plugin with LLVM 3.2 (wasn't necessary in 2.8) because otherwise ar with some ELF and some IR files will index only the ELF symbols and the IR will be ignored (in 2.8 gold seemed not to use the index).
 
 as: this is a bit trickier: gcc will try to use the assembler whenever it's run with -c or further, but when it runs all the way to a final binary it will run gold, which in turn will use the assembler on the output of llc.
 As a result this as needs to do the right thing with both llvm and x86 assembler, and does, mostly, by trying to guess and then also trying both when it seems appropriate.
@@ -99,11 +100,15 @@ x. Patch both strftime and _strftime_case to use more readily understood pointer
 
 xi. Add crtspec.S, a prologue that doesn't use main(), permitting it to be eliminated.
 
+xii. Define libc-symbols.h::link_warning to nothing, because this uses .gnu.warning sections that choke the LLVM backend when trying to lower to a .o, e.g. in llc, gold --plugin LLVMgold.so etc.
+
 3. Fix dragonegg-2.8:
 
 Apply a patch making its treatment of inline asm more flexible, in particular fixing <sys/select.h>, which used some tricky asm to implement FD_ZERO. The fix in trunk was applied around the 2.9 timeframe, so it involved a little backporting.
 
 This patch is stored in this directory as dragonegg.diff
+
+Dragonegg-3.2 appears to work out of the box.
 
 4. Fix the llvm gold plugin (or rather, libLTO which it uses to do all the real work):
 
@@ -112,9 +117,11 @@ uclibc uses lots of aliases, so this was breaking applications that link against
 
 These changes show up as a commit against this repo.
 
+libLTO in LLVM 3.2 works unmodified.
+
 5. Patch a couple of snags in the coreutils that prevent them from building against uclibc (in general, not just with llvm):
 
 i. isascii is obsolete. Replace with a macro that checks chr & 0x7f
 ii. configure's test for utime and utimes (the former is obsolete) is broken -- it tries to use the utime.h header when checking for utimes. Fix the test, or define config.h's HAVE_WORKING_UTIMES symbol.
 
-
+6. Patch a flaw in Gold: amend the visibility_error path to allow weak, hidden, undefined symbols like other weak symbols. LLVM 3.2 produces these when emitting code for e.g. __uClibc_main which calls _stdio_init() declared weak+extern+hidden. In first phase communication with Gold LLVM describes it as weak+extern+default, but emits lto.o ELF that includes the hidden attribute as well, causing a "hidden symbol not defined here" error from Gold.

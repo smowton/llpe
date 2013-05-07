@@ -2,4 +2,4 @@
 
 # Just run opt with my modules
 
-/usr/bin/opt -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorAnalyses.so -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorTransforms.so $@
+/usr/bin/opt -load /home/chris/integrator/llvm-3.2.src/Release+Debug/lib/IntegratorAnalyses.so -load /home/chris/integrator/llvm-3.2.src/Release+Debug/lib/IntegratorTransforms.so $@
