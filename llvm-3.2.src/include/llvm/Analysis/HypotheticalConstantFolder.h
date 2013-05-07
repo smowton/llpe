@@ -580,9 +580,11 @@ enum WalkInstructionResult {
 
 class IAWalker {
 
- protected:
+ public:
 
   typedef std::pair<uint32_t, ShadowBB*> WLItem;
+
+ protected:
   WLItem makeWL(uint32_t x, ShadowBB* y) { return std::make_pair(x, y); }
 
   DenseSet<WLItem> Visited;
@@ -632,7 +634,7 @@ class BackwardIAWalker : public IAWalker {
   virtual WalkInstructionResult reachedTop() { return WIRStopThisPath; }
   virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return WIRContinue; }
 
-  BackwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0);
+  BackwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0, DenseSet<WLItem>* AlreadyVisited = 0);
   
 };
 
@@ -1334,7 +1336,7 @@ class InlineAttempt : public IntegrationAttempt {
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
 
- PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error);
+ PointerBase tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error, DenseSet<BackwardIAWalker::WLItem>&);
  PointerBase tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA, bool inAnalyser, bool optimistic);
  std::string describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt*);
 

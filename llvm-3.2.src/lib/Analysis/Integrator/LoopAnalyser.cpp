@@ -16,11 +16,13 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 
 using namespace llvm;
 
+static cl::opt<bool> VerboseLA("int-la-verbose");
 
 static double time_diff(struct timespec& start, struct timespec& end) {
 
@@ -127,7 +129,7 @@ void IntegrationAttempt::queueUserUpdatePBLocal(ShadowInstructionInvar* I, Shado
   }
   else if(inst_is<StoreInst>(SI)) {
 
-    if(UsedOverdef && SI->getOperand(1) == UsedV) {
+    if(VerboseLA && UsedOverdef && SI->getOperand(1) == UsedV) {
 
       errs() << "Warning: " << itcache(UsedV) << " went overdef but used as pointer operand by " << itcache(SI) << "; likely to cause knock-on problems\n";
 
@@ -480,9 +482,11 @@ void LoopPBAnalyser::run() {
   std::vector<ShadowValue> updatedVals;
   runPointerBaseSolver(false, &updatedVals);
 
-  errs() << "MIDPOINT CHECK FOR " << L->getHeader()->getName() << " " << CacheThresholdIA->getShortHeader() << "\n";
-  CacheThresholdIA->checkWholeLoop(L);
-  errs() << "END CHECK\n";
+  if(VerboseLA) {
+    errs() << "MIDPOINT CHECK FOR " << L->getHeader()->getName() << " " << CacheThresholdIA->getShortHeader() << "\n";
+    CacheThresholdIA->checkWholeLoop(L);
+    errs() << "END CHECK\n";
+  }
 
   std::sort(updatedVals.begin(), updatedVals.end());
   std::vector<ShadowValue>::iterator startit, endit;

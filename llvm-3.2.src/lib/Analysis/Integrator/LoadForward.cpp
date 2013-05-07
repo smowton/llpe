@@ -52,7 +52,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
 
   bool walkVerbose;
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV, DenseSet<WLItem>* AlreadyVisited) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx, AlreadyVisited), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
 
     LoadPtrOffset = 0;
     if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset, /* ignoreNull = */ true)) {
@@ -62,7 +62,7 @@ struct NormalLoadForwardWalker : public BackwardIAWalker {
 
   }
 
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
+  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, DenseSet<WLItem>* AlreadyVisited) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx, AlreadyVisited), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
 
   }
 
@@ -570,7 +570,7 @@ bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std
     // Disallow complex queries when solving for loop invariants:
     if(maySubquery && !inLoopAnalyser) {
 
-      NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error);
+      NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error, Visited);
 
     }
     else {
@@ -1319,12 +1319,12 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 }
 
-PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error) {
+PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error, DenseSet<BackwardIAWalker::WLItem>& Visited) {
 
   struct LFPathContext* disableCaching = new LFPathContext();
 
   if(LoadPtr.isInval()) {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false);
+    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, &Visited);
     Walker.walk();
     
     if(Walker.Result.Overdef) {
@@ -1338,7 +1338,7 @@ PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowVal
     return Walker.Result;
   }
   else {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, false);
+    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, false, &Visited);
     Walker.walk();
     
     if(Walker.Result.Overdef) {
@@ -1361,7 +1361,7 @@ PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowV
   PartialVal emptyPV;
   struct LFPathContext* firstCtx = new LFPathContext();
   
-  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, optimisticMode, cacheThresholdBB, cacheThresholdIA, firstCtx, emptyPV, inLoopAnalyser);
+  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, optimisticMode, cacheThresholdBB, cacheThresholdIA, firstCtx, emptyPV, inLoopAnalyser, 0);
 
   if(alreadyValidBytes) {
     bool* validBytes = Walker.getValidBuf();
@@ -1569,7 +1569,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, 
 				 CacheThresholdBB, CacheThresholdIA, initialCtx,
 				 emptyPV,
 				 !!LPBA,
-				 walkVerbose);
+				 walkVerbose,
+				 0);
 
   if(LPBA && (!finalise) && Walker.LoadPtrBase.isInval()) {
 

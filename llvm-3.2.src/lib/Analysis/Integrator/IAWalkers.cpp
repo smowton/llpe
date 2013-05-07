@@ -12,7 +12,7 @@ using namespace llvm;
 
 //// Implement the backward walker:
 
-BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirst, void* initialCtx) : IAWalker(initialCtx) {
+BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirst, void* initialCtx, DenseSet<WLItem>* AlreadyVisited) : IAWalker(initialCtx) {
 
   PList = &Worklist1;
   CList = &Worklist2;
@@ -20,6 +20,9 @@ BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirs
     --instIdx;
   
   WLItem firstItem = makeWL(instIdx, BB);
+
+  if(AlreadyVisited)
+    Visited = *AlreadyVisited;
 
   PList->push_back(std::make_pair(firstItem, initialCtx));
   Visited.insert(firstItem);
