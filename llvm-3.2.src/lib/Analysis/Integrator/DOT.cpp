@@ -167,13 +167,9 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
     return;
 
   DenseMap<Instruction*, std::string>::iterator optit = optimisticForwardStatus.find(SI->invar->I);
-  DenseMap<Instruction*, std::string>::iterator pesit = pessimisticForwardStatus.find(SI->invar->I);
   if(!PBPrinted) {
     if(optit != optimisticForwardStatus.end()) {
       Out << "OPT (" << optit->second << "), ";
-    }
-    if(pesit != pessimisticForwardStatus.end()) {
-      Out << "PES (" << pesit->second << "), ";
     }
   }
   if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {

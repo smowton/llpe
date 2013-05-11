@@ -96,6 +96,61 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 }
 
+void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
+
+  uint32_t nMutableGlobals = 0;
+  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
+
+    if(!it->isConstant())
+      nMutableGlobals++;
+
+  }
+
+  uint32_t i = 0;
+  ShadowGlobals = new ShadowGV[nMutableGlobals];
+
+  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
+
+    if(it->isConstant())
+      continue;
+    
+    ShadowGlobals[i].G = it;
+    ImprovedValSetSingle* Init = new ImprovedValSetSingle();
+
+    if(it->hasDefinitiveInitialiser()) {
+
+      Constant* I = it->getInitializer();
+      if(isa<ConstantAggregateZero>(I)) {
+
+	Init->Type = ValSetTypeConstantSplat;
+	Type* I8 = Type::getInt8Ty(M.getContext());
+	Constant* I8Z = Constant::getNullValue(I8);
+	Init->insert(ImprovedVal(I8Z));
+
+      }
+      else {
+
+	(*Init) = ImprovedValSetSingle::get(I);
+
+      }
+
+    }
+    else {
+
+      // Start off overdef.
+      Init->setOverdef();
+
+    }
+
+    ShadowGlobals[i].store.store = Init;
+    ShadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
+
+    shadowGlobalsIdx[it] = i;
+
+  }
+
+}
+
 ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
 
   DenseMap<Function*, ShadowFunctionInvar*>::iterator findit = functionInfo.find(&F);
@@ -214,6 +269,8 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
 	  if(Instruction* OpI = dyn_cast<Instruction>(PN->getIncomingValue(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
+	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, pass->getShadowGlobalIndex(OpGV));
 	  else
 	    operandIdxs[k] = ShadowInstIdx();
 	  incomingBBs[k] = BBIndices[PN->getIncomingBlock(k)];
@@ -232,6 +289,8 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 	  
 	  if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
+	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
+	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, pass->getShadowGlobalIndex(OpGV));
 	  else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
 	  else
@@ -346,7 +405,7 @@ void InlineAttempt::prepareShadows() {
 
     argShadows[i].invar = &(invarInfo->Args[i]);
     argShadows[i].IA = this;
-    argShadows[i].i.PB = PointerBase();
+    argShadows[i].i.PB = ImprovedValSetSingle();
     argShadows[i].i.dieStatus = INSTSTATUS_ALIVE;
 
   }
@@ -595,6 +654,9 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
     Value* ArgV = invar->I->getOperand(i);
     if(Argument* A = dyn_cast<Argument>(ArgV)) {
       return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
+    }
+    else if(isa<GlobalVariable>(ArgV)) {
+      return ShadowValue(parent->IA->pass->shadowGlobals[SII.instIdx]);
     }
     else {
       return ShadowValue(ArgV);

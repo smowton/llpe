@@ -134,7 +134,10 @@ bool PeelIteration::entryBlockAssumed() {
 
 }
 
-void IntegrationAttempt::createEntryBlock() {
+bool IntegrationAttempt::createEntryBlock() {
+
+  if(BBs[0])
+    return false;
 
   ShadowBBStatus newStatus = BBSTATUS_UNKNOWN;
 
@@ -145,25 +148,40 @@ void IntegrationAttempt::createEntryBlock() {
 
   createBBAndPostDoms(BBsOffset, newStatus);
 
+  return true;
+
 }
 
-void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
+// Return true on change.
+bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
-  if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI)))
-    return;
+  if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI))) {
+    
+    // Store management for returns and similar:
+    if(inst_is<UnreachableInst>(SI))
+      SI->parent->localStore->dropReference();
+    // Return instructions donate their reference to their callsite
+    // TODO: invoke should make refs for each successor
+
+    return false;
+
+  }
 
   if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
     if(BI->isUnconditional())
-      return;
+      return false;
   }
 
   // Easiest case: copy edge liveness from our parent.
+  // Can't ever result in a change at this scope.
   if(L && tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
-    return;
+    return false;
 
   // Both switches and conditional branches use operand 0 for the condition.
   ShadowValue Condition = SI->getOperand(0);
       
+  bool changed = false;
+  
   ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
 
   if(ConstCondition) {
@@ -197,6 +215,8 @@ void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 	if(thisTarget != takenTarget) {
 
 	  // Mark outgoing edge dead.
+	  if(SI->parent->succsAlive[I])
+	    changed = true;
 	  SI->parent->succsAlive[I] = false;
 
 	}
@@ -206,6 +226,23 @@ void IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
     }
 
   }
+  else {
+
+    // Condition unknown -- set all successors alive.
+    TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
+    const unsigned NumSucc = TI->getNumSuccessors();
+    for (unsigned I = 0; I != NumSucc; ++I) {
+
+      // Mark outgoing edge alive
+      if(!SI->parent->succsAlive[I])
+	changed = true;
+      SI->parent->succsAlive[I] = true;
+      
+    }
+
+  }
+
+  return changed;
 
 }
 
@@ -252,13 +289,14 @@ void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newSta
 
 }
 
-void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation) {
+// Return true if the result changes:
+bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation) {
 
   // Clarify branch target if possible:
-  tryEvaluateTerminatorInst(SI);
+  bool anyChange = tryEvaluateTerminatorInst(SI);
 
-  if(skipSuccessorCreation)
-    return;
+  if(skipSuccessorCreation || !anyChange)
+    return false;
 
   ShadowBB* BB = SI->parent;
   ShadowBBInvar* BBI = BB->invar;
@@ -283,6 +321,9 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
     if(!BB->succsAlive[i])
       continue;
 
+    // Create a store reference for each live successor
+    ++SI->parent->localStore->refCount;
+
     ShadowBBInvar* SBBI = getBBInvar(BB->invar->succIdxs[i]);
 
     IntegrationAttempt* IA = getIAForScope(SBBI->naturalScope);
@@ -304,5 +345,7 @@ void IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
     }
 
   }
+
+  return true;
 
 }

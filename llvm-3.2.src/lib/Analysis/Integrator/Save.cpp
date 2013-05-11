@@ -77,7 +77,7 @@ void IntegrationAttempt::localPrepareCommit() {
       /*
       ShadowInstruction* SI = &(BB->insts[j]);
       if(mayBeReplaced(SI) && !willBeReplacedOrDeleted(ShadowValue(SI)))
-	SI->i.PB = PointerBase();
+	SI->i.PB = ImprovedValSetSingle();
       */
 
     }

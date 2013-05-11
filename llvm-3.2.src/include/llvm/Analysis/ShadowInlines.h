@@ -1,5 +1,7 @@
 // Helper for shadow structures
 
+#include "llvm/ADT/IntervalMap.h"
+
 template<typename T> class ImmutableArray {
 
   T* arr;
@@ -40,6 +42,7 @@ enum ShadowValType {
 
   SHADOWVAL_ARG,
   SHADOWVAL_INST,
+  SHADOWVAL_GV,
   SHADOWVAL_OTHER,
   SHADOWVAL_INVAL
 
@@ -50,8 +53,9 @@ enum va_arg_type {
   va_arg_type_none,
   va_arg_type_baseptr,
   va_arg_type_fp,
-  va_arg_type_nonfp
-
+  va_arg_type_nonfp,
+  va_arg_type_any
+  
 };
 
 class ShadowArg;
@@ -64,12 +68,14 @@ struct ShadowValue {
   union {
     ShadowArg* A;
     ShadowInstruction* I;
+    ShadowGV* GV;
     Value* V;
   } u;
 
 ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
 ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
 ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST) { u.I = _I; }
+ShadowValue(ShadowGV* _GV) : t(SHADOWVAL_GV) { u.GV = _GV; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
 
   bool isInval() {
@@ -106,6 +112,8 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   void setCommittedVal(Value* V);
   bool isAvailableFromCtx(IntegrationAttempt* OtherIA);
   const MDNode* getTBAATag();
+  uint64_t getAllocSize();
+  LocStore& getBaseStore();
 
 };
 
@@ -161,7 +169,7 @@ inline bool operator>=(ShadowValue V1, ShadowValue V2) {
   return !(V1 < V2);
 }
 
-// PointerBase: an SCCP-like value giving candidate constants or pointer base addresses for a value.
+// ImprovedValSetSingle: an SCCP-like value giving candidate constants or pointer base addresses for a value.
 // May be: 
 // overdefined (overflowed, or defined by an unknown)
 // defined (known set of possible values)
@@ -175,6 +183,7 @@ enum ValSetType {
   ValSetTypeUnknown,
   ValSetTypePB, // Pointers; the Offset member is set
   ValSetTypeScalar, // Ordinary constants
+  ValSetTypeScalarSplat, // Constant splat, used to cheaply express memset(block, size), Offset == size
   ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
   ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie
   ValSetTypeOverdef // Useful for disambiguating empty PB from Overdef; never actually used in PB.
@@ -196,7 +205,8 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
   static const int64_t va_baseptr = -2;
   static const int64_t first_nonfp_arg = 0;
   static const int64_t first_fp_arg = 0x00010000;
-  static const int64_t max_arg = 0x00020000;
+  static const int64_t first_any_arg = 0x00020000;
+  static const int64_t max_arg = 0x00030000;
 
   int getVaArgType() {
 
@@ -206,8 +216,10 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
       return va_arg_type_baseptr;
     else if(Offset >= first_nonfp_arg && Offset < first_fp_arg)
       return va_arg_type_nonfp;
-    else if(Offset >= first_fp_arg && Offset < max_arg)
+    else if(Offset >= first_fp_arg && Offset < first_any_arg)
       return va_arg_type_fp;
+    else if(Offset >= first_any_arg && Offset < max_arg)
+      return va_arg_type_any;
     else
       assert(0 && "Bad va_arg value\n");
     return va_arg_type_none;
@@ -217,6 +229,8 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
   int64_t getVaArg() {
 
     switch(getVaArgType()) {
+    case va_arg_type_any:
+      return Offset - first_any_arg;
     case va_arg_type_fp:
       return Offset - first_fp_arg;
     case va_arg_type_nonfp:
@@ -256,15 +270,34 @@ inline bool operator>=(ImprovedVal V1, ImprovedVal V2) {
   return !(V1 < V2);
 }
 
-struct PointerBase {
+class ImprovedValSetSingle;
+
+struct ImprovedValSet {
+
+  bool isMulti;
+ImprovedValSet(bool M) : isMulti(M) { }
+  virtual void dropReference() = 0;
+  virtual bool isWritableMulti() = 0;
+  virtual ImprovedValSet* getReadableCopy() = 0;
+  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) = 0;
+  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) = 0;
+  
+};
+
+struct ImprovedValSetSingle : public ImprovedValSet {
+
+ ImprovedValSetSingle() : ImprovedValSet(false) {}
+  static bool classof(const ImprovedValSet* IVS) { return !IVS->isMulti; }
 
   ValSetType Type;
   SmallVector<ImprovedVal, 1> Values;
   bool Overdef;
 
-PointerBase() : Type(ValSetTypeUnknown), Overdef(false) { }
-PointerBase(ValSetType T) : Type(T), Overdef(false) { }
-PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
+ImprovedValSetSingle() : Type(ValSetTypeUnknown), Overdef(false) { }
+ImprovedValSetSingle(ValSetType T) : Type(T), Overdef(false) { }
+ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
+
+  virtual void dropReference();
 
   bool isInitialised() {
     return Overdef || Values.size() > 0;
@@ -313,7 +346,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   }
 
-  virtual PointerBase& insert(ImprovedVal V) {
+  virtual ImprovedValSetSingle& insert(ImprovedVal V) {
 
     release_assert(V.V.t != SHADOWVAL_INVAL);
 
@@ -351,7 +384,7 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   }
 
-  PointerBase& merge(PointerBase& OtherPB) {
+  ImprovedValSetSingle& merge(ImprovedValSetSingle& OtherPB) {
     if(!OtherPB.isInitialised())
       return *this;
     if(OtherPB.Overdef) {
@@ -393,10 +426,83 @@ PointerBase(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   }
 
-  static PointerBase get(ShadowValue V);
-  static PointerBase get(ImprovedVal V, ValSetType t) { return PointerBase(t).insert(V); }
-  static PointerBase getOverdef() { return PointerBase(ValSetTypeUnknown, true); }
+  ImprovedValSet* getReadableCopy() {
+
+    return new ImprovedValSetSingle(*this);
+
+  }
+
+  static ImprovedValSetSingle get(ShadowValue V);
+  static ImprovedValSetSingle get(ImprovedVal V, ValSetType t) { return ImprovedValSetSingle(t).insert(V); }
+  static ImprovedValSetSingle getOverdef() { return ImprovedValSetSingle(ValSetTypeUnknown, true); }
+
+  bool isWritableMulti() {
+    return false;
+  }
+
+  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
+  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
+  void truncateRight(uint64_t);
+  void truncateLeft(uint64_t);
+  bool canTruncate();
+  bool coerceToType(Type* Target, uint64_t TargetSize, std::string& error);
   
+};
+
+// Traits for half-open integers that never coalesce:
+
+struct HalfOpenNoMerge {
+  /// startLess - Return true if x is not in [a;b].
+  /// This is x < a both for closed intervals and for [a;b) half-open intervals.
+  static inline bool startLess(const uint64_t &x, const uint64_t &a) {
+    return x < a;
+  }
+
+  /// stopLess - Return true if x is not in [a;b].
+  /// This is b < x for a closed interval, b <= x for [a;b) half-open intervals.
+  static inline bool stopLess(const uint64_t &b, const uint64_t &x) {
+    return b <= x;
+  }
+
+  /// adjacent - Return true when the intervals [x;a] and [b;y] can coalesce.
+  /// This is a+1 == b for closed intervals, a == b for half-open intervals.
+  static inline bool adjacent(const uint64_t &a, const uint64_t &b) {
+    return false;
+  }
+
+};
+
+struct ImprovedValSetMulti : public ImprovedValSet {
+
+  typedef IntervalMap<uint64_t, ImprovedValSetSingle, IntervalMapImpl::NodeSizer<uint64_t, ImprovedValSetSingle>::LeafSize, HalfOpenNoMerge> MapTy;
+  typedef MapTy::iterator MapIt;
+  MapTy Map;
+  uint32_t MapRefCount;
+  ImprovedValSet* Underlying;
+  uint64_t CoveredBytes;
+  uint64_t AllocSize;
+
+ ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), MapRefCount(1), Underlying(0), CoveredBytes(0) {
+    
+    AllocSize = V.getAllocSize();
+
+  }
+
+  static bool classof(const ImprovedValSet* IVS) { return IVS->isMulti; }
+  virtual void dropReference();
+  bool isWritableMulti() {
+    return MapRefCount == 1;
+  }
+  ImprovedValSet* getReadableCopy() {
+    MapRefCount++;
+    return this;
+  }
+
+  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
+  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
+  void clearRange(uint64_t Start, uint64_t Size);
+  void replaceRangeWithPB(ImprovedValSetSingle& NewVal, uint64_t Offset, uint64_t Size);
+
 };
 
 #define INVALID_BLOCK_IDX 0xffffffff
@@ -445,7 +551,7 @@ template<class X> inline X* cast_inst(ShadowInstructionInvar* SII) {
 
 struct InstArgImprovement {
 
-  PointerBase PB;
+  ImprovedValSetSingle PB;
   uint32_t dieStatus;
 
 InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
@@ -454,14 +560,25 @@ InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
 
 class ShadowBB;
 
+struct LocStore {
+
+  ImprovedValSet* store;
+LocStore(ImprovedValSet* s) : store(s) {}
+LocStore() : store(0) {}
+
+};
+
 struct ShadowInstruction {
 
   ShadowBB* parent;
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
-  SmallVector<ShadowInstruction*, 1> indirectUsers;
+  //SmallVector<ShadowInstruction*, 1> indirectUsers;
   SmallVector<ShadowValue, 1> indirectDIEUsers;
   Value* committedVal;
+  // Storage for allocation instructions:
+  LocStore store;
+  uint64_t storeSize;
 
   uint32_t getNumOperands() {
     return invar->operandIdxs.size();
@@ -492,6 +609,14 @@ struct ShadowInstruction {
   Type* getType() {
     return invar->I->getType();
   }
+
+};
+
+struct ShadowGV {
+
+  GlobalVariable* G;
+  LocStore store;
+  uint64_t storeSize;
 
 };
 
@@ -557,6 +682,18 @@ struct ShadowBBInvar {
 
 };
 
+struct LocalStoreMap {
+
+  DenseMap<ShadowValue, LocStore> store;
+  bool allOthersClobbered;
+  uint32_t refCount;
+
+LocalStoreMap() : allOthersClobbered(false), refCount(1) {}
+  void dropReference();
+  LocalStoreMap* getWritableStoreMap();
+  
+};
+
 struct ShadowBB {
 
   IntegrationAttempt* IA;
@@ -564,6 +701,7 @@ struct ShadowBB {
   bool* succsAlive;
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
+  LocalStoreMap* localStore;
   BasicBlock* committedHead;
   BasicBlock* committedTail;
 
@@ -585,6 +723,9 @@ struct ShadowBB {
     return !foundLiveEdge;
 
   }
+
+  DenseMap<ShadowValue, LocStore>& getWritableStoreMap();
+  LocStore& getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
 
 };
 
@@ -749,6 +890,34 @@ inline void ShadowValue::setCommittedVal(Value* V) {
   }
 }
 
+inline uint64_t ShadowValue::getAllocSize() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    release_assert(u.I.store.store && "getAllocSize on instruction without store");
+    return u.I.storeSize;
+  case SHADOWVAL_GV:
+    return u.GV.storeSize;
+  default:
+    release_assert(0 && "getAllocSize on non-inst, non-GV value");
+  }
+
+}
+
+inline LocStore& ShadowValue::getBaseStore() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    release_assert(u.I.store.store && "getBaseStore on instruction without one");
+    return store;
+  case SHADOWVAL_GV:
+    return u.GV.store;
+  default:
+    release_assert(0 && "getBaseStore on non-inst, non-GV value");
+  }
+
+}
+
 template<class X> inline bool val_is(ShadowValue V) {
   if(Value* V2 = V.getVal())
     return isa<X>(V2);
@@ -820,7 +989,7 @@ inline ShadowValue tryGetConstReplacement(ShadowValue SV) {
 
 std::pair<ValSetType, ImprovedVal> getValPB(Value* V);
 
-inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
+inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) {
 
   if(ShadowInstruction* SI = V.getInst()) {
 
@@ -839,7 +1008,7 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
     std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
     if(VPB.first == ValSetTypeUnknown)
       return false;
-    OutPB = PointerBase::get(VPB.second, VPB.first);
+    OutPB = ImprovedValSetSingle::get(VPB.second, VPB.first);
     return true;
 
   }
@@ -848,8 +1017,8 @@ inline bool getPointerBase(ShadowValue V, PointerBase& OutPB) {
 
 inline bool getBaseAndOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset, bool ignoreNull = false) {
 
-  PointerBase SVPB;
-  if(!getPointerBase(SV, SVPB))
+  ImprovedValSetSingle SVPB;
+  if(!getImprovedValSetSingle(SV, SVPB))
     return false;
 
   if(SVPB.Type != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() == 0)

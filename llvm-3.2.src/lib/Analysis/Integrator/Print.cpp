@@ -89,7 +89,7 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
 }
 
 
-void IntegrationAttempt::printPB(raw_ostream& out, PointerBase PB, bool brief) {
+void IntegrationAttempt::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
 
   switch(PB.Type) {
   case ValSetTypeScalar:

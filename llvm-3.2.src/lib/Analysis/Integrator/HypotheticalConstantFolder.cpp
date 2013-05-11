@@ -125,11 +125,7 @@ void IntegrationAttempt::markContextDead() {
 
 }
 
-// If finalise is false, we're in the 'incremental upgrade' phase: PHIs and selects take on
-// the newest result of their operands.
-// If finalise is true, we're in the 'resolution' phase: they take on their true value.
-// e.g. in phase 1, PHI(def, undef) = def, in phase 2 it is overdef.
-bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, PointerBase& NewPB) {
+bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB) {
 
   // The case for a resolved select instruction is already resolved.
 
@@ -176,7 +172,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
 
   if(verbose) {
 
-    errs() << "=== START MERGE for " << itcache(I) << " (finalise = " << finalise << ")\n";
+    errs() << "=== START MERGE for " << itcache(I) << "\n";
 
     IntegrationAttempt* PrintCtx = this;
     while(PrintCtx) {
@@ -189,18 +185,14 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, bool finalise, P
 
   for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
-    PointerBase VPB;
-    if(!getPointerBase(*it, VPB)) {
+    ImprovedValSetSingle VPB;
+    if(!getImprovedValSetSingle(*it, VPB)) {
       if(verbose)
 	errs() << "Predecessor " << itcache(*it) << " undefined\n";
-      if(finalise) {
-	NewPB = PointerBase::getOverdef();
-	if(verbose)
-	  errs() << "=== END PHI MERGE\n";
-	return true;
-      }
-      else
-	continue;
+      NewPB = ImprovedValSetSingle::getOverdef();
+      if(verbose)
+	errs() << "=== END PHI MERGE\n";
+      return true;
     }
 
     if(verbose) {
@@ -253,13 +245,13 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
 }
 
 
-bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result) {
+bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result) {
 
   return false;
 
 }
 
-bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, PointerBase& result) {
+bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result) {
 
   PHINode* PN = cast_inst<PHINode>(SI);
   bool isHeaderPHI = PN->getParent() == L->getHeader();
@@ -267,7 +259,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
   if(isHeaderPHI) {
 
     ShadowValue predValue = getLoopHeaderForwardedOperand(SI);
-    resultValid = getPointerBase(predValue, result);
+    resultValid = getImprovedValSetSingle(predValue, result);
     return true;
 
   }
@@ -990,54 +982,46 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       return;
 
     }
-    else if(Ops[0].first == ValSetTypeVarArg) {
+    else if(SI->getNumOperands() == 2 && Ops[0].first == ValSetTypeVarArg) {
+
+      if(Ops[1].first == ValSetTypeVarArg) {
+
+	// This should be gep ( symbolic-stack-base, some-offset )
+	// some-offset will denote the nth fp arg or nth non-fp arg
+	// return value should be the nth arg /of either kind/
 	
-      if(SI->getNumOperands() == 2 && Ops[1].first == ValSetTypeScalar) {
-
-	ConstantInt* CI = cast_val<ConstantInt>(Ops[1].second.V);
-
 	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->IA->getFunctionRoot();
 	Function& calledF = calledIA->getFunction();
 
-	uint64_t GEPOff = CI->getLimitedValue();
-	assert(GEPOff % 8 == 0);
-	GEPOff /= 8;
-
 	int64_t newVaArg = -1;
-	switch(Ops[0].second.getVaArgType()) {
-	case va_arg_type_baseptr:
-	  // This is indexing off the frame base pointer.
-	  // Determine which zone it's in:
-	  if(GEPOff < 6) {
-	    // Non-FP zone:
-	    newVaArg = GEPOff - (getInitialBytesOnStack(calledF) / 8);
-	  }
-	  else if(GEPOff >= 6 && GEPOff < 22) {
-	    newVaArg = (((GEPOff - 6) / 2) - (getInitialFPBytesOnStack(calledF) / 16)) + ImprovedVal::first_fp_arg;
-	  }
-	  else {
-	    newVaArg = ImprovedVal::not_va_arg;
-	  }
-	  break;
-	case va_arg_type_fp:
-	case va_arg_type_nonfp:
-	  assert(GEPOff == 1);
-	  // In the spilled zone. Find the next spilled argument:
-	  newVaArg = calledIA->getSpilledVarargAfter(Ops[0].second.getVaArg());
-	  break;
-	default:
-	  assert(0);
+	if(Ops[0].second.getVaArgType() == va_arg_type_baseptr) {
+
+	  if(Ops[1].second.getVaArgType() == va_arg_type_nonfp)
+	    newVaArg = calledIA->NonFPArgIdxToArgIdx(Ops[1].second.getVaArg());
+	  else if(Ops[1].second.getVaArgType() == va_arg_type_fp)
+	    newVaArg = calledIA->FPArgIdxToArgIdx(Ops[1].second.getVaArg());
+
 	}
 
-	if(newVaArg != ImprovedVal::not_va_arg) {
-	  ImpType = ValSetTypeVarArg;
-	  Improved.V = Ops[0].second.V;
-	  Improved.Offset = newVaArg;
-	  return;
+      }
+      else if(Ops[1].first == ValSetTypeScalar) {
+
+	// This should be gep ( any-arg-ptr, some-scalar ) -> any-arg-ptr + 1
+	if(Ops[0].second.getVaArgType() == va_arg_type_any) {
+
+	  newVaArg = Ops[0].second.Offset + 1;
+
 	}
 
       }
 
+      if(newVaArg != ImprovedVal::not_va_arg) {
+	ImpType = ValSetTypeVarArg;
+	Improved.V = Ops[0].second.V;
+	Improved.Offset = newVaArg;
+	return;
+      }
+      
     }
 
     ImpType = (Ops[0].first == ValSetTypeUnknown ? ValSetTypeUnknown : ValSetTypeOverdef);
@@ -1047,6 +1031,11 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   else if(I->getOpcode() == Instruction::Add || I->getOpcode() == Instruction::Sub || I->getOpcode() == Instruction::And || I->getOpcode() == Instruction::Or) {
 
+    if(I->getOpcode() == Instruction::Add && Ops[0].first == ValSetTypeVarArg) {
+      ImpType = ValSetTypeVarArg;
+      Improved = ImprovedVal(Ops[0].second.V, Ops[0].second.Offset + 1);
+      return;
+    }
     if(tryFoldPtrAsIntOp(SI, Ops, ImpType, Improved))
       return;
     if(tryFoldBitwiseOp(SI, Ops, ImpType, Improved))
@@ -1148,7 +1137,7 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
-bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
+bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
 
   if(OpIdx == SI->getNumOperands()) {
 
@@ -1163,7 +1152,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
     }
     else {
 
-      PointerBase ThisPB(ThisVST);
+      ImprovedValSetSingle ThisPB(ThisVST);
       ThisPB.insert(ThisV);
       NewPB.merge(ThisPB);
       return true;
@@ -1183,8 +1172,8 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
   }
   else {
 
-    PointerBase ArgPB;
-    bool ArgPBValid = getPointerBase(OpV, ArgPB);
+    ImprovedValSetSingle ArgPB;
+    bool ArgPBValid = getImprovedValSetSingle(OpV, ArgPB);
     if((!ArgPBValid) || ArgPB.Overdef) {
       Ops[OpIdx].first = ArgPB.Overdef ? ValSetTypeOverdef : ValSetTypeUnknown;
       Ops[OpIdx].second.V = ShadowValue();
@@ -1210,14 +1199,14 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerB
 
 }
 
-bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, PointerBase& NewPB) {
+bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB) {
 
   std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
   return tryEvaluateOrdinaryInst(SI, NewPB, Ops, 0);
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -1225,7 +1214,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
   switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
-    return tryForwardLoadPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA);
+    return tryForwardLoadPB(SI, NewPB);
   case Instruction::PHI:
     {
       bool Valid;
@@ -1239,9 +1228,9 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
       Constant* Cond = getConstReplacement(SI->getOperand(0));
       if(Cond) {
 	if(cast<ConstantInt>(Cond)->isZero())
-	  return getPointerBase(SI->getOperand(2), NewPB);
+	  return getImprovedValSetSingle(SI->getOperand(2), NewPB);
 	else
-	  return getPointerBase(SI->getOperand(1), NewPB);
+	  return getImprovedValSetSingle(SI->getOperand(1), NewPB);
       }
       else {
 	tryMerge = true;
@@ -1266,13 +1255,13 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
 
   if(tryMerge) {
 
-    tryEvaluateMerge(SI, finalise, NewPB);
+    tryEvaluateMerge(SI, NewPB);
 
   }
   else {
 
     tryEvaluateOrdinaryInst(SI, NewPB);
-    if(finalise && !NewPB.isInitialised())
+    if(!NewPB.isInitialised())
       NewPB.setOverdef();
 
   }
@@ -1281,30 +1270,27 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, bool finalise, PointerB
 
 }
 
-bool InlineAttempt::getArgBasePointer(Argument* A, PointerBase& OutPB) {
+bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSetSingle& OutPB) {
 
   if(!parent)
     return false;
   ShadowValue Arg = CI->getCallArgOperand(A->getArgNo());
-  return getPointerBase(Arg, OutPB);
+  return getImprovedValSetSingle(Arg, OutPB);
 
 }
 
-bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA) {
+bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser) {
 
-  PointerBase OldPB;
-  bool OldPBValid = getPointerBase(V, OldPB);
+  ImprovedValSetSingle OldPB;
+  bool OldPBValid = getImprovedValSetSingle(V, OldPB);
 
-  // In the optimistic phase it can only get worse; if we've found no information at all
-  // in the optimistic phase that can't improve in the pessimistic final check.
-  if(LPBA) {
-    if(OldPB.Overdef)
-      return false;
-    if(finalise && !OldPBValid)
+  if(inLoopAnalyser) {
+    // Values can only get worse, and overdef is as bad as it gets:
+    if(OldPBValid && OldPB.Overdef)
       return false;
   }
 
-  PointerBase NewPB;
+  ImprovedValSetSingle NewPB;
   bool NewPBValid;
 
   if(ShadowArg* SA = V.getArg()) {
@@ -1316,7 +1302,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
   else {
 
     ShadowInstruction* SI = V.getInst();
-    NewPBValid = getNewPB(SI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA);
+    NewPBValid = getNewPB(SI, NewPB);
 
   }
 
@@ -1346,10 +1332,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
 	raw_string_ostream RSO(RStr);
 	printPB(RSO, NewPB, true);
 	RSO.flush();
-	if(!finalise)
-	  optimisticForwardStatus[I->invar->I] = RStr;
-	else
-	  pessimisticForwardStatus[I->invar->I] = RStr;
+	optimisticForwardStatus[I->invar->I] = RStr;
       }
     }
 
@@ -1369,10 +1352,12 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyse
       errs() << "\n";
     }
   
+    /*
     if(LPBA) {
       //errs() << "QUEUE\n";
       queueUsersUpdatePB(V, LPBA);
     }
+    */
 
     return true;
 

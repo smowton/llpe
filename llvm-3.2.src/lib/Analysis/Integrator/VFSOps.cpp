@@ -65,7 +65,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     std::string fwdError;
 
-    PointerBase byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0, false, false);
+    ImprovedValSetSingle byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0, false, false);
     if(byte.Overdef || byte.Type != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
@@ -152,7 +152,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  bool exists = sys::Path(Filename).exists();
 	  forwardableOpenCalls[CI] = new OpenStatus(Filename, exists, FDEscapes);
 	  if(exists) {
-	    SI->i.PB = PointerBase::get(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
+	    SI->i.PB = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
 	  }
 	  else {
@@ -262,8 +262,8 @@ static ShadowInstruction* getFD(ShadowValue V) {
   if(V.isVal())
     return 0;
 
-  PointerBase VPB;
-  if(!getPointerBase(V, VPB))
+  ImprovedValSetSingle VPB;
+  if(!getImprovedValSetSingle(V, VPB))
     return 0;
 
   if(VPB.Overdef || VPB.Values.size() != 1 || VPB.Type != ValSetTypeFD)
@@ -278,8 +278,8 @@ static AliasAnalysis::AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD
   if(V.isVal())
     return AliasAnalysis::NoAlias;
 
-  PointerBase VPB;
-  if(!getPointerBase(V, VPB))
+  ImprovedValSetSingle VPB;
+  if(!getImprovedValSetSingle(V, VPB))
     return AliasAnalysis::MayAlias;
 
   if(VPB.Overdef || VPB.Values.size() == 0)
@@ -485,6 +485,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     
     // The number of bytes read is also the return value of read.
     setReplacement(SI, ConstantInt::get(Type::getInt64Ty(CI->getContext()), cBytes));
+
+    executeReadInst(SI, OS, Walk.uniqueIncomingOffset, cBytes);
 
   }
   else {

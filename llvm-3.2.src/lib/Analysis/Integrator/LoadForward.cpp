@@ -13,237 +13,9 @@
 
 using namespace llvm;
 
-//// Type definitions: the LF walker, and its 2 derivatives for normal and PB LF.
-
-namespace llvm {
-
-struct LFPathContext {
-
-  bool cacheAllowed;
-  ShadowBB* readOnlyUntilBB;
-
-  LFPathContext() : cacheAllowed(0), readOnlyUntilBB(0) { }
-  LFPathContext(const struct LFPathContext& other) : cacheAllowed(other.cacheAllowed), readOnlyUntilBB(other.readOnlyUntilBB) { }
-
-};
-
-struct NormalLoadForwardWalker : public BackwardIAWalker {
-
-  ShadowValue LoadedPtr;
-  uint64_t LoadSize;
-
-  ShadowValue LoadPtrBase;
-  int64_t LoadPtrOffset;
-
-  Type* originalType;
-  bool OptimisticMode;
-  
-  BasicBlock* cacheThresholdBB;
-  IntegrationAttempt* cacheThresholdIA;
-
-  PartialVal& inputPV;
-  PointerBase Result;
-  std::vector<std::string> OverdefReasons;
-  std::vector<ShadowInstruction*> UsedInstructions;
-  PointerBase* activeCacheEntry;
-  IntegrationAttempt* usedCacheEntryIA;
-  LFCacheKey usedCacheEntryKey;
-  bool inLoopAnalyser;
-
-  bool walkVerbose;
-
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue Ptr, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, bool WV, DenseSet<WLItem>* AlreadyVisited) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx, AlreadyVisited), LoadedPtr(Ptr), LoadSize(Size), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(WV) { 
-
-    LoadPtrOffset = 0;
-    if(!getBaseAndConstantOffset(LoadedPtr, LoadPtrBase, LoadPtrOffset, /* ignoreNull = */ true)) {
-      LoadPtrBase = ShadowValue();
-      LoadPtrOffset = 0;
-    }
-
-  }
-
-  NormalLoadForwardWalker(ShadowInstruction* Start, ShadowValue PtrBase, int64_t PtrOffset, uint64_t Size, Type* OT, bool OM, BasicBlock* optBB, IntegrationAttempt* optIA, struct LFPathContext* firstCtx, PartialVal& iPV, bool iLA, DenseSet<WLItem>* AlreadyVisited) : BackwardIAWalker(Start->invar->idx, Start->parent, true, firstCtx, AlreadyVisited), LoadedPtr(), LoadSize(Size), LoadPtrBase(PtrBase), LoadPtrOffset(PtrOffset), originalType(OT), OptimisticMode(OM), cacheThresholdBB(optBB), cacheThresholdIA(optIA), inputPV(iPV), activeCacheEntry(0), usedCacheEntryIA(0), inLoopAnalyser(iLA), walkVerbose(false) { 
-
-  }
-
-  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*, void*);
-
-  WalkInstructionResult handleAlias(ShadowInstruction* SI, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx);
-  virtual WalkInstructionResult reachedTop();
-  virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt* IA, void*);
-  bool addPartialVal(PartialVal& PV, PointerBase& PB, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool cacheAllowed, bool maySubquery);
-  bool getMIOrReadValue(ShadowInstruction* SI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase&, std::string& error);
-  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
-  bool* getValidBuf();
-  virtual WalkInstructionResult walkFromBlock(ShadowBB* BB, void* Ctx);
-  PointerBase PVToPB(PartialVal& PV, raw_string_ostream& RSO);
-  ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO);
-
-  void addPBDefn(PointerBase& NewPB, bool cacheAllowed);
-  void _addPBDefn(PointerBase& MergeWith, PointerBase& NewPB);
-  void setPBOverdef(std::string reason, bool cacheAllowed);
-
-  void cancelCache();
-
-  virtual void freeContext(void* ctx) {
-    delete ((struct LFPathContext*)ctx);
-  }
-
-  virtual void* copyContext(void* ctx) {
-    struct LFPathContext* newctx = new LFPathContext(*((struct LFPathContext*)ctx));
-    return (void*)newctx;
-  }
-
-};
-
-}
-
 bool IntAAProxy::isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size) {
 
-  return (tryResolvePointerBases(Ptr1Base, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true) == SVNoAlias);
-
-}
-
-//// Implement generic LF
-
-bool NormalLoadForwardWalker::shouldEnterCall(ShadowInstruction* SI, void* context) {
-
-  AliasAnalysis::ModRefResult Res;
-  struct LFPathContext* LCtx = (struct LFPathContext*)context;
-  CallInst* CI = cast_inst<CallInst>(SI);
-
-  if(LCtx->readOnlyUntilBB)
-    return !!SI->parent->IA->getInlineAttempt(CI);
-
-  if(LoadPtrBase.isInval()) {
-
-    Res = GlobalAA->getCSModRefInfo(SI, LoadedPtr, LoadSize, LoadedPtr.getTBAATag(), true);
-
-  }
-  else {
-
-    IntAAProxy AACB;
-    Res = GlobalAA->getCSModRefInfoWithOffset(SI, LoadPtrBase, LoadPtrOffset, LoadSize, 0, AACB);
-
-  }
-
-  if(walkVerbose) {
-
-    errs() << "Mod-ref " << SI->parent->IA->itcache(SI) << ": " << Res << "\n";
-
-  }
-
-  switch(Res) {
-    
-  case AliasAnalysis::NoModRef:
-  case AliasAnalysis::Ref: 
-    {
-      // Consider entering the call just to look for cache entries we can use:
-      // Is there no point because caching is forbidden for this query?
-      if(!cacheThresholdIA) 
-	return false;
-      // Is the call unavailable?
-      InlineAttempt* IA = SI->parent->IA->getInlineAttempt(CI);
-      if(!IA)
-	return false;
-      // OK, set a threshold when we'll start walking "properly" again.
-      LCtx->readOnlyUntilBB = IA->BBs[0];
-      return true;
-    }
-  default:
-    return true;
-  }
-
-}
-
-WalkInstructionResult NormalLoadForwardWalker::walkInstruction(ShadowInstruction* I, void* Ctx) {
-
-  struct LFPathContext* LCtx = (struct LFPathContext*)Ctx;
-  // We're inside a readonly or readnone function -- we only bother walking at all
-  // to find cache entries; there can't be any stores or the like.
-  if(LCtx->readOnlyUntilBB)
-    return WIRContinue;
-
-  ShadowValue Ptr;
-  uint64_t PtrSize;
-
-  if (inst_is<StoreInst>(I)) {
-
-    Ptr = I->getOperand(1);
-    PtrSize = GlobalAA->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
-    // Fall through to alias analysis
-
-  }
-  else if (inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I, GlobalTLI, true))) {
-    
-    if(LoadPtrBase == I) {
-      return handleAlias(I, SVMustAlias, ShadowValue(I), LoadSize, Ctx);
-    }
-    else
-      return WIRContinue;
-
-  }
-  else if(inst_is<MemIntrinsic>(I)) {
-
-    Ptr = I->getCallArgOperand(0);
-    ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(I->getCallArgOperand(2)));
-    PtrSize = CI ? CI->getLimitedValue() : AliasAnalysis::UnknownSize;
-    // Fall through to alias analysis
-
-  }
-  else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
-
-    if(ReadFile* RF = I->parent->IA->tryGetReadFile(CI)) {
-      
-      Ptr = I->getCallArgOperand(1);
-      PtrSize = RF->readSize;
-      // Fall through to alias analysis
-
-    }
-    else if(Function* CalledF = getCalledFunction(I)) {
-
-      if(CalledF->getName() == "llvm.va_start" || CalledF->getName() == "llvm.va_copy") {
-
-	Ptr = I->getCallArgOperand(0);
-	PtrSize = 24;
-
-      }
-      else if(CalledF->getName() == "realloc") {
-
-	Ptr = I;
-	PtrSize = AliasAnalysis::UnknownSize;
-
-      }
-      else {
-
-	return WIRContinue;
-
-      }
-
-    }
-    else {
-
-      return WIRContinue;
-
-    }
-
-  }
-  else {
-
-    return WIRContinue;
-
-  }
-
-  SVAAResult R;
-  if(LoadedPtr.isInval())
-    R = tryResolvePointerBases(LoadPtrBase, LoadPtrOffset, LoadSize, Ptr, PtrSize, true);
-  else
-    R = aliasSVs(LoadedPtr, LoadSize, Ptr, PtrSize, true);
-  if(R == SVNoAlias)
-    return WIRContinue;
-
-  return handleAlias(I, R, Ptr, PtrSize, Ctx);
+  return (tryResolveImprovedValSetSingles(Ptr1Base, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true) == SVNoAlias);
 
 }
 
@@ -505,8 +277,6 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
 }
 
-//// Implement Normal LF:
-
 static bool containsPointerTypes(Type* Ty) {
 
   if(Ty->isPointerTy())
@@ -523,593 +293,30 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
-bool NormalLoadForwardWalker::addPartialVal(PartialVal& PV, PointerBase& PB, std::string& error, ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, bool cacheAllowed, bool maySubquery) {
-
-  if(PB.Overdef) {
-    addPBDefn(PB, cacheAllowed);
-    return false;
-  }
-
-  // For now, forbid using pursuing several different subqueries because a partial defn had multiple values.
-  if(PB.Values.size() >= 1) {
-
-    if(FirstDef == 0 && FirstNotDef == LoadSize && inputPV.isEmpty() && (PB.Type == ValSetTypeFD || PB.Type == ValSetTypeVarArg || PB.Type == ValSetTypePB || PB.Values[0].V.getType() == originalType)) {
-
-      addPBDefn(PB, cacheAllowed);
-      if(PB.Overdef)
-	error = "OD";
-      return !PB.Overdef;
-
-    }
-    else if(PB.Values.size() == 1 && PB.Type == ValSetTypeScalar) {
-
-      PV = PartialVal::getPartial(cast<Constant>(PB.Values[0].V.getVal()), 0);
-      // Fall through to standard PV case
-      
-    }
-    else {
-
-      errs() << "Defn is ";
-      I->parent->IA->printPB(errs(), PB);
-      errs() << "\n";
-      error = "PMV";
-      return false;
-
-    }
-    
-  }
-
-  PartialVal valSoFar(inputPV);
-  if(!valSoFar.combineWith(PV, FirstDef, FirstNotDef, LoadSize, GlobalTD, error))
-    return false;
-
-  PointerBase NewPB;
-
-  if(!valSoFar.isComplete()) {
-
-    // Disallow complex queries when solving for loop invariants:
-    if(maySubquery && !inLoopAnalyser) {
-
-      NewPB = tryForwardLoadSubquery(I, LoadedPtr, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, valSoFar, error, Visited);
-
-    }
-    else {
-
-      if(maySubquery)
-	error = "RQL";
-      else
-	error = "RT";
-      return false;
-
-    }
-
-  }
-  else {
-
-    std::string synthError;
-    ShadowValue NewSV;
-    {
-      raw_string_ostream RSO(synthError);
-      NewPB = PVToPB(valSoFar, RSO);
-    }
-    if(!NewPB.isInitialised()) {
-      error = synthError;
-      return false;
-    }
-
-  }
-
-  addPBDefn(NewPB, cacheAllowed);
-  return !Result.Overdef;
-
-}
-
-bool NormalLoadForwardWalker::getMIOrReadValue(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, PartialVal& NewPV, PointerBase& NewPB, std::string& error) {
-
-  bool ret;
-
-  if (inst_is<MemIntrinsic>(I)) {
-
-    if(inst_is<MemSetInst>(I))
-      ret = getMemsetPV(I, FirstNotDef - FirstDef, NewPV, error);
-    else {
-      bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getMemcpyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPV, NewPB, error, cacheThresholdBB, cacheThresholdIA);
-    }
-
-  }
-  else {
-
-    Function* F = getCalledFunction(I);
-    if(F->getName() == "read") {
-      
-      ret = getReadPV(I, FirstNotDef - FirstDef, ReadOffset, NewPV, error);
-
-    }
-    else if(F->getName() == "llvm.va_start") {
-
-      ret = getVaStartPV(I, ReadOffset, NewPV, error);
-
-    }
-    else if(F->getName() == "realloc") {
-
-      bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getReallocPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, cacheThresholdBB, cacheThresholdIA);
-
-    }
-    else {
-
-      assert(F->getName() == "llvm.va_copy");
-      bool* validBytes = inputPV.isByteArray() ? inputPV.partialValidBuf : 0;
-      ret = getVaCopyPB(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, originalType, validBytes, NewPB, error, cacheThresholdBB, cacheThresholdIA);
-
-    }
-
-  }
-
-  return ret;
-
-}
-
-
-
-#define NLFWFail(Code) do { std::string failureText; { raw_string_ostream RSO(failureText); RSO << Code << " " << I->parent->IA->itcache(I); }  setPBOverdef(failureText, cacheAllowed); if(!cacheAllowed) { cancelCache(); } return WIRStopWholeWalk; } while(0);
-
-WalkInstructionResult NormalLoadForwardWalker::handleAlias(ShadowInstruction* I, SVAAResult R, ShadowValue Ptr, uint64_t PtrSize, void* Ctx) { 
-
-  PartialVal NewPV;
-  PointerBase NewPB;
-  uint64_t FirstDef, FirstNotDef, ReadOffset;
-
-  // If we're in the optimistic phase, ignore anything but the following:
-  // * Defining stores with an associated PB
-  // * Defining alloca instructions
-  // Unexpanded calls are also significant but these are caught by blockedByUnexpandedCall.
-  // Don't behave optimistically if we're outside the loop subject to consideration.
-
-  if(R == SVMustAlias)
-    UsedInstructions.push_back(I);
-
-  bool cacheAllowed = ((struct LFPathContext*)Ctx)->cacheAllowed;
-
-  if(OptimisticMode && !cacheAllowed) {
-
-    bool ignore = true;
-
-    if(R == SVMustAlias) {
-      if(inst_is<AllocaInst>(I))
-	ignore = false;
-      else if(inst_is<StoreInst>(I)) {
-	PointerBase ResPB;
-	ShadowValue StoredVal = I->getOperand(0);
-	if(StoredVal.isVal() || getPointerBase(StoredVal, ResPB))
-	  ignore = false;
-	else
-	  return WIRStopThisPath;
-      }
-    }
-      
-    if(ignore)
-      return WIRContinue;
-
-  }
-
-  if(walkVerbose) {
-
-    errs() << "alias " << I->parent->IA->itcache(I) << "\n";
-    
-  }
-  
-  if(R == SVMustAlias) {
-
-    FirstDef = 0; FirstNotDef = std::min(LoadSize, PtrSize); ReadOffset = 0;
-
-    if(inst_is<StoreInst>(I)) {
-
-      if(!getPointerBase(I->getOperand(0), NewPB)) {
-	// Defined by store with no value
-	NLFWFail("DNS");
-      }
-      else if(NewPB.Overdef) {
-	NLFWFail("DO");
-      }
-
-    }
-    else if(inst_is<AllocaInst>(I) || (inst_is<CallInst>(I) && extractMallocCall(I->invar->I, GlobalTLI, true))) {
-
-      Type* defType;
-      if(AllocaInst* AI = dyn_cast_inst<AllocaInst>(I)) 
-	defType = AI->getAllocatedType();
-      else
-	defType = Type::getIntNTy(I->invar->I->getContext(), 8 * LoadSize);
-      
-      NewPV = PartialVal::getTotal(defType->isPointerTy() ? ValSetTypePB : ValSetTypeScalar, ImprovedVal(ShadowValue(Constant::getNullValue(defType))));
-
-    }
-    else {
-
-      std::string error;
-      if(!getMIOrReadValue(I, 0, std::min(LoadSize, PtrSize), 0, LoadSize, NewPV, NewPB, error)) {
-
-	// Memcpy, memset or read failed
-	NLFWFail(error);
-
-      }
-      // Else fall through
-
-    }
-
-  }
-  else {
-    
-    // MayAlias
-
-    int64_t WriteOffset = 0;
-    ShadowValue WriteBase;
-    if(getBaseAndConstantOffset(Ptr, WriteBase, WriteOffset)) {
-
-      if(GetDefinedRange(LoadPtrBase, LoadPtrOffset, LoadSize,
-			 WriteBase, WriteOffset, PtrSize,
-			 FirstDef, FirstNotDef, ReadOffset)) {
-
-	if(inst_is<StoreInst>(I)) {
-
-	  Constant* StoreC = getConstReplacement(I->getOperand(0));
-	  if(!StoreC) {
-
-	    // Partial defn by store of non-const
-	    NLFWFail("NCS");
-
-	  }
-	  else {
-
-	    NewPV = PartialVal::getPartial(StoreC, ReadOffset);
-
-	  }
-
-	}
-	else {
-
-	  std::string error;
-	  if(!getMIOrReadValue(I, FirstDef, FirstNotDef, ReadOffset, LoadSize, NewPV, NewPB, error)) {
-	
-	    // Memset, memcpy or read failed
-	    NLFWFail(error);
-
-	  }
-	  // Else fall through
-	
-	}
-
-      }
-      else {
-	
-	NLFWFail("C");
-
-      }
-
-    }
-    else {
-
-      // We don't know enough about one or other pointer, must assume this write
-      // trashes the entire value.
-      NLFWFail("C");
-
-    }
-
-  }
-
-  if(walkVerbose) {
-
-    errs() << "Merge ";
-    I->parent->IA->printPB(errs(), Result);
-    errs() << " with ";
-    I->parent->IA->printPB(errs(), NewPB);
-    errs() << "\n";
-
-  }
-
-  std::string error;
-  if(!addPartialVal(NewPV, NewPB, error, I, FirstDef, FirstNotDef, cacheAllowed, true)) {
-    // Couldn't perform some implicit cast, or encountered a conflict
-    NLFWFail(error);
-  }
-
-  return WIRStopThisPath;
-
-}
-
-WalkInstructionResult NormalLoadForwardWalker::reachedTop() {
-
-  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(LoadPtrBase.getVal())) {
-	    
-    if(GV->hasDefinitiveInitializer()) {
-
-      DEBUG(dbgs() << "Load using global initialiser " << (*(GV->getInitializer())) << "\n");
-
-      Constant* GVC = GV->getInitializer();
-      uint64_t GVCSize = (GlobalTD->getTypeSizeInBits(GVC->getType()) + 7) / 8;
-      uint64_t FirstNotDef = std::min(GVCSize - LoadPtrOffset, LoadSize);
-      DEBUG(dbgs() << "Read offset is " << LoadPtrOffset << "\n");
-
-      PartialVal GPV = PartialVal::getPartial(GVC, LoadPtrOffset);
-      PartialVal valSoFar = inputPV;
-      std::string error;
-      
-      PointerBase NoPB;
-      if(!addPartialVal(GPV, NoPB, error, 0, 0, FirstNotDef, true, false))
-	return WIRStopWholeWalk;
-      else
-	return WIRStopThisPath;
-
-    }
-
-  }
-  
-  if(!OptimisticMode) {
-    setPBOverdef("Reached top", true);
-    return WIRStopWholeWalk;
-  }
-  else {
-    return WIRStopThisPath;
-  }
-
-}
-
-bool* NormalLoadForwardWalker::getValidBuf() {
-
-  return inputPV.getValidArray(LoadSize);
-
-}
-
-void NormalLoadForwardWalker::_addPBDefn(PointerBase& MergeWith, PointerBase& NewPB) {
-
-  bool WasOverdef = MergeWith.Overdef;
-  MergeWith.merge(NewPB);
-  if(MergeWith.Overdef && (!WasOverdef) && (!NewPB.Overdef))
-    OverdefReasons.push_back("Fan-in");
-
-}
-
-void NormalLoadForwardWalker::addPBDefn(PointerBase& NewPB, bool cacheAllowed) {
-
-  _addPBDefn(Result, NewPB);
-  if(activeCacheEntry && cacheAllowed)
-    _addPBDefn(*activeCacheEntry, NewPB);
-
-}
-
-void NormalLoadForwardWalker::setPBOverdef(std::string reason, bool cacheAllowed) {
-  OverdefReasons.push_back(reason);
-  Result = PointerBase::getOverdef();
-  if(activeCacheEntry && cacheAllowed)
-    *activeCacheEntry = PointerBase::getOverdef();
-}
-
-void NormalLoadForwardWalker::cancelCache() {
-
-  if(activeCacheEntry) {
-
-    LFCacheKey Key = LFCK(cacheThresholdBB, LoadPtrBase, LoadPtrOffset, LoadSize);
-    cacheThresholdIA->deleteLFPBCacheEntry(Key);
-    activeCacheEntry = 0;
-
-  }
-
-}
-
-bool NormalLoadForwardWalker::blockedByUnexpandedCall(ShadowInstruction* I, void* Ctx) {
-
-  bool cacheAllowed = ((struct LFPathContext*)Ctx)->cacheAllowed;
-
-  // Memory intrinsics are dealt with in the direct effects path.
-  if(inst_is<MemIntrinsic>(I))
-    return false;
-
-  if(OptimisticMode && !cacheAllowed) {
-
-    bool ignore = true;
-
-    Function* CF = getCalledFunction(I);
-    if(!CF)
-      ignore = false;
-    else {
-      if(!functionIsBlacklisted(CF))
-	ignore = false;
-    }
-
-    // Grim hack: usually a function maybe-modifying a pointer is a sign that the function's
-    // arguments need to be better resolved -- e.g. read(2) modifying some buffer, and we should
-    // look past it. In other cases the function is known to clobber for certain and always will,
-    // but modrefinfo isn't expressive enough to tell us that.
-    // A particular case is errno: it's easily recognised, and frequently clobbered. Don't ignore
-    // for that case, but TODO make modrefinfo capable of describe *WILL* clobber vs. *MAY* clobber.
-    
-    if(!LoadPtrBase.isInval()) {
-
-      if(GlobalVariable* GV = dyn_cast_val<GlobalVariable>(LoadPtrBase)) {
-
-	if(GV->getName() == "errno")
-	  ignore = false;
-
-      }
-
-    }
-
-    if(ignore)
-      return false;
-
-  }
-
-  std::string RStr;
-  raw_string_ostream RSO(RStr);
-  RSO << "UEC " << I->parent->IA->itcache(I, true);
-  RSO.flush();
-  setPBOverdef(RStr, cacheAllowed);
-
-  if(!cacheAllowed)
-    cancelCache();
-
-  return true;
-
-}
-
-WalkInstructionResult NormalLoadForwardWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
-
-  bool cacheAllowed = ((struct LFPathContext*)Ctx)->cacheAllowed;
-
-  if(ShadowInstruction* SI = LoadPtrBase.getInst()) {
-
-    if(IA == SI->parent->IA) {
-    
-      if(!OptimisticMode) {
-	setPBOverdef("Scope", cacheAllowed);
-	if(!cacheAllowed)
-	  cancelCache();
-	return WIRStopWholeWalk;
-      }
-      else {
-	return WIRStopThisPath;
-      }
-
-    }
-    
-  }
-
-  return WIRContinue;
-
-}
-
-PointerBase* IntegrationAttempt::getLFPBCacheEntry(LFCacheKey& Key) {
-
-  DenseMap<LFCacheKey, PointerBase>::iterator it = LFPBCache.find(Key);
-  if(it != LFPBCache.end())
-    return &(it->second);
-  else
-    return 0;
-
-}
-
-void IntegrationAttempt::deleteLFPBCacheEntry(LFCacheKey& Key) {
-
-  release_assert(LFPBCache.erase(Key));
-
-}
-
-PointerBase* IntegrationAttempt::createLFPBCacheEntry(LFCacheKey& Key) {
-
-  return &(LFPBCache[Key]);
-
-}
-
-WalkInstructionResult NormalLoadForwardWalker::walkFromBlock(ShadowBB* BB, void* Ctx) {
-
-  struct LFPathContext* LCtx = (struct LFPathContext*)Ctx;
-
-  if(BB == LCtx->readOnlyUntilBB)
-    LCtx->readOnlyUntilBB = 0;
-
-  if(!LCtx->cacheAllowed) {
-
-    // Don't cache if we're not certain what location we're addressing.
-    if(LoadPtrBase.isInval())
-      return WIRContinue;
-
-    // See if we're walking from the first block that is cache-eligible
-    if(BB->invar->BB == cacheThresholdBB && BB->IA == cacheThresholdIA) {
-
-      LPDEBUG("Left loop at " << BB->invar->BB->getName() << "\n");
-      LCtx->cacheAllowed = 1;
-
-    }
-    else {
-
-      return WIRContinue;
-
-    }
-
-  }
-
-  // No point either looking for cache entries or making them if the block isn't a certainty
-  // or the cache threshold (an uncertain threshold indicates a temporary cachepoint)
-  if(BB->status != BBSTATUS_CERTAIN && BB->invar->BB != cacheThresholdBB)
-    return WIRContinue;
-
-  // See if this block has a cache entry for us:
-  LFCacheKey Key = LFCK(BB->invar->BB, LoadPtrBase, LoadPtrOffset, LoadSize);
-  if(PointerBase* CachedPB = BB->IA->getLFPBCacheEntry(Key)) {
-      
-    if(walkVerbose) {
-
-      errs() << "Use cache entry at " << BB->invar->BB->getName() << "\n";
-      errs() << "Entry = ";
-      BB->IA->printPB(errs(), *CachedPB);
-      errs() << "\n";
-
-    }
-    LPDEBUG("Use cache entry at " << BB->invar->BB->getName() << "\n");
-    if(CachedPB->Overdef) {
-      std::string cacheODReason;
-      {
-	raw_string_ostream RSO(cacheODReason);
-	RSO << "COD " << BB->invar->BB->getName() << "/" << BB->IA->F.getName();
-      }
-      OverdefReasons.push_back(cacheODReason);
-    }
-    addPBDefn(*CachedPB, true);
-    
-    usedCacheEntryIA = BB->IA;
-    usedCacheEntryKey = Key;
-
-    return WIRStopThisPath;
-
-    // Don't delete this potentially redundant cache entry just yet!
-    // We might yet abort this walk and want to keep it.
-    // Instead clean it up in TFLPB below if necessary.
-
-  }
-  else if(!activeCacheEntry) {
-
-    // This is necessarily the cache threshold:
-    LPDEBUG("Create cache entry at " << BB->getName() << "\n");
-    // Make a cache entry here:
-    activeCacheEntry = BB->IA->createLFPBCacheEntry(Key);
-    return WIRContinue;
-      
-  }
-  else {
-      
-    // Keep building existing entry
-    return WIRContinue;
-
-  }
-
-}
- 
-PointerBase NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& RSO) {
+ImprovedValSetSingle NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& RSO) {
 
   // Try to use an entire value:
   if(PV.isTotal()) {
 
     release_assert(PV.TotalIVType == ValSetTypeScalar || PV.TotalIVType == ValSetTypeVarArg);
     if(PV.TotalIVType == ValSetTypeVarArg)
-      return PointerBase::get(PV.TotalIV, PV.TotalIVType);
+      return ImprovedValSetSingle::get(PV.TotalIV, PV.TotalIVType);
 
     Type* sourceType = PV.TotalIV.V.getType();
 
     if(allowTotalDefnImplicitCast(sourceType, originalType) || allowTotalDefnImplicitPtrToInt(sourceType, originalType, GlobalTD))
-      return PointerBase::get(PV.TotalIV, PV.TotalIVType);
+      return ImprovedValSetSingle::get(PV.TotalIV, PV.TotalIVType);
 
   }
 
   ShadowValue NewSV = PVToSV(PV, RSO);
   if(NewSV.isInval())
-    return PointerBase();
+    return ImprovedValSetSingle();
 
-  PointerBase NewPB;
-  if(!getPointerBase(NewSV, NewPB)) {
+  ImprovedValSetSingle NewPB;
+  if(!getImprovedValSetSingle(NewSV, NewPB)) {
     RSO << "PVToPB";
-    return PointerBase();
+    return ImprovedValSetSingle();
   }
 
   return NewPB;
@@ -1175,12 +382,12 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, PointerBase& Result, std::string& error, bool finalise) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string& error, bool finalise) {
 
   // A special case: loading from a symbolic vararg:
 
-  PointerBase PtrPB;
-  if(!getPointerBase(LoadI->getOperand(0), PtrPB))
+  ImprovedValSetSingle PtrPB;
+  if(!getImprovedValSetSingle(LoadI->getOperand(0), PtrPB))
     return false;
 
   if(PtrPB.Type == ValSetTypeVarArg && PtrPB.Values.size() == 1) {
@@ -1213,7 +420,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
 	  error = "Const out of range";
-	  Result = PointerBase::getOverdef();
+	  Result = ImprovedValSetSingle::getOverdef();
 	  return true;
 	}
 
@@ -1221,10 +428,10 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	if(ExVal) {
       
-	  getPointerBase(ShadowValue(ExVal), Result);
+	  getImprovedValSetSingle(ShadowValue(ExVal), Result);
 	  if(!((!Result.Overdef) && Result.Values.size() > 0)) {
 	    error = "No PB for ExVal";
-	    Result = PointerBase::getOverdef();
+	    Result = ImprovedValSetSingle::getOverdef();
 	  }
 
 	  return true;
@@ -1236,7 +443,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	  
 	  LPDEBUG("Can't forward from constant: read from global out of range\n");
 	  error = "Const out of range 2";
-	  Result = PointerBase::getOverdef();
+	  Result = ImprovedValSetSingle::getOverdef();
 	  return true;
 	    
 	}
@@ -1245,7 +452,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	memset(buf, 0, LoadSize);
 	if(ReadDataFromGlobal(GV->getInitializer(), PtrOffset, buf, LoadSize, *GlobalTD)) {
 
-	  getPointerBase(ShadowValue(constFromBytes(buf, LoadI->getType(), GlobalTD)), Result);
+	  getImprovedValSetSingle(ShadowValue(constFromBytes(buf, LoadI->getType(), GlobalTD)), Result);
 	  return true;
 	    
 	}
@@ -1253,7 +460,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 	  LPDEBUG("ReadDataFromGlobal failed\n");
 	  error = "Const RDFG failed";
-	  Result = PointerBase::getOverdef();
+	  Result = ImprovedValSetSingle::getOverdef();
 	  return true;
 
 	}
@@ -1295,7 +502,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	Type* defType = LoadI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	Result = PointerBase::get(ResultIV.second, ResultIV.first);
+	Result = ImprovedValSetSingle::get(ResultIV.second, ResultIV.first);
 	return true;
 
       }
@@ -1304,9 +511,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
 	error = "Const pointer vague";
 	if(finalise)
-	  Result = PointerBase::getOverdef();
+	  Result = ImprovedValSetSingle::getOverdef();
 	else
-	  Result = PointerBase();
+	  Result = ImprovedValSetSingle();
 	return true;
 
       }
@@ -1319,100 +526,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Po
 
 }
 
-PointerBase llvm::tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error, DenseSet<BackwardIAWalker::WLItem>& Visited) {
 
-  struct LFPathContext* disableCaching = new LFPathContext();
-
-  if(LoadPtr.isInval()) {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtrBase, LoadPtrOffset, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, &Visited);
-    Walker.walk();
-    
-    if(Walker.Result.Overdef) {
-      
-      error = "";
-      raw_string_ostream RSO(error);
-      RSO << "SQ3 (" << describePBWalker(Walker, StartInst->parent->IA) << ")";
-      
-    }
-
-    return Walker.Result;
-  }
-  else {
-    NormalLoadForwardWalker Walker(StartInst, LoadPtr, LoadSize, originalType, false, 0, 0, disableCaching, ResolvedSoFar, false, false, &Visited);
-    Walker.walk();
-    
-    if(Walker.Result.Overdef) {
-      
-      error = "";
-      raw_string_ostream RSO(error);
-      RSO << "SQ1 (" << describePBWalker(Walker, StartInst->parent->IA) << ")";
-      
-    }
-
-    return Walker.Result;
-  }
-
-}
-
-  // Like normal load forwarding, but using a base+offset instead of a pointer.
-  // This is used when forwarding through a copy instruction. 
-PointerBase llvm::tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* cacheThresholdBB, IntegrationAttempt* cacheThresholdIA, bool inLoopAnalyser, bool optimisticMode) {
-
-  PartialVal emptyPV;
-  struct LFPathContext* firstCtx = new LFPathContext();
-  
-  NormalLoadForwardWalker Walker(StartInst, LoadBase, LoadOffset, LoadSize, targetType, optimisticMode, cacheThresholdBB, cacheThresholdIA, firstCtx, emptyPV, inLoopAnalyser, 0);
-
-  if(alreadyValidBytes) {
-    bool* validBytes = Walker.getValidBuf();
-    memcpy(validBytes, alreadyValidBytes, sizeof(bool) * LoadSize);
-  }
-
-  Walker.walk();
-
-  if(Walker.Result.Overdef) {
-
-    error = "";
-    raw_string_ostream RSO(error);
-    RSO << "SQ2 (" << describePBWalker(Walker, StartInst->parent->IA) << ")";
-
-  }
-
-  return Walker.Result;
-
-}
-
-//// PBLF Interface
-
-std::string llvm::describePBWalker(NormalLoadForwardWalker& Walker, IntegrationAttempt* IA) {
-  
-  std::string out;
-  {
-    raw_string_ostream RSO(out);
-  
-    if(Walker.Result.Overdef) {
-      for(unsigned i = 0; i < Walker.OverdefReasons.size(); ++i) {
-	if(i != 0)
-	  RSO << ", ";
-	RSO << Walker.OverdefReasons[i];
-      }
-    }  
-    else if(Walker.Result.Values.size() == 0) {
-    
-      RSO << "No defn";
-    
-    }
-    else {
-    
-      IA->printPB(RSO, Walker.Result, true);
-    
-    }
-  }
-    
-  return out;
-    
-}
-  
 static double time_diff(struct timespec& start, struct timespec& end) {
 
   timespec temp;
@@ -1430,7 +544,7 @@ static double time_diff(struct timespec& start, struct timespec& end) {
 
 static bool multiLoadEnabled = true;
 
-static bool shouldMultiload(PointerBase& PB) {
+static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
   if(PB.Overdef || PB.Values.size() == 0)
     return false;
@@ -1458,19 +572,16 @@ static bool shouldMultiload(PointerBase& PB) {
 
 }
 
-static bool tryMultiload(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA, std::string& report) {
+static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std::string& report) {
 
-  uint32_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
+  uint64_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
 
   // We already know that LI's PB is made up entirely of nulls and definite pointers.
-  NewPB = PointerBase();
-  PointerBase LIPB;
-  getPointerBase(LI->getOperand(0), LIPB);
+  NewPB = ImprovedValSetSingle();
+  ImprovedValSetSingle LIPB;
+  getImprovedValSetSingle(LI->getOperand(0), LIPB);
 
-  raw_string_ostream RSO(report);
-  RSO << "ML! ";
-
-  std::string thisError;
+  raw_string_ostream RSO(report); 
 
   for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB.Overdef; ++i) {
 
@@ -1480,30 +591,42 @@ static bool tryMultiload(ShadowInstruction* LI, bool finalise, PointerBase& NewP
 	Type* defType = LI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	PointerBase NullPB = PointerBase::get(ResultIV.second, ResultIV.first);
+	ImprovedValSetSingle NullPB = ImprovedValSetSingle::get(ResultIV.second, ResultIV.first);
 	NewPB.merge(NullPB);
 	continue;
 
       }
     }
 
-    PointerBase ThisPB = tryForwardLoadArtificial(LI, LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->getType(), /* alreadyValidBytes = */ 0, thisError, CacheThresholdBB, CacheThresholdIA, !!LPBA, !finalise);
+    std::string ThisError;
+    ImprovedValSetSingle ThisPB;
 
-    NewPB.merge(ThisPB);
+    readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, ThisError);
+
+    if(!ThisPB.Overdef) {
+      if(!ThisPB.coerceToType(LI->getType(), LoadSize, ThisError)) {
+	NewPB.setOverdef();
+      }
+      else {
+	NewPB.merge(ThisPB);
+      }
+    }
+    else {
+      NewPB.merge(ThisPB);
+    }
 
     if(ThisPB.Overdef) {
 	
-      RSO << LI->parent->IA->itcache(LIPB.Values[i].V, true) << ": " << thisError;
+      RSO << "Load " << LI->parent->IA->itcache(LIPB.Values[i].V, true) << " -> " << ThisError;
 
     }
-    else {
+    else if(NewPB.Overdef) {
 	
-      RSO << LI->parent->IA->itcache(LIPB.Values[i].V, true) << ": ";
+      RSO << "Loaded ";
       LI->parent->IA->printPB(RSO, ThisPB, true);
+      RSO << " -merge-> " << ThisError;
 
     }
-
-    RSO << ", ";
 
   }
 
@@ -1511,153 +634,45 @@ static bool tryMultiload(ShadowInstruction* LI, bool finalise, PointerBase& NewP
 
 }
 
-// Do load forwarding, possibly in optimistic mode: this means that
-// stores that def but which have no associated PB are optimistically assumed
-// to be compatible with anything, the same as the mergepoint logic above
-// when finalise is false. When finalise = true this is just like normal load
-// forwarding operating in PB mode.
-bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, bool finalise, PointerBase& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser* LPBA) {
+// Fish a value out of the block-local or value store for LI.
+bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB) {
 
-  PointerBase ConstResult;
+  ImprovedValSetSingle ConstResult;
   std::string error;
   if(tryResolveLoadFromConstant(LI, ConstResult, error, finalise)) {
     NewPB = ConstResult;
-    if(NewPB.Overdef) {
-      if(!finalise)
-	optimisticForwardStatus[LI->invar->I] = error;
-      else
-	pessimisticForwardStatus[LI->invar->I] = error;
-    }
+    if(NewPB.Overdef)
+      optimisticForwardStatus[LI->invar->I] = error;
     return NewPB.isInitialised();
   }
 
-  if(multiLoadEnabled) {
+  bool ret;
+  std::string report;
 
-    PointerBase LoadPtrPB;
-    getPointerBase(LI->getOperand(0), LoadPtrPB);
-    if(shouldMultiload(LoadPtrPB)) {
-
-      std::string report;
-
-      bool ret = tryMultiload(LI, finalise, NewPB, CacheThresholdBB, CacheThresholdIA, LPBA, report);
-
-      if(!finalise)
-	optimisticForwardStatus[LI->invar->I] = report;
-      else
-	pessimisticForwardStatus[LI->invar->I] = report;
-
-      return ret;
-
-    }
-
-  }
-
-  bool walkVerbose = false;
-
-  // Freed by the walker:
-  struct LFPathContext* initialCtx = new LFPathContext();
-  // Per-block context records whether we've passed the cache threshold.
-  // When we're outside the cache threshold we also switch to pessimistic mode
-  // since everything before that point is a fixed certainty.
-
-  Type* TargetType = LI->getType();
-
-  PartialVal emptyPV;
-  NormalLoadForwardWalker Walker(LI, LI->getOperand(0),
-				 GlobalAA->getTypeStoreSize(TargetType), TargetType,
-				 !finalise,
-				 CacheThresholdBB, CacheThresholdIA, initialCtx,
-				 emptyPV,
-				 !!LPBA,
-				 walkVerbose,
-				 0);
-
-  if(LPBA && (!finalise) && Walker.LoadPtrBase.isInval()) {
-
-    // Wait and see if we can better describe this pointer:
-    return false;
-
-  }
-
-  if(TargetType->isStructTy() || TargetType->isArrayTy()) {
-    bool* validBytes = Walker.getValidBuf();
-    markPaddingBytes(validBytes, TargetType, GlobalTD);
-  }
-
-  bool verbose = false;
-
-  if(verbose) {
-
-    errs() << "=== START LFA for " << LI->parent->IA->itcache(LI) << "\n";
-
-    IntegrationAttempt* PrintCtx = this;
-    while(PrintCtx) {
-      errs() << PrintCtx->getShortHeader() << ", ";
-      PrintCtx = PrintCtx->parent;
-    }
-    errs() << "\n";
-
-  }
-
-  struct timespec start;
-  clock_gettime(CLOCK_REALTIME, &start);
-  
-  Walker.walk();
-
-  struct timespec end;
-  clock_gettime(CLOCK_REALTIME, &end);
-
-  if(time_diff(start, end) > 0.1) {
-
-    errs() << "Consider " << LI->parent->IA->itcache(LI) << " took " << time_diff(start, end) << "\n";
-    errs() << "Cache params: " << LI->parent->IA->itcache(Walker.LoadPtrBase) << ", " << Walker.LoadPtrOffset << ", " << Walker.LoadSize << ", " << (!!Walker.activeCacheEntry) << ", " << (Walker.usedCacheEntryIA ? Walker.usedCacheEntryIA->getShortHeader() : "(none)") << ", " << (Walker.usedCacheEntryIA ? Walker.usedCacheEntryKey.first.first.first->getName() : "(none)") << "\n";
-
-  }
-
-  if(Walker.activeCacheEntry && Walker.usedCacheEntryIA && ((!LPBA) || !LPBA->cachePointIsTemporary)) {
-
-    LPDEBUG("Delete cache entry\n");
-    // Our new cache entry subsumes this old one, since we walk the program in topological order.
-    Walker.usedCacheEntryIA->deleteLFPBCacheEntry(Walker.usedCacheEntryKey);
-
-  }
-
-  if(!finalise) {
-
-    for(std::vector<ShadowInstruction*>::iterator it = Walker.UsedInstructions.begin(), it2 = Walker.UsedInstructions.end(); it != it2; ++it) {
-
-      if(!LPBA->isConsidered(ShadowValue(*it)))
-	continue;
-
-      // Register our dependency on various instructions:
-      // This is only useful during loop invariant analysis.
-      if(std::find((*it)->indirectUsers.begin(), (*it)->indirectUsers.end(), LI) == (*it)->indirectUsers.end())
-	(*it)->indirectUsers.push_back(LI);
-
-    }
-
-  }
-
-  if(verbose)
-    errs() << "=== END LFA\n";
-
-  if(!finalise)
-    optimisticForwardStatus[LI->invar->I] = describePBWalker(Walker, LI->parent->IA);
-  else
-    pessimisticForwardStatus[LI->invar->I] = describePBWalker(Walker, LI->parent->IA);
+  ImprovedValSetSingle LoadPtrPB;
+  getImprovedValSetSingle(LI->getOperand(0), LoadPtrPB);
+  if(shouldMultiload(LoadPtrPB)) {
     
-  if(Walker.Result.Values.size() == 0 && !Walker.Result.Overdef)
-    return false;
+    ret = tryMultiload(LI, NewPB, report);
 
-  if(Walker.Result.Type == ValSetTypeVarArg)
-    contextTaintedByVarargs = true;
+  }
+  else {
 
-  NewPB = Walker.Result;
-  return NewPB.isInitialised();
+    // Load from a vague pointer -> Overdef.
+    ret = true;
+    raw_string_ostream RSO(report);
+    RSO << "Load vague ";
+    LI->parent->IA->printPB(RSO, LoadPtrPB, true);
+
+  }
+
+  optimisticForwardStatus[LI->invar->I] = report;
+   
+  return ret;
 
 }
 
-static ImprovedVal* getUniqueNonNullIV(PointerBase& PB) {
+static ImprovedVal* getUniqueNonNullIV(ImprovedValSetSingle& PB) {
 
   ImprovedVal* uniqueVal = 0;
   
@@ -1682,7 +697,7 @@ static ImprovedVal* getUniqueNonNullIV(PointerBase& PB) {
 // Potentially dubious: report a must-alias relationship even if either of them may be null.
 // The theory is that either a store-through or read-from a null pointer will kill the program,
 // so we can safely assume they alias since either they do or the resulting code is not executed.
-static bool PBsMustAliasIfStoredAndLoaded(PointerBase& PB1, PointerBase& PB2) {
+static bool PBsMustAliasIfStoredAndLoaded(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
   ImprovedVal* IV1;
   ImprovedVal* IV2;
@@ -1694,7 +709,7 @@ static bool PBsMustAliasIfStoredAndLoaded(PointerBase& PB1, PointerBase& PB2) {
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, uint64_t V1Size, PointerBase& PB2, uint64_t V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolveImprovedValSetSingles(ImprovedValSetSingle& PB1, uint64_t V1Size, ImprovedValSetSingle& PB2, uint64_t V2Size, bool usePBKnowledge) {
 
   if(V1Size == V2Size && PBsMustAliasIfStoredAndLoaded(PB1, PB2))
     return SVMustAlias;
@@ -1723,12 +738,12 @@ SVAAResult llvm::tryResolvePointerBases(PointerBase& PB1, uint64_t V1Size, Point
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
       
-  PointerBase PB1(ValSetTypePB);
+  ImprovedValSetSingle PB1(ValSetTypePB);
   PB1.insert(ImprovedVal(V1Base, V1Offset));
-  PointerBase PB2;
-  if(!getPointerBase(V2, PB2))
+  ImprovedValSetSingle PB2;
+  if(!getImprovedValSetSingle(V2, PB2))
     return SVMayAlias;
       
   if(PB2.Overdef || PB2.Values.size() == 0)
@@ -1737,14 +752,14 @@ SVAAResult llvm::tryResolvePointerBases(ShadowValue V1Base, int64_t V1Offset, ui
   if(PB2.Type != ValSetTypePB)
     return SVMayAlias;
 
-  return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+  return tryResolveImprovedValSetSingles(PB1, V1Size, PB2, V2Size, usePBKnowledge);
 
 }
 
-SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
+SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge) {
       
-  PointerBase PB1, PB2;
-  if((!getPointerBase(V1, PB1)) || (!getPointerBase(V2, PB2)))
+  ImprovedValSetSingle PB1, PB2;
+  if((!getImprovedValSetSingle(V1, PB1)) || (!getImprovedValSetSingle(V2, PB2)))
     return SVMayAlias;
       
   if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
@@ -1753,15 +768,1618 @@ SVAAResult llvm::tryResolvePointerBases(ShadowValue V1, uint64_t V1Size, ShadowV
   if(PB1.Type != ValSetTypePB || PB2.Type != ValSetTypePB)
     return SVMayAlias;
 
-  return tryResolvePointerBases(PB1, V1Size, PB2, V2Size, usePBKnowledge);
+  return tryResolveImprovedValSetSingles(PB1, V1Size, PB2, V2Size, usePBKnowledge);
        
+}
+
+
+DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
+
+  release_assert(localStore && "getWritableStoreMap without a local store?");
+  DenseMap<ShadowValue, LocStore>* newMap = localStore->getWritableStoreMap();
+  if(newMap != localStore) {
+    
+    // Store the new one:
+    localStore = newMap;
+
+  }
+
+  return newMap->store;
+
+}
+
+LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
+
+  // Refcount == 1 means we can just write in place.
+  if(refCount == 1)
+    return this;
+
+  // COW break: copy the map and either share or copy its entries.
+  LocalStoreMap* newMap = new LocalStoreMap();
+  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it) {
+
+    if(ImprovedValSetSingle* OldSet = dyn_cast<ImprovedValSetSingle>(it->second.store)) {
+
+      // Individual valsets are not sharable: copy.
+      ImprovedValSetSingle* NewSet = new ImprovedValSetSingle(OldSet);
+      newMap->store[it->first] = LocStore(NewSet);
+
+    }
+    else {
+
+      ImprovedValSetMulti* SharedSet = cast<ImprovedValSetMulti>(it->second.store);
+      SharedSet->MapRefCount++;
+      newMap->store[it->first] = LocStore(SharedSet);
+
+    }
+
+  }
+
+  newMap->allOthersClobbered = allOthersClobbered;
+
+  // Drop reference on the existing map (can't destroy it):
+  refCount--;
+
+  return newMap;
+
+}
+
+void ImprovedValSetSingle::dropReference() {
+
+  // Singles can never be shared
+  delete this;
+
+}
+
+void ImprovedValSetMulti::dropReference() {
+
+  if(!(--MapRefCount)) {
+
+    Underlying->dropReference();
+    
+    delete this;
+
+  }
+
+}
+
+LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
+
+  // We're about to write to memory location V + Offset -> Offset+Size. 
+  // We must return a LocStore for that value that can be updated (i.e. is not shared).
+
+  // Can write direct to the base store if we're sure this write is "for good".
+  LocStore* ret;
+  if(status == BBSTATUS_CERTAIN && !localStore->allOthersClobbered)
+    ret = V.getBaseStore();
+
+  // Otherwise we need to write into the block-local store map. COW break it if necessary:
+  bool writeWholeObject = (Offset == 0 && (Size == ULONG_MAX || Size == V.getAllocSize()));
+   
+  if(!ret) {
+
+    DenseMap<ShadowValue, LocStore>& storeMap = getWritableStoreMap();
+    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = storeMap.insert(V);
+    ret = &(insResult.first.second);
+  
+    if(insResult.second) {
+
+      // There wasn't an entry in the local map. Make a Single or Multi store depending on
+      // whether we're about to cover the whole store or not:
+      if(writeWholeObject)
+	ret->store = new ImprovedValSetSingle();
+      else {
+	// Defer the rest of the multimap to the base object.
+	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
+	M->Underlying = V.getBaseStore().store;
+	ret->store = M;
+      }
+
+      return *ret;
+
+    }
+
+  }
+  else {
+
+    // There was already an entry in the local map or base store.
+
+    if(writeWholeObject && willWriteSingleObject) {
+      
+      // If we're about to overwrite the whole thing with a single, convert a multi to a single.
+
+      if(ImprovedValSetMulti* M = dyn_cast<ImprovedValSetMulti>(ret->store)) {
+	
+	// Might delete the Multi:
+	M->dropReference();
+	ret->store = new ImprovedValSetSingle();
+
+      }
+
+      // Or retain an existing single as-is, they're always private and writable.
+
+    }
+    else {
+
+      // If we're doing a partial overwrite, make sure a multi is writable and promote
+      // a single to a multi with that single as base.
+      if(!ret->store->isWritableMulti()) {
+
+	ImprovedValSetMulti* NewIMap = new ImprovedValSetMulti(V);
+	NewIMap->Underlying = ret->store;
+	// M's refcount remains unchanged, it's just now referenced as a base rather than
+	// being directly used here.
+	ret->store = NewIMap;
+	
+      }
+      // Else already a local map, nothing to do.
+
+    }
+
+  }
+
+  return ret;
+  
+}
+
+void ImprovedValSetSingle::replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
+
+  *this = NewVal;
+
+}
+
+void ImprovedValSetSingle::truncateRight(uint64_t n) {
+
+  // Remove bytes from the RHS, leaving a value of size n bytes.
+
+  if(Overdef)
+    return;
+  if(Type == ValSetTypeScalarSplat) {
+    Offset = (int64_t)n;
+    return;
+  }
+
+  for(uint32_t i = 0; i < Values.size(); ++i) {
+
+    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
+    Type* TruncType = Type::getIntNTy(CI->getContext(), n * 8);
+    Constant* NewC = ConstantExpr::getTrunc(CI, TruncType);
+    release_assert(!isa<ConstantExpr>(NewC));
+    Values[i].V = ShadowVal(NewC);
+
+  }
+
+}
+
+void ImprovedValSetSingle::truncateLeft(uint64_t n, LLVMContext& C) {
+
+  // Remove bytes from the LHS, leaving a value of size n bytes.
+
+  if(Overdef)
+    return;
+  if(Type == ValSetTypeScalar) {
+    Offset = (int64_t)n;
+    return;
+  }
+
+  for(uint32_t i = 0; i < Values.size(); ++i) {
+
+    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
+    uint64_t shiftn = CI->getBitWidth() - (n * 8);
+    Constant* ShiftAmount = ConstantInt::get(Type::getInt64Ty(CI->getContext()), shiftn);
+    Constant* NewC = ConstantExpr::getShl(CI, ShiftAmount);
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(NewC))
+      NewC = ConstantFoldConstantExpression(CE, GlobalTD, GlobalTLI);
+    release_assert(!isa<ConstantExpr>(NewC));
+    Values[i].V = ShadowVal(NewC);
+
+  }
+
+}
+
+void ImprovedValSetSingle::canTruncate() {
+
+  return 
+    Overdef || 
+    (Type == ValSetTypeScalar && Values[0].V.getType()->isIntegerTy()) || 
+    Type == ValSetTypeScalarSplat;
+
+}
+
+void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
+
+  MapIt found = Map.find(Offset);
+  if(found == Map.end())
+    return;
+
+  uint64_t LastByte = Offset + Size;
+
+  if(found.start() < Offset) {
+
+    ImprovedValSetSingle RHS;
+
+    if(found.stop() > LastByte) {
+
+      // Punching a hole in a value that wholly covers the range we're clearing:
+      ImprovedValSetSingle RHS;
+      if(found->canTruncate()) {
+
+	RHS = *found;
+	RHS.truncateLeft(found.stop() - LastByte);
+
+      }
+      else {
+
+	RHS = ImprovedValSetSingle::getOverdef();
+
+      }
+
+    }
+
+    if(found->canTruncate()) {
+      CoveredBytes -= (found.stop() - Offset);
+      found->truncateRight(Offset - found.start());
+    }
+    else {
+      found->setOverdef();
+    }
+    uint64_t oldStop = found.stop();
+    found.setStopUnchecked(Offset);
+
+    if(RHS.isInitialised()) {
+
+      Map.insert(LastByte, oldStop, RHS);
+      CoveredBytes += (oldStop - LastByte);
+      return;
+
+    }
+
+    ++found;
+
+  }
+  
+  while(found != Map.end() && found.start() <= LastByte && found.stop() <= LastByte) {
+
+    // Implicitly bumps the iterator forwards:
+    CoveredBytes -= (found.stop() - found.start());
+    found.erase();
+
+  }
+
+  if(found != Map.end() && found.start() <= LastByte) {
+
+    if(found->canTruncate()) {
+      found->truncateLeft(found.stop() - LastByte);
+    }
+    else {
+      found->setOverdef();
+    }
+    CoveredBytes -= (LastByte - found.start());
+    found.setStartUnchecked(LastByte);
+
+  }
+
+}
+
+void ImprovedValSetMulti::replaceRangeWithPB(ImprovedValSetSingle& NewVal, uint64_t Offset, uint64_t Size) {
+
+  if(Size == ULONG_MAX) {
+
+    release_assert(NewVal.Overdef && "Indefinite write with non-clobber value?");
+
+  }
+
+  clearRange(Offset, Size);
+  Map.insert(Offset, Offset + Size, NewVal);
+
+  CoveredBytes += Size;
+  if(Underlying && CoveredBytes == AllocSize) {
+
+    // This Multi now defines the whole object: drop the underlying object as it never shows through.
+    Underlying->dropReference();
+    Underlying = 0;
+
+  }
+
+}
+
+void ImprovedValSetSingle::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+
+  release_assert(NewVals.size() == 1 && Offset == 0);
+  *this = NewVals[0].second;
+
+}
+
+void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+
+  clearRange(Offset, Size);
+  MapIt it = Map->find(Offset);
+
+  for(unsigned i = NewVals.size(); i != 0; --i, --it) {
+
+    IVSRange& RangeVal = NewVals[i-1];
+    it.insert(RangeVal.second, RangeVal.first.first, RangeVal.first.second);
+
+  }
+
+  CoveredBytes += Size;
+  if(Underlying && CoveredBytes == AllocSize) {
+
+    // This Multi now defines the whole object: drop the underlying object as it never shows through.
+    Underlying->dropReference();
+    Underlying = 0;
+
+  }  
+
+}
+
+bool llvm::addIVStoPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error) {
+
+  release_assert(PV && "Must allocate PV before calling addIVSToPartialVal");
+
+  // For now we forbid building from bytes when an input is set-typed:
+  if(IVS.Overdef || IVS.Values.size() != 1)
+    return false;
+  // And also if the value that would be merged is not constant-typed:
+  if(IVS.Type != ValSetTypeScalar && IVS.Type != ValSetTypeScalarSplat)
+    return false;
+
+  PartialVal NewPV;
+  Constant* DefC = cast<Constant>(IVS.Values[0].V.getVal());
+  if(IVS.Type == ValSetTypeScalar) {
+    NewPV = PartialVal::getConstant(DefC, Offset);
+  }
+  else {
+    // Splat of i8:
+    uint8_t SplatVal = (uint8_t)(DefC->getLimitedValue());
+    NewPV = PartialVal::getByteArray(Size);
+    
+    uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
+    bool* validBuf = (bool*)NewPV.partialValidBuf;
+    
+    for(uint64_t i = 0; i < Size; ++i) {
+      buffer[i] = SplatVal;
+      validBuf[i] = true;
+    }
+
+    NewPV.loadFinished = true;
+  }
+
+  if(!ResultPV->combineWith(NewPV, 0, Size, Size, GlobalTD, error))
+    return false;
+
+  return true;
+
+}
+
+void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string& error) {
+
+  ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
+  uint64_t IVSSize = V.getAllocSize();
+  ImprovedValSetMulti* IVM;
+  ImprovedValSetMulti::MapIt it;
+
+  if(!IVS) {
+
+    // Check for a multi-member that wholly defines the target value:
+
+    IVM = cast<ImprovedValSetMulti>(store);
+    it = IVM->Map.find(Offset);
+
+    if(it != IVM->Map.end() && it.start() <= Offset && it.stop() >= (Offset + Size)) {
+
+      IVS = &*it;
+      IVSSize = it.stop() - it.start();
+      Offset -= it.start();
+
+    }
+
+  }
+
+  if(IVS) {
+
+    if(!ResultPV) {
+
+      // Try to extract the entire value
+      if(IVSSize == Size && Offset == 0) {
+	Result = *IVS;
+	return;
+      }
+      
+      // Otherwise we need to extract a sub-value: only works on constants:
+      bool rejectHere = IVS->Type != ValSetTypeScalar && IVS->Type != ValSetTypeScalarSplat;
+      if(rejectHere) {
+	Result = ImprovedValSetSingle::getOverdef();
+	return;
+      }
+      
+      if(IVS->Type == ValSetTypeScalar) {
+      
+	for(uint32_t i = 0, endi = IVS->Values.size(); i != endi; ++i) {
+	
+	  Constant* bigConst = cast<Constant>(IVS->Values[i].V.getVal());
+	  Constant* smallConst = extractAggregateMemberAt(bigConst, Offset, 0, Size, GlobalTD);
+	  if(smallConst) {
+
+	    ShadowValue SV(smallConst);
+	    ImprovedValSetSingle NewIVS;
+	    getImprovedValSetSingle(SV, NewIVS);
+	    Result.merge(NewIVS);
+	    if(Result.Overdef)
+	      return;
+
+	  }
+					  
+	}
+
+	return;
+
+      }
+
+      // Else fall through to bytewise case:
+      ResultPV = new PartialVal(Size);
+
+    }
+
+    if(!addIVSToPartialVal(IVS, Offset, Size, ResultPV, error)) {
+      
+      delete ResultPV;
+      Result = ImprovedValSetSingle::getOverdef();
+
+    }
+    else {
+
+      release_assert(ResultPV->isComplete() && "Fetch defined by a Single value but not complete?");
+
+    }
+
+    return;
+
+  }
+
+  // If we get to here the value is not wholly covered by this Multi map. Add what we can and defer:
+  release_assert(IVM && "Fell through without a multi?");
+
+  for(; it != IVM->end() && it.start() < (Offset + Size); ++it) {
+
+    if(!ResultPV)
+      ResultPV = new PartialVal(Size);
+
+    uint64_t FirstReadByte = std::max(Offset, it.start());
+    uint64_t LastReadByte = std::min(Offset + Size, it.stop());
+
+    if(!addIVSToPartialVal(*it, FirstReadByte - it.start(), LastReadByte - FirstReadByte, ResultPV, error)) {
+      delete ResultPV;
+      Result = ImprovedValSetSingle::getOverdef();
+      return;
+    }
+
+  }
+  
+  if((!ResultPV) || !ResultPV->isComplete()) {
+      
+    // Try the next linked map (one should exist:)
+    release_assert(IVM->Underlying && "Value not complete, but no underlying map?");
+    readValueRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, error);
+      
+  }
+
+}
+
+void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string& error) {
+
+  // Try to make an IVS representing the block-local value of V+Offset -> Size.
+  // Limitations for now: because our output is a single IVS, non-scalar types may only be described
+  // if they correspond to a whole object.
+
+  LocStore* firstStore;
+
+  DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
+  if(it == ReadBB->localStore->store.end()) {
+    if(ReadBB->localStore->allOthersClobbered) {
+      Result.setOverdef();
+      return;
+    }
+    firstStore = &(V.getBaseStore());
+  }
+  else
+    firstStore = &(it->second);
+
+  PartialVal* ResultPV = 0;
+  readValRangeFrom(V, Offset, Size, ReadBB, firstStore, Result, ResultPV);
+
+  if(ResultPV) {
+
+    raw_string_ostream RSO(error);
+    Result = PVToPB(*ResultPV, RSO);
+    delete ResultPV;
+
+  }
+
+}
+
+bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string& error) {
+
+  Type* Source = Values[i].V.getType();
+  
+  // All casts ignored for VAs:
+  if(Type == ValSetTypeVarArg)
+    return true;
+
+  // Allow implicit ptrtoint and bitcast between pointer types
+  // without modifying anything:
+  if(allowTotalDefnImplicitCast(Source, Target))
+    return true;
+  if(allowTotalDefnImplicitPtrToInt(Source, Target, GlobalTD))
+    return true;
+
+  if(Type != ValSetTypeScalar) {
+    error = "Non-scalar coercion";
+    return false;
+  }
+
+  // Finally reinterpret cast each member:
+  for(uint32_t i = 0, iend = Values.size(); i != iend; ++i) {
+
+    PartialVal PV = PartialVal::getTotal(cast<Constant>(Values[i].V.getVal()));
+    if(!PV.convertToBytes(TargetSize, GlobalTD, error))
+      return false;
+
+    if(containsPointerTypes(Target)) {
+
+      // If we're trying to synthesise a pointer from raw bytes, only a null pointer is allowed.
+      unsigned char* checkBuf = (unsigned char*)PV.partialBuf;
+      for(unsigned i = 0; i < PV.partialBufBytes; ++i) {
+	
+	if(checkBuf[i]) {
+	  error = "Cast non-zero to pointer";
+	  return false;
+	}
+	
+      }
+
+    }
+
+    Values[i].V = ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, Target, GlobalTD));
+
+  }
+
+  return true;
+
+}
+
+void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
+
+  // Get written location:
+  ShadowBB* StoreBB = StoreSI->parent;
+  ShadowValue Ptr = StoreSI->getOperand(1);
+  uint64_t PtrSize = GlobalAA->getTypeStoreSize(StoreSI->invar->I->getOperand(0)->getType());
+
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert(PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+
+  ShadowValue Val = StoreSI->getOperand(0);
+  ImprovedValSetSingle ValPB;
+  getImprovedValSetSingle(Val, ValPB);
+
+  executeWriteInst(PtrSet, ValPB, PtrSize, StoreBB);
+
+}
+
+void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
+
+  ShadowBB* MemsetBB = MemsetSI->parent;
+  ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert(PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  
+  ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(2)));
+  ConstantInt* ValCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(1)));
+
+  ImprovedValSetSingle ValSet;
+
+  if(LengthCI && ValCI) {
+   
+    ValSet.Type = ValSetTypeScalarSplat;
+    ImprovedVal IV(ShadowValue(ValCI), LengthCI->getLimitedValue());
+    ValSet.insert(IV);
+
+  }
+  else {
+
+    ValSet.setOverdef();
+
+  }
+
+  executeWriteInst(PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetBB);
+  
+}
+
+void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
+
+  // Subvals only allowed for scalars:
+
+  if(Src.Overdef) {
+    Dest = Src;
+    return;
+  }
+
+  switch(Src.Type) {
+  case ValSetTypeScalar:
+    break;
+  case ValSetTypeScalarSplat:
+    Dest = Src;
+    return;
+  default:
+    Dest.setOverdef();
+    return;
+  }
+
+  for(uint32_t i = 0, endi = Src->Values.size(); i != endi && !Result.Overdef; ++i) {
+	
+    Constant* bigConst = cast<Constant>(Src->Values[i].V.getVal());
+
+    Constant* smallConst = extractAggregateMemberAt(bigConst, Offset, 0, Size, GlobalTD);
+
+    if(!smallConst) {
+
+      // Must do a reinterpret cast
+      PartialVal PV = PartialVal::getByteArray(Size);
+      std::string error;
+      PartialVal SrcPV = PartialVal::getPartial(bigConst, Offset);
+      if(!PV.combineWith(SrcPV, 0, Size, Size, GlobalTD, error)) {
+	Dest.setOverdef();
+	return;
+      }
+
+      Type* ReinterpType = Type::getIntNTy(bigConst->getContext(), Size * 8);
+      smallConst = constFromBytes(PV.partialBuf, ReinterpType, GlobalTD);
+
+    }
+    
+    ShadowValue SV(smallConst);
+    ImprovedValSetSingle NewIVS;
+    getImprovedValSetSingle(SV, NewIVS);
+    Dest.merge(NewIVS);
+					  
+  }
+  
+}
+
+#define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+
+void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore) {
+
+  if(ignoreBelowStore && ignoreBelowStore == store)
+    return;
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store)) {
+
+    if(Offset == 0 && Size == V.getAllocSize()) {
+      
+      Results.push_back(IVSR(0, Size, *IVS));
+      
+    }
+    else {
+      
+      ImprovedValSetSingle SubVal;
+      getIVSSubVal(*IVS, Offset, Size, SubVal);
+      Results.push_back(IVSR(Offset, Offset+Size, SubVal));
+      
+    }
+
+  }
+  else {
+    
+    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(store);
+    IVM::MapTy it = IVM->Map.find(Offset);
+
+    // Value overlapping range on the left:
+    if(it != IVM->Map.end() && it.start() < Offset) {
+
+      // Read a sub-value:
+      uint64_t SubvalOffset = Offset - it.start();
+      uint64_t SubvalSize = std::min(Offset + Size, it.stop()) - Offset;
+      
+      ImprovedValSetSingle SubVal;
+      getIVSSubVal(*it, SubvalOffset, SubvalSize, SubVal);
+      Results.push_back(IVSR(Offset, Offset + SubvalSize, SubVal));
+      Offset += SubvalSize;
+      Size -= SubvalSize;
+      ++it;
+		     
+    }
+
+    // Process vals that don't overlap on the left, but may on the right:
+    while(it != IVM->Map.end() && it.start() < (Offset + Size)) {
+
+      if(it.start() != Offset) {
+
+	release_assert(it.start() > Offset && "Overlapping-on-left should be caught already");
+	// Gap -- defer this bit to our parent map (which must exist)
+	release_assert(IVM->Underlying && "Gap but no underlying map?");
+	readValRangeMultiFrom(V, Offset, it.start() - Offset, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
+	Size -= (it.start() - Offset);
+	Offset = it.start();
+	
+      }
+
+      if(it.stop() > (Offset + Size)) {
+
+	// Overlap on the right: extract sub-val.
+	ImprovedValSetSingle SubVal;
+	getIVSSubVal(*it, 0, Size, SubVal);
+	Results.push_back(IVSR(it.start(), Offset+Size, SubVal));
+	Offset += Size;
+	Size = 0;
+	break;
+
+      }
+      else {
+
+	// No overlap: use whole value.
+	Results.push_back(IVSR(it.start(), it.stop(), *it));
+	Offset += (it.stop() - it.start());
+	Size -= (it.stop() - it.start());
+
+      }
+
+    }
+
+    // Check for gap on the right:
+    if(Size != 0) {
+
+      release_assert(IVM->Underlying && "Gap but no underlying map/2?");
+      readValRangeMultiFrom(V, Offset, Size, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
+
+    }
+
+  }
+
+}
+
+void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results) {
+
+  // Try to make an IVS representing the block-local value of V+Offset -> Size.
+  // Limitations for now: because our output is a single IVS, non-scalar types may only be described
+  // if they correspond to a whole object.
+
+  LocStore* firstStore;
+
+  DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
+  if(it == ReadBB->localStore->store.end()) {
+    if(ReadBB->localStore->allOthersClobbered) {
+      Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle::getOverdef()));
+      return;
+    }
+    else {
+      firstStore = &(V.getBaseStore());
+    }
+  }
+  else {
+    firstStore = &(it->second);
+  }
+
+  PartialVal* ResultPV = 0;
+  readValRangeMultiFrom(V, Offset, Size, ReadBB, firstStore, Results, 0);
+
+}
+
+void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
+
+  ShadowBB* MemcpyBB = MemcpySI->parent;
+  ShadowValue Ptr = MemcpySI->getCallArgOperand(0);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  
+  ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemcpySI->getCallArgOperand(2)));
+
+  ShadowValue SrcPtr = MemcpySI->getCallArgOperand(1);
+  ImprovedValSetSingle SrcPtrSet;
+  release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
+  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Memcpy from non-pointer value?");
+
+  executeCopyInst(PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
+
+}
+
+void llvm::executeVaCopyInst(ShadowInstruction* SI) {
+  
+  ShadowBB* BB = SI->parent;
+  ShadowValue Ptr = SI->getCallArgOperand(0);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  
+  ShadowValue SrcPtr = SI->getCallArgOperand(1);
+  ImprovedValSetSingle SrcPtrSet;
+  release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
+  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Memcpy from non-pointer value?");
+  
+  executeCopyInst(PtrSet, SrcPtrSet, 24, BB);
+
+}
+
+void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize) {
+
+  // Represent the store by a big undef value at the start.
+  release_assert((!SI->store.store) && "Allocation already initialised?");
+  Constant* Undef = UndefValue::get(AllocType);
+  ImprovedVal IV(ShadowValue(Undef), 0);
+  SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
+  storeSize = AllocSize;
+
+}
+
+void llvm::executeAllocaInst(ShadowInstruction* SI) {
+
+  // If the store is already initialised this must represent the general case of an allocation
+  // within a loop or recursive call.
+  if(SI->store.store)
+    return;
+
+  AllocaInst* AI = cast_inst<AllocaInst>(SI);
+  Type* allocType = AI->getAllocatedType();
+ 
+  if(AI->isArrayAlloction()) {
+
+    ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
+    if(!N)
+      return;
+    allocType = ArrayType::get(allocType, N->getLimitedValue());
+
+  }
+
+  executeAllocInst(SI, allocType, GlobalAA->getTypeStoreSize(allocType));
+
+}
+
+void llvm::executeMallocInst(ShadowInstruction* SI) {
+
+  if(SI->store.store)
+    return;
+
+  ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
+  if(!AllocSize)
+    return;
+
+  Type* allocType = ArrayType::get(Type::getInt8Ty(SI->getContext()), AllocSize->getLimitedValue());
+
+  executeAllocInst(SI, allocType, AllocSize->getLimitedValue());
+
+}
+
+void llvm::executeReallocInst(ShadowInstruction* SI) {
+
+  if(!SI->store.store) {
+
+    // Only alloc the first time; always carry out the copy implied by realloc.
+    ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
+    if(!AllocSize)
+      return;
+    
+    Type* allocType = ArrayType::get(Type::getInt8Ty(SI->getContext()), AllocSize->getLimitedValue());
+    executeAllocInst(SI, allocType, AllocSize->getLimitedValue());    
+
+  }
+
+  ShadowValue SrcPtr = SI->getCallArgOperand(0);
+  ImprovedValSetSingle SrcPtrSet;
+  release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Realloc from uninitialised PB?");
+  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Realloc non-pointer-typed value?");
+  uint64_t CopySize = ULONG_MAX;
+
+  if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
+
+    // Overdef the realloc.
+    SrcPtrSet.setOverdef();
+
+  }
+  else {
+
+    CopySize = SrcPtrSet.Values[0].V.getAllocSize();
+
+  }
+
+  ImprovedValSetSingle ThisInst = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
+
+  executeCopyInst(ThisInst, SrcPtrSet, CopySize, SI->parent);
+
+}
+
+void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
+
+  if(Size == ULONG_MAX || PtrSet.Overdef || PtrSet.Values.size() != 1 || SrcPtrSet.Overdef || SrcPtrSet.Values.size() != 1) {
+
+    // Only support memcpy from single pointer to single pointer for the time being:
+    ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+    executeWriteInst(PtrSet, OD, Size, BB);
+    return;
+
+  }
+
+  SmallVector<IVSRange, 4> copyValues;
+  readValRangeMulti(SrcPtrSet.Values[0].V, SrcPtrSet.Values[0].Offset, Size, BB, copyValues);
+
+  // OK now blow a hole in the local map for that value and write this list of extents into the gap:
+  LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, copyValues.size() == 1);
+  Store.store.replaceRangeWithPBs(copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
+
+}
+
+void llvm::executeVaStartInst(ShadowInstruction* SI) {
+
+  ShadowBB* BB = SI->parent;
+  ShadowValue Ptr = SI->getCallArgOperand(0);
+  ImprovedValSetSingle PtrSet;
+
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+
+  if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
+
+    ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+    executeWriteInst(PtrSet, OD, 24, BB);
+    return;
+
+  }
+
+  SmallVector<IVSRange, 4> vaStartVals;
+  ImprovedValSetSingle nonFPOffset = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_nonfp_arg), ValSetTypeVarArg);
+  vaStartVals.push_back(IVSR(0, 4, nonFPOffset));
+
+  ImprovedValSetSingle FPOffset = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_fp_arg), ValSetTypeVarArg);
+  vaStartVals.push_back(IVSR(4, 8, FPOffset));
+
+  ImprovedValSetSingle AnyPtr = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_any_arg), ValSetTypeVarArg);
+  vaStartVals.push_back(IVSR(8, 16, AnyPtr));
+  
+  ImprovedValSetSingle StackBase = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::va_baseptr), ValSetTypeVarArg);
+  vaStartVals.push_back(IVSR(16, 24, StackBase));
+
+  LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
+  Store.store.replaceRangeWithPBs(vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
+
+}
+
+void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size) {
+
+  ShadowBB* ReadBB = ReadSI->parent;
+
+  ShadowValue Ptr = ReadSI->getCallArgOperand(1);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB (read)?");
+  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value (read)?");
+
+  ImprovedValSetSingle WriteIVS;
+  
+  if(PtrSet.Overdef || PtrSet.Values.size() != 1) {
+
+    WriteIVS = ImprovedValSetSingle::getOverdef();
+
+  }
+  else {
+
+    std::vector<Constant*> constBytes;
+    std::string errors;
+    LLVMContext& Context = Ptr.getBareVal().getContext();
+    if(getFileBytes(OS->Name, FileOffset, Size, constBytes, Context,  errors)) {
+      ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
+      Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
+      WriteIVS = ImprovedValSetSingle::get(ByteArray);
+    }
+
+  }
+
+  executeWriteInst(PtrSet, WriteIVS, Size, ReadBB);
+
+}
+
+enum specialfunctions {
+
+  SF_MALLOC,
+  SF_REALLOC,
+  SF_VASTART,
+  SF_VACOPY
+
+};
+
+static DenseMap<Function*, specialfunctions> SpecialFunctionMap;
+
+void llvm::initSpecialFunctionsMap(Module& M) {
+
+  if(Function* F1 = M.getFunction("malloc"))
+    SpecialFunctionMap[F1] = SF_MALLOC;  
+  if(Function* F2 = M.getFunction("realloc"))
+    SpecialFunctionMap[F2] = SF_REALLOC;
+  if(Function* F4 = M.getFunction("llvm.va_start"))
+    SpecialFunctionMap[F4] = SF_VASTART;
+  if(Function* F5 = M.getFunction("llvm.va_copy"))
+    SpecialFunctionMap[F5] = SF_VACOPY;
+
+}
+
+void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
+
+  Function* F = getCalledFunction(SI);
+
+  if(F) {
+
+    // Try to execute a special instruction:
+
+    DenseMap<Function*, specialfunctions>::iterator it = SpecialFunctionMap.find(F);
+    if(it != SpecialFunctionMap.end()) {
+      
+      switch(it->second) {
+	
+      case SF_MALLOC:
+	executeMallocInst(SI);
+	break;
+      case SF_REALLOC:
+	executeReallocInst(SI);
+	break;
+      case SF_VASTART:
+	executeVaStartInst(SI);
+	break;
+      case SF_VACOPY:
+	executeVaCopyInst(SI);
+	break;
+
+      }
+
+      return;
+
+    }
+
+    // See if we can discard the call because it's annotated read-only:
+
+    if(F->onlyReadsMemory())
+      return;
+
+    // Otherwise do selective clobbering for annotated syscalls:
+
+    if(LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+      
+      const LibCallFunctionInfo::LocationMRInfo *Details = 0;
+
+      if(FI->LocationDetails)
+	Details = FI->LocationDetails;
+      else if(FI->getLocationDetailsFor)
+	Details = FI->getLocationDetailsFor(CS);
+
+      release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
+
+      for (unsigned i = 0; Details[i].Location; ++i) {
+
+	ShadowValue ClobberV;
+	uint64_t ClobberSize;
+	if(Details[i].Location.getLocation) {
+	  Details[i].Location.getLocation(ClobberV, ClobberSize);
+	}
+	else {
+	  ClobberV = getCalllArgOperand(SI, Details[i].Location.argIndex);
+	  ClobberSize = Details[i].Location.argSize;
+	}
+
+	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+	executeWriteInst(ClobberV, OD, ClobberSize, SI->parent);
+
+      }
+
+      return;
+
+    }
+
+  }
+
+  // Finally clobber all locations; this call is entirely unhandled
+  errs() << "Warning: unhandled call clobbers all locations";
+  ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+  executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
+
+}
+
+void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
+
+  if(PtrSet.Overdef) {
+
+    // Start with a plain local store map giving no locations.
+    StoreBB->localStore->dropReference();
+    StoreBB->localStore = new LocalStoreMap();
+    StoreBB->localStore->allOthersClobbered = true;
+
+  }
+  else if(PtrSet.Values.size() == 1 && PtrSet.Values[0].Offset != LLONG_MAX) {
+
+    // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
+    LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
+    Store.store.replaceRangeWithPB(ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
+
+  }
+  else {
+
+    for(SmallVector<ImprovedVal, 1>::iterator it = PtrSet.Values.begin(), it2 = PtrSet.Values.end(); it != it2; ++it) {
+
+      if(it->Offset == LLONG_MAX) {
+	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
+	Store.store.clobber();
+      }
+      else {
+
+	ImprovedValSetSingle oldValSet;
+	if(ValPB.Overdef) {
+
+	  // Overdef merges with everything to make overdef, so don't bother with the lookup.
+	  oldValSet = ValPB;
+
+	}
+	else {
+
+	  std::string ignoreErrorHere;
+	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, ignoreErrorHere);
+
+	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
+
+	    ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, error);
+
+	  }
+
+	  oldValSet.merge(ValPB);
+
+	}
+
+	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
+	Store.store.replaceRangeWithPB(oldValSet, (uint64_t)it->Offset, PtrSize); 
+
+      }
+
+    }
+
+  }
+
+}
+
+void LocalStoreMap::dropReference() {
+
+  if(!--refCount) {
+
+    // Drop references to any maps this points to;
+    for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it)
+      it->second->store->dropReference();
+
+    delete this;
+
+  }
+
+}
+
+static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti>& Seen) {
+
+  if(ImprovedValSetSingle* LHSS = dyn_cast<ImprovedValSetSingle>(LHS)) {
+
+    if(ImprovedValSetSingle* RHSS = dyn_cast<ImprovedValSetSingle>(RHS)) {
+      
+      bool match = (*LHS) == (*RHS);
+      if(match) {
+	
+	LHSResult = LHS;
+	RHSResult = RHS;
+	return true;
+
+      }
+      return match;
+
+    }
+    else {
+
+      // Flip args:
+      return getCommonAncestor(RHS, LHS, RHSResult, LHSResult);
+
+    }
+
+  }
+
+  ImprovedValSetMulti* LHSM = cast<ImprovedValSetMulti>(LHS);
+  if(!Seen.insert(LHSM)) {
+    LHSResult = LHSM;
+    RHSResult = RHSM;
+    return true;
+  }
+
+  // Neither side can advance?
+  if((!LHSM->Underlying)) {
+
+    if(isa<ImprovedValSetSingle>(RHS) || (!cast<ImprovedValSetMulti>(RHS)->Underlying))
+      return false;
+
+  }
+
+  // Advance the LHS pointer if possible, flip args to advance other side next.
+  return getCommonAncestor(RHS, LHS->Underlying ? LHS->Underlying : LHS, RHSResult, LHSResult);
+
+}
+
+struct MergeBlockVisitor : public ShadowBBVisitor {
+
+  bool newMapValid
+  LocalStoreMap* newMap;
+  SmallPtrSet<LocalStoreMap*> seenMaps;
+  bool mergeToBase;
+
+  MergeBlockVisitor(bool mtb) : newMapValid(false), newMap(0), mergeToBase(mtb) { }
+
+  void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
+
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
+
+      if(IVS->Overdef)
+	return;
+
+      if(ImprovedValSetSingle* IVS2 = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
+	IVS->merge(*IVS2);
+	return;
+      }
+
+    }
+
+    // Get an IVS list for each side that contains gaps where there is a common ancestor:
+    ImprovedValSet *LHSAncestor, *RHSAncestor;
+    {
+      SmallPtrSet<ImprovedValSetMulti> Seen;
+      // If we're making a new base store, flatten entirely.
+      if(mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
+
+	LHSAncestor = 0;
+	RHSAncestor = 0;
+	      
+      }
+    }
+
+    {
+      SmallVector<IVSRange, 4> LHSVals;
+      SmallVector<IVSRange, 4> RHSVals;
+      uint64_t TotalBytes = MergeV.getAllocSize();
+
+      readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeToStore->store, LHSVals, LHSAncestor);
+      readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeFromStore->store, RHSVals, RHSAncestor);
+	  
+      SmallVector<IVSRange, 4> MergedVals;
+      // Algorithm:
+      // Where both ancestors cover some range, merge.
+      // Where neither ancestor covers, leave blank for deferral.
+      // Where only one covers, get that subrange from the common ancestor store.
+      // Where granularity of coverage differs, break apart into subvals.
+
+      SmallVector<IVSRange, 4>::iterator LHSit = LHSVals.begin(), RHSit = RHSVals.begin();
+      SmallVector<IVSRange, 4>::iterator LHSitend = LHSVals.end(), RHSitend = RHSVals.end();
+      uint64_t LastOffset = 0;
+      bool anyGaps = false;
+
+      while(LHSit != LHSitend && RHSit != RHSitend) {
+
+	// Pick earlier-starting, earlier-ending operand to consume from next:
+	SmallVector<IVSRange, 4>::iterator* consumeNext;
+	if(LHSit == LHSitend)
+	  consumeNext = &RHSit;
+	else if(RHSit == RHSitend)
+	  consumeNext = &LHSit;
+	else {
+
+	  // Regard starting before now as equal to starting right now.
+	  uint64_t consumeLHS = std::max(LHSit->first.first, LastOffset);
+	  uint64_t consumeRHS = std::max(RHSit->first.first, LastOffset);
+
+	  if(consumeLHS == consumeRHS)
+	    consumeNext = LHSit->first.second <= RHSit->first.second ? &LHSit : &RHSit;
+	  else
+	    consumeNext = consumeLHS < consumeRHS ? &LHSit : &RHSit;
+
+	}
+	SmallVector<IVSRange, 4>::iterator& consumeit = *consumeNext;
+	SmallVector<IVSRange, 4>::iterator& otherit = (consumeNext == &LHSit ? RHSit : LHSit);
+	SmallVector<IVSRange, 4>::iterator& otherend = (consumeNext == &LHSit ? RHSitend : LHSitend);
+
+	// consumeit is now the input iterator that
+	// (a) is not at the end
+	// (b) is defined at LastOffset, in which case otherit is not defined here,
+	// (c) or it is defined and otherit is also defined here and otherit remains defined for longer,
+	// (d) or else both iterators are not defined here and consumeit becomes defined first.
+	// In short we should leave a gap until consumeit becomes defined, or merge the next
+	// consumeit object with either the base (if otherit is not defined) or with a partial
+	// otherit object.
+
+	// Find next event:
+	if(LastOffset < consumeit->first.first) {
+		
+	  // Case (d) Leave a gap
+	  anyGaps = true;
+	  LastOffset = LHSit->first.first;
+
+	}
+	else if(otherit == otherend || otherit->first.first > LastOffset) {
+
+	  // consumeit entry begins here or earlier but otherit is not defined, case (b). 
+	  // Merge it with base up to this entry's end or otherit becoming defined.
+	  uint64_t stopAt;
+	  bool bump;
+	  if(otherit == otherend || otherit->first.first >= consumeit->first.second) {
+	    stopAt = consumeit->first.second;
+	    bump = true;
+	  }
+	  else {
+	    stopAt = otherit->first.first;
+	    bump = false;
+	  }
+
+	  SmallVector<IVSRange, 4> baseVals;
+	  readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, BB, LHSAncestor, baseVals, 0);
+		
+	  for(SmallVector<IVSRange, 4>::iterator baseit = baseVals.begin(), baseend = baseVals.end();
+	      baseit != baseend; ++baseit) {
+
+	    ImprovedValSetSingle subVal;
+	    getIVSSubVal(consumeit.second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
+	    subVal.merge(baseit->second);
+	    MergedVals.push_back(IVSR(baseit->first.first, baseit->first.second, subVal));
+		    
+	  }
+
+	  coveredBytes += (stopAt - LastOffset);
+	  LastOffset = stopAt;
+	  if(bump)
+	    ++consumeit;
+		
+	}
+	else {
+
+	  // Both entries are defined here, case (c), so consumeit finishes equal or sooner.
+	  ImprovedValSetSingle consumeVal;
+	  getIVSSubVal(consumeit->second, LastOffset - consumeit->first.first, consumeit->first.second - LastOffset, consumeVal);
+		
+	  ImprovedValSetSingle otherVal;
+	  getIVSSubVal(otherit->second, LastOffset - otherit->first.first, consumeit->first.second - LastOffset, otherVal);
+		
+	  consumeVal.merge(otherVal);
+	  MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, otherVal));
+
+	  LastOffset = consumeit->first.second;
+
+	  ++consumeit;
+	  if(consumeit->first.second == otherit->first.second)
+	    ++otherit;
+
+	}
+	      
+      }
+      
+      // MergedVals is now an in-order extent list of values for the merged store
+      // except for gaps where LHSAncestor (or RHSAncestor) would show through.
+      // Figure out if we in fact have any gaps:
+
+      ImprovedValSet* newUnderlying;
+
+      if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes))
+	newUnderlying = LHSAncestor->getReadableCopy();
+      else
+	newUnderlying = 0;
+
+      // Get a Multi to populate: either clear an existing one or allocate one.
+
+      ImprovedValSetMulti* newStore;
+
+      if(mergeToStore->store->isWritableMulti()) {
+	ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(mergeToStore->store);
+	M->Map.clear();
+	if(M->Underlying)
+	  M->dropReference();
+	newStore = M;
+      }
+      else {
+	mergeToStore->store->dropReference();
+	newStore = new ImprovedValSetMulti();
+      }	
+
+      newStore->Underlying = newUnderlying;
+
+      newStore::MapIt insertit = newStore->Map.end();
+      for(SmallVector<IVSRange, 4>::iterator finalit = MergedVals.begin(), finalitend = MergedVals.end();
+	  finalit != finalitend; ++finalit) {
+
+	insertit.insert(finalit->first.first, finalit->first.second, finalit->second);
+	
+      }
+
+      mergeToStore->store = newStore;
+
+    }
+
+  }
+
+  void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+
+    if(!seenMaps.insert(BB->localStore)) {
+      // We've already seen this exact map as a pred; drop the extra ref.
+      return;
+    }
+
+    if(!newMapValid) {
+      // This is the first predecessor, borrow the incoming block's map / use the base map.
+      // Note that the refcount is already correct (blocks assume their map will be taken per default)
+      // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
+      newMap = BB->localStore;
+      newMapValid = true;
+      return;
+    }
+    else {
+
+      // Merge in the new map or base store values as appropriate.
+      // Create a local map if we didn't have one; COW break it if it was shared.
+      // The first time a real merge is necessary this might COW-break.
+      // After that it's a no-op.
+      LocalStoreMap* mergeMap = newMap->getWritableStoreMap();
+      LocalStoreMap* mergeFromMap = BB->localStore;
+
+      release_assert(mergeMap && "Must have a concrete destination map");
+
+      if(mergeFromMap) {
+
+	if(mergeFromMap->allOthersClobbered) {
+
+	  SmallVector<ShadowValue, 4> keysToRemove;
+
+	  // Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
+	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), itend = mergeMap->store.end();
+	      it != itend; ++it) {
+
+	    if(!mergeFromMap->store.count(it->first)) {
+
+	      keysToRemove.push_back(it->first);
+	      it->second.store.dropReference();
+
+	    }
+
+	  }
+
+	  for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), delitend = keysToRemove.end();
+	      delit != delitend; ++delit) {
+
+	    mergeMap->store.erase(*delit);
+
+	  }
+
+	  mergeMap->allOthersClobbered = true;
+
+	}
+	else if(!mergeMap->allOthersClobbered) {
+
+	  // For any locations mentioned in mergeFromMap but not mergeMap,
+	  // move them over. We'll still need to merge in the base object below, this
+	  // just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
+	  
+	  SmallVector<ShadowValue, 4> toDelete;
+
+	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
+		itend = mergeFromMap->store.end(); it != itend; ++it) {
+	
+	    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
+	      mergeMap->insert(it->first, it->second);
+	
+	    if(it->second)
+	      toDelete.push_back(it->first);
+
+	  }
+      
+	  for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
+	      delit != delend; ++delit)
+	    mergeFromMap->erase(*delit);
+
+	}
+
+      }
+
+      // mergeMap now contains all information from one or other incoming branch;
+      // for each location it mentions merge in the other map's version or the base object.
+      // Note that in the mergeMap->allOthersClobbered case this only merges in
+      // information from locations explicitly mentioned in mergeMap.
+
+      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(),
+	    itend = mergeMap->store.end(); it != itend; ++it) {
+
+	LocStore* mergeFromStore;
+	if(!mergeFromMap)
+	  mergeFromStore = &it->first.getBaseStore();
+	else {
+	  DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
+	  if(found != mergeFromMap->store.end())
+	    mergeFromStore = &(found->second);
+	  else
+	    mergeFromStore = &it->first.getBaseStore();
+	}
+
+	// Right, merge it->second and mergeFromStore.
+	// If the pointers match these are two refs to the same Multi.
+	// Refcounting will be caught up when we deref mergeFromMap below:
+	if(mergeFromStore->store != it->second->store) {
+
+	  mergeStores(it->first, mergeFromStore, &it->second);
+
+	}
+
+      }
+
+      if(mergeFromMap)
+	mergeFromMap->dropReference();
+
+      newMap = mergeMap;
+
+    }
+
+  }
+
+};
+
+void llvm::commitStoreToBase(LocalStoreMap* Map) {
+
+  for(DenseMap<ShadowValue, LocStore>::iterator it = Map->begin(), itend = Map->end(); it != itend; ++it) {
+
+    LocStore* baseStore = it->first.getBaseStore();
+    release_assert(baseStore && "No base store?");
+    baseStore->store.dropReference();
+    baseStore->store = it->second.store->getReadableCopy();
+
+  }
+
+}
+
+void llvm::doBlockStoreMerge(ShadowBB* BB) {
+
+  // We're entering BB; one or more live predecessor blocks exist and we must produce an appropriate
+  // localStore from them.
+
+  bool mergeToBase = BB->status == BBSTATUS_CERTAIN;
+  // This BB is a merge of all that has gone before; merge to values' base stores
+  // rather than a local map.
+
+  MergeBlockVisitor V(mergeToBase);
+  BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
+
+  // TODO: do this better
+  if(mergeToBase && !V.newMap->allOthersClobbered) {
+    commitStoreToBase(V.newMap);
+    V.newMap->store.dropReference();
+  }
+  else
+    BB->localStore = V.newMap;
+
+}
+
+void llvm::doCallStoreMerge(ShadowInstruction* SI) {
+
+  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN;
+  InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(cast_inst<CallInst>(SI));
+
+  MergeBlockVisitor V(mergeToBase);
+  CallIA->visitLiveReturnBlocks(SI);
+
+  if(mergeToBase && !V.newMap->allOthersClobbered) {
+    commitStoreToBase(V.newMap);
+    V.newMap->dropReference();
+    // Blank block-local map.
+    SI->parent->localStore = new LocalStoreMap();
+  }
+  else
+    SI->parent->localStore = V.newMap;
+  
 }
 
 SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
 			  ShadowValue V2, uint64_t V2Size,
 			  bool usePBKnowledge) {
   
-  SVAAResult Alias = tryResolvePointerBases(V1, V1Size, V2, V2Size, usePBKnowledge);
+  SVAAResult Alias = tryResolveImprovedValSetSingles(V1, V1Size, V2, V2Size, usePBKnowledge);
   if(Alias != SVMayAlias)
     return Alias;
 

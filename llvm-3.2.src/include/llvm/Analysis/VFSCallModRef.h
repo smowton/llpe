@@ -18,7 +18,8 @@ public:
   /// set of libcalls represented by this LibCallInfo object.  This array is
   /// terminated by an entry with a NULL name.
   virtual const LibCallFunctionInfo *getFunctionInfoArray() const; 
- 
+
+  virtual LibCallLocationInfo::LocResult isLocation(const LibCallLocationInfo&, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB);
 };
 
 class VFSCallAliasAnalysis : public LibCallAliasAnalysis {
@@ -26,6 +27,8 @@ class VFSCallAliasAnalysis : public LibCallAliasAnalysis {
  public:
   static char ID;
   VFSCallAliasAnalysis();
+
+  LibCallFunctionInfo* getFunctionInfo(Function* F);
 
 };
 

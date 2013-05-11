@@ -30,30 +30,66 @@
 
 using namespace llvm;
 
-static cl::opt<bool> NoInnerLoopSolver("int-no-inner-loop-solver");
+bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser) {
 
-void InlineAttempt::analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+  bool anyChange = false;
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SArg = &(argShadows[i]);
-    tryEvaluate(ShadowValue(SArg), true, 0, CacheThresholdBB, CacheThresholdIA);
+    anyChange |= tryEvaluate(ShadowValue(SArg), inLoopAnalyser);
 
   }
-  analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+
+  anyChange |= analyse(inLoopAnalyser);
+  return anyChange;
 
 }
 
-void IntegrationAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+bool InlineAttempt::getInitialStore() {
 
-  createEntryBlock();
+  // Take our caller's store; they will make a new one
+  // upon return.
+
+  BBs[0]->localStore = CI->parent->localStore;
+
+}
+
+bool PeelIteration::getInitialStore() {
+  
+  if(iterCount == 0) {
+
+    // Borrow the preheader's store read-only (in case we fail to terminate
+    // then the preheader store will be needed again)
+    BBs[0]->localStore = parent->getBB(parentPA->invarInfo->latchIdx)->localStore;
+    BBs[0]->localStore->refCount++;
+
+  }
+  else {
+
+    // Take the previous latch's store
+    BBs[0]->localStore = parentPA->Iterations[itercount-1]->getBB(parentPA->invarInfo->latchIdx)->localStore;
+
+  } 
+
+}
+
+bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
+
+  bool anyChange = false;
+
+  anyChange |= createEntryBlock();
+
+  getInitialStore();
 
   for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
     // analyseBlock can increment i past loops
-    analyseBlock(i, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+    anyChange |= analyseBlock(i, inLoopAnalyser, i == BBsOffset, L);
 
   }
+
+  return anyChange;
 
 }
 
@@ -63,34 +99,47 @@ void IntegrationAttempt::analyse() {
   BasicBlock* FirstThresholdBB = &F.getEntryBlock();
   IntegrationAttempt* FirstThresholdIA = this;
 
-  analyse(false, FirstThresholdBB, FirstThresholdIA);
+  analyse(false, FirstThresholdBB, FirstThresholdIA, false);
 
 }
 
-void PeelAttempt::analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+bool PeelAttempt::analyse() {
   
+  bool anyChange = false;
+
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
-    PI->analyse(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+    anyChange |= PI->analyse();
 
   }
 
   Iterations.back()->checkFinalIteration();
+  
+  return anyChange;
 
 }
 
-void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA) {
+bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL) {
 
   ShadowBB* BB = getBB(blockIdx);
   if(!BB)
-    return;
+    return false;
+
+  bool anyChange = false;
+
+  if(!skipStoreMerge) {
+
+    // Loop headers and entry blocks are given their stores in other ways
+    doBlockStoreMerge(BB);
+
+  }
 
   // Use natural scope rather than scope because even if a loop is
   // ignored we want to notice that it exists so we can call analyseLoopPBs.
   ShadowBBInvar* BBI = BB->invar;
   const Loop* BBL = BBI->naturalScope;
    
-  if(BBL != L) {
+  if(BBL != MyL) {
 
     // By construction of our top-ordering, must be a loop entry block.
     release_assert(BBL && "Walked into root context?");
@@ -101,95 +150,52 @@ void IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool withinUnboundedLo
     // Calculate invariants for the header block, which uniquely is created in its invariant scope
     // before being created in any child loops.
 
-    analyseBlockInstructions(BB, true, CacheThresholdBB, CacheThresholdIA, true);
+    anyChange |= analyseBlockInstructions(BB, true, false);
    
-    BasicBlock* LThresholdBB = CacheThresholdBB;
-    IntegrationAttempt* LThresholdIA = CacheThresholdIA;
-    
     // Now explore the loop, if possible.
-    PeelAttempt* LPA = getOrCreatePeelAttempt(BBL);
-    if(LPA) {
-      LPA->analyse(withinUnboundedLoop, LThresholdBB, LThresholdIA);
+    // At the moment can't ever happen inside the loop analyser.
+    PeelAttempt* LPA = 0;
+    if(!inLoopAnalyser) {
+      if((LPA = getOrCreatePeelAttempt(BBL)))
+	LPA->analyse();
     }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
     if((!LPA) || !LPA->isTerminated()) {
-      for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
-	if(ShadowBB* InvarBB = getBB(i))
-	  analyseBlockInstructions(InvarBB, true, CacheThresholdBB, CacheThresholdIA, false);
-      }
 
-      // If the non-creation was because this loop is ignored, create child contexts:
-      /*
-      if((!LPA) && (pass->shouldIgnoreLoop(&F, BBL->getHeader()) || 
-      pass->shouldExpandLoopCalls(&F, BBL->getHeader()))) {*/
-      // For now create invariant functions whenever a peel attempt is not available.
-      if((!LPA) || !LPA->isTerminated()) {
-
-	for(uint32_t i = blockIdx; i < (nBBs + BBsOffset) && BBL->contains(getBBInvar(i)->naturalScope); ++i) {
-
-	  if(ShadowBB* InvarBB = getBB(i)) {
-
-	    for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
-
-	      ShadowInstruction* SI = &(InvarBB->insts[j]);
-	      if(inst_is<CallInst>(SI)) {
-
-		if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, true))
-		  IA->analyseWithArgs(true, CacheThresholdBB, CacheThresholdIA);
-
-	      }
-
-	    }
-
-	  }
-
-	}
-
-      }
-
-      // Finally, analyse everything in loop context together:
-      if((!withinUnboundedLoop) || (!NoInnerLoopSolver))
-	analyseLoopPBs(BBL, CacheThresholdBB, CacheThresholdIA);
+      anychange |= analyseLoop(BBL);
 
     }
     else {
+
       // Copy edges found always dead to local scope, to accelerate edgeIsDead queries without
       // checking every iteration every time.
       copyLoopExitingDeadEdges(LPA);
-      // Loop terminated, permit a within-loop-threshold (block certainty constraint implies
-      // there is no path around the loop).
-      CacheThresholdBB = LThresholdBB;
-      CacheThresholdIA = LThresholdIA;
-      LPDEBUG("Accept loop threshold adv -> " << CacheThresholdBB->getName() << "\n");
+
     }
 
     // Advance the main loop past this loop. Loop blocks are always contiguous in the topo ordering.
     while(blockIdx < invarInfo->BBs.size() && BBL->contains(getBBInvar(blockIdx)->naturalScope))
       ++blockIdx;
     --blockIdx;
+      
+    return anyChange;
 
   }
-  else {
 
-    if((!withinUnboundedLoop) && BB->status == BBSTATUS_CERTAIN) {
+  // Else we should just analyse this block here.
+  anyChange |= analyseBlockInstructions(BB, false, inLoopAnalyser);
 
-      LPDEBUG("Advance threshold to " << BB->getName() << "\n");
-      CacheThresholdBB = BB->invar->BB;
-      CacheThresholdIA = this;
-
-    }
-    
-    // Else we should just analyse this block here.
-    analyseBlockInstructions(BB, withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA, false);
-
-  }
+  return anyChange;
 
 }
 
-void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, bool skipSuccessorCreation) {
+// Returns true if there was any change
+bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser) {
 
   const Loop* MyL = L;
+
+  bool anyChange = false;
 
   for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
@@ -199,31 +205,101 @@ void IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool withinUnbou
 
     if(inst_is<TerminatorInst>(SI)) {
       // Call tryEvalTerminator regardless of scope.
-      tryEvaluateTerminator(SI, skipSuccessorCreation);
+      anyChange |= tryEvaluateTerminator(SI, skipSuccessorCreation);
       continue;
     }
 
     // Could the instruction have out-of-loop dependencies?
-    if(SII->naturalScope != MyL)
+    if((!inLoopAnalyser) && SII->naturalScope != MyL)
       continue;
     
-    if(isa<CallInst>(I)) {
+    switch(I->getOpcode()) {
 
-      if(tryPromoteOpenCall(SI))
-	continue;
-      if(tryResolveVFSCall(SI))
-	continue;
-      if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false))
-	IA->analyseWithArgs(withinUnboundedLoop, CacheThresholdBB, CacheThresholdIA);
+    case Instruction::Alloca:
+      executeAllocaInst(SI);
+      continue;
+    case Instruction::Store:
+      executeStoreInst(SI);
+      continue;
+    case Instruction::Call: 
+      {
+	if(tryPromoteOpenCall(SI))
+	  continue;
+	if(tryResolveVFSCall(SI))
+	  continue;
+      
+	bool created;
+	if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, created)) {
+	  anyChange |= created;
+	  anyChange |= IA->analyseWithArgs(inLoopAnalyser);
+	  doCallStoreMerge(SI);
+	}
+	else
+	  executeUnexpandedCall(SI);
+      }
 
       // Fall through to try to get the call's return value
 
     }
 
-    tryEvaluate(ShadowValue(SI), true, 0, CacheThresholdBB, CacheThresholdIA);
+    anyChange |= tryEvaluate(ShadowValue(SI), inLoopAnalyser);
 
   }
 
+  return anyChange;
+
 }
 
+bool IntegrationAttempt::analyseLoop(const Loop* L) {
+
+  ShadowLoopInvar* LInfo = invar->LInfo[L];
+  bool anyChange = true;
+  bool firstIter = true;
+  bool everChanged = false;
+
+  while(anyChange) {
+
+    if(!firstIter) {
+
+      // Drop store references at exit edges: we're going around again.
+      for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
+	    itend = LInfo->exitEdges.end(); it != itend; ++it) {
+
+	ShadowBB* BB = getBB(it->first);
+	if(BB && !edgeIsDead(BB, getBBInvar(it->second)))
+	  BB->localStore->dropReference();
+
+      }
+      
+      // Give the header block the latch store
+      getBB(LInfo->headerIdx)->localStore = getBB(LInfo->latchIdx)->localStore;
+
+    }
+    else {
+
+      firstIter = false;
+      
+      // Give the header block the store from the preheader
+      getBB(LInfo->headerIdx)->localStore = getBB(LInfo->preheaderIdx)->localStore;
+
+    }
+
+    anyChange = false;
+
+    for(uint32_t i = LInfo->headerIdx; i < (BBOffset + nBBs); ++i) {
+
+      if(!L->contains(getBBInvar(i)->naturalScope))
+	break;
+
+      anyChange |= analyseBlock(i, true, i == LInfo->headerIdx, L);
+
+    }
+
+    everChanged |= anyChange;
+
+  }
+  
+  return everChanged;
+
+}
 

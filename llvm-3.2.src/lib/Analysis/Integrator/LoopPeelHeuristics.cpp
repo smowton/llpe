@@ -352,8 +352,9 @@ bool IntegrationAttempt::shouldInlineFunction(ShadowInstruction* SI, Function* F
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope) {
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool& created) {
 
+  created = false;
   CallInst* CI = cast_inst<CallInst>(SI);
 
   if(ignoreIAs.count(CI))
@@ -393,6 +394,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   //errs() << "Inline new fn " << FCalled->getName() << "\n";
   mainPhaseProgress();
+
+  created = true;
 
   InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1);
   inlineChildren[CI] = IA;
@@ -593,6 +596,22 @@ void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
 
 }
 
+void InlineAttempt::visitLiveReturnBlocks(ShadowBBVisitor& V) {
+
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    if(ShadowBB* BB = BBs[i]) {
+
+      ShadowInstruction* TI = &(BB->insts.back());
+      if(inst_is<ReturnInst>(TI))
+	V.visit(BB, 0, false);
+
+    }
+
+  }
+
+}
+
 // Store->Load forwarding helpers:
 
 BasicBlock* InlineAttempt::getEntryBlock() {
@@ -633,47 +652,28 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
 
 }
 
-void InlineAttempt::getVarArg(int64_t idx, PointerBase& Result) {
+void InlineAttempt::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
 
   unsigned numNonFPArgs = 0;
   unsigned numFPArgs = 0;
 
-  uint32_t argIdx = 0xffffffff;
+  release_assert(idx >= ImprovedVal::first_any_arg && idx < ImprovedVal::max_arg);
+  uint32_t argIdx = idx - ImprovedVal::first_any_arg;
 
   CallInst* RawCI = cast_inst<CallInst>(CI);
 
-  for(unsigned i = F.arg_size(); i < CI->getNumArgOperands(); ++i) {
-
-    Value* Arg = RawCI->getArgOperand(i);
-    if(Arg->getType()->isPointerTy() || Arg->getType()->isIntegerTy()) {
-      if(idx < ImprovedVal::first_fp_arg && idx == numNonFPArgs) {
-	argIdx = i;
-	break;
-      }
-      numNonFPArgs++;
-    }
-    else if(Arg->getType()->isFloatingPointTy()) {
-      if(idx >= ImprovedVal::first_fp_arg && (idx - ImprovedVal::first_fp_arg) == numFPArgs) {
-	argIdx = i;
-	break;
-      }
-      numFPArgs++;
-    }
-
-  }
-
   if(argIdx < CI->getNumArgOperands())
-    getPointerBase(CI->getCallArgOperand(argIdx), Result);
+    getImprovedValSetSingle(CI->getCallArgOperand(argIdx), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
-    Result = PointerBase();
+    Result = ImprovedValSetSingle();
 
   }
 
 }
 
-void PeelIteration::getVarArg(int64_t idx, PointerBase& Result) {
+void PeelIteration::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
 
   parent->getVarArg(idx, Result);
 
@@ -994,12 +994,15 @@ bool llvm::allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout* TD) 
 
 }
 
+// Target == 0 -> don't care about the returned type.
 Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout* TD) {
 
   Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
 
   if(Offset == 0 && TargetSize == FromSize) {
+    if(!Target)
+      return FromC;
     if(allowTotalDefnImplicitCast(FromType, Target))
       return (FromC);
     else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
@@ -1018,6 +1021,9 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
   if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
 
     // Wholly subsumed within a zeroinitialiser:
+    if(!Target) {
+      Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+    }
     return (Constant::getNullValue(Target));
 
   }
@@ -1103,8 +1109,10 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, DataLayout* TD) {
 
     uint64_t PtrSize = TD->getTypeStoreSize(Ty);
     for(unsigned i = 0; i < PtrSize; ++i) {
-
-      assert(!Bytes[i]);
+      
+      // Only null pointers can be synth'd from bytes
+      if(bytes[i])
+	return 0;
 
     }
 
@@ -1628,8 +1636,8 @@ void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* 
 
   }
 
-  PointerBase ArgPB;
-  getPointerBase(ShadowValue(Val), ArgPB);
+  ImprovedValSetSingle ArgPB;
+  getImprovedValSetSingle(ShadowValue(Val), ArgPB);
   if(ArgPB.Overdef || ArgPB.Values.size() != 1) {
 
     errs() << "Couldn't get a PB for " << *Val << "\n";
@@ -1965,6 +1973,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   parseArgs(F, argConstants, argvIdx);
 
   populateGVCaches(&M);
+  initSpecialFunctionsMap();
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 
@@ -1977,9 +1986,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   if(argvIdx != 0xffffffff) {
 
-    IA->argShadows[argvIdx].i.PB = PointerBase::get(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
+    IA->argShadows[argvIdx].i.PB = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
 
   }
+
+  initShadowGlobals(M);
 
   RootIA = IA;
 

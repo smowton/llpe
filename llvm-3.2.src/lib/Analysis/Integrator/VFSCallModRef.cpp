@@ -25,40 +25,9 @@ VFSCallAliasAnalysis::VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, new VFSC
   //initializeBasicAliasAnalysisPass(*PassRegistry::getPassRegistry());
 }
 
-// Two locations:
-// 1. errno, modelled here as __errno_location, which is likely to be pretty brittle.
-// 2. an abstract location representing the buffer that's passed to a read call.
-
-static LibCallLocationInfo::LocResult isErrnoForLocation(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge, int64_t Ptr1Offset, IntAAProxy* AACB) {
-
-  if(CS.getCtx() && CS.getCtx()->isSuccessfulVFSCall(CS.getInst()->invar->I)) {
-
-    // Resolved VFS calls definitely do not write to errno, so ignore any potential alias.
-    return LibCallLocationInfo::No;
-
-  }
-
-  // Try to identify errno: if it's a call to __errno_location(), it is. If it's a resolved object of any kind,
-  // it isn't.
-
-  if(const CallInst* CI = dyn_cast_val<CallInst>(P)) {
+LibCallLocationInfo* getFunctionInfo(const Function* F) {
   
-    if(Function* F = CI->getCalledFunction()) {
-
-      if(F && F->getName() == "__errno_location") {
-	return LibCallLocationInfo::Yes;
-      }
-
-    }
-
-  }
-
-  ShadowValue Base;
-  int64_t Offset;
-  if(Ptr1Offset != LLONG_MAX || getBaseAndOffset(P, Base, Offset))
-    return LibCallLocationInfo::No;
-  
-  return LibCallLocationInfo::Unknown;
+  return LCI->getFunctionInfo(F);
 
 }
 
@@ -66,7 +35,7 @@ static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t
 
   SVAAResult AR;
   if(Ptr1Offset != LLONG_MAX)
-    AR = tryResolvePointerBases(Ptr1, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true);
+    AR = tryResolveImprovedValSetSingles(Ptr1, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true);
   else
     AR = aliasSVs(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
 
@@ -81,84 +50,47 @@ static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t
 
 }
 
-static LibCallLocationInfo::LocResult isReadBuf(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+LibCallLocationInfo::LocResult VFSCallModRef::isLocation(const LibCallLocationInfo& LCI, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+
+  ShadowValue CSPtr;
+  uint64_t CSPtrSize;
+  if(!LCI.getLocation) {
+    CSPtr = getValArgOperand(CS, LCI.argIndex);
+    CSPtrSize = LCI.argSize;
+  }
+  else {
+    LCI.getLocation(CS, CSPtr, CSPtrSize);
+  }
+  return aliasCheckAsLCI(Ptr, Size, CSPtr, CSPtrSize, usePBKnowledge, POffset, AACB)
+
+}
+
+static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ConstantInt* ReadSize = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 2)));
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
+  V = getValArgOperand(CS, 1);
+  Size = ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize;
 
 }
 
-static LibCallLocationInfo::LocResult isArg0(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isArg0Size24(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), 24, usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isPollFds(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ConstantInt* nFDs = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)));
-  uint64_t fdArraySize = nFDs ? (nFDs->getLimitedValue() * sizeof(struct pollfd)) : AliasAnalysis::UnknownSize;
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 0), fdArraySize, usePBKnowledge, POffset, AACB);
+  Size = nFDs ? (nFDs->getLimitedValue() * sizeof(struct pollfd)) : AliasAnalysis::UnknownSize;
+  V = getValArgOperand(CS, 0);
   
 }
 
-static LibCallLocationInfo::LocResult isArg1(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+static void isReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isArg2(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isArg2SockLen(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), sizeof(socklen_t), usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isArg3(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 3), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-  
-}
-
-static LibCallLocationInfo::LocResult isReturnVal(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
+  V = CS;
+  Size = AliasAnalysis::UnknownSize;
   return aliasCheckAsLCI(Ptr, Size, CS, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
   
 }
 
-static LibCallLocationInfo::LocResult isTermios(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 2), sizeof(struct termios), usePBKnowledge, POffset, AACB);
-
-}
-
-static LibCallLocationInfo::LocResult isArg1Timespec(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), sizeof(struct timespec), usePBKnowledge, POffset, AACB);
-
-}
-
-static LibCallLocationInfo::LocResult isArg1Rlimit(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), sizeof(struct rlimit), usePBKnowledge, POffset, AACB);
-
-}
-
-static LibCallLocationInfo::LocResult isAnyArgFrom2(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+/*
+static void isAnyArgFrom2(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   CallInst* CI = cast_val<CallInst>(CS);
 
@@ -173,21 +105,9 @@ static LibCallLocationInfo::LocResult isAnyArgFrom2(ShadowValue CS, ShadowValue 
   return LibCallLocationInfo::No;
 
 }
+*/
 
-static LibCallLocationInfo::LocResult isArg4Sockaddr(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  // TODO: Deref addrlen if we can for the modified buffer size.
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 4), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-
-}
-
-static LibCallLocationInfo::LocResult isArg5Socklen(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 5), sizeof(socklen_t), usePBKnowledge, POffset, AACB);
-
-}
-
-static LibCallLocationInfo::LocResult isRecvfromBuffer(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ShadowValue LenArg = getValArgOperand(CS, 1);
   uint64_t Len;
@@ -200,34 +120,37 @@ static LibCallLocationInfo::LocResult isRecvfromBuffer(ShadowValue CS, ShadowVal
 
 }
 
-static LibCallLocationInfo::LocResult dummyLocInfo(ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  return LibCallLocationInfo::Unknown;
+  if(GlobalVariable* GV = CS.getBareVal()->getParent()->getParent()->getParent()->getGlobalVariable("errno")) {
+    V = ShadowValue(GV);
+    Size = AliasAnalysis::UnknownSize;
+  }
 
 }
 
-static LibCallLocationInfo VFSCallLocations[] = {
-  { isErrnoForLocation },
-  { isReadBuf },
-  { isArg0 },
-  { isTermios },
-  { isReturnVal },
-  { isArg1 },
-  { isArg2 },
-  { isArg3 },
-  { isArg0Size24 },
-  { dummyLocInfo },
-  { dummyLocInfo },
-  { dummyLocInfo },
-  { isArg2SockLen },
-  { isPollFds },
-  { isAnyArgFrom2 },
-  { isArg1Timespec },
-  { isRecvfromBuffer },
-  { isArg4Sockaddr },
-  { isArg5Socklen },
-  { isArg1Rlimit }
-};
+// Plain parameters:
+struct LibCallLocationInfo locArg0 = { 0, 0, AliasAnalysis::UnknownSize };
+struct LibCallLocationInfo locArg1 = { 0, 1, AliasAnalysis::UnknownSize };
+struct LibCallLocationInfo locArg2 = { 0, 2, AliasAnalysis::UnknownSize };
+
+// Sized parameters:
+struct LibCallLocationInfo locTermios = { 0, 2, sizeof(struct termios) };
+struct LibCallLocationInfo locTimespecArg1 = { 0, 1, sizeof(struct timespec) };
+struct LibCallLocationInfo locSockaddrArg4 = { 0, 4, sizeof(struct sockaddr) };
+struct LibCallLocationInfo locSocklenArg2 = { 0, 2, sizeof(socklen_t) };
+struct LibCallLocationInfo locSocklenArg5 = { 0, 5, sizeof(socklen_t) };
+struct LibCallLocationInfo locRlimitArg1 = { 0, 1, sizeof(struct rlimit) };
+struct LibCallLocationInfo locVaListArg0 = { 0, 0, 24 };
+
+// Call-dependent parameters
+struct LibCallLocationInfo locReturnVal = { isReturnVal, 0, 0 };
+struct LibCallLocationInfo locPollFds = { isPollFds, 0, 0 };
+struct LibCallLocationInfo locReadBuf = { isReadBuf, 0, 0 };
+struct LibCallLocationInfo locRecvfromBuffer = { isRecvfromBuffer, 0, 0 };
+
+// Globals
+struct LibCallLocationInfo locErrno = { isErrno, 0, 0 };
 
 unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
 
@@ -235,159 +158,161 @@ unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const
   return 20;
     
 }
-  
+
+// Begin function descriptions
+
 static LibCallFunctionInfo::LocationMRInfo JustErrno[] = {
-  { 0, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo ReadMR[] = {
-  { 0, AliasAnalysis::Mod },
-  { 1, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locReadBuf, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo ReallocMR[] = {
-  { 2, AliasAnalysis::Mod },
-  { 4, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locArg0, AliasAnalysis::Mod },
+  { &locReturnVal, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo MallocMR[] = {
-  { 4, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locReturnVal, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo TCGETSMR[] = {
-  { 0, AliasAnalysis::Mod },
-  { 3, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locTermios, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo GettimeMR[] = {
-  { 0, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo GettimeofdayMR[] = {
-  { 0, AliasAnalysis::Mod },
-  { 2, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg0, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo TimeMR[] = {
-  { 0, AliasAnalysis::Mod },
-  { 2, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg0, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 };
 
 static LibCallFunctionInfo::LocationMRInfo VAStartMR[] = {
 
-  { 8, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locVaListArg0, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo VACopyMR[] = {
 
-  { 8, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Ref },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locVaListArg0, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Ref },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo WriteMR[] = {
 
-  { 5, AliasAnalysis::Ref },
-  { 0, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locArg1, AliasAnalysis::Ref },
+  { &locErrno, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo StatMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 2, AliasAnalysis::Ref },
-  { 5, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg0, AliasAnalysis::Ref },
+  { &locArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo SigactionMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Ref },
-  { 6, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Ref },
+  { &locArg2, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo AcceptMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Mod },
-  { 12, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Mod },
+  { &locSocklenArg2, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo PollMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 13, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locPollFds, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo NanosleepMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 15, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locTimespecArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo RecvfromMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 16, AliasAnalysis::Mod },
-  { 17, AliasAnalysis::Mod },
-  { 18, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locRecvfromBuffer, AliasAnalysis::Mod },
+  { &locSockaddrArg4, AliasAnalysis::Mod },
+  { &locSocklenArg5, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo RlimitMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 19, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locRlimitArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo SigprocmaskMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 6, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg2, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo DirentsMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 5, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg1, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 
 static LibCallFunctionInfo::LocationMRInfo UnameMR[] = {
 
-  { 0, AliasAnalysis::Mod },
-  { 2, AliasAnalysis::Mod },
-  { ~0U, AliasAnalysis::ModRef }
+  { &locErrno, AliasAnalysis::Mod },
+  { &locArg0, AliasAnalysis::Mod },
+  { 0, AliasAnalysis::ModRef }
 
 };
 

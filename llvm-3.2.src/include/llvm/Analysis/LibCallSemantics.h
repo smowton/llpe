@@ -50,7 +50,9 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    LocResult (*isLocation)(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool, int64_t, IntAAProxy*);
+    LocResult (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t LocSize);
+    uint64_t argIndex;
+    uint64_t argSize;
   };
   
   /// LibCallFunctionInfo - Each record in the array of FunctionInfo structs
@@ -165,6 +167,9 @@ namespace llvm {
     /// set of libcalls represented by this LibCallInfo object.  This array is
     /// terminated by an entry with a NULL name.
     virtual const LibCallFunctionInfo *getFunctionInfoArray() const = 0;
+
+    virtual LibCallLocationInfo::LocResult isLocation(const LibCallLocationInfo&, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) = 0;
+
   };
 
 } // end namespace llvm

@@ -29,7 +29,20 @@ BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirs
 
 }
 
-void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred) {
+struct QueueWalkVisitor : public ShadowBBVisitor {
+
+  BackwardIAWalker* W;
+  QueueWalkVisitor(BackwardIAWalker* _W) : W(_W) { }
+
+  void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+
+    w->queueWalkFrom(BB->invar->insts.size(), BB, Ctx, mustCopyCtx);
+
+  }
+
+};
+
+void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor* Visitor, void* Ctx, bool& firstPred) {
 
   if(edgeIsDead(ExitingBB, ExitedBB))
     return;
@@ -38,7 +51,7 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
   const Loop* ExitingBBL = ExitingBB->outerScope;
   if(MyL == ExitingBBL) {
 
-    Walker->queueWalkFrom(ExitingBB->insts.size(), getBB(*ExitingBB), Ctx, !firstPred);
+    Visitor->visit(getBB(*ExitingBB), Ctx, !firstPred);
     firstPred = false;
 
   }
@@ -49,12 +62,12 @@ void IntegrationAttempt::queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
     if(LPA && LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i)
-	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, Walker, Ctx, firstPred);
+	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, Visitor, Ctx, firstPred);
 
     }
     else {
 
-      Walker->queueWalkFrom(ExitingBB->insts.size(), getBB(*ExitingBB), Ctx, !firstPred);
+      Visitor->visit(getBB(*ExitingBB), Ctx, !firstPred);
       firstPred = false;
 
     }
@@ -77,8 +90,9 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
   }
   else {
-
-    queueNormalPredecessorsBW(FromBB, Walker, Ctx);
+    
+    QueueWalkVisitor V(Walker);
+    queueNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
 
@@ -110,7 +124,8 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
   }
   else {
 
-    queueNormalPredecessorsBW(FromBB, Walker, Ctx);
+    QueueWalkVisitor V(Walker);    
+    visitNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
 
@@ -118,7 +133,7 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
 }
 
-void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
+void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVisitor* Visitor, void* Ctx) {
 
   // This isn't the function entry block and isn't our loop header. Queue all predecessors.
 
@@ -157,7 +172,7 @@ void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAW
       else {
 
 	// Must be a child loop; could be several loops deep however.
-	queueLoopExitingBlocksBW(FromBBI, BBI, Walker, Ctx, firstPred);
+	visitLoopExitingBlocksBW(FromBBI, BBI, Visitor, Ctx, firstPred);
 	      
       }
 
@@ -166,7 +181,7 @@ void IntegrationAttempt::queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAW
     if(queueHere) {
 
       ShadowBB* BB = getBB(*BBI);
-      Walker->queueWalkFrom(BB->insts.size(), BB, Ctx, !firstPred);
+      Visitor->visit(BB, Ctx, !firstPred);
       firstPred = false;
 
     }
