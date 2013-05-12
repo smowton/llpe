@@ -36,7 +36,7 @@ struct QueueWalkVisitor : public ShadowBBVisitor {
 
   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 
-    w->queueWalkFrom(BB->invar->insts.size(), BB, Ctx, mustCopyCtx);
+    W->queueWalkFrom(BB->invar->insts.size(), BB, Ctx, mustCopyCtx);
 
   }
 
@@ -62,7 +62,7 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
     if(LPA && LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i)
-	LPA->Iterations[i]->queueLoopExitingBlocksBW(ExitedBB, ExitingBB, Visitor, Ctx, firstPred);
+	LPA->Iterations[i]->visitLoopExitingBlocksBW(ExitedBB, ExitingBB, Visitor, Ctx, firstPred);
 
     }
     else {
@@ -92,7 +92,7 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
   else {
     
     QueueWalkVisitor V(Walker);
-    queueNormalPredecessorsBW(FromBB, &V, Ctx);
+    visitNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
 

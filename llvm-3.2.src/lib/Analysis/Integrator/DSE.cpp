@@ -179,7 +179,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(mayBeReplaced(I) && isAvailable()) {
 
-      if(I->i.PB.Type == ValSetTypePB || I->i.PB.Type == ValSetTypeFD) {
+      if(I->i.PB.SetType == ValSetTypePB || I->i.PB.SetType == ValSetTypeFD) {
 
 	ShadowValue Base = I->i.PB.Values[0].V;
 	if((!Base.getCtx()) || Base.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))

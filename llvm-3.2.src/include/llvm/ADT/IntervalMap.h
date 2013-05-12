@@ -1552,6 +1552,9 @@ public:
   /// @param x New value.
   void setValueUnchecked(ValT x) { this->unsafeValue() = x; }
 
+  // Only reasonable when the IntervalMap's coalescing behaviour is disabled via the traits class.
+  ValT& val() { return this->unsafeValue(); }
+
   /// insert - Insert mapping [a;b] -> y before the current position.
   void insert(KeyT a, KeyT b, ValT y);
 

@@ -80,8 +80,8 @@ namespace llvm {
     /// LocationMRInfo - This pair captures info about whether a specific
     /// location is modified or referenced by a libcall.
     struct LocationMRInfo {
-      /// LocationID - ID # of the accessed location or ~0U for array end.
-      unsigned LocationID;
+      /// This location, or null to signify end of list
+      LibCallLocationInfo* Location;
       /// MRInfo - Mod/Ref info for this location.
       AliasAnalysis::ModRefResult MRInfo;
     };

@@ -8,6 +8,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 
@@ -293,23 +294,9 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
-ImprovedValSetSingle NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_ostream& RSO) {
+ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext& Ctx) {
 
-  // Try to use an entire value:
-  if(PV.isTotal()) {
-
-    release_assert(PV.TotalIVType == ValSetTypeScalar || PV.TotalIVType == ValSetTypeVarArg);
-    if(PV.TotalIVType == ValSetTypeVarArg)
-      return ImprovedValSetSingle::get(PV.TotalIV, PV.TotalIVType);
-
-    Type* sourceType = PV.TotalIV.V.getType();
-
-    if(allowTotalDefnImplicitCast(sourceType, originalType) || allowTotalDefnImplicitPtrToInt(sourceType, originalType, GlobalTD))
-      return ImprovedValSetSingle::get(PV.TotalIV, PV.TotalIVType);
-
-  }
-
-  ShadowValue NewSV = PVToSV(PV, RSO);
+  ShadowValue NewSV = PVToSV(PV, RSO, Size, Ctx);
   if(NewSV.isInval())
     return ImprovedValSetSingle();
 
@@ -323,7 +310,7 @@ ImprovedValSetSingle NormalLoadForwardWalker::PVToPB(PartialVal& PV, raw_string_
 
 }
 
-ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& RSO) {
+ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext& Ctx) {
 
   // Otherwise try to use a sub-value:
   if(PV.isTotal() || PV.isPartial()) {
@@ -340,7 +327,7 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
     if(SalvageC) {
 
       uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
-      Constant* extr = extractAggregateMemberAt(SalvageC, Offset, originalType, LoadSize, GlobalTD);
+      Constant* extr = extractAggregateMemberAt(SalvageC, Offset, 0, Size, GlobalTD);
       if(extr)
 	return ShadowValue(extr);
 
@@ -356,33 +343,19 @@ ShadowValue NormalLoadForwardWalker::PVToSV(PartialVal& PV, raw_string_ostream& 
 
   // Finally build it from bytes.
   std::string error;
-  if(!PV.convertToBytes(LoadSize, GlobalTD, error)) {
+  if(!PV.convertToBytes(Size, GlobalTD, error)) {
     RSO << error;
     return ShadowValue();
   }
 
   assert(PV.isByteArray());
 
-  if(containsPointerTypes(originalType)) {
-
-    // If we're trying to synthesise a pointer from raw bytes, only a null pointer is allowed.
-    unsigned char* checkBuf = (unsigned char*)PV.partialBuf;
-    for(unsigned i = 0; i < PV.partialBufBytes; ++i) {
-
-      if(checkBuf[i]) {
-	RSO << "Non-null Ptr Byteops";
-	return ShadowValue();
-      }
-
-    }
-
-  }
-
-  return ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, originalType, GlobalTD));
+  Type* targetType = Type::getIntNTy(Ctx, Size * 8);
+  return ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD));
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string& error, bool finalise) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string& error) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -390,7 +363,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
   if(!getImprovedValSetSingle(LoadI->getOperand(0), PtrPB))
     return false;
 
-  if(PtrPB.Type == ValSetTypeVarArg && PtrPB.Values.size() == 1) {
+  if(PtrPB.SetType == ValSetTypeVarArg && PtrPB.Values.size() == 1) {
   
     ImprovedVal& IV = PtrPB.Values[0];
     if(IV.getVaArgType() != ImprovedVal::va_baseptr) {
@@ -476,7 +449,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
   if(ShadowInstruction* SI = LoadI->getOperand(0).getInst()) {
 
-    if(SI->i.PB.Values.size() > 0 && SI->i.PB.Type == ValSetTypePB) {
+    if(SI->i.PB.Values.size() > 0 && SI->i.PB.SetType == ValSetTypePB) {
 
       bool foundNonNull = false;
       bool foundNonConst = false;
@@ -510,10 +483,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
 	error = "Const pointer vague";
-	if(finalise)
-	  Result = ImprovedValSetSingle::getOverdef();
-	else
-	  Result = ImprovedValSetSingle();
+	Result = ImprovedValSetSingle::getOverdef();
 	return true;
 
       }
@@ -526,30 +496,12 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
 }
 
-
-static double time_diff(struct timespec& start, struct timespec& end) {
-
-  timespec temp;
-  if ((end.tv_nsec-start.tv_nsec)<0) {
-    temp.tv_sec = end.tv_sec-start.tv_sec-1;
-    temp.tv_nsec = 1000000000+end.tv_nsec-start.tv_nsec;
-  } else {
-    temp.tv_sec = end.tv_sec-start.tv_sec;
-    temp.tv_nsec = end.tv_nsec-start.tv_nsec;
-  }
-
-  return (temp.tv_sec) + (((double)temp.tv_nsec) / 1000000000.0);
-
-}
-
-static bool multiLoadEnabled = true;
-
 static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
   if(PB.Overdef || PB.Values.size() == 0)
     return false;
 
-  if(PB.Type != ValSetTypePB)
+  if(PB.SetType != ValSetTypePB)
     return false;
 
   uint32_t numNonNulls = 0;
@@ -639,7 +591,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
 
   ImprovedValSetSingle ConstResult;
   std::string error;
-  if(tryResolveLoadFromConstant(LI, ConstResult, error, finalise)) {
+  if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
     NewPB = ConstResult;
     if(NewPB.Overdef)
       optimisticForwardStatus[LI->invar->I] = error;
@@ -749,7 +701,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1Base, int64_t V1O
   if(PB2.Overdef || PB2.Values.size() == 0)
     return SVMayAlias;
 
-  if(PB2.Type != ValSetTypePB)
+  if(PB2.SetType != ValSetTypePB)
     return SVMayAlias;
 
   return tryResolveImprovedValSetSingles(PB1, V1Size, PB2, V2Size, usePBKnowledge);
@@ -765,7 +717,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
   if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
     return SVMayAlias;
 
-  if(PB1.Type != ValSetTypePB || PB2.Type != ValSetTypePB)
+  if(PB1.SetType != ValSetTypePB || PB2.SetType != ValSetTypePB)
     return SVMayAlias;
 
   return tryResolveImprovedValSetSingles(PB1, V1Size, PB2, V2Size, usePBKnowledge);
@@ -776,7 +728,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
 DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
 
   release_assert(localStore && "getWritableStoreMap without a local store?");
-  DenseMap<ShadowValue, LocStore>* newMap = localStore->getWritableStoreMap();
+  LocalStoreMap* newMap = localStore->getWritableStoreMap();
   if(newMap != localStore) {
     
     // Store the new one:
@@ -801,7 +753,7 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
     if(ImprovedValSetSingle* OldSet = dyn_cast<ImprovedValSetSingle>(it->second.store)) {
 
       // Individual valsets are not sharable: copy.
-      ImprovedValSetSingle* NewSet = new ImprovedValSetSingle(OldSet);
+      ImprovedValSetSingle* NewSet = new ImprovedValSetSingle(*OldSet);
       newMap->store[it->first] = LocStore(NewSet);
 
     }
@@ -849,9 +801,9 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   // We must return a LocStore for that value that can be updated (i.e. is not shared).
 
   // Can write direct to the base store if we're sure this write is "for good".
-  LocStore* ret;
+  LocStore* ret = 0;
   if(status == BBSTATUS_CERTAIN && !localStore->allOthersClobbered)
-    ret = V.getBaseStore();
+    ret = &V.getBaseStore();
 
   // Otherwise we need to write into the block-local store map. COW break it if necessary:
   bool writeWholeObject = (Offset == 0 && (Size == ULONG_MAX || Size == V.getAllocSize()));
@@ -859,8 +811,9 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   if(!ret) {
 
     DenseMap<ShadowValue, LocStore>& storeMap = getWritableStoreMap();
-    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = storeMap.insert(V);
-    ret = &(insResult.first.second);
+    LocStore newStore;
+    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = storeMap.insert(std::make_pair(V, newStore));
+    ret = &(insResult.first->second);
   
     if(insResult.second) {
 
@@ -918,7 +871,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   }
 
-  return ret;
+  return *ret;
   
 }
 
@@ -934,31 +887,33 @@ void ImprovedValSetSingle::truncateRight(uint64_t n) {
 
   if(Overdef)
     return;
-  if(Type == ValSetTypeScalarSplat) {
-    Offset = (int64_t)n;
+  if(SetType == ValSetTypeScalarSplat) {
+    release_assert(Values.size() == 1 && "Splat set can't be multivalued");
+    Values[0].Offset = (int64_t)n;
     return;
   }
 
   for(uint32_t i = 0; i < Values.size(); ++i) {
 
     ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
-    Type* TruncType = Type::getIntNTy(CI->getContext(), n * 8);
+    llvm::Type* TruncType = Type::getIntNTy(CI->getContext(), n * 8);
     Constant* NewC = ConstantExpr::getTrunc(CI, TruncType);
     release_assert(!isa<ConstantExpr>(NewC));
-    Values[i].V = ShadowVal(NewC);
+    Values[i].V = ShadowValue(NewC);
 
   }
 
 }
 
-void ImprovedValSetSingle::truncateLeft(uint64_t n, LLVMContext& C) {
+void ImprovedValSetSingle::truncateLeft(uint64_t n) {
 
   // Remove bytes from the LHS, leaving a value of size n bytes.
 
   if(Overdef)
     return;
-  if(Type == ValSetTypeScalar) {
-    Offset = (int64_t)n;
+  if(SetType == ValSetTypeScalar) {
+    release_assert(Values.size() == 1 && "Splat value must be single-valued");
+    Values[0].Offset = (int64_t)n;
     return;
   }
 
@@ -971,18 +926,18 @@ void ImprovedValSetSingle::truncateLeft(uint64_t n, LLVMContext& C) {
     if(ConstantExpr* CE = dyn_cast<ConstantExpr>(NewC))
       NewC = ConstantFoldConstantExpression(CE, GlobalTD, GlobalTLI);
     release_assert(!isa<ConstantExpr>(NewC));
-    Values[i].V = ShadowVal(NewC);
+    Values[i].V = ShadowValue(NewC);
 
   }
 
 }
 
-void ImprovedValSetSingle::canTruncate() {
+bool ImprovedValSetSingle::canTruncate() {
 
   return 
     Overdef || 
-    (Type == ValSetTypeScalar && Values[0].V.getType()->isIntegerTy()) || 
-    Type == ValSetTypeScalarSplat;
+    (SetType == ValSetTypeScalar && Values[0].V.getType()->isIntegerTy()) || 
+    SetType == ValSetTypeScalarSplat;
 
 }
 
@@ -1002,7 +957,7 @@ void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
 
       // Punching a hole in a value that wholly covers the range we're clearing:
       ImprovedValSetSingle RHS;
-      if(found->canTruncate()) {
+      if(found.val().canTruncate()) {
 
 	RHS = *found;
 	RHS.truncateLeft(found.stop() - LastByte);
@@ -1016,12 +971,12 @@ void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
 
     }
 
-    if(found->canTruncate()) {
+    if(found.val().canTruncate()) {
       CoveredBytes -= (found.stop() - Offset);
-      found->truncateRight(Offset - found.start());
+      found.val().truncateRight(Offset - found.start());
     }
     else {
-      found->setOverdef();
+      found.val().setOverdef();
     }
     uint64_t oldStop = found.stop();
     found.setStopUnchecked(Offset);
@@ -1048,11 +1003,11 @@ void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
 
   if(found != Map.end() && found.start() <= LastByte) {
 
-    if(found->canTruncate()) {
-      found->truncateLeft(found.stop() - LastByte);
+    if(found.val().canTruncate()) {
+      found.val().truncateLeft(found.stop() - LastByte);
     }
     else {
-      found->setOverdef();
+      found.val().setOverdef();
     }
     CoveredBytes -= (LastByte - found.start());
     found.setStartUnchecked(LastByte);
@@ -1093,12 +1048,12 @@ void ImprovedValSetSingle::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals
 void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
 
   clearRange(Offset, Size);
-  MapIt it = Map->find(Offset);
+  MapIt it = Map.find(Offset);
 
   for(unsigned i = NewVals.size(); i != 0; --i, --it) {
 
     IVSRange& RangeVal = NewVals[i-1];
-    it.insert(RangeVal.second, RangeVal.first.first, RangeVal.first.second);
+    it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
 
   }
 
@@ -1113,7 +1068,7 @@ void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals,
 
 }
 
-bool llvm::addIVStoPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error) {
+bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error) {
 
   release_assert(PV && "Must allocate PV before calling addIVSToPartialVal");
 
@@ -1121,17 +1076,17 @@ bool llvm::addIVStoPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64
   if(IVS.Overdef || IVS.Values.size() != 1)
     return false;
   // And also if the value that would be merged is not constant-typed:
-  if(IVS.Type != ValSetTypeScalar && IVS.Type != ValSetTypeScalarSplat)
+  if(IVS.SetType != ValSetTypeScalar && IVS.SetType != ValSetTypeScalarSplat)
     return false;
 
   PartialVal NewPV;
   Constant* DefC = cast<Constant>(IVS.Values[0].V.getVal());
-  if(IVS.Type == ValSetTypeScalar) {
-    NewPV = PartialVal::getConstant(DefC, Offset);
+  if(IVS.SetType == ValSetTypeScalar) {
+    NewPV = PartialVal::getPartial(DefC, Offset);
   }
   else {
     // Splat of i8:
-    uint8_t SplatVal = (uint8_t)(DefC->getLimitedValue());
+    uint8_t SplatVal = (uint8_t)(cast<ConstantInt>(DefC)->getLimitedValue());
     NewPV = PartialVal::getByteArray(Size);
     
     uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
@@ -1145,7 +1100,7 @@ bool llvm::addIVStoPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64
     NewPV.loadFinished = true;
   }
 
-  if(!ResultPV->combineWith(NewPV, 0, Size, Size, GlobalTD, error))
+  if(!PV->combineWith(NewPV, 0, Size, Size, GlobalTD, error))
     return false;
 
   return true;
@@ -1168,7 +1123,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     if(it != IVM->Map.end() && it.start() <= Offset && it.stop() >= (Offset + Size)) {
 
-      IVS = &*it;
+      IVS = &it.val();
       IVSSize = it.stop() - it.start();
       Offset -= it.start();
 
@@ -1187,13 +1142,13 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       }
       
       // Otherwise we need to extract a sub-value: only works on constants:
-      bool rejectHere = IVS->Type != ValSetTypeScalar && IVS->Type != ValSetTypeScalarSplat;
+      bool rejectHere = IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat;
       if(rejectHere) {
 	Result = ImprovedValSetSingle::getOverdef();
 	return;
       }
       
-      if(IVS->Type == ValSetTypeScalar) {
+      if(IVS->SetType == ValSetTypeScalar) {
       
 	for(uint32_t i = 0, endi = IVS->Values.size(); i != endi; ++i) {
 	
@@ -1221,7 +1176,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     }
 
-    if(!addIVSToPartialVal(IVS, Offset, Size, ResultPV, error)) {
+    if(!addIVSToPartialVal(*IVS, Offset, Size, ResultPV, error)) {
       
       delete ResultPV;
       Result = ImprovedValSetSingle::getOverdef();
@@ -1240,7 +1195,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
   // If we get to here the value is not wholly covered by this Multi map. Add what we can and defer:
   release_assert(IVM && "Fell through without a multi?");
 
-  for(; it != IVM->end() && it.start() < (Offset + Size); ++it) {
+  for(; it != IVM->Map.end() && it.start() < (Offset + Size); ++it) {
 
     if(!ResultPV)
       ResultPV = new PartialVal(Size);
@@ -1248,7 +1203,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
     uint64_t FirstReadByte = std::max(Offset, it.start());
     uint64_t LastReadByte = std::min(Offset + Size, it.stop());
 
-    if(!addIVSToPartialVal(*it, FirstReadByte - it.start(), LastReadByte - FirstReadByte, ResultPV, error)) {
+    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
       Result = ImprovedValSetSingle::getOverdef();
       return;
@@ -1260,7 +1215,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       
     // Try the next linked map (one should exist:)
     release_assert(IVM->Underlying && "Value not complete, but no underlying map?");
-    readValueRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, error);
+    readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, error);
       
   }
 
@@ -1286,12 +1241,12 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
     firstStore = &(it->second);
 
   PartialVal* ResultPV = 0;
-  readValRangeFrom(V, Offset, Size, ReadBB, firstStore, Result, ResultPV);
+  readValRangeFrom(V, Offset, Size, ReadBB, firstStore->store, Result, ResultPV, error);
 
   if(ResultPV) {
 
     raw_string_ostream RSO(error);
-    Result = PVToPB(*ResultPV, RSO);
+    Result = PVToPB(*ResultPV, RSO, Size, V.getLLVMContext());
     delete ResultPV;
 
   }
@@ -1300,10 +1255,10 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
 bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string& error) {
 
-  Type* Source = Values[i].V.getType();
+  Type* Source = Values[0].V.getType();
   
   // All casts ignored for VAs:
-  if(Type == ValSetTypeVarArg)
+  if(SetType == ValSetTypeVarArg)
     return true;
 
   // Allow implicit ptrtoint and bitcast between pointer types
@@ -1313,7 +1268,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
   if(allowTotalDefnImplicitPtrToInt(Source, Target, GlobalTD))
     return true;
 
-  if(Type != ValSetTypeScalar) {
+  if(SetType != ValSetTypeScalar) {
     error = "Non-scalar coercion";
     return false;
   }
@@ -1321,7 +1276,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
   // Finally reinterpret cast each member:
   for(uint32_t i = 0, iend = Values.size(); i != iend; ++i) {
 
-    PartialVal PV = PartialVal::getTotal(cast<Constant>(Values[i].V.getVal()));
+    PartialVal PV = PartialVal::getPartial(cast<Constant>(Values[i].V.getVal()), 0);
     if(!PV.convertToBytes(TargetSize, GlobalTD, error))
       return false;
 
@@ -1357,7 +1312,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert(PtrSet.SetType == ValSetTypePB && "Write through non-pointer-typed value?");
 
   ShadowValue Val = StoreSI->getOperand(0);
   ImprovedValSetSingle ValPB;
@@ -1373,7 +1328,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert(PtrSet.SetType == ValSetTypePB && "Write through non-pointer-typed value?");
   
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(2)));
   ConstantInt* ValCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(1)));
@@ -1382,7 +1337,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 
   if(LengthCI && ValCI) {
    
-    ValSet.Type = ValSetTypeScalarSplat;
+    ValSet.SetType = ValSetTypeScalarSplat;
     ImprovedVal IV(ShadowValue(ValCI), LengthCI->getLimitedValue());
     ValSet.insert(IV);
 
@@ -1406,7 +1361,7 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
     return;
   }
 
-  switch(Src.Type) {
+  switch(Src.SetType) {
   case ValSetTypeScalar:
     break;
   case ValSetTypeScalarSplat:
@@ -1417,9 +1372,9 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
     return;
   }
 
-  for(uint32_t i = 0, endi = Src->Values.size(); i != endi && !Result.Overdef; ++i) {
+  for(uint32_t i = 0, endi = Src.Values.size(); i != endi && !Dest.Overdef; ++i) {
 	
-    Constant* bigConst = cast<Constant>(Src->Values[i].V.getVal());
+    Constant* bigConst = cast<Constant>(Src.Values[i].V.getVal());
 
     Constant* smallConst = extractAggregateMemberAt(bigConst, Offset, 0, Size, GlobalTD);
 
@@ -1435,7 +1390,7 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
       }
 
       Type* ReinterpType = Type::getIntNTy(bigConst->getContext(), Size * 8);
-      smallConst = constFromBytes(PV.partialBuf, ReinterpType, GlobalTD);
+      smallConst = constFromBytes((uint8_t*)PV.partialBuf, ReinterpType, GlobalTD);
 
     }
     
@@ -1474,7 +1429,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
   else {
     
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(store);
-    IVM::MapTy it = IVM->Map.find(Offset);
+    ImprovedValSetMulti::MapIt it = IVM->Map.find(Offset);
 
     // Value overlapping range on the left:
     if(it != IVM->Map.end() && it.start() < Offset) {
@@ -1484,7 +1439,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
       uint64_t SubvalSize = std::min(Offset + Size, it.stop()) - Offset;
       
       ImprovedValSetSingle SubVal;
-      getIVSSubVal(*it, SubvalOffset, SubvalSize, SubVal);
+      getIVSSubVal(it.val(), SubvalOffset, SubvalSize, SubVal);
       Results.push_back(IVSR(Offset, Offset + SubvalSize, SubVal));
       Offset += SubvalSize;
       Size -= SubvalSize;
@@ -1510,7 +1465,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 
 	// Overlap on the right: extract sub-val.
 	ImprovedValSetSingle SubVal;
-	getIVSSubVal(*it, 0, Size, SubVal);
+	getIVSSubVal(it.val(), 0, Size, SubVal);
 	Results.push_back(IVSR(it.start(), Offset+Size, SubVal));
 	Offset += Size;
 	Size = 0;
@@ -1520,7 +1475,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
       else {
 
 	// No overlap: use whole value.
-	Results.push_back(IVSR(it.start(), it.stop(), *it));
+	Results.push_back(IVSR(it.start(), it.stop(), it.val()));
 	Offset += (it.stop() - it.start());
 	Size -= (it.stop() - it.start());
 
@@ -1562,8 +1517,7 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
     firstStore = &(it->second);
   }
 
-  PartialVal* ResultPV = 0;
-  readValRangeMultiFrom(V, Offset, Size, ReadBB, firstStore, Results, 0);
+  readValRangeMultiFrom(V, Offset, Size, ReadBB, firstStore->store, Results, 0);
 
 }
 
@@ -1573,14 +1527,14 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   ShadowValue Ptr = MemcpySI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
   
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemcpySI->getCallArgOperand(2)));
 
   ShadowValue SrcPtr = MemcpySI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Memcpy from non-pointer value?");
+  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
 
   executeCopyInst(PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
 
@@ -1592,12 +1546,12 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   ShadowValue Ptr = SI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
   
   ShadowValue SrcPtr = SI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Memcpy from non-pointer value?");
+  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
   
   executeCopyInst(PtrSet, SrcPtrSet, 24, BB);
 
@@ -1610,7 +1564,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   Constant* Undef = UndefValue::get(AllocType);
   ImprovedVal IV(ShadowValue(Undef), 0);
   SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
-  storeSize = AllocSize;
+  SI->storeSize = AllocSize;
 
 }
 
@@ -1624,7 +1578,7 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   AllocaInst* AI = cast_inst<AllocaInst>(SI);
   Type* allocType = AI->getAllocatedType();
  
-  if(AI->isArrayAlloction()) {
+  if(AI->isArrayAllocation()) {
 
     ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
     if(!N)
@@ -1646,7 +1600,7 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
   if(!AllocSize)
     return;
 
-  Type* allocType = ArrayType::get(Type::getInt8Ty(SI->getContext()), AllocSize->getLimitedValue());
+  Type* allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
   executeAllocInst(SI, allocType, AllocSize->getLimitedValue());
 
@@ -1661,7 +1615,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
     if(!AllocSize)
       return;
     
-    Type* allocType = ArrayType::get(Type::getInt8Ty(SI->getContext()), AllocSize->getLimitedValue());
+    Type* allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
     executeAllocInst(SI, allocType, AllocSize->getLimitedValue());    
 
   }
@@ -1669,10 +1623,10 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
   ShadowValue SrcPtr = SI->getCallArgOperand(0);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Realloc from uninitialised PB?");
-  release_assert(SrcPtrSet.Overdef || SrcPtrSet.Type == ValSetTypePB && "Realloc non-pointer-typed value?");
+  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Realloc non-pointer-typed value?");
   uint64_t CopySize = ULONG_MAX;
 
-  if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
+  if(SrcPtrSet.Overdef || SrcPtrSet.Values.size() > 1) {
 
     // Overdef the realloc.
     SrcPtrSet.setOverdef();
@@ -1706,7 +1660,7 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
   // OK now blow a hole in the local map for that value and write this list of extents into the gap:
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, copyValues.size() == 1);
-  Store.store.replaceRangeWithPBs(copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
+  Store.store->replaceRangeWithPBs(copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
 
 }
 
@@ -1717,7 +1671,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   ImprovedValSetSingle PtrSet;
 
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
   if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
 
@@ -1741,7 +1695,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   vaStartVals.push_back(IVSR(16, 24, StackBase));
 
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
-  Store.store.replaceRangeWithPBs(vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
+  Store.store->replaceRangeWithPBs(vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
 
 }
 
@@ -1752,7 +1706,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
   ShadowValue Ptr = ReadSI->getCallArgOperand(1);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB (read)?");
-  release_assert(PtrSet.Overdef || PtrSet.Type == ValSetTypePB && "Write through non-pointer-typed value (read)?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value (read)?");
 
   ImprovedValSetSingle WriteIVS;
   
@@ -1765,8 +1719,8 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
 
     std::vector<Constant*> constBytes;
     std::string errors;
-    LLVMContext& Context = Ptr.getBareVal().getContext();
-    if(getFileBytes(OS->Name, FileOffset, Size, constBytes, Context,  errors)) {
+    LLVMContext& Context = Ptr.getLLVMContext();
+    if(getFileBytes(OS.Name, FileOffset, Size, constBytes, Context,  errors)) {
       ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
       Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
       WriteIVS = ImprovedValSetSingle::get(ByteArray);
@@ -1841,31 +1795,33 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
     // Otherwise do selective clobbering for annotated syscalls:
 
-    if(LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+    if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
       
       const LibCallFunctionInfo::LocationMRInfo *Details = 0;
 
       if(FI->LocationDetails)
 	Details = FI->LocationDetails;
       else if(FI->getLocationDetailsFor)
-	Details = FI->getLocationDetailsFor(CS);
+	Details = FI->getLocationDetailsFor(ShadowValue(SI));
 
       release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
 
       for (unsigned i = 0; Details[i].Location; ++i) {
 
 	ShadowValue ClobberV;
-	uint64_t ClobberSize;
-	if(Details[i].Location.getLocation) {
-	  Details[i].Location.getLocation(ClobberV, ClobberSize);
+	uint64_t ClobberSize = 0;
+	if(Details[i].Location->getLocation) {
+	  Details[i].Location->getLocation(ShadowValue(SI), ClobberV, ClobberSize);
 	}
 	else {
-	  ClobberV = getCalllArgOperand(SI, Details[i].Location.argIndex);
-	  ClobberSize = Details[i].Location.argSize;
+	  ClobberV = SI->getCallArgOperand(Details[i].Location->argIndex);
+	  ClobberSize = Details[i].Location->argSize;
 	}
 
+	ImprovedValSetSingle ClobberSet;
+	getImprovedValSetSingle(ClobberV, ClobberSet);
 	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
-	executeWriteInst(ClobberV, OD, ClobberSize, SI->parent);
+	executeWriteInst(ClobberSet, OD, ClobberSize, SI->parent);
 
       }
 
@@ -1896,7 +1852,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
-    Store.store.replaceRangeWithPB(ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
+    Store.store->replaceRangeWithPB(ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
 
   }
   else {
@@ -1905,7 +1861,8 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
       if(it->Offset == LLONG_MAX) {
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
-	Store.store.clobber();
+	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+	Store.store->replaceRangeWithPB(OD, 0, ULONG_MAX);
       }
       else {
 
@@ -1923,7 +1880,8 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
 	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
 
-	    ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, error);
+	    std::string ignoredError;
+	    ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, ignoredError);
 
 	  }
 
@@ -1932,7 +1890,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	}
 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
-	Store.store.replaceRangeWithPB(oldValSet, (uint64_t)it->Offset, PtrSize); 
+	Store.store->replaceRangeWithPB(oldValSet, (uint64_t)it->Offset, PtrSize); 
 
       }
 
@@ -1948,7 +1906,7 @@ void LocalStoreMap::dropReference() {
 
     // Drop references to any maps this points to;
     for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it)
-      it->second->store->dropReference();
+      it->second.store->dropReference();
 
     delete this;
 
@@ -1956,13 +1914,13 @@ void LocalStoreMap::dropReference() {
 
 }
 
-static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti>& Seen) {
+static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti*, 4>& Seen) {
 
   if(ImprovedValSetSingle* LHSS = dyn_cast<ImprovedValSetSingle>(LHS)) {
 
     if(ImprovedValSetSingle* RHSS = dyn_cast<ImprovedValSetSingle>(RHS)) {
       
-      bool match = (*LHS) == (*RHS);
+      bool match = (*LHSS) == (*RHSS);
       if(match) {
 	
 	LHSResult = LHS;
@@ -1976,7 +1934,7 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
     else {
 
       // Flip args:
-      return getCommonAncestor(RHS, LHS, RHSResult, LHSResult);
+      return getCommonAncestor(RHS, LHS, RHSResult, LHSResult, Seen);
 
     }
 
@@ -1984,8 +1942,8 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 
   ImprovedValSetMulti* LHSM = cast<ImprovedValSetMulti>(LHS);
   if(!Seen.insert(LHSM)) {
-    LHSResult = LHSM;
-    RHSResult = RHSM;
+    LHSResult = LHS;
+    RHSResult = RHS;
     return true;
   }
 
@@ -1998,20 +1956,20 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
   }
 
   // Advance the LHS pointer if possible, flip args to advance other side next.
-  return getCommonAncestor(RHS, LHS->Underlying ? LHS->Underlying : LHS, RHSResult, LHSResult);
+  return getCommonAncestor(RHS, LHSM->Underlying ? LHSM->Underlying : LHS, RHSResult, LHSResult, Seen);
 
 }
 
 struct MergeBlockVisitor : public ShadowBBVisitor {
 
-  bool newMapValid
+  bool newMapValid;
   LocalStoreMap* newMap;
-  SmallPtrSet<LocalStoreMap*> seenMaps;
+  SmallPtrSet<LocalStoreMap*, 4> seenMaps;
   bool mergeToBase;
 
   MergeBlockVisitor(bool mtb) : newMapValid(false), newMap(0), mergeToBase(mtb) { }
 
-  void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
+  void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
 
     if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
 
@@ -2028,7 +1986,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
     // Get an IVS list for each side that contains gaps where there is a common ancestor:
     ImprovedValSet *LHSAncestor, *RHSAncestor;
     {
-      SmallPtrSet<ImprovedValSetMulti> Seen;
+      SmallPtrSet<ImprovedValSetMulti*, 4> Seen;
       // If we're making a new base store, flatten entirely.
       if(mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
 
@@ -2121,13 +2079,12 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	      baseit != baseend; ++baseit) {
 
 	    ImprovedValSetSingle subVal;
-	    getIVSSubVal(consumeit.second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
+	    getIVSSubVal(consumeit->second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
 	    subVal.merge(baseit->second);
 	    MergedVals.push_back(IVSR(baseit->first.first, baseit->first.second, subVal));
 		    
 	  }
 
-	  coveredBytes += (stopAt - LastOffset);
 	  LastOffset = stopAt;
 	  if(bump)
 	    ++consumeit;
@@ -2179,12 +2136,12 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
       }
       else {
 	mergeToStore->store->dropReference();
-	newStore = new ImprovedValSetMulti();
+	newStore = new ImprovedValSetMulti(MergeV);
       }	
 
       newStore->Underlying = newUnderlying;
 
-      newStore::MapIt insertit = newStore->Map.end();
+      ImprovedValSetMulti::MapIt insertit = newStore->Map.end();
       for(SmallVector<IVSRange, 4>::iterator finalit = MergedVals.begin(), finalitend = MergedVals.end();
 	  finalit != finalitend; ++finalit) {
 
@@ -2237,7 +2194,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	    if(!mergeFromMap->store.count(it->first)) {
 
 	      keysToRemove.push_back(it->first);
-	      it->second.store.dropReference();
+	      it->second.store->dropReference();
 
 	    }
 
@@ -2265,16 +2222,16 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 		itend = mergeFromMap->store.end(); it != itend; ++it) {
 	
 	    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
-	      mergeMap->insert(it->first, it->second);
+	      mergeMap->store.insert(std::make_pair(it->first, it->second));
 	
-	    if(it->second)
-	      toDelete.push_back(it->first);
+	    if(ins.second)
+	      toDelete.push_back(ins.first->first);
 
 	  }
       
 	  for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
 	      delit != delend; ++delit)
-	    mergeFromMap->erase(*delit);
+	    mergeFromMap->store.erase(*delit);
 
 	}
 
@@ -2302,9 +2259,9 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	// Right, merge it->second and mergeFromStore.
 	// If the pointers match these are two refs to the same Multi.
 	// Refcounting will be caught up when we deref mergeFromMap below:
-	if(mergeFromStore->store != it->second->store) {
+	if(mergeFromStore->store != it->second.store) {
 
-	  mergeStores(it->first, mergeFromStore, &it->second);
+	  mergeStores(BB, &it->second, mergeFromStore, it->first);
 
 	}
 
@@ -2323,12 +2280,11 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
 void llvm::commitStoreToBase(LocalStoreMap* Map) {
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = Map->begin(), itend = Map->end(); it != itend; ++it) {
+  for(DenseMap<ShadowValue, LocStore>::iterator it = Map->store.begin(), itend = Map->store.end(); it != itend; ++it) {
 
-    LocStore* baseStore = it->first.getBaseStore();
-    release_assert(baseStore && "No base store?");
-    baseStore->store.dropReference();
-    baseStore->store = it->second.store->getReadableCopy();
+    LocStore& baseStore = it->first.getBaseStore();
+    baseStore.store->dropReference();
+    baseStore.store = it->second.store->getReadableCopy();
 
   }
 
@@ -2349,7 +2305,7 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
   // TODO: do this better
   if(mergeToBase && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
-    V.newMap->store.dropReference();
+    V.newMap->dropReference();
   }
   else
     BB->localStore = V.newMap;
@@ -2362,7 +2318,7 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
   InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(cast_inst<CallInst>(SI));
 
   MergeBlockVisitor V(mergeToBase);
-  CallIA->visitLiveReturnBlocks(SI);
+  CallIA->visitLiveReturnBlocks(V);
 
   if(mergeToBase && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);

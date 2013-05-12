@@ -984,6 +984,8 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     }
     else if(SI->getNumOperands() == 2 && Ops[0].first == ValSetTypeVarArg) {
 
+      int64_t newVaArg = ImprovedVal::not_va_arg;
+
       if(Ops[1].first == ValSetTypeVarArg) {
 
 	// This should be gep ( symbolic-stack-base, some-offset )
@@ -991,9 +993,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	// return value should be the nth arg /of either kind/
 	
 	InlineAttempt* calledIA = Ops[0].second.V.getInst()->parent->IA->getFunctionRoot();
-	Function& calledF = calledIA->getFunction();
 
-	int64_t newVaArg = -1;
 	if(Ops[0].second.getVaArgType() == va_arg_type_baseptr) {
 
 	  if(Ops[1].second.getVaArgType() == va_arg_type_nonfp)
@@ -1181,7 +1181,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
     }
     else {
       
-      Ops[OpIdx].first = ArgPB.Type;
+      Ops[OpIdx].first = ArgPB.SetType;
       for(uint32_t i = 0; i < ArgPB.Values.size(); ++i) {
 	
 	Ops[OpIdx].second = ArgPB.Values[i];
@@ -1309,11 +1309,11 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser) {
   if(!NewPBValid)
     return false;
 
-  release_assert(NewPB.Overdef || (NewPB.Type != ValSetTypeUnknown));
+  release_assert(NewPB.Overdef || (NewPB.SetType != ValSetTypeUnknown));
 
   if((!OldPBValid) || OldPB != NewPB) {
 
-    if(NewPB.Type == ValSetTypeFD) {
+    if(NewPB.SetType == ValSetTypeFD) {
 
       for(uint32_t i = 0; i < NewPB.Values.size(); ++i) {
 

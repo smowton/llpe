@@ -1,7 +1,5 @@
 // Helper for shadow structures
 
-#include "llvm/ADT/IntervalMap.h"
-
 template<typename T> class ImmutableArray {
 
   T* arr;
@@ -60,7 +58,9 @@ enum va_arg_type {
 
 class ShadowArg;
 class ShadowInstruction;
+class ShadowGV;
 class InstArgImprovement;
+class LocStore;
 
 struct ShadowValue {
 
@@ -272,6 +272,8 @@ inline bool operator>=(ImprovedVal V1, ImprovedVal V2) {
 
 class ImprovedValSetSingle;
 
+typedef std::pair<std::pair<uint64_t, uint64_t>, ImprovedValSetSingle> IVSRange;
+
 struct ImprovedValSet {
 
   bool isMulti;
@@ -281,21 +283,23 @@ ImprovedValSet(bool M) : isMulti(M) { }
   virtual ImprovedValSet* getReadableCopy() = 0;
   virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) = 0;
   virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) = 0;
+  virtual ~ImprovedValSet() = 0;
   
 };
 
 struct ImprovedValSetSingle : public ImprovedValSet {
 
- ImprovedValSetSingle() : ImprovedValSet(false) {}
   static bool classof(const ImprovedValSet* IVS) { return !IVS->isMulti; }
 
-  ValSetType Type;
+  ValSetType SetType;
   SmallVector<ImprovedVal, 1> Values;
   bool Overdef;
 
-ImprovedValSetSingle() : Type(ValSetTypeUnknown), Overdef(false) { }
-ImprovedValSetSingle(ValSetType T) : Type(T), Overdef(false) { }
-ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
+ ImprovedValSetSingle() : ImprovedValSet(false), SetType(ValSetTypeUnknown), Overdef(false) { }
+ ImprovedValSetSingle(ValSetType T) : ImprovedValSet(false), SetType(T), Overdef(false) { }
+ ImprovedValSetSingle(ValSetType T, bool OD) : ImprovedValSet(false), SetType(T), Overdef(OD) { }
+
+  virtual ~ImprovedValSetSingle() {}
 
   virtual void dropReference();
 
@@ -318,7 +322,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   bool onlyContainsNulls() {
 
-    if(Type == ValSetTypePB && Values.size() == 1) {
+    if(SetType == ValSetTypePB && Values.size() == 1) {
       
       if(Constant* C = dyn_cast_or_null<Constant>(Values[0].V.getVal()))
 	return C->isNullValue();
@@ -331,7 +335,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
   bool onlyContainsFunctions() {
 
-    if(Type != ValSetTypeScalar)
+    if(SetType != ValSetTypeScalar)
       return false;
     
     for(uint32_t i = 0; i < Values.size(); ++i) {
@@ -353,7 +357,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     if(Overdef)
       return *this;
 
-    if(Type == ValSetTypePB) {
+    if(SetType == ValSetTypePB) {
 
       for(SmallVector<ImprovedVal, 1>::iterator it = Values.begin(), endit = Values.end(); it != endit; ++it) {
 
@@ -390,7 +394,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
     if(OtherPB.Overdef) {
       setOverdef();
     }
-    else if(isInitialised() && OtherPB.Type != Type) {
+    else if(isInitialised() && OtherPB.SetType != SetType) {
 
       // Special case: functions may permissibly merge with null pointers. In this case
       // reclassify the null as a scalar.
@@ -402,7 +406,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
       }
       else if(onlyContainsNulls() && OtherPB.onlyContainsFunctions()) {
 
-	Type = ValSetTypeScalar;
+	SetType = ValSetTypeScalar;
 	// Try again:
 	return merge(OtherPB);
 
@@ -412,7 +416,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
 
     }
     else {
-      Type = OtherPB.Type;
+      SetType = OtherPB.SetType;
       for(SmallVector<ImprovedVal, 4>::iterator it = OtherPB.Values.begin(), it2 = OtherPB.Values.end(); it != it2 && !Overdef; ++it)
 	insert(*it);
     }
@@ -445,7 +449,7 @@ ImprovedValSetSingle(ValSetType T, bool OD) : Type(T), Overdef(OD) { }
   void truncateRight(uint64_t);
   void truncateLeft(uint64_t);
   bool canTruncate();
-  bool coerceToType(Type* Target, uint64_t TargetSize, std::string& error);
+  bool coerceToType(llvm::Type* Target, uint64_t TargetSize, std::string& error);
   
 };
 
@@ -476,17 +480,20 @@ struct ImprovedValSetMulti : public ImprovedValSet {
 
   typedef IntervalMap<uint64_t, ImprovedValSetSingle, IntervalMapImpl::NodeSizer<uint64_t, ImprovedValSetSingle>::LeafSize, HalfOpenNoMerge> MapTy;
   typedef MapTy::iterator MapIt;
+  MapTy::Allocator MapAllocator;
   MapTy Map;
   uint32_t MapRefCount;
   ImprovedValSet* Underlying;
   uint64_t CoveredBytes;
   uint64_t AllocSize;
 
- ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), MapRefCount(1), Underlying(0), CoveredBytes(0) {
+ ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), MapAllocator(), Map(MapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0) {
     
     AllocSize = V.getAllocSize();
 
   }
+
+  virtual ~ImprovedValSetMulti() {}
 
   static bool classof(const ImprovedValSet* IVS) { return IVS->isMulti; }
   virtual void dropReference();
@@ -612,14 +619,6 @@ struct ShadowInstruction {
 
 };
 
-struct ShadowGV {
-
-  GlobalVariable* G;
-  LocStore store;
-  uint64_t storeSize;
-
-};
-
 template<class X> inline bool inst_is(ShadowInstruction* SI) {
   return inst_is<X>(SI->invar);
 }
@@ -636,6 +635,14 @@ struct ShadowArgInvar {
 
   Argument* A;
   ImmutableArray<ShadowInstIdx> userIdxs;
+
+};
+
+struct ShadowGV {
+
+  GlobalVariable* G;
+  LocStore store;
+  uint64_t storeSize;
 
 };
 
@@ -894,12 +901,12 @@ inline uint64_t ShadowValue::getAllocSize() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    release_assert(u.I.store.store && "getAllocSize on instruction without store");
-    return u.I.storeSize;
+    release_assert(u.I->store.store && "getAllocSize on instruction without store");
+    return u.I->storeSize;
   case SHADOWVAL_GV:
-    return u.GV.storeSize;
+    return u.GV->storeSize;
   default:
-    release_assert(0 && "getAllocSize on non-inst, non-GV value");
+    llvm_unreachable("getAllocSize on non-inst, non-GV value");
   }
 
 }
@@ -908,12 +915,12 @@ inline LocStore& ShadowValue::getBaseStore() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    release_assert(u.I.store.store && "getBaseStore on instruction without one");
-    return store;
+    release_assert(u.I->store.store && "getBaseStore on instruction without one");
+    return u.I->store;
   case SHADOWVAL_GV:
-    return u.GV.store;
+    return u.GV->store;
   default:
-    release_assert(0 && "getBaseStore on non-inst, non-GV value");
+    llvm_unreachable("getBaseStore on non-inst, non-GV value");
   }
 
 }
@@ -948,7 +955,7 @@ template<class X> inline X* cast_val(ShadowValue V) {
 
 inline Constant* getConstReplacement(ShadowArg* SA) {
  
-  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 1 || SA->i.PB.Type != ValSetTypeScalar)
+  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 1 || SA->i.PB.SetType != ValSetTypeScalar)
     return 0;
   else
     return cast<Constant>(SA->i.PB.Values[0].V.getVal());
@@ -957,7 +964,7 @@ inline Constant* getConstReplacement(ShadowArg* SA) {
 
 inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
-  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 1 || SI->i.PB.Type != ValSetTypeScalar)
+  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 1 || SI->i.PB.SetType != ValSetTypeScalar)
     return 0;
   else
     return cast<Constant>(SI->i.PB.Values[0].V.getVal());
@@ -1021,7 +1028,7 @@ inline bool getBaseAndOffset(ShadowValue SV, ShadowValue& Base, int64_t& Offset,
   if(!getImprovedValSetSingle(SV, SVPB))
     return false;
 
-  if(SVPB.Type != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() == 0)
+  if(SVPB.SetType != ValSetTypePB || SVPB.Overdef || SVPB.Values.size() == 0)
     return false;
 
   if(!ignoreNull) {
@@ -1078,9 +1085,9 @@ inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t&
 }
 
 inline bool mayBeReplaced(InstArgImprovement& IAI) {
-  return IAI.PB.Values.size() == 1 && (IAI.PB.Type == ValSetTypeScalar ||
-				       (IAI.PB.Type == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
-				       IAI.PB.Type == ValSetTypeFD);
+  return IAI.PB.Values.size() == 1 && (IAI.PB.SetType == ValSetTypeScalar ||
+				       (IAI.PB.SetType == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
+				       IAI.PB.SetType == ValSetTypeFD);
 }
 
 inline bool mayBeReplaced(ShadowInstruction* SI) {
@@ -1109,7 +1116,7 @@ inline void setReplacement(ShadowInstruction* SI, Constant* C) {
   SI->i.PB.Values.clear();
   std::pair<ValSetType, ImprovedVal> P = getValPB(C);
   SI->i.PB.Values.push_back(P.second);
-  SI->i.PB.Type = P.first;
+  SI->i.PB.SetType = P.first;
 
 }
 
@@ -1118,7 +1125,7 @@ inline void setReplacement(ShadowArg* SA, Constant* C) {
   SA->i.PB.Values.clear();
   std::pair<ValSetType, ImprovedVal> P = getValPB(C);
   SA->i.PB.Values.push_back(P.second);
-  SA->i.PB.Type = P.first;
+  SA->i.PB.SetType = P.first;
 
 }
 

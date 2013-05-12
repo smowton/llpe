@@ -1935,6 +1935,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
+  GlobalVFSAA = &getAnalysis<VFSCallModRef>();
   GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {

@@ -4,6 +4,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/IntervalMap.h"
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
@@ -62,8 +63,6 @@ class IAWalker;
 class BackwardIAWalker;
 class ForwardIAWalker;
 class raw_string_ostream;
-class NormalLoadForwardWalker;
-class PBLoadForwardWalker;
 class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
@@ -83,8 +82,11 @@ inline void release_assert_fail(const char* str) {
 // Include structures and functions for working with instruction and argument shadows.
 #include "ShadowInlines.h"
 
+class VFSCallModRef;
+
 extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
+extern VFSCallModRef* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -228,8 +230,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 		    const Loop* L);
 
    void initShadowGlobals();
-   ShadowGV* getShadowGlobalIndex(GlobalVariable* GV) {
-     return shadowGlobals[GV];
+   uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
+     return shadowGlobalsIdx[GV];
    }
 
    uint64_t getSeq() {
@@ -485,7 +487,7 @@ public:
 
 inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
-  if(PB1.Type != PB2.Type)
+  if(PB1.SetType != PB2.SetType)
     return false;
 
   if(PB1.Overdef != PB2.Overdef)
@@ -694,7 +696,6 @@ protected:
     
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth) : 
-  pass(Pass),
     LI(_LI),
     improvableInstructions(0),
     improvedInstructions(0),
@@ -708,6 +709,7 @@ protected:
     commitStarted(false),
     contextTaintedByVarargs(false),
     nesting_depth(depth),
+    pass(Pass),
     F(_F),
     L(_L),
     contextIsDead(false),
@@ -778,8 +780,8 @@ protected:
   // Constant propagation:
 
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result);
-  bool tryEvaluate(ShadowValue V, bool finalise, LoopPBAnalyser* LPBA, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-  bool getNewPB(ShadowInstruction* SI, bool finalise, ImprovedValSetSingle& NewPB, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA, LoopPBAnalyser*);
+  bool tryEvaluate(ShadowValue V, bool inLoopAnalyser);
+  bool getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   void tryEvaluateResult(ShadowInstruction* SI, 
@@ -794,14 +796,14 @@ protected:
   void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
   void getCommittedOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
-  bool tryEvaluateMerge(ShadowInstruction* I, bool finalise, ImprovedValSetSingle& NewPB);
+  bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB);
 
   // CFG analysis:
 
-  void createEntryBlock();
+  bool createEntryBlock();
   void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
-  void tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation);
-  void tryEvaluateTerminatorInst(ShadowInstruction* SI);
+  bool tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation);
+  bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
   IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
   void setBlockStatus(ShadowBBInvar* BB, ShadowBBStatus);
@@ -822,14 +824,14 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string& error, bool finalise);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string& error);
   bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
-  void queueLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, BackwardIAWalker* Walker, void* Ctx, bool& firstPred);
+  void visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor*, void* Ctx, bool& firstPred);
   virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
-  void queueNormalPredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx);
+  void visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVisitor*, void* Ctx);
   void queueReturnBlocks(BackwardIAWalker* Walker, void*);
   void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
@@ -891,6 +893,7 @@ protected:
   void resetDeadInstructions();
 
   // Pointer base analysis
+  /*
   void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
   void queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser*);
   void queueUserUpdatePB(ShadowInstructionInvar*, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
@@ -902,6 +905,8 @@ protected:
   void checkInstsInScope(const Loop* CheckL);
   void checkWholeLoop(const Loop* L);
   void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
+  */
+
   void printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   bool tryForwardLoadPB(LoadInst*, bool finalise, ImprovedValSetSingle& out, BasicBlock* optBB, IntegrationAttempt* optIA);
@@ -1172,8 +1177,6 @@ class PeelAttempt {
    bool isEnabled(); 
    void setEnabled(bool); 
    
-   void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue UsedV, LoopPBAnalyser*, bool usedOverdef); 
-
    void reduceDependentLoads(int64_t); 
 
    void dumpMemoryUsage(int indent); 
@@ -1243,10 +1246,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool ctxContains(IntegrationAttempt*); 
 
   bool getArgBasePointer(Argument*, ImprovedValSetSingle&); 
-  void queueUpdateCall(LoopPBAnalyser*); 
-  void queueCheckAllArgs(LoopPBAnalyser*); 
 
-  int64_t getSpilledVarargAfter(int64_t arg); 
+  int64_t NonFPArgIdxToArgIdx(int64_t idx);
+  int64_t FPArgIdxToArgIdx(int64_t idx);
 
   virtual void reduceDependentLoads(int64_t); 
 
@@ -1272,6 +1274,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
+  void visitLiveReturnBlocks(ShadowBBVisitor& V);
   std::string getCommittedBlockPrefix();
   BasicBlock* getCommittedEntryBlock();
   virtual void runDIE();
@@ -1357,14 +1360,12 @@ class InlineAttempt : public IntegrationAttempt {
 
 
  // Load forwarding v3 functions:
- bool addIVStoPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error);
+ bool addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error);
  void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string& error);
  void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string& error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
-
- typedef std::pair<std::pair<uint64_t, uint64_t>, ImprovedValSetSingle> IVSRange
 
  void readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore);
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);
@@ -1379,6 +1380,9 @@ class InlineAttempt : public IntegrationAttempt {
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
  void executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
+
+ ImprovedValSetSingle PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
+ ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
 
  void commitStoreToBase(LocalStoreMap* Map);
  void doBlockStoreMerge(ShadowBB* BB);
