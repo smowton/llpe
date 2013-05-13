@@ -66,7 +66,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     std::string fwdError;
 
     ImprovedValSetSingle byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0, false, false);
-    if(byte.Overdef || byte.Type != ValSetTypeScalar || byte.Values.size() != 1) {
+    if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
       success = false;
@@ -266,7 +266,7 @@ static ShadowInstruction* getFD(ShadowValue V) {
   if(!getImprovedValSetSingle(V, VPB))
     return 0;
 
-  if(VPB.Overdef || VPB.Values.size() != 1 || VPB.Type != ValSetTypeFD)
+  if(VPB.Overdef || VPB.Values.size() != 1 || VPB.SetType != ValSetTypeFD)
     return 0;
 
   return VPB.Values[0].V.getInst();
@@ -285,7 +285,7 @@ static AliasAnalysis::AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD
   if(VPB.Overdef || VPB.Values.size() == 0)
     return AliasAnalysis::MayAlias;
 
-  if(VPB.Type != ValSetTypeFD)
+  if(VPB.SetType != ValSetTypeFD)
     return AliasAnalysis::NoAlias;
 
   if(VPB.Values.size() == 1 && VPB.Values[0].V.getInst() == FD)

@@ -67,6 +67,7 @@ class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
 class TargetLibraryInfo;
+ class VFSCallAliasAnalysis;
 
 bool functionIsBlacklisted(Function*);
 
@@ -86,7 +87,7 @@ class VFSCallModRef;
 
 extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
-extern VFSCallModRef* GlobalVFSAA;
+extern VFSCallAliasAnalysis* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
 
 class IntegrationHeuristicsPass : public ModulePass {
@@ -160,8 +161,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Instruction*, std::string>& getFunctionCache(const Function* F, bool brief);
    DenseMap<const GlobalVariable*, std::string>& getGVCache(bool brief);
    void populateGVCaches(const Module*);
-   void printValue(raw_ostream& ROS, const Value* V, bool brief);
-   void printValue(raw_ostream& ROS, ShadowValue V, bool brief);
+   virtual void printValue(raw_ostream& ROS, const Value* V, bool brief);
+   virtual void printValue(raw_ostream& ROS, ShadowValue V, bool brief);
    void disableValueCache();
 
    Constant* loadEnvironment(Module&, std::string&);
@@ -229,7 +230,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 		    const Loop* L);
 
-   void initShadowGlobals();
+   void initShadowGlobals(Module&);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
      return shadowGlobalsIdx[GV];
    }
@@ -241,7 +242,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    InlineAttempt* getRoot() { return RootIA; }
    void commit();
   
- };
+};
+
+extern IntegrationHeuristicsPass* GlobalIHP;
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
 template<class T> class PrintCacheWrapper {
@@ -267,6 +270,20 @@ template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T>
 }
 
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
+
+// Caching instruction text for debug and DOT export:
+ inline PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) {
+   return PrintCacheWrapper<const Value*>(*GlobalIHP, &V, brief);
+ }
+ inline PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) {
+   return PrintCacheWrapper<ShadowValue>(*GlobalIHP, V, brief);
+ }
+ inline PrintCacheWrapper<ShadowValue> itcache(ShadowInstruction* SI, bool brief = false) {
+   return itcache(ShadowValue(SI), brief);
+ }
+ inline PrintCacheWrapper<ShadowValue> itcache(ShadowArg* SA, bool brief = false) {
+   return itcache(ShadowValue(SA), brief);
+ }
 
 // Characteristics for using ShadowValues in hashsets (DenseSet, or as keys in DenseMaps)
 template<> struct DenseMapInfo<ShadowValue> {
@@ -773,9 +790,11 @@ protected:
 
   // The toplevel loop:
   void analyse();
-  void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void analyseBlock(uint32_t& BBIdx, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
-  void analyseBlockInstructions(ShadowBB* BB, bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA, bool skipSuccessorCreation);
+  bool analyse(bool inLoopAnalyser);
+  bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL);
+  bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser);
+  bool analyseLoop(const Loop*);
+  virtual void getInitialStore() = 0;
 
   // Constant propagation:
 
@@ -817,7 +836,7 @@ protected:
   InlineAttempt* getInlineAttempt(CallInst* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool& created);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -892,22 +911,6 @@ protected:
   virtual void runDIE();
   void resetDeadInstructions();
 
-  // Pointer base analysis
-  /*
-  void queueUpdatePB(ShadowValue, LoopPBAnalyser*);
-  void queueUsersUpdatePB(ShadowValue V, LoopPBAnalyser*);
-  void queueUserUpdatePB(ShadowInstructionInvar*, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
-  void queueUserUpdatePBFalling(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
-  void queueUserUpdatePBRising(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
-  void queueUserUpdatePBLocal(ShadowInstructionInvar* I, ShadowValue Used, LoopPBAnalyser*, bool usedOverdef);
-  void queuePBUpdateAllUnresolvedVCsInScope(const Loop* L, LoopPBAnalyser*);
-  void queuePBUpdateIfUnresolved(ShadowValue, LoopPBAnalyser*);
-  void checkInstsInScope(const Loop* CheckL);
-  void checkWholeLoop(const Loop* L);
-  void queueUpdatePBWholeLoop(const Loop*, LoopPBAnalyser*);
-  */
-
-  void printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief = false);
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   bool tryForwardLoadPB(LoadInst*, bool finalise, ImprovedValSetSingle& out, BasicBlock* optBB, IntegrationAttempt* optIA);
   bool shouldCheckPB(ShadowValue);
@@ -954,20 +957,6 @@ protected:
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
   bool blockLiveInAnyScope(ShadowBBInvar* BB);
-
-  // Caching instruction text for debug and DOT export:
-  PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) const {
-    return PrintCacheWrapper<const Value*>(*pass, &V, brief);
-  }
-  PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) const {
-    return PrintCacheWrapper<ShadowValue>(*pass, V, brief);
-  }
-  PrintCacheWrapper<ShadowValue> itcache(ShadowInstruction* SI, bool brief = false) const {
-    return itcache(ShadowValue(SI), brief);
-  }
-  PrintCacheWrapper<ShadowValue> itcache(ShadowArg* SA, bool brief = false) const {
-    return itcache(ShadowValue(SA), brief);
-  }
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
@@ -1111,6 +1100,8 @@ public:
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result);
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
+  virtual void getInitialStore();
+
 };
 
 class ProcessExternalCallback;
@@ -1149,7 +1140,7 @@ class PeelAttempt {
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
    ~PeelAttempt();
 
-   void analyse(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA);
+   bool analyse();
 
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 
@@ -1190,14 +1181,6 @@ class PeelAttempt {
 
    bool isTerminated() {
      return Iterations.back()->iterStatus == IterationStatusFinal;
-   }
-
-   // Caching instruction text for debug and DOT export:
-   PrintCacheWrapper<const Value*> itcache(const Value& V) const {
-     return parent->itcache(V);
-   }
-   PrintCacheWrapper<ShadowValue> itcache(ShadowValue V) const {
-     return parent->itcache(V);
    }
 
    void getShadowInfo();
@@ -1270,7 +1253,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   void disableVarargsContexts(); 
 
-  void analyseWithArgs(bool withinUnboundedLoop, BasicBlock*& CacheThresholdBB, IntegrationAttempt*& CacheThresholdIA); 
+  bool analyseWithArgs(bool withinUnboundedLoop); 
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
@@ -1284,6 +1267,8 @@ class InlineAttempt : public IntegrationAttempt {
   void commitArgsAndInstructions();
 
   void resetDeadArgsAndInstructions();
+
+  virtual void getInitialStore();
 
 };
 
@@ -1390,7 +1375,7 @@ class InlineAttempt : public IntegrationAttempt {
  
  void initSpecialFunctionsMap(Module& M);
  
-
+ void printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief = false);
 
  struct IntAAProxy {
 

@@ -25,7 +25,7 @@ VFSCallAliasAnalysis::VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, new VFSC
   //initializeBasicAliasAnalysisPass(*PassRegistry::getPassRegistry());
 }
 
-LibCallLocationInfo* getFunctionInfo(const Function* F) {
+const LibCallFunctionInfo* VFSCallAliasAnalysis::getFunctionInfo(Function* F) {
   
   return LCI->getFunctionInfo(F);
 
@@ -61,7 +61,7 @@ LibCallLocationInfo::LocResult VFSCallModRef::isLocation(const LibCallLocationIn
   else {
     LCI.getLocation(CS, CSPtr, CSPtrSize);
   }
-  return aliasCheckAsLCI(Ptr, Size, CSPtr, CSPtrSize, usePBKnowledge, POffset, AACB)
+  return aliasCheckAsLCI(Ptr, Size, CSPtr, CSPtrSize, usePBKnowledge, POffset, AACB);
 
 }
 
@@ -85,44 +85,23 @@ static void isReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   V = CS;
   Size = AliasAnalysis::UnknownSize;
-  return aliasCheckAsLCI(Ptr, Size, CS, AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-  
-}
-
-/*
-static void isAnyArgFrom2(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
-
-  CallInst* CI = cast_val<CallInst>(CS);
-
-  for(uint32_t i = 2, ilim = CI->getNumArgOperands(); i < ilim; ++i) {
-
-    LibCallLocationInfo::LocResult ThisR = aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, i), AliasAnalysis::UnknownSize, usePBKnowledge, POffset, AACB);
-    if(ThisR != LibCallLocationInfo::No)
-      return LibCallLocationInfo::Unknown;
-
-  }
-
-  return LibCallLocationInfo::No;
 
 }
-*/
 
 static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  ShadowValue LenArg = getValArgOperand(CS, 1);
-  uint64_t Len;
+  ShadowValue LenArg = getValArgOperand(CS, 2);
   if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(LenArg)))
-    Len = CI->getLimitedValue();
+    Size = CI->getLimitedValue();
   else
-    Len = AliasAnalysis::UnknownSize;
-  
-  return aliasCheckAsLCI(Ptr, Size, getValArgOperand(CS, 1), Len, usePBKnowledge, POffset, AACB);
+    Size = AliasAnalysis::UnknownSize;
+  V = getValArgOperand(CS, 1);
 
 }
 
 static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  if(GlobalVariable* GV = CS.getBareVal()->getParent()->getParent()->getParent()->getGlobalVariable("errno")) {
+  if(GlobalVariable* GV = cast<CallInst>(CS.getBareVal())->getParent()->getParent()->getParent()->getGlobalVariable("errno")) {
     V = ShadowValue(GV);
     Size = AliasAnalysis::UnknownSize;
   }
@@ -151,13 +130,6 @@ struct LibCallLocationInfo locRecvfromBuffer = { isRecvfromBuffer, 0, 0 };
 
 // Globals
 struct LibCallLocationInfo locErrno = { isErrno, 0, 0 };
-
-unsigned VFSCallModRef::getLocationInfo(const LibCallLocationInfo *&Array) const {
-
-  Array = VFSCallLocations;
-  return 20;
-    
-}
 
 // Begin function descriptions
 

@@ -283,7 +283,8 @@ ImprovedValSet(bool M) : isMulti(M) { }
   virtual ImprovedValSet* getReadableCopy() = 0;
   virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) = 0;
   virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) = 0;
-  virtual ~ImprovedValSet() = 0;
+  virtual void print(raw_ostream&, bool brief = false) = 0;
+  virtual ~ImprovedValSet() {}
   
 };
 
@@ -450,6 +451,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
   void truncateLeft(uint64_t);
   bool canTruncate();
   bool coerceToType(llvm::Type* Target, uint64_t TargetSize, std::string& error);
+  virtual void print(raw_ostream&, bool brief = false);
   
 };
 
@@ -508,7 +510,7 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
   virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
   void clearRange(uint64_t Start, uint64_t Size);
-  void replaceRangeWithPB(ImprovedValSetSingle& NewVal, uint64_t Offset, uint64_t Size);
+  virtual void print(raw_ostream&, bool brief = false);
 
 };
 
@@ -698,6 +700,7 @@ struct LocalStoreMap {
 LocalStoreMap() : allOthersClobbered(false), refCount(1) {}
   void dropReference();
   LocalStoreMap* getWritableStoreMap();
+  void print(raw_ostream&, bool brief = false);
   
 };
 

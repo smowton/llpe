@@ -50,7 +50,7 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    LocResult (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t LocSize);
+    void (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t& LocSize);
     uint64_t argIndex;
     uint64_t argSize;
   };
@@ -145,7 +145,7 @@ namespace llvm {
     //===------------------------------------------------------------------===//
     
     /// getLocationInfo - Return information about the specified LocationID.
-    const LibCallLocationInfo &getLocationInfo(unsigned LocID) const;
+    //const LibCallLocationInfo &getLocationInfo(unsigned LocID) const;
     
     
     /// getFunctionInfo - Return the LibCallFunctionInfo object corresponding to
@@ -159,9 +159,6 @@ namespace llvm {
     
     /// getLocationInfo - Return descriptors for the locations referenced by
     /// this set of libcalls.
-    virtual unsigned getLocationInfo(const LibCallLocationInfo *&Array) const {
-      return 0;
-    }
     
     /// getFunctionInfoArray - Return an array of descriptors that describe the
     /// set of libcalls represented by this LibCallInfo object.  This array is

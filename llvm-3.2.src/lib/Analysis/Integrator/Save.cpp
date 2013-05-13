@@ -1009,7 +1009,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     return;
   }
 
-  else if(I->i.PB.Type == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst() && I->i.PB.Values[0].V.isAvailableFromCtx(this)) {
+  else if(I->i.PB.SetType == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst() && I->i.PB.Values[0].V.isAvailableFromCtx(this)) {
     I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
     return;
   }

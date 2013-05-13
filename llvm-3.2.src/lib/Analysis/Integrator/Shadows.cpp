@@ -1,9 +1,11 @@
 // Implement guts of instruction and block shadow structures, as well as utility routines for generating them
 // from a function or block.
 
+#include "llvm/Module.h"
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instruction.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
@@ -99,7 +101,7 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
   uint32_t nMutableGlobals = 0;
-  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
+  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it) {
 
     if(!it->isConstant())
       nMutableGlobals++;
@@ -107,22 +109,22 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
   }
 
   uint32_t i = 0;
-  ShadowGlobals = new ShadowGV[nMutableGlobals];
+  shadowGlobals = new ShadowGV[nMutableGlobals];
 
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     if(it->isConstant())
       continue;
     
-    ShadowGlobals[i].G = it;
+    shadowGlobals[i].G = it;
     ImprovedValSetSingle* Init = new ImprovedValSetSingle();
 
-    if(it->hasDefinitiveInitialiser()) {
+    if(it->hasDefinitiveInitializer()) {
 
       Constant* I = it->getInitializer();
       if(isa<ConstantAggregateZero>(I)) {
 
-	Init->Type = ValSetTypeConstantSplat;
+	Init->SetType = ValSetTypeScalarSplat;
 	Type* I8 = Type::getInt8Ty(M.getContext());
 	Constant* I8Z = Constant::getNullValue(I8);
 	Init->insert(ImprovedVal(I8Z));
@@ -142,8 +144,8 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
     }
 
-    ShadowGlobals[i].store.store = Init;
-    ShadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
+    shadowGlobals[i].store.store = Init;
+    shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
 
     shadowGlobalsIdx[it] = i;
 
@@ -270,7 +272,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 	  if(Instruction* OpI = dyn_cast<Instruction>(PN->getIncomingValue(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
 	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
-	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, pass->getShadowGlobalIndex(OpGV));
+	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, getShadowGlobalIndex(OpGV));
 	  else
 	    operandIdxs[k] = ShadowInstIdx();
 	  incomingBBs[k] = BBIndices[PN->getIncomingBlock(k)];
@@ -290,7 +292,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 	  if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
 	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
-	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, pass->getShadowGlobalIndex(OpGV));
+	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, getShadowGlobalIndex(OpGV));
 	  else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
 	  else
@@ -499,9 +501,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
     if(!parent->getBB(blockIdx)) {
       ShadowBB* parentBB = parent->createBB(blockIdx);
-      BasicBlock* DummyCacheBB = 0;
-      IntegrationAttempt* DummyCacheIA = 0;
-      parent->analyseBlockInstructions(parentBB, true, DummyCacheBB, DummyCacheIA, true);
+      parent->analyseBlockInstructions(parentBB, true, true);
     }
 
   }
@@ -656,7 +656,7 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
       return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
     }
     else if(isa<GlobalVariable>(ArgV)) {
-      return ShadowValue(parent->IA->pass->shadowGlobals[SII.instIdx]);
+      return ShadowValue(&(parent->IA->pass->shadowGlobals[SII.instIdx]));
     }
     else {
       return ShadowValue(ArgV);

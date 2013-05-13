@@ -29,16 +29,6 @@ LibCallInfo::~LibCallInfo() {
     delete getMap(Impl);
 }
 
-const LibCallLocationInfo &LibCallInfo::getLocationInfo(unsigned LocID) const {
-  // Get location info on the first call.
-  if (NumLocations == 0)
-    NumLocations = getLocationInfo(Locations);
-  
-  assert(LocID < NumLocations && "Invalid location ID!");
-  return Locations[LocID];
-}
-
-
 /// getFunctionInfo - Return the LibCallFunctionInfo object corresponding to
 /// the specified function if we have it.  If not, return null.
 const LibCallFunctionInfo *

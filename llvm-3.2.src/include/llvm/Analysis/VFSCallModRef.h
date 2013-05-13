@@ -12,7 +12,7 @@ public:
 
   VFSCallModRef() { }
  
-  virtual unsigned getLocationInfo(const LibCallLocationInfo *&Array) const;
+  //virtual unsigned getLocationInfo(const LibCallLocationInfo *&Array) const;
     
   /// getFunctionInfoArray - Return an array of descriptors that describe the
   /// set of libcalls represented by this LibCallInfo object.  This array is
@@ -28,7 +28,7 @@ class VFSCallAliasAnalysis : public LibCallAliasAnalysis {
   static char ID;
   VFSCallAliasAnalysis();
 
-  LibCallFunctionInfo* getFunctionInfo(Function* F);
+  const LibCallFunctionInfo* getFunctionInfo(Function* F);
 
 };
 

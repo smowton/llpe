@@ -72,7 +72,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
     // Find out if the pointer refers to a known location.
     for (unsigned i = 0; Details[i].Location; ++i) {
    
-      LibCallLocationInfo::LocResult Res = isLocation(Details[i].Location, CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
+      LibCallLocationInfo::LocResult Res = isLocation(*(Details[i].Location), CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
       if (Res != LibCallLocationInfo::Yes) continue;
       
       // If we find a match against a location that we 'do not' interact with,
@@ -91,7 +91,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   // Find out if the pointer refers to a known location.
   MRInfo = NoModRef;
   for (unsigned i = 0; Details[i].Location && MRInfo != ModRef; ++i) {
-    LibCallLocationInfo::LocResult Res = isLocation(Details[i].Location, CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
+    LibCallLocationInfo::LocResult Res = isLocation(*(Details[i].Location), CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
     if (Res == LibCallLocationInfo::No) continue;
     
     // If we don't know if this pointer points to the location, then we have to

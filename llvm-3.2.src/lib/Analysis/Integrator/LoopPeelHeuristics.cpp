@@ -654,15 +654,12 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
 
 void InlineAttempt::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
 
-  unsigned numNonFPArgs = 0;
-  unsigned numFPArgs = 0;
-
   release_assert(idx >= ImprovedVal::first_any_arg && idx < ImprovedVal::max_arg);
   uint32_t argIdx = idx - ImprovedVal::first_any_arg;
 
   CallInst* RawCI = cast_inst<CallInst>(CI);
 
-  if(argIdx < CI->getNumArgOperands())
+  if(argIdx < RawCI->getNumArgOperands())
     getImprovedValSetSingle(CI->getCallArgOperand(argIdx), Result);
   else {
     
@@ -1111,7 +1108,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, DataLayout* TD) {
     for(unsigned i = 0; i < PtrSize; ++i) {
       
       // Only null pointers can be synth'd from bytes
-      if(bytes[i])
+      if(Bytes[i])
 	return 0;
 
     }
@@ -1935,8 +1932,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
-  GlobalVFSAA = &getAnalysis<VFSCallModRef>();
+  GlobalVFSAA = &getAnalysis<VFSCallAliasAnalysis>();
   GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
+  GlobalIHP = this;
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
@@ -1974,7 +1972,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   parseArgs(F, argConstants, argvIdx);
 
   populateGVCaches(&M);
-  initSpecialFunctionsMap();
+  initSpecialFunctionsMap(M);
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 

@@ -101,13 +101,13 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 
 int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 
-  for(unsigned i = F->getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
+  for(unsigned i = F.getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
 
     Type* T = cast_inst<CallInst>(CI)->getArgOperand(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       if(idx == 0)
-	return ImprovedVal::first_any_arg + (i - F->getFunctionType()->getNumParams());
+	return ImprovedVal::first_any_arg + (i - F.getFunctionType()->getNumParams());
       else
 	--idx;
 
@@ -131,7 +131,7 @@ int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 
 int64_t InlineAttempt::FPArgIdxToArgIdx(int64_t idx) {
 
-  for(unsigned i = F->getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
+  for(unsigned i = F.getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
 
     Type* T = cast_inst<CallInst>(CI)->getArgOperand(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
@@ -142,7 +142,7 @@ int64_t InlineAttempt::FPArgIdxToArgIdx(int64_t idx) {
     else if(T->isFloatingPointTy()) {
 
       if(idx == 0)
-	return ImprovedVal::first_any_arg + (i - F->getFunctionType()->getNumParams());
+	return ImprovedVal::first_any_arg + (i - F.getFunctionType()->getNumParams());
       else
 	--idx;
 

@@ -88,48 +88,18 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
 
 }
 
-
-void IntegrationAttempt::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
-
-  switch(PB.Type) {
-  case ValSetTypeScalar:
-    out << "S "; break;
-  case ValSetTypePB:
-    out << "PB "; break;
-  case ValSetTypeFD:
-    out << "FD "; break;
-  case ValSetTypeVarArg:
-    out << "VA "; break;
-  case ValSetTypeUnknown:
-    out << "U "; break;
-  }
-
-  if(PB.Overdef)
-    out << "Overdef";
-  else {
-    out << "{ ";
-    for(SmallVector<ImprovedVal, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
-
-      if(it != PB.Values.begin())
-	out << ", ";
-      out << itcache(it->V, brief);
-      if(PB.Type == ValSetTypePB) {
-	if(it->Offset == LLONG_MAX)
-	  out << " + ?";
-	else
-	  out << " + " << it->Offset;
-      }
-      else if(PB.Type == ValSetTypeVarArg) {
-	out << " #" << it->Offset;
-      }
-    }
-    out << " }";
-  }
-
-}
-
 void IntegrationHeuristicsPass::disableValueCache() {
 
   cacheDisabled = true;
   
+}
+
+void LocalStoreMap::print(raw_ostream& RSO, bool brief) {
+
+  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+
+    it->second.store->print(RSO, brief);
+
+  }
+
 }

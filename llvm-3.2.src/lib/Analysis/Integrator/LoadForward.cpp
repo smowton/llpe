@@ -569,13 +569,13 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 
     if(ThisPB.Overdef) {
 	
-      RSO << "Load " << LI->parent->IA->itcache(LIPB.Values[i].V, true) << " -> " << ThisError;
+      RSO << "Load " << itcache(LIPB.Values[i].V, true) << " -> " << ThisError;
 
     }
     else if(NewPB.Overdef) {
 	
       RSO << "Loaded ";
-      LI->parent->IA->printPB(RSO, ThisPB, true);
+      printPB(RSO, ThisPB, true);
       RSO << " -merge-> " << ThisError;
 
     }
@@ -614,7 +614,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
     ret = true;
     raw_string_ostream RSO(report);
     RSO << "Load vague ";
-    LI->parent->IA->printPB(RSO, LoadPtrPB, true);
+    printPB(RSO, LoadPtrPB, true);
 
   }
 
@@ -724,6 +724,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
        
 }
 
+#define LFV3(x) x
 
 DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
 
@@ -732,6 +733,7 @@ DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
   if(newMap != localStore) {
     
     // Store the new one:
+    LFV3(errs() << "Stored new map " << newMap << "\n");
     localStore = newMap;
 
   }
@@ -743,15 +745,19 @@ DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
 LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
 
   // Refcount == 1 means we can just write in place.
-  if(refCount == 1)
+  if(refCount == 1) {
+    LFV3(errs() << "Local map " << this << " already writable\n");
     return this;
+  }
 
   // COW break: copy the map and either share or copy its entries.
+  LFV3(errs() << "COW break local map " << this << "\n");
   LocalStoreMap* newMap = new LocalStoreMap();
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it) {
 
     if(ImprovedValSetSingle* OldSet = dyn_cast<ImprovedValSetSingle>(it->second.store)) {
 
+      LFV3(errs() << "Copy single val\n");
       // Individual valsets are not sharable: copy.
       ImprovedValSetSingle* NewSet = new ImprovedValSetSingle(*OldSet);
       newMap->store[it->first] = LocStore(NewSet);
@@ -760,6 +766,7 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
     else {
 
       ImprovedValSetMulti* SharedSet = cast<ImprovedValSetMulti>(it->second.store);
+      LFV3(errs() << "Share multimap " << SharedSet << "\n");
       SharedSet->MapRefCount++;
       newMap->store[it->first] = LocStore(SharedSet);
 
@@ -776,25 +783,6 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
 
 }
 
-void ImprovedValSetSingle::dropReference() {
-
-  // Singles can never be shared
-  delete this;
-
-}
-
-void ImprovedValSetMulti::dropReference() {
-
-  if(!(--MapRefCount)) {
-
-    Underlying->dropReference();
-    
-    delete this;
-
-  }
-
-}
-
 LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
 
   // We're about to write to memory location V + Offset -> Offset+Size. 
@@ -802,8 +790,10 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   // Can write direct to the base store if we're sure this write is "for good".
   LocStore* ret = 0;
-  if(status == BBSTATUS_CERTAIN && !localStore->allOthersClobbered)
+  if(status == BBSTATUS_CERTAIN && !localStore->allOthersClobbered) {
+    LFV3(errs() << "Use base store\n");
     ret = &V.getBaseStore();
+  }
 
   // Otherwise we need to write into the block-local store map. COW break it if necessary:
   bool writeWholeObject = (Offset == 0 && (Size == ULONG_MAX || Size == V.getAllocSize()));
@@ -819,253 +809,75 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
       // There wasn't an entry in the local map. Make a Single or Multi store depending on
       // whether we're about to cover the whole store or not:
-      if(writeWholeObject)
+      if(writeWholeObject) {
+	LFV3(errs() << "Create new store with blank single\n");
 	ret->store = new ImprovedValSetSingle();
+      }
       else {
 	// Defer the rest of the multimap to the base object.
 	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
 	M->Underlying = V.getBaseStore().store;
+	LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
 	ret->store = M;
       }
 
       return *ret;
 
     }
+    else {
+
+      LFV3(errs() << "Use existing store " << insResult.first->second.store << "\n");
+
+    }
 
   }
-  else {
 
-    // There was already an entry in the local map or base store.
+  // There was already an entry in the local map or base store.
 
-    if(writeWholeObject && willWriteSingleObject) {
+  if(writeWholeObject && willWriteSingleObject) {
       
-      // If we're about to overwrite the whole thing with a single, convert a multi to a single.
+    // If we're about to overwrite the whole thing with a single, convert a multi to a single.
 
-      if(ImprovedValSetMulti* M = dyn_cast<ImprovedValSetMulti>(ret->store)) {
+    if(ImprovedValSetMulti* M = dyn_cast<ImprovedValSetMulti>(ret->store)) {
 	
-	// Might delete the Multi:
-	M->dropReference();
-	ret->store = new ImprovedValSetSingle();
-
-      }
-
-      // Or retain an existing single as-is, they're always private and writable.
+      // Might delete the Multi:
+      M->dropReference();
+      ret->store = new ImprovedValSetSingle();
+      LFV3(errs() << "Free multi " << M << " and replace with single " << ret->store << "\n");
 
     }
     else {
 
-      // If we're doing a partial overwrite, make sure a multi is writable and promote
-      // a single to a multi with that single as base.
-      if(!ret->store->isWritableMulti()) {
+      LFV3(errs() << "Retain existing single " << ret->store << "\n");
 
-	ImprovedValSetMulti* NewIMap = new ImprovedValSetMulti(V);
-	NewIMap->Underlying = ret->store;
-	// M's refcount remains unchanged, it's just now referenced as a base rather than
-	// being directly used here.
-	ret->store = NewIMap;
+    }
+
+    // Or retain an existing single as-is, they're always private and writable.
+
+  }
+  else {
+
+    // If we're doing a partial overwrite, make sure a multi is writable and promote
+    // a single to a multi with that single as base.
+    if(!ret->store->isWritableMulti()) {
+
+      ImprovedValSetMulti* NewIMap = new ImprovedValSetMulti(V);
+      LFV3(errs() << "Break shared multi " << ret->store << " -> " << NewIMap << "\n");
+      NewIMap->Underlying = ret->store;
+      // M's refcount remains unchanged, it's just now referenced as a base rather than
+      // being directly used here.
+      ret->store = NewIMap;
 	
-      }
+    }
+    else {
       // Else already a local map, nothing to do.
-
+      LFV3(errs() << "Retain existing writable multi " << ret->store << "\n");
     }
 
   }
 
   return *ret;
   
-}
-
-void ImprovedValSetSingle::replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
-
-  *this = NewVal;
-
-}
-
-void ImprovedValSetSingle::truncateRight(uint64_t n) {
-
-  // Remove bytes from the RHS, leaving a value of size n bytes.
-
-  if(Overdef)
-    return;
-  if(SetType == ValSetTypeScalarSplat) {
-    release_assert(Values.size() == 1 && "Splat set can't be multivalued");
-    Values[0].Offset = (int64_t)n;
-    return;
-  }
-
-  for(uint32_t i = 0; i < Values.size(); ++i) {
-
-    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
-    llvm::Type* TruncType = Type::getIntNTy(CI->getContext(), n * 8);
-    Constant* NewC = ConstantExpr::getTrunc(CI, TruncType);
-    release_assert(!isa<ConstantExpr>(NewC));
-    Values[i].V = ShadowValue(NewC);
-
-  }
-
-}
-
-void ImprovedValSetSingle::truncateLeft(uint64_t n) {
-
-  // Remove bytes from the LHS, leaving a value of size n bytes.
-
-  if(Overdef)
-    return;
-  if(SetType == ValSetTypeScalar) {
-    release_assert(Values.size() == 1 && "Splat value must be single-valued");
-    Values[0].Offset = (int64_t)n;
-    return;
-  }
-
-  for(uint32_t i = 0; i < Values.size(); ++i) {
-
-    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
-    uint64_t shiftn = CI->getBitWidth() - (n * 8);
-    Constant* ShiftAmount = ConstantInt::get(Type::getInt64Ty(CI->getContext()), shiftn);
-    Constant* NewC = ConstantExpr::getShl(CI, ShiftAmount);
-    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(NewC))
-      NewC = ConstantFoldConstantExpression(CE, GlobalTD, GlobalTLI);
-    release_assert(!isa<ConstantExpr>(NewC));
-    Values[i].V = ShadowValue(NewC);
-
-  }
-
-}
-
-bool ImprovedValSetSingle::canTruncate() {
-
-  return 
-    Overdef || 
-    (SetType == ValSetTypeScalar && Values[0].V.getType()->isIntegerTy()) || 
-    SetType == ValSetTypeScalarSplat;
-
-}
-
-void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
-
-  MapIt found = Map.find(Offset);
-  if(found == Map.end())
-    return;
-
-  uint64_t LastByte = Offset + Size;
-
-  if(found.start() < Offset) {
-
-    ImprovedValSetSingle RHS;
-
-    if(found.stop() > LastByte) {
-
-      // Punching a hole in a value that wholly covers the range we're clearing:
-      ImprovedValSetSingle RHS;
-      if(found.val().canTruncate()) {
-
-	RHS = *found;
-	RHS.truncateLeft(found.stop() - LastByte);
-
-      }
-      else {
-
-	RHS = ImprovedValSetSingle::getOverdef();
-
-      }
-
-    }
-
-    if(found.val().canTruncate()) {
-      CoveredBytes -= (found.stop() - Offset);
-      found.val().truncateRight(Offset - found.start());
-    }
-    else {
-      found.val().setOverdef();
-    }
-    uint64_t oldStop = found.stop();
-    found.setStopUnchecked(Offset);
-
-    if(RHS.isInitialised()) {
-
-      Map.insert(LastByte, oldStop, RHS);
-      CoveredBytes += (oldStop - LastByte);
-      return;
-
-    }
-
-    ++found;
-
-  }
-  
-  while(found != Map.end() && found.start() <= LastByte && found.stop() <= LastByte) {
-
-    // Implicitly bumps the iterator forwards:
-    CoveredBytes -= (found.stop() - found.start());
-    found.erase();
-
-  }
-
-  if(found != Map.end() && found.start() <= LastByte) {
-
-    if(found.val().canTruncate()) {
-      found.val().truncateLeft(found.stop() - LastByte);
-    }
-    else {
-      found.val().setOverdef();
-    }
-    CoveredBytes -= (LastByte - found.start());
-    found.setStartUnchecked(LastByte);
-
-  }
-
-}
-
-void ImprovedValSetMulti::replaceRangeWithPB(ImprovedValSetSingle& NewVal, uint64_t Offset, uint64_t Size) {
-
-  if(Size == ULONG_MAX) {
-
-    release_assert(NewVal.Overdef && "Indefinite write with non-clobber value?");
-
-  }
-
-  clearRange(Offset, Size);
-  Map.insert(Offset, Offset + Size, NewVal);
-
-  CoveredBytes += Size;
-  if(Underlying && CoveredBytes == AllocSize) {
-
-    // This Multi now defines the whole object: drop the underlying object as it never shows through.
-    Underlying->dropReference();
-    Underlying = 0;
-
-  }
-
-}
-
-void ImprovedValSetSingle::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
-
-  release_assert(NewVals.size() == 1 && Offset == 0);
-  *this = NewVals[0].second;
-
-}
-
-void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
-
-  clearRange(Offset, Size);
-  MapIt it = Map.find(Offset);
-
-  for(unsigned i = NewVals.size(); i != 0; --i, --it) {
-
-    IVSRange& RangeVal = NewVals[i-1];
-    it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
-
-  }
-
-  CoveredBytes += Size;
-  if(Underlying && CoveredBytes == AllocSize) {
-
-    // This Multi now defines the whole object: drop the underlying object as it never shows through.
-    Underlying->dropReference();
-    Underlying = 0;
-
-  }  
-
 }
 
 bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error) {
@@ -1114,6 +926,8 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
   ImprovedValSetMulti* IVM;
   ImprovedValSetMulti::MapIt it;
 
+  LFV3(errs() << "Read range " << Offset << "-" << (Offset+Size) << "\n");
+
   if(!IVS) {
 
     // Check for a multi-member that wholly defines the target value:
@@ -1126,6 +940,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       IVS = &it.val();
       IVSSize = it.stop() - it.start();
       Offset -= it.start();
+      LFV3(errs() << "Read fully defined by multi subval " << it.start() << "-" << it.stop() << "\n");
 
     }
 
@@ -1138,18 +953,22 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       // Try to extract the entire value
       if(IVSSize == Size && Offset == 0) {
 	Result = *IVS;
+	LFV3(errs() << "Return whole value\n");
 	return;
       }
       
       // Otherwise we need to extract a sub-value: only works on constants:
       bool rejectHere = IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat;
       if(rejectHere) {
+	LFV3(errs() << "Reject: non-scalar\n");
 	Result = ImprovedValSetSingle::getOverdef();
 	return;
       }
       
       if(IVS->SetType == ValSetTypeScalar) {
       
+	bool extractWorked = true;
+
 	for(uint32_t i = 0, endi = IVS->Values.size(); i != endi; ++i) {
 	
 	  Constant* bigConst = cast<Constant>(IVS->Values[i].V.getVal());
@@ -1164,10 +983,17 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 	      return;
 
 	  }
+	  else {
+	    
+	    LFV3(errs() << "Extract-aggregate failed, fall through\n");
+	    extractWorked = false;
+
+	  }
 					  
 	}
 
-	return;
+	if(extractWorked)
+	  return;
 
       }
 
@@ -1178,6 +1004,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     if(!addIVSToPartialVal(*IVS, Offset, Size, ResultPV, error)) {
       
+      LFV3(errs() << "Partial build failed\n");
       delete ResultPV;
       Result = ImprovedValSetSingle::getOverdef();
 
@@ -1185,6 +1012,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
     else {
 
       release_assert(ResultPV->isComplete() && "Fetch defined by a Single value but not complete?");
+      LFV3(errs() << "Built from bytes\n");
 
     }
 
@@ -1195,6 +1023,8 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
   // If we get to here the value is not wholly covered by this Multi map. Add what we can and defer:
   release_assert(IVM && "Fell through without a multi?");
 
+  LFV3(errs() << "Build from bytes (multi path)\n");
+
   for(; it != IVM->Map.end() && it.start() < (Offset + Size); ++it) {
 
     if(!ResultPV)
@@ -1202,6 +1032,8 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     uint64_t FirstReadByte = std::max(Offset, it.start());
     uint64_t LastReadByte = std::min(Offset + Size, it.stop());
+
+    LFV3(errs() << "Merge subval at " << FirstReadByte << "-" << LastReadByte << "\n");
 
     if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
@@ -1215,6 +1047,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       
     // Try the next linked map (one should exist:)
     release_assert(IVM->Underlying && "Value not complete, but no underlying map?");
+    LFV3(errs() << "Defer to next map: " << IVM->Underlying << "\n");
     readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, error);
       
   }
@@ -1229,22 +1062,29 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
   LocStore* firstStore;
 
+  LFV3(errs() << "Start read " << Offset << "-" << (Offset + Size) << "\n");
+
   DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
   if(it == ReadBB->localStore->store.end()) {
     if(ReadBB->localStore->allOthersClobbered) {
+      LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Result.setOverdef();
       return;
     }
+    LFV3(errs() << "Starting at base store\n");
     firstStore = &(V.getBaseStore());
   }
-  else
+  else {
+    LFV3(errs() << "Starting at local store\n");
     firstStore = &(it->second);
+  }
 
   PartialVal* ResultPV = 0;
   readValRangeFrom(V, Offset, Size, ReadBB, firstStore->store, Result, ResultPV, error);
 
   if(ResultPV) {
 
+    LFV3(errs() << "Read used a PV\n");
     raw_string_ostream RSO(error);
     Result = PVToPB(*ResultPV, RSO, Size, V.getLLVMContext());
     delete ResultPV;
@@ -1407,18 +1247,22 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
 
 void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore) {
 
-  if(ignoreBelowStore && ignoreBelowStore == store)
+  if(ignoreBelowStore && ignoreBelowStore == store) {
+    LFV3(errs() << "Leaving a gap due to threshold store " << ignoreBelowStore << "\n");
     return;
+  }
 
   if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store)) {
 
     if(Offset == 0 && Size == V.getAllocSize()) {
       
+      LFV3(errs() << "Single val satisfies whole read\n");
       Results.push_back(IVSR(0, Size, *IVS));
       
     }
     else {
       
+      LFV3(errs() << "Single val subval satisfies whole read\n");
       ImprovedValSetSingle SubVal;
       getIVSSubVal(*IVS, Offset, Size, SubVal);
       Results.push_back(IVSR(Offset, Offset+Size, SubVal));
@@ -1437,6 +1281,8 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
       // Read a sub-value:
       uint64_t SubvalOffset = Offset - it.start();
       uint64_t SubvalSize = std::min(Offset + Size, it.stop()) - Offset;
+
+      LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << SubvalOffset << "-" << (SubvalOffset + SubvalSize) << "\n");
       
       ImprovedValSetSingle SubVal;
       getIVSSubVal(it.val(), SubvalOffset, SubvalSize, SubVal);
@@ -1455,6 +1301,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 	release_assert(it.start() > Offset && "Overlapping-on-left should be caught already");
 	// Gap -- defer this bit to our parent map (which must exist)
 	release_assert(IVM->Underlying && "Gap but no underlying map?");
+	LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << it.start() << "\n");
 	readValRangeMultiFrom(V, Offset, it.start() - Offset, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
 	Size -= (it.start() - Offset);
 	Offset = it.start();
@@ -1462,6 +1309,8 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
       }
 
       if(it.stop() > (Offset + Size)) {
+
+	LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << "0-" << Size << "\n");
 
 	// Overlap on the right: extract sub-val.
 	ImprovedValSetSingle SubVal;
@@ -1473,6 +1322,8 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 
       }
       else {
+
+	LFV3(errs() << "Add whole val at " << it.start() << "-" << it.stop() << "\n");
 
 	// No overlap: use whole value.
 	Results.push_back(IVSR(it.start(), it.stop(), it.val()));
@@ -1487,6 +1338,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
     if(Size != 0) {
 
       release_assert(IVM->Underlying && "Gap but no underlying map/2?");
+      LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << (Offset+Size) << " (end path)\n");      
       readValRangeMultiFrom(V, Offset, Size, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
 
     }
@@ -1501,19 +1353,24 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
   // Limitations for now: because our output is a single IVS, non-scalar types may only be described
   // if they correspond to a whole object.
 
+  LFV3(errs() << "Start read-multi " << Offset << "-" << (Offset+Size) << "\n");
+
   LocStore* firstStore;
 
   DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
   if(it == ReadBB->localStore->store.end()) {
     if(ReadBB->localStore->allOthersClobbered) {
+      LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle::getOverdef()));
       return;
     }
     else {
+      LFV3(errs() << "Starting at base store\n");
       firstStore = &(V.getBaseStore());
     }
   }
   else {
+    LFV3(errs() << "Starting at local store\n");
     firstStore = &(it->second);
   }
 
@@ -1646,6 +1503,8 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
 void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
 
+  LFV3(errs() << "Start copy inst\n");
+
   if(Size == ULONG_MAX || PtrSet.Overdef || PtrSet.Values.size() != 1 || SrcPtrSet.Overdef || SrcPtrSet.Values.size() != 1) {
 
     // Only support memcpy from single pointer to single pointer for the time being:
@@ -1665,6 +1524,8 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 }
 
 void llvm::executeVaStartInst(ShadowInstruction* SI) {
+
+  LFV3(errs() << "Start va_start inst\n");
 
   ShadowBB* BB = SI->parent;
   ShadowValue Ptr = SI->getCallArgOperand(0);
@@ -1700,6 +1561,8 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 }
 
 void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size) {
+
+  LFV3(errs() << "Start read inst\n");
 
   ShadowBB* ReadBB = ReadSI->parent;
 
@@ -1846,10 +1709,12 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
     StoreBB->localStore->dropReference();
     StoreBB->localStore = new LocalStoreMap();
     StoreBB->localStore->allOthersClobbered = true;
+    LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
 
   }
   else if(PtrSet.Values.size() == 1 && PtrSet.Values[0].Offset != LLONG_MAX) {
 
+    LFV3(errs() << "Write through certain pointer\n");
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
     Store.store->replaceRangeWithPB(ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
@@ -1860,6 +1725,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
     for(SmallVector<ImprovedVal, 1>::iterator it = PtrSet.Values.begin(), it2 = PtrSet.Values.end(); it != it2; ++it) {
 
       if(it->Offset == LLONG_MAX) {
+	LFV3(errs() << "Write through vague pointer; clobber\n");
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
 	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
 	Store.store->replaceRangeWithPB(OD, 0, ULONG_MAX);
@@ -1876,12 +1742,15 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	else {
 
 	  std::string ignoreErrorHere;
+	  LFV3(errs() << "Write through maybe pointer; merge\n");
 	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, ignoreErrorHere);
 
 	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
 
 	    std::string ignoredError;
-	    ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, ignoredError);
+	    if(!ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, ignoredError)) {
+	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldValSet.Values[0].V.getType()) << "\n");
+	    }
 
 	  }
 
@@ -1904,11 +1773,20 @@ void LocalStoreMap::dropReference() {
 
   if(!--refCount) {
 
+    LFV3(errs() << "Local map " << this << " freed\n");
+
     // Drop references to any maps this points to;
-    for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it)
+    for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+      LFV3(errs() << "Drop ref to " << it->second.store << "\n");
       it->second.store->dropReference();
+    }
 
     delete this;
+
+  }
+  else {
+
+    LFV3(errs() << "Local map " << this << " refcount down to " << refCount << "\n");
 
   }
 
@@ -1973,10 +1851,15 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
     if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
 
-      if(IVS->Overdef)
+      LFV3(errs() << "Merge in store " << mergeFromStore << " -> " << mergeToStore << "\n");
+
+      if(IVS->Overdef) {
+	LFV3(errs() << "Target already clobbered\n");
 	return;
+      }
 
       if(ImprovedValSetSingle* IVS2 = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
+	LFV3(errs() << "Merge in another single\n");
 	IVS->merge(*IVS2);
 	return;
       }
@@ -1994,6 +1877,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	RHSAncestor = 0;
 	      
       }
+      LFV3(errs() << "Merging multi stores; use common ancestor " << LHSAncestor << "/" << RHSAncestor << "\n");
     }
 
     {
@@ -2052,9 +1936,10 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	// Find next event:
 	if(LastOffset < consumeit->first.first) {
 		
+	  LFV3(errs() << "Gap " << LastOffset << "-" << LHSit->first.first << "\n");
 	  // Case (d) Leave a gap
 	  anyGaps = true;
-	  LastOffset = LHSit->first.first;
+	  LastOffset = consumeit->first.first;
 
 	}
 	else if(otherit == otherend || otherit->first.first > LastOffset) {
@@ -2072,6 +1957,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	    bump = false;
 	  }
 
+	  LFV3(errs() << "Merge with base " << LastOffset << "-" << stopAt << "\n");
+	  
 	  SmallVector<IVSRange, 4> baseVals;
 	  readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, BB, LHSAncestor, baseVals, 0);
 		
@@ -2091,6 +1978,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 		
 	}
 	else {
+
+	  LFV3(errs() << "Merge two vals " << LastOffset << "-" << consumeit->first.second << "\n");
 
 	  // Both entries are defined here, case (c), so consumeit finishes equal or sooner.
 	  ImprovedValSetSingle consumeVal;
@@ -2118,10 +2007,14 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
       ImprovedValSet* newUnderlying;
 
-      if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes))
+      if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes)) {
+	LFV3(errs() << "Using ancestor " << LHSAncestor << "\n");
 	newUnderlying = LHSAncestor->getReadableCopy();
-      else
+      }
+      else {
+	LFV3(errs() << "No ancestor used (totally defined locally)\n");
 	newUnderlying = 0;
+      }
 
       // Get a Multi to populate: either clear an existing one or allocate one.
 
@@ -2129,6 +2022,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
       if(mergeToStore->store->isWritableMulti()) {
 	ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(mergeToStore->store);
+	LFV3(errs() << "Using existing writable multi " << M << "\n");
 	M->Map.clear();
 	if(M->Underlying)
 	  M->dropReference();
@@ -2137,6 +2031,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
       else {
 	mergeToStore->store->dropReference();
 	newStore = new ImprovedValSetMulti(MergeV);
+	LFV3(errs() << "Drop existing store " << mergeToStore->store << ", allocate new multi " << newStore << "\n");
       }	
 
       newStore->Underlying = newUnderlying;
@@ -2157,8 +2052,12 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 
+    LFV3(errs() << "Merge: visit BB " << BB->invar->BB->getName() << "\n");
+
     if(!seenMaps.insert(BB->localStore)) {
       // We've already seen this exact map as a pred; drop the extra ref.
+      LFV3(errs() << "Seen map " << BB->localStore << " before; drop ref\n");
+      BB->localStore->dropReference();
       return;
     }
 
@@ -2167,6 +2066,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
       // Note that the refcount is already correct (blocks assume their map will be taken per default)
       // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
       newMap = BB->localStore;
+      LFV3(errs() << "Take incoming map " << BB->localStore << "\n");
       newMapValid = true;
       return;
     }
@@ -2193,6 +2093,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
 	    if(!mergeFromMap->store.count(it->first)) {
 
+	      LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
 	      keysToRemove.push_back(it->first);
 	      it->second.store->dropReference();
 
@@ -2211,6 +2112,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 
 	}
 	else if(!mergeMap->allOthersClobbered) {
+
+	  LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
 
 	  // For any locations mentioned in mergeFromMap but not mergeMap,
 	  // move them over. We'll still need to merge in the base object below, this
@@ -2234,7 +2137,12 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	    mergeFromMap->store.erase(*delit);
 
 	}
-
+	else {
+	  
+	  LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
+	  
+	}
+	
       }
 
       // mergeMap now contains all information from one or other incoming branch;
@@ -2295,6 +2203,8 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
   // We're entering BB; one or more live predecessor blocks exist and we must produce an appropriate
   // localStore from them.
 
+  LFV3(errs() << "Start block store merge\n");
+
   bool mergeToBase = BB->status == BBSTATUS_CERTAIN;
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
@@ -2313,6 +2223,8 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
 }
 
 void llvm::doCallStoreMerge(ShadowInstruction* SI) {
+
+  LFV3(errs() << "Start call-return store merge\n");
 
   bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN;
   InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(cast_inst<CallInst>(SI));
@@ -2381,4 +2293,18 @@ bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
 
   }
    
+}
+
+bool InlineAttempt::ctxContains(IntegrationAttempt* IA) {
+
+  return this == IA;
+
+}
+
+bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
+
+  if(this == IA)
+    return true;
+  return parent->ctxContains(IA);
+
 }

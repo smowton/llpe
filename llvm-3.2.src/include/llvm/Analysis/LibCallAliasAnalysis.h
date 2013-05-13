@@ -15,6 +15,7 @@
 #define LLVM_ANALYSIS_LIBCALL_AA_H
 
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LibCallSemantics.h"
 #include "llvm/Pass.h"
 
 namespace llvm {
@@ -60,7 +61,11 @@ namespace llvm {
         return (AliasAnalysis*)this;
       return this;
     }
-    
+
+    virtual LibCallLocationInfo::LocResult isLocation(const LibCallLocationInfo& LCI, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+      return LibCallLocationInfo::Unknown;
+    }
+
   private:
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
 				       ShadowValue CS,

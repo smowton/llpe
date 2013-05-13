@@ -1,4 +1,6 @@
 
+#include "llvm/ADT/IntervalMap.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/DataLayout.h"
@@ -198,8 +200,8 @@ static Function* getReplacementFunction(ShadowValue CCalledV) {
   if(!C) {
 
     Constant* OnlyVal = 0;
-    PointerBase PB;
-    if(getPointerBase(CalledV, PB)) {
+    ImprovedValSetSingle PB;
+    if(getImprovedValSetSingle(CalledV, PB)) {
      
       if(!PB.Overdef) {
 
@@ -248,6 +250,302 @@ Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
 }
 
+#define LFV3(x) x
+
+void ImprovedValSetSingle::dropReference() {
+
+  // Singles can never be shared
+  LFV3(errs() << "Drop ref on single val: deleted");
+  delete this;
+
+}
+
+void ImprovedValSetMulti::dropReference() {
+
+  if(!(--MapRefCount)) {
+
+    LFV3(errs() << "Drop ref on multi: deleted");
+    Underlying->dropReference();
+    
+    delete this;
+
+  }
+  else {
+
+    LFV3(errs() << "Drop ref on multi: new refcount " << MapRefCount);
+
+  }
+
+}
+
+void ImprovedValSetSingle::replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
+
+  *this = NewVal;
+
+}
+
+void ImprovedValSetMulti::replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
+
+  if(Size == ULONG_MAX) {
+
+    release_assert(NewVal.Overdef && "Indefinite write with non-clobber value?");
+
+  }
+
+  clearRange(Offset, Size);
+  Map.insert(Offset, Offset + Size, NewVal);
+
+  CoveredBytes += Size;
+  if(Underlying && CoveredBytes == AllocSize) {
+
+    // This Multi now defines the whole object: drop the underlying object as it never shows through.
+    Underlying->dropReference();
+    Underlying = 0;
+
+  }
+
+}
+
+
+void ImprovedValSetSingle::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+
+  release_assert(NewVals.size() == 1 && Offset == 0);
+  *this = NewVals[0].second;
+
+}
+
+void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
+
+  MapIt found = Map.find(Offset);
+  if(found == Map.end())
+    return;
+
+  uint64_t LastByte = Offset + Size;
+
+  if(found.start() < Offset) {
+
+    ImprovedValSetSingle RHS;
+
+    if(found.stop() > LastByte) {
+
+      // Punching a hole in a value that wholly covers the range we're clearing:
+      ImprovedValSetSingle RHS;
+      if(found.val().canTruncate()) {
+
+	RHS = *found;
+	RHS.truncateLeft(found.stop() - LastByte);
+
+      }
+      else {
+
+	RHS = ImprovedValSetSingle::getOverdef();
+
+      }
+
+    }
+
+    if(found.val().canTruncate()) {
+      CoveredBytes -= (found.stop() - Offset);
+      found.val().truncateRight(Offset - found.start());
+    }
+    else {
+      found.val().setOverdef();
+    }
+    uint64_t oldStop = found.stop();
+    found.setStopUnchecked(Offset);
+
+    if(RHS.isInitialised()) {
+
+      Map.insert(LastByte, oldStop, RHS);
+      CoveredBytes += (oldStop - LastByte);
+      return;
+
+    }
+
+    ++found;
+
+  }
+  
+  while(found != Map.end() && found.start() <= LastByte && found.stop() <= LastByte) {
+
+    // Implicitly bumps the iterator forwards:
+    CoveredBytes -= (found.stop() - found.start());
+    found.erase();
+
+  }
+
+  if(found != Map.end() && found.start() <= LastByte) {
+
+    if(found.val().canTruncate()) {
+      found.val().truncateLeft(found.stop() - LastByte);
+    }
+    else {
+      found.val().setOverdef();
+    }
+    CoveredBytes -= (LastByte - found.start());
+    found.setStartUnchecked(LastByte);
+
+  }
+
+}
+
+void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+
+  clearRange(Offset, Size);
+  MapIt it = Map.find(Offset);
+
+  for(unsigned i = NewVals.size(); i != 0; --i, --it) {
+
+    IVSRange& RangeVal = NewVals[i-1];
+    it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
+
+  }
+
+  CoveredBytes += Size;
+  if(Underlying && CoveredBytes == AllocSize) {
+
+    // This Multi now defines the whole object: drop the underlying object as it never shows through.
+    Underlying->dropReference();
+    Underlying = 0;
+
+  }  
+
+}
+
+void ImprovedValSetSingle::truncateRight(uint64_t n) {
+
+  // Remove bytes from the RHS, leaving a value of size n bytes.
+
+  if(Overdef)
+    return;
+  if(SetType == ValSetTypeScalarSplat) {
+    release_assert(Values.size() == 1 && "Splat set can't be multivalued");
+    Values[0].Offset = (int64_t)n;
+    return;
+  }
+
+  for(uint32_t i = 0; i < Values.size(); ++i) {
+
+    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
+    llvm::Type* TruncType = Type::getIntNTy(CI->getContext(), n * 8);
+    Constant* NewC = ConstantExpr::getTrunc(CI, TruncType);
+    release_assert(!isa<ConstantExpr>(NewC));
+    Values[i].V = ShadowValue(NewC);
+
+  }
+
+}
+
+void ImprovedValSetSingle::truncateLeft(uint64_t n) {
+
+  // Remove bytes from the LHS, leaving a value of size n bytes.
+
+  if(Overdef)
+    return;
+  if(SetType == ValSetTypeScalar) {
+    release_assert(Values.size() == 1 && "Splat value must be single-valued");
+    Values[0].Offset = (int64_t)n;
+    return;
+  }
+
+  for(uint32_t i = 0; i < Values.size(); ++i) {
+
+    ConstantInt* CI = cast<ConstantInt>(Values[i].V.getVal());
+    uint64_t shiftn = CI->getBitWidth() - (n * 8);
+    Constant* ShiftAmount = ConstantInt::get(Type::getInt64Ty(CI->getContext()), shiftn);
+    Constant* NewC = ConstantExpr::getShl(CI, ShiftAmount);
+    if(ConstantExpr* CE = dyn_cast<ConstantExpr>(NewC))
+      NewC = ConstantFoldConstantExpression(CE, GlobalTD, GlobalTLI);
+    release_assert(!isa<ConstantExpr>(NewC));
+    Values[i].V = ShadowValue(NewC);
+
+  }
+
+}
+
+bool ImprovedValSetSingle::canTruncate() {
+
+  return 
+    Overdef || 
+    (SetType == ValSetTypeScalar && Values[0].V.getType()->isIntegerTy()) || 
+    SetType == ValSetTypeScalarSplat;
+
+}
+
+void ImprovedValSetSingle::print(raw_ostream& RSO, bool brief) {
+
+  printPB(RSO, *this, brief);
+
+}
+
+void ImprovedValSetMulti::print(raw_ostream& RSO, bool brief) {
+
+  RSO << "Multi: {\n";
+  
+  for(MapIt it = Map.begin(), itend = Map.end(); it != itend; ++it) {
+
+    RSO << it.start() << "-" << it.stop() << " -> ";
+    it.val().print(RSO, brief);
+    RSO << "\n";
+
+  }
+
+  RSO << "}\n";
+
+  if(Underlying) {
+
+    RSO << "With underlying:\n";
+    Underlying->print(RSO, brief);
+
+  }
+
+}
+
+void llvm::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
+
+  switch(PB.SetType) {
+  case ValSetTypeScalar:
+    out << "S "; break;
+  case ValSetTypeScalarSplat:
+    out << "Splat "; break;
+  case ValSetTypePB:
+    out << "PB "; break;
+  case ValSetTypeFD:
+    out << "FD "; break;
+  case ValSetTypeVarArg:
+    out << "VA "; break;
+  case ValSetTypeUnknown:
+    out << "U "; break;
+  }
+
+  if(PB.Overdef)
+    out << "Overdef";
+  else {
+    out << "{ ";
+    for(SmallVector<ImprovedVal, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
+
+      if(it != PB.Values.begin())
+	out << ", ";
+      out << itcache(it->V, brief);
+      if(PB.SetType == ValSetTypePB) {
+	if(it->Offset == LLONG_MAX)
+	  out << " + ?";
+	else
+	  out << " + " << it->Offset;
+      }
+      else if(PB.SetType == ValSetTypeVarArg) {
+	out << " #" << it->Offset;
+      }
+    }
+    out << " }";
+  }
+
+}
+
+
+
 DataLayout* llvm::GlobalTD;
 AliasAnalysis* llvm::GlobalAA;
 TargetLibraryInfo* llvm::GlobalTLI;
+VFSCallAliasAnalysis* llvm::GlobalVFSAA;
+IntegrationHeuristicsPass* llvm::GlobalIHP;

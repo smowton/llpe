@@ -46,18 +46,21 @@ bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser) {
 
 }
 
-bool InlineAttempt::getInitialStore() {
+void InlineAttempt::getInitialStore() {
 
   // Take our caller's store; they will make a new one
   // upon return.
 
-  BBs[0]->localStore = CI->parent->localStore;
+  if(CI)
+    BBs[0]->localStore = CI->parent->localStore;
+  else
+    BBs[0]->localStore = new LocalStoreMap();
 
 }
 
-bool PeelIteration::getInitialStore() {
+void PeelIteration::getInitialStore() {
   
-  if(iterCount == 0) {
+  if(iterationCount == 0) {
 
     // Borrow the preheader's store read-only (in case we fail to terminate
     // then the preheader store will be needed again)
@@ -68,7 +71,7 @@ bool PeelIteration::getInitialStore() {
   else {
 
     // Take the previous latch's store
-    BBs[0]->localStore = parentPA->Iterations[itercount-1]->getBB(parentPA->invarInfo->latchIdx)->localStore;
+    BBs[0]->localStore = parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx)->localStore;
 
   } 
 
@@ -95,11 +98,7 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
 
 void IntegrationAttempt::analyse() {
 
-  // Analysis primary entry point:
-  BasicBlock* FirstThresholdBB = &F.getEntryBlock();
-  IntegrationAttempt* FirstThresholdIA = this;
-
-  analyse(false, FirstThresholdBB, FirstThresholdIA, false);
+  analyse(false);
 
 }
 
@@ -109,7 +108,7 @@ bool PeelAttempt::analyse() {
 
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
-    anyChange |= PI->analyse();
+    anyChange |= PI->analyse(false);
 
   }
 
@@ -118,6 +117,8 @@ bool PeelAttempt::analyse() {
   return anyChange;
 
 }
+
+#define LFV3(x) x
 
 bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL) {
 
@@ -133,6 +134,9 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     doBlockStoreMerge(BB);
 
   }
+
+  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store: ");
+  LFV3(BB->localStore->print(errs()));
 
   // Use natural scope rather than scope because even if a loop is
   // ignored we want to notice that it exists so we can call analyseLoopPBs.
@@ -163,7 +167,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     // Analyse for invariants if we didn't establish that the loop terminates.
     if((!LPA) || !LPA->isTerminated()) {
 
-      anychange |= analyseLoop(BBL);
+      anyChange |= analyseLoop(BBL);
 
     }
     else {
@@ -252,7 +256,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipSuccess
 
 bool IntegrationAttempt::analyseLoop(const Loop* L) {
 
-  ShadowLoopInvar* LInfo = invar->LInfo[L];
+  ShadowLoopInvar* LInfo = invarInfo->LInfo[L];
   bool anyChange = true;
   bool firstIter = true;
   bool everChanged = false;
@@ -266,7 +270,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
 	    itend = LInfo->exitEdges.end(); it != itend; ++it) {
 
 	ShadowBB* BB = getBB(it->first);
-	if(BB && !edgeIsDead(BB, getBBInvar(it->second)))
+	if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second)))
 	  BB->localStore->dropReference();
 
       }
@@ -286,7 +290,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
 
     anyChange = false;
 
-    for(uint32_t i = LInfo->headerIdx; i < (BBOffset + nBBs); ++i) {
+    for(uint32_t i = LInfo->headerIdx; i < (BBsOffset + nBBs); ++i) {
 
       if(!L->contains(getBBInvar(i)->naturalScope))
 	break;
