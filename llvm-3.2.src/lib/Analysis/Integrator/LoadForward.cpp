@@ -752,7 +752,7 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
   }
 
   // COW break: copy the map and either share or copy its entries.
-  LFV3(errs() << "COW break local map " << this << "\n");
+  LFV3(errs() << "COW break local map " << this << " with " << store.size() << " entries\n");
   LocalStoreMap* newMap = new LocalStoreMap();
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it) {
 
@@ -817,7 +817,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
       else {
 	// Defer the rest of the multimap to the base object.
 	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
-	M->Underlying = V.getBaseStore().store;
+	M->Underlying = V.getBaseStore().store->getReadableCopy();
 	LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
 	ret->store = M;
       }
@@ -1333,6 +1333,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 	Results.push_back(IVSR(it.start(), it.stop(), it.val()));
 	Offset += (it.stop() - it.start());
 	Size -= (it.stop() - it.start());
+	++it;
 
       }
 
@@ -1449,6 +1450,9 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
     allocType = ArrayType::get(allocType, N->getLimitedValue());
 
   }
+
+  InlineAttempt* thisIA = SI->parent->IA->getFunctionRoot();
+  thisIA->localAllocas.push_back(SI);
 
   executeAllocInst(SI, allocType, GlobalAA->getTypeStoreSize(allocType));
 
@@ -1777,13 +1781,15 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
 void LocalStoreMap::clear() {
 
-  release_assert(refCount == 1 && "clear() against shared map?");
+  release_assert(refCount <= 1 && "clear() against shared map?");
 
   // Drop references to any maps this points to;
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
     LFV3(errs() << "Drop ref to " << it->second.store << "\n");
     it->second.store->dropReference();
   }
+
+  store.clear();
 
 }
 
@@ -1820,6 +1826,8 @@ void LocalStoreMap::dropReference() {
 
 static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti*, 4>& Seen) {
 
+  errs() << "gca " << LHS << " " << RHS << " " << isa<ImprovedValSetSingle>(LHS) << " " << isa<ImprovedValSetSingle>(RHS) << "\n";
+
   if(ImprovedValSetSingle* LHSS = dyn_cast<ImprovedValSetSingle>(LHS)) {
 
     if(ImprovedValSetSingle* RHSS = dyn_cast<ImprovedValSetSingle>(RHS)) {
@@ -1829,7 +1837,6 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 	
 	LHSResult = LHS;
 	RHSResult = RHS;
-	return true;
 
       }
       return match;
@@ -1845,7 +1852,7 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
   }
 
   ImprovedValSetMulti* LHSM = cast<ImprovedValSetMulti>(LHS);
-  if(!Seen.insert(LHSM)) {
+  if(LHS == RHS || Seen.count(LHSM)) {
     LHSResult = LHS;
     RHSResult = RHS;
     return true;
@@ -1857,6 +1864,11 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
     if(isa<ImprovedValSetSingle>(RHS) || (!cast<ImprovedValSetMulti>(RHS)->Underlying))
       return false;
 
+  }
+  else {
+    
+    Seen.insert(LHSM);
+    
   }
 
   // Advance the LHS pointer if possible, flip args to advance other side next.
@@ -1897,6 +1909,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
     {
       SmallPtrSet<ImprovedValSetMulti*, 4> Seen;
       // If we're making a new base store, flatten entirely.
+      if(mergeToBase)
+	LFV3(errs() << "Not using ancestor because target is base object\n");
       if(mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
 
 	LHSAncestor = 0;
@@ -1926,7 +1940,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
       uint64_t LastOffset = 0;
       bool anyGaps = false;
 
-      while(LHSit != LHSitend && RHSit != RHSitend) {
+      while(LHSit != LHSitend || RHSit != RHSitend) {
 
 	// Pick earlier-starting, earlier-ending operand to consume from next:
 	SmallVector<IVSRange, 4>::iterator* consumeNext;
@@ -1949,6 +1963,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	SmallVector<IVSRange, 4>::iterator& consumeit = *consumeNext;
 	SmallVector<IVSRange, 4>::iterator& otherit = (consumeNext == &LHSit ? RHSit : LHSit);
 	SmallVector<IVSRange, 4>::iterator& otherend = (consumeNext == &LHSit ? RHSitend : LHSitend);
+
+	LFV3(errs() << "Consume from " << ((consumeNext == &LHSit) ? "LHS" : "RHS") << " val at " << consumeit->first.first << "-" << consumeit->first.second << "\n");
 
 	// consumeit is now the input iterator that
 	// (a) is not at the end
@@ -2015,13 +2031,13 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	  getIVSSubVal(otherit->second, LastOffset - otherit->first.first, consumeit->first.second - LastOffset, otherVal);
 		
 	  consumeVal.merge(otherVal);
-	  MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, otherVal));
+	  MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, consumeVal));
 
 	  LastOffset = consumeit->first.second;
 
-	  ++consumeit;
 	  if(consumeit->first.second == otherit->first.second)
 	    ++otherit;
+	  ++consumeit;
 
 	}
 	      
@@ -2051,7 +2067,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	LFV3(errs() << "Using existing writable multi " << M << "\n");
 	M->Map.clear();
 	if(M->Underlying)
-	  M->dropReference();
+	  M->Underlying->dropReference();
 	newStore = M;
       }
       else {
@@ -2067,8 +2083,12 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	  finalit != finalitend; ++finalit) {
 
 	insertit.insert(finalit->first.first, finalit->first.second, finalit->second);
+	insertit = newStore->Map.end();
 	
       }
+
+      LFV3(errs() << "Merge result:\n");
+      LFV3(newStore->print(errs()));
 
       mergeToStore->store = newStore;
 
@@ -2114,8 +2134,8 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	  SmallVector<ShadowValue, 4> keysToRemove;
 
 	  // Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
-	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), itend = mergeMap->store.end();
-	      it != itend; ++it) {
+	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
+		itend = mergeMap->store.end(); it != itend; ++it) {
 
 	    if(!mergeFromMap->store.count(it->first)) {
 
@@ -2195,7 +2215,7 @@ struct MergeBlockVisitor : public ShadowBBVisitor {
 	// Refcounting will be caught up when we deref mergeFromMap below:
 	if(mergeFromStore->store != it->second.store) {
 
-	  mergeStores(BB, &it->second, mergeFromStore, it->first);
+	  mergeStores(BB, mergeFromStore, &it->second, it->first);
 
 	}
 

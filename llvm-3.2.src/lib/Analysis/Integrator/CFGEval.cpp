@@ -162,14 +162,20 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
   }
 
   if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
-    if(BI->isUnconditional())
-      return false;
+    if(BI->isUnconditional()) {
+      bool changed = !SI->parent->succsAlive[0];
+      SI->parent->succsAlive[0] = true;
+      return changed;
+    }
   }
 
   // Easiest case: copy edge liveness from our parent.
   // Can't ever result in a change at this scope.
-  if(L && tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent))
-    return false;
+  if(L) {
+    bool changed;
+    if(tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent, changed))
+      return changed;
+  }
 
   // Both switches and conditional branches use operand 0 for the condition.
   ShadowValue Condition = SI->getOperand(0);
@@ -206,34 +212,35 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
 	BasicBlock* thisTarget = TI->getSuccessor(I);
 
-	if(thisTarget != takenTarget) {
+	if(thisTarget == takenTarget) {
 
-	  // Mark outgoing edge dead.
-	  if(SI->parent->succsAlive[I])
+	  // Mark this edge alive
+	  if(!SI->parent->succsAlive[I])
 	    changed = true;
-	  SI->parent->succsAlive[I] = false;
+	  SI->parent->succsAlive[I] = true;
 
 	}
 
       }
 
+      return changed;
+
     }
+    
+    // Else fall through to set all alive.
 
   }
-  else {
 
-    // Condition unknown -- set all successors alive.
-    TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
-    const unsigned NumSucc = TI->getNumSuccessors();
-    for (unsigned I = 0; I != NumSucc; ++I) {
-
-      // Mark outgoing edge alive
-      if(!SI->parent->succsAlive[I])
-	changed = true;
-      SI->parent->succsAlive[I] = true;
-      
-    }
-
+  // Condition unknown -- set all successors alive.
+  TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
+  const unsigned NumSucc = TI->getNumSuccessors();
+  for (unsigned I = 0; I != NumSucc; ++I) {
+    
+    // Mark outgoing edge alive
+    if(!SI->parent->succsAlive[I])
+      changed = true;
+    SI->parent->succsAlive[I] = true;
+    
   }
 
   return changed;
@@ -294,8 +301,16 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
 
   // Return instruction breaks early to avoid the refcount juggling below:
   // a live return always has one successor, the call-merge.
-  if(inst_is<ReturnInst>(SI))
-    return false;
+  if(inst_is<ReturnInst>(SI)) {
+    // Drop local allocas from the store:
+    InlineAttempt* thisIA = getFunctionRoot();
+    for(SmallVector<ShadowInstruction*, 4>::iterator it = thisIA->localAllocas.begin(),
+	  it2 = thisIA->localAllocas.end(); it != it2; ++it) {
+      errs() << "Drop val " << itcache(*it) << " from local map\n";
+      SI->parent->localStore->store.erase(ShadowValue(*it));
+      return false;
+    }
+  }
 
   ShadowBB* BB = SI->parent;
   ShadowBBInvar* BBI = BB->invar;

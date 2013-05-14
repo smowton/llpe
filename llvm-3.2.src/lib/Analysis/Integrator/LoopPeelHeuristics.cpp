@@ -1980,6 +1980,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
     if(argConstants[i])
       setParam(IA, i, argConstants[i]);
+    else 
+      IA->argShadows[i].i.PB.setOverdef();
 
   }
 

@@ -77,6 +77,13 @@ void PeelIteration::getInitialStore() {
 
 }
 
+void IntegrationAttempt::cleanupLocalStore() {}
+void InlineAttempt::cleanupLocalStore() {
+
+  localAllocas.clear();
+
+}
+
 bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
 
   bool anyChange = false;
@@ -91,6 +98,8 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
     anyChange |= analyseBlock(i, inLoopAnalyser, i == BBsOffset, L);
 
   }
+
+  cleanupLocalStore();
 
   return anyChange;
 

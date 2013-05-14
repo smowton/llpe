@@ -511,7 +511,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
   newBB->invar = &(invarInfo->BBs[blockIdx]);
   newBB->succsAlive = new bool[newBB->invar->succIdxs.size()];
   for(unsigned i = 0, ilim = newBB->invar->succIdxs.size(); i != ilim; ++i)
-    newBB->succsAlive[i] = true;
+    newBB->succsAlive[i] = false;
   newBB->status = BBSTATUS_UNKNOWN;
   newBB->IA = this;
 
@@ -696,13 +696,17 @@ ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
 }
 
-bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB) {
+bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed) {
 
   bool foundDeadEdge = false;
+  changed = false;
 
   for(uint32_t i = 0; i < FromBB->invar->succIdxs.size(); ++i) {
 
-    ToBB->succsAlive[i] = FromBB->succsAlive[i];
+    if(ToBB->succsAlive[i] != FromBB->succsAlive[i]) {
+      changed = true;
+      ToBB->succsAlive[i] = FromBB->succsAlive[i];
+    }
     foundDeadEdge |= (!FromBB->succsAlive[i]);
 
   }

@@ -265,7 +265,8 @@ void ImprovedValSetMulti::dropReference() {
   if(!(--MapRefCount)) {
 
     LFV3(errs() << "Drop ref on multi: deleted\n");
-    Underlying->dropReference();
+    if(Underlying)
+      Underlying->dropReference();
     
     delete this;
 
@@ -366,7 +367,7 @@ void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
 
   }
   
-  while(found != Map.end() && found.start() <= LastByte && found.stop() <= LastByte) {
+  while(found != Map.end() && found.start() < LastByte && found.stop() <= LastByte) {
 
     // Implicitly bumps the iterator forwards:
     CoveredBytes -= (found.stop() - found.start());
@@ -374,7 +375,7 @@ void ImprovedValSetMulti::clearRange(uint64_t Offset, uint64_t Size) {
 
   }
 
-  if(found != Map.end() && found.start() <= LastByte) {
+  if(found != Map.end() && found.start() < LastByte) {
 
     if(found.val().canTruncate()) {
       found.val().truncateLeft(found.stop() - LastByte);
@@ -442,7 +443,7 @@ void ImprovedValSetSingle::truncateLeft(uint64_t n) {
 
   if(Overdef)
     return;
-  if(SetType == ValSetTypeScalar) {
+  if(SetType == ValSetTypeScalarSplat) {
     release_assert(Values.size() == 1 && "Splat value must be single-valued");
     Values[0].Offset = (int64_t)n;
     return;
