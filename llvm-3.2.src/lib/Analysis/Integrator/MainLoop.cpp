@@ -135,7 +135,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   }
 
-  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store: ");
+  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store:\n");
   LFV3(BB->localStore->print(errs()));
 
   // Use natural scope rather than scope because even if a loop is
@@ -171,6 +171,11 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
     }
     else {
+
+      // The loop preheader's local store was copied by the loop analysis assuming we'd
+      // need it to analyse the loop body, but we've found the loop terminates; drop the extra ref.
+      ShadowLoopInvar* LInfo = invarInfo->LInfo[BBL];
+      getBB(LInfo->preheaderIdx)->localStore->dropReference();
 
       // Copy edges found always dead to local scope, to accelerate edgeIsDead queries without
       // checking every iteration every time.

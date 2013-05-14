@@ -291,7 +291,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 	  
 	  if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
-	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
+	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, getShadowGlobalIndex(OpGV));
 	  else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);

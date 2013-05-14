@@ -698,6 +698,8 @@ struct LocalStoreMap {
   uint32_t refCount;
 
 LocalStoreMap() : allOthersClobbered(false), refCount(1) {}
+  void clear();
+  LocalStoreMap* getEmptyMap();
   void dropReference();
   LocalStoreMap* getWritableStoreMap();
   void print(raw_ostream&, bool brief = false);

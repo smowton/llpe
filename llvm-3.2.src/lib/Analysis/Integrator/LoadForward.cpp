@@ -520,7 +520,7 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
   }
 
-  return numNonNulls > 1;
+  return numNonNulls >= 1;
 
 }
 
@@ -615,6 +615,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
     raw_string_ostream RSO(report);
     RSO << "Load vague ";
     printPB(RSO, LoadPtrPB, true);
+    NewPB.setOverdef();
 
   }
 
@@ -862,7 +863,10 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
     if(!ret->store->isWritableMulti()) {
 
       ImprovedValSetMulti* NewIMap = new ImprovedValSetMulti(V);
-      LFV3(errs() << "Break shared multi " << ret->store << " -> " << NewIMap << "\n");
+      if(isa<ImprovedValSetMulti>(ret->store))
+	LFV3(errs() << "Break shared multi " << ret->store << " -> " << NewIMap << "\n");
+      else
+	LFV3(errs() << "Break single -> multi " << ret->store << " -> " << NewIMap << "\n");	
       NewIMap->Underlying = ret->store;
       // M's refcount remains unchanged, it's just now referenced as a base rather than
       // being directly used here.
@@ -880,9 +884,9 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   
 }
 
-bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64_t Size, PartialVal* PV, std::string& error) {
+bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string& error) {
 
-  release_assert(PV && "Must allocate PV before calling addIVSToPartialVal");
+  release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVSToPartialVal");
 
   // For now we forbid building from bytes when an input is set-typed:
   if(IVS.Overdef || IVS.Values.size() != 1)
@@ -894,7 +898,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64
   PartialVal NewPV;
   Constant* DefC = cast<Constant>(IVS.Values[0].V.getVal());
   if(IVS.SetType == ValSetTypeScalar) {
-    NewPV = PartialVal::getPartial(DefC, Offset);
+    NewPV = PartialVal::getPartial(DefC, IVSOffset);
   }
   else {
     // Splat of i8:
@@ -912,7 +916,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t Offset, uint64
     NewPV.loadFinished = true;
   }
 
-  if(!PV->combineWith(NewPV, 0, Size, Size, GlobalTD, error))
+  if(!PV->combineWith(NewPV, PVOffset, PVOffset + Size, PV->partialBufBytes, GlobalTD, error))
     return false;
 
   return true;
@@ -1002,7 +1006,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     }
 
-    if(!addIVSToPartialVal(*IVS, Offset, Size, ResultPV, error)) {
+    if(!addIVSToPartialVal(*IVS, Offset, 0, Size, ResultPV, error)) {
       
       LFV3(errs() << "Partial build failed\n");
       delete ResultPV;
@@ -1035,7 +1039,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     LFV3(errs() << "Merge subval at " << FirstReadByte << "-" << LastReadByte << "\n");
 
-    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), LastReadByte - FirstReadByte, ResultPV, error)) {
+    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), FirstReadByte, LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
       Result = ImprovedValSetSingle::getOverdef();
       return;
@@ -1422,6 +1426,8 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   ImprovedVal IV(ShadowValue(Undef), 0);
   SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
   SI->storeSize = AllocSize;
+  
+  SI->i.PB = ImprovedValSetSingle::get(ImprovedVal(SI, 0), ValSetTypePB);
 
 }
 
@@ -1695,7 +1701,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   }
 
   // Finally clobber all locations; this call is entirely unhandled
-  errs() << "Warning: unhandled call clobbers all locations";
+  errs() << "Warning: unhandled call clobbers all locations\n";
   ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
   executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
 
@@ -1706,8 +1712,8 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
   if(PtrSet.Overdef) {
 
     // Start with a plain local store map giving no locations.
-    StoreBB->localStore->dropReference();
-    StoreBB->localStore = new LocalStoreMap();
+    // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
+    StoreBB->localStore = StoreBB->localStore->getEmptyMap();
     StoreBB->localStore->allOthersClobbered = true;
     LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
 
@@ -1769,17 +1775,37 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
 }
 
+void LocalStoreMap::clear() {
+
+  release_assert(refCount == 1 && "clear() against shared map?");
+
+  // Drop references to any maps this points to;
+  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+    LFV3(errs() << "Drop ref to " << it->second.store << "\n");
+    it->second.store->dropReference();
+  }
+
+}
+
+LocalStoreMap* LocalStoreMap::getEmptyMap() {
+
+  if(refCount == 1) {
+    clear();
+    return this;
+  }
+  else {
+    dropReference();
+    return new LocalStoreMap();
+  }
+
+}
+
 void LocalStoreMap::dropReference() {
 
   if(!--refCount) {
 
     LFV3(errs() << "Local map " << this << " freed\n");
-
-    // Drop references to any maps this points to;
-    for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
-      LFV3(errs() << "Drop ref to " << it->second.store << "\n");
-      it->second.store->dropReference();
-    }
+    clear();
 
     delete this;
 
@@ -2214,11 +2240,11 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   // TODO: do this better
   if(mergeToBase && !V.newMap->allOthersClobbered) {
-    commitStoreToBase(V.newMap);
-    V.newMap->dropReference();
+    commitStoreToBase(V.newMap);    
+    V.newMap->clear();
   }
-  else
-    BB->localStore = V.newMap;
+
+  BB->localStore = V.newMap;
 
 }
 
@@ -2234,12 +2260,10 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   if(mergeToBase && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
-    V.newMap->dropReference();
-    // Blank block-local map.
-    SI->parent->localStore = new LocalStoreMap();
+    V.newMap->clear();
   }
-  else
-    SI->parent->localStore = V.newMap;
+
+  SI->parent->localStore = V.newMap;
   
 }
 

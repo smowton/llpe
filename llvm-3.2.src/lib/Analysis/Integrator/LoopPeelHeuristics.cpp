@@ -2011,8 +2011,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "\n";
   }
 
-  IA->disableVarargsContexts();
-
   IA->prepareCommit();
 
   if(!SkipDIE)

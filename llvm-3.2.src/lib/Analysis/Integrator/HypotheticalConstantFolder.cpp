@@ -893,18 +893,9 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   
   Instruction* I = SI->invar->I;
 
-  if(inst_is<AllocaInst>(SI) || isNoAliasCall(SI->invar->I)) {
-
-    ImpType = ValSetTypePB;
-    Improved.V = ShadowValue(SI);
-    Improved.Offset = 0;
-    return;
-      
-  }
-
   // Try a special case for forwarding FDs: they can be passed through any cast preserving 32 bits.
   // We optimistically pass vararg cookies through all casts.
-  else if(inst_is<CastInst>(SI)) {
+  if(inst_is<CastInst>(SI)) {
 
     CastInst* CI = cast_inst<CastInst>(SI);
     Type* SrcTy = CI->getSrcTy();

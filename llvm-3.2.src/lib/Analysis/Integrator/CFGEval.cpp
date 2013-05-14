@@ -157,12 +157,6 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
   if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI))) {
     
-    // Store management for returns and similar:
-    if(inst_is<UnreachableInst>(SI))
-      SI->parent->localStore->dropReference();
-    // Return instructions donate their reference to their callsite
-    // TODO: invoke should make refs for each successor
-
     return false;
 
   }
@@ -295,7 +289,12 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
   // Clarify branch target if possible:
   bool anyChange = tryEvaluateTerminatorInst(SI);
 
-  if(skipSuccessorCreation || !anyChange)
+  if(skipSuccessorCreation)
+    return false;
+
+  // Return instruction breaks early to avoid the refcount juggling below:
+  // a live return always has one successor, the call-merge.
+  if(inst_is<ReturnInst>(SI))
     return false;
 
   ShadowBB* BB = SI->parent;
@@ -307,6 +306,10 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
 
     if(!BB->succsAlive[i])
       continue;
+
+    // Create a store reference for each live successor
+    ++SI->parent->localStore->refCount;
+    
     if(uniqueSucc == BBI->succIdxs[i] || uniqueSucc == 0xffffffff)
       uniqueSucc = BBI->succIdxs[i];
     else {
@@ -316,13 +319,16 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
 
   }
 
+  // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
+  SI->parent->localStore->dropReference();
+
+  if(!anyChange)
+    return false;
+
   for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
 
     if(!BB->succsAlive[i])
       continue;
-
-    // Create a store reference for each live successor
-    ++SI->parent->localStore->refCount;
 
     ShadowBBInvar* SBBI = getBBInvar(BB->invar->succIdxs[i]);
 
