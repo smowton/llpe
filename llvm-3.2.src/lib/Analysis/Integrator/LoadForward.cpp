@@ -1012,6 +1012,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       
       LFV3(errs() << "Partial build failed\n");
       delete ResultPV;
+      ResultPV = 0;
       Result = ImprovedValSetSingle::getOverdef();
 
     }
@@ -1041,8 +1042,9 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     LFV3(errs() << "Merge subval at " << FirstReadByte << "-" << LastReadByte << "\n");
 
-    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), FirstReadByte, LastReadByte - FirstReadByte, ResultPV, error)) {
+    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), FirstReadByte - Offset, LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
+      ResultPV = 0;
       Result = ImprovedValSetSingle::getOverdef();
       return;
     }
@@ -1663,8 +1665,10 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
     }
 
-    // See if we can discard the call because it's annotated read-only:
+    // All unannotated calls return an unknown value:
+    SI->i.PB.setOverdef();
 
+    // See if we can discard the call because it's annotated read-only:
     if(F->onlyReadsMemory())
       return;
 
@@ -1797,7 +1801,9 @@ void LocalStoreMap::clear() {
 
 LocalStoreMap* LocalStoreMap::getEmptyMap() {
 
-  if(refCount == 1) {
+  if(store.empty())
+    return this;
+  else if(refCount == 1) {
     clear();
     return this;
   }
@@ -2251,8 +2257,8 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   // TODO: do this better
   if(mergeToBase && !V.newMap->allOthersClobbered) {
-    commitStoreToBase(V.newMap);    
-    V.newMap->clear();
+    commitStoreToBase(V.newMap);
+    V.newMap = V.newMap->getEmptyMap();
   }
 
   BB->localStore = V.newMap;
@@ -2271,7 +2277,7 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   if(mergeToBase && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
-    V.newMap->clear();
+    V.newMap = V.newMap->getEmptyMap();
   }
 
   SI->parent->localStore = V.newMap;
@@ -2298,22 +2304,27 @@ SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
 
 bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
 
-  if(V1.isVal()) {
+  switch(V1.t) {
+  case SHADOWVAL_OTHER:
 
     if(!V2.isVal())
       return false;
     else
       return V1.getVal() == V2.getVal();
 
-  }
-  else if(V1.isArg()) {
+  case SHADOWVAL_ARG:
 
     if(!V2.isArg())
       return false;
     return V1.getArg() == V2.getArg();
 
-  }
-  else {
+  case SHADOWVAL_GV:
+
+    if(V2.t != SHADOWVAL_GV)
+      return false;
+    return V1.u.GV == V2.u.GV;
+
+  case SHADOWVAL_INST:
 
     if(!V2.isInst())
       return false;
@@ -2325,6 +2336,10 @@ bool llvm::basesAlias(ShadowValue V1, ShadowValue V2) {
     }
     else
       return false;
+
+  default:
+    release_assert(0 && "basesAlias with bad value type");
+    llvm_unreachable();
 
   }
    

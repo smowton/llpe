@@ -310,6 +310,8 @@ template<> struct DenseMapInfo<ShadowValue> {
       hashPtr = V.u.A; break;
     case SHADOWVAL_INST:
       hashPtr = V.u.I; break;
+    case SHADOWVAL_GV:
+      hashPtr = V.u.GV; break;
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
     default:

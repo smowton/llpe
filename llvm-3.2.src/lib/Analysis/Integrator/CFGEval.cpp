@@ -308,8 +308,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
 	  it2 = thisIA->localAllocas.end(); it != it2; ++it) {
       errs() << "Drop val " << itcache(*it) << " from local map\n";
       SI->parent->localStore->store.erase(ShadowValue(*it));
-      return false;
     }
+    return false;
   }
 
   ShadowBB* BB = SI->parent;

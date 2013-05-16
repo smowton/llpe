@@ -707,7 +707,7 @@ bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed) {
   if(!foundDeadEdge)
     return false;
 
-  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size() && !foundDeadEdge; ++i) {
+  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size(); ++i) {
 
     if(ToBB->succsAlive[i] != FromBB->succsAlive[i]) {
       changed = true;

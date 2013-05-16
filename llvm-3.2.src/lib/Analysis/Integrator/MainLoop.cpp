@@ -64,7 +64,7 @@ void PeelIteration::getInitialStore() {
 
     // Borrow the preheader's store read-only (in case we fail to terminate
     // then the preheader store will be needed again)
-    BBs[0]->localStore = parent->getBB(parentPA->invarInfo->latchIdx)->localStore;
+    BBs[0]->localStore = parent->getBB(parentPA->invarInfo->preheaderIdx)->localStore;
     BBs[0]->localStore->refCount++;
 
   }
@@ -143,18 +143,8 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   bool anyChange = false;
 
-  if(!skipStoreMerge) {
-
-    // Loop headers and entry blocks are given their stores in other ways
-    doBlockStoreMerge(BB);
-
-  }
-
-  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store:\n");
-  LFV3(BB->localStore->print(errs()));
-
   // Use natural scope rather than scope because even if a loop is
-  // ignored we want to notice that it exists so we can call analyseLoopPBs.
+  // ignored we want to notice that it exists so we can call analyseLoop
   ShadowBBInvar* BBI = BB->invar;
   const Loop* BBL = BBI->naturalScope;
    
@@ -206,6 +196,16 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     return anyChange;
 
   }
+
+  if(!skipStoreMerge) {
+
+    // Loop headers and entry blocks are given their stores in other ways
+    doBlockStoreMerge(BB);
+
+  }
+
+  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store:\n");
+  LFV3(BB->localStore->print(errs()));
 
   // Else we should just analyse this block here.
   anyChange |= analyseBlockInstructions(BB, false, inLoopAnalyser);
