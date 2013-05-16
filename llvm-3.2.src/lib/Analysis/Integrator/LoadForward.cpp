@@ -383,7 +383,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
   if(getBaseAndConstantOffset(LoadI->getOperand(0), PtrBase, PtrOffset)) {
 
-    if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(PtrBase.getVal())) {
+    if(ShadowGV* SGV = PtrBase.getGV()) {
+
+      GlobalVariable* GV = SGV->G;
 
       if(GV->isConstant()) {
 
@@ -1596,7 +1598,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
     if(getFileBytes(OS.Name, FileOffset, Size, constBytes, Context,  errors)) {
       ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
       Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
-      WriteIVS = ImprovedValSetSingle::get(ByteArray);
+      WriteIVS = ImprovedValSetSingle::get(ImprovedVal(ByteArray, 0), ValSetTypePB);
     }
 
   }
@@ -1876,361 +1878,350 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 
 }
 
-struct MergeBlockVisitor : public ShadowBBVisitor {
+void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
 
-  bool newMapValid;
-  LocalStoreMap* newMap;
-  SmallPtrSet<LocalStoreMap*, 4> seenMaps;
-  bool mergeToBase;
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
 
-  MergeBlockVisitor(bool mtb) : newMapValid(false), newMap(0), mergeToBase(mtb) { }
+    LFV3(errs() << "Merge in store " << mergeFromStore << " -> " << mergeToStore << "\n");
 
-  void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
-
-    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
-
-      LFV3(errs() << "Merge in store " << mergeFromStore << " -> " << mergeToStore << "\n");
-
-      if(IVS->Overdef) {
-	LFV3(errs() << "Target already clobbered\n");
-	return;
-      }
-
-      if(ImprovedValSetSingle* IVS2 = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
-	LFV3(errs() << "Merge in another single\n");
-	IVS->merge(*IVS2);
-	return;
-      }
-
+    if(IVS->Overdef) {
+      LFV3(errs() << "Target already clobbered\n");
+      return;
     }
 
-    // Get an IVS list for each side that contains gaps where there is a common ancestor:
-    ImprovedValSet *LHSAncestor, *RHSAncestor;
-    {
-      SmallPtrSet<ImprovedValSetMulti*, 4> Seen;
-      // If we're making a new base store, flatten entirely.
-      if(mergeToBase)
-	LFV3(errs() << "Not using ancestor because target is base object\n");
-      if(mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
-
-	LHSAncestor = 0;
-	RHSAncestor = 0;
-	      
-      }
-      LFV3(errs() << "Merging multi stores; use common ancestor " << LHSAncestor << "/" << RHSAncestor << "\n");
-    }
-
-    {
-      SmallVector<IVSRange, 4> LHSVals;
-      SmallVector<IVSRange, 4> RHSVals;
-      uint64_t TotalBytes = MergeV.getAllocSize();
-
-      readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeToStore->store, LHSVals, LHSAncestor);
-      readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeFromStore->store, RHSVals, RHSAncestor);
-	  
-      SmallVector<IVSRange, 4> MergedVals;
-      // Algorithm:
-      // Where both ancestors cover some range, merge.
-      // Where neither ancestor covers, leave blank for deferral.
-      // Where only one covers, get that subrange from the common ancestor store.
-      // Where granularity of coverage differs, break apart into subvals.
-
-      SmallVector<IVSRange, 4>::iterator LHSit = LHSVals.begin(), RHSit = RHSVals.begin();
-      SmallVector<IVSRange, 4>::iterator LHSitend = LHSVals.end(), RHSitend = RHSVals.end();
-      uint64_t LastOffset = 0;
-      bool anyGaps = false;
-
-      while(LHSit != LHSitend || RHSit != RHSitend) {
-
-	// Pick earlier-starting, earlier-ending operand to consume from next:
-	SmallVector<IVSRange, 4>::iterator* consumeNext;
-	if(LHSit == LHSitend)
-	  consumeNext = &RHSit;
-	else if(RHSit == RHSitend)
-	  consumeNext = &LHSit;
-	else {
-
-	  // Regard starting before now as equal to starting right now.
-	  uint64_t consumeLHS = std::max(LHSit->first.first, LastOffset);
-	  uint64_t consumeRHS = std::max(RHSit->first.first, LastOffset);
-
-	  if(consumeLHS == consumeRHS)
-	    consumeNext = LHSit->first.second <= RHSit->first.second ? &LHSit : &RHSit;
-	  else
-	    consumeNext = consumeLHS < consumeRHS ? &LHSit : &RHSit;
-
-	}
-	SmallVector<IVSRange, 4>::iterator& consumeit = *consumeNext;
-	SmallVector<IVSRange, 4>::iterator& otherit = (consumeNext == &LHSit ? RHSit : LHSit);
-	SmallVector<IVSRange, 4>::iterator& otherend = (consumeNext == &LHSit ? RHSitend : LHSitend);
-
-	LFV3(errs() << "Consume from " << ((consumeNext == &LHSit) ? "LHS" : "RHS") << " val at " << consumeit->first.first << "-" << consumeit->first.second << "\n");
-
-	// consumeit is now the input iterator that
-	// (a) is not at the end
-	// (b) is defined at LastOffset, in which case otherit is not defined here,
-	// (c) or it is defined and otherit is also defined here and otherit remains defined for longer,
-	// (d) or else both iterators are not defined here and consumeit becomes defined first.
-	// In short we should leave a gap until consumeit becomes defined, or merge the next
-	// consumeit object with either the base (if otherit is not defined) or with a partial
-	// otherit object.
-
-	// Find next event:
-	if(LastOffset < consumeit->first.first) {
-		
-	  LFV3(errs() << "Gap " << LastOffset << "-" << LHSit->first.first << "\n");
-	  // Case (d) Leave a gap
-	  anyGaps = true;
-	  LastOffset = consumeit->first.first;
-
-	}
-	else if(otherit == otherend || otherit->first.first > LastOffset) {
-
-	  // consumeit entry begins here or earlier but otherit is not defined, case (b). 
-	  // Merge it with base up to this entry's end or otherit becoming defined.
-	  uint64_t stopAt;
-	  bool bump;
-	  if(otherit == otherend || otherit->first.first >= consumeit->first.second) {
-	    stopAt = consumeit->first.second;
-	    bump = true;
-	  }
-	  else {
-	    stopAt = otherit->first.first;
-	    bump = false;
-	  }
-
-	  LFV3(errs() << "Merge with base " << LastOffset << "-" << stopAt << "\n");
-	  
-	  SmallVector<IVSRange, 4> baseVals;
-	  readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, BB, LHSAncestor, baseVals, 0);
-		
-	  for(SmallVector<IVSRange, 4>::iterator baseit = baseVals.begin(), baseend = baseVals.end();
-	      baseit != baseend; ++baseit) {
-
-	    ImprovedValSetSingle subVal;
-	    getIVSSubVal(consumeit->second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
-	    subVal.merge(baseit->second);
-	    MergedVals.push_back(IVSR(baseit->first.first, baseit->first.second, subVal));
-		    
-	  }
-
-	  LastOffset = stopAt;
-	  if(bump)
-	    ++consumeit;
-		
-	}
-	else {
-
-	  LFV3(errs() << "Merge two vals " << LastOffset << "-" << consumeit->first.second << "\n");
-
-	  // Both entries are defined here, case (c), so consumeit finishes equal or sooner.
-	  ImprovedValSetSingle consumeVal;
-	  getIVSSubVal(consumeit->second, LastOffset - consumeit->first.first, consumeit->first.second - LastOffset, consumeVal);
-		
-	  ImprovedValSetSingle otherVal;
-	  getIVSSubVal(otherit->second, LastOffset - otherit->first.first, consumeit->first.second - LastOffset, otherVal);
-		
-	  consumeVal.merge(otherVal);
-	  MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, consumeVal));
-
-	  LastOffset = consumeit->first.second;
-
-	  if(consumeit->first.second == otherit->first.second)
-	    ++otherit;
-	  ++consumeit;
-
-	}
-	      
-      }
-      
-      // MergedVals is now an in-order extent list of values for the merged store
-      // except for gaps where LHSAncestor (or RHSAncestor) would show through.
-      // Figure out if we in fact have any gaps:
-
-      ImprovedValSet* newUnderlying;
-
-      if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes)) {
-	LFV3(errs() << "Using ancestor " << LHSAncestor << "\n");
-	newUnderlying = LHSAncestor->getReadableCopy();
-      }
-      else {
-	LFV3(errs() << "No ancestor used (totally defined locally)\n");
-	newUnderlying = 0;
-      }
-
-      // Get a Multi to populate: either clear an existing one or allocate one.
-
-      ImprovedValSetMulti* newStore;
-
-      if(mergeToStore->store->isWritableMulti()) {
-	ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(mergeToStore->store);
-	LFV3(errs() << "Using existing writable multi " << M << "\n");
-	M->Map.clear();
-	if(M->Underlying)
-	  M->Underlying->dropReference();
-	newStore = M;
-      }
-      else {
-	mergeToStore->store->dropReference();
-	newStore = new ImprovedValSetMulti(MergeV);
-	LFV3(errs() << "Drop existing store " << mergeToStore->store << ", allocate new multi " << newStore << "\n");
-      }	
-
-      newStore->Underlying = newUnderlying;
-
-      ImprovedValSetMulti::MapIt insertit = newStore->Map.end();
-      for(SmallVector<IVSRange, 4>::iterator finalit = MergedVals.begin(), finalitend = MergedVals.end();
-	  finalit != finalitend; ++finalit) {
-
-	insertit.insert(finalit->first.first, finalit->first.second, finalit->second);
-	insertit = newStore->Map.end();
-	
-      }
-
-      LFV3(errs() << "Merge result:\n");
-      LFV3(newStore->print(errs()));
-
-      mergeToStore->store = newStore;
-
+    if(ImprovedValSetSingle* IVS2 = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
+      LFV3(errs() << "Merge in another single\n");
+      IVS->merge(*IVS2);
+      return;
     }
 
   }
 
-  void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+  // Get an IVS list for each side that contains gaps where there is a common ancestor:
+  ImprovedValSet *LHSAncestor, *RHSAncestor;
+  {
+    SmallPtrSet<ImprovedValSetMulti*, 4> Seen;
+    // If we're making a new base store, flatten entirely.
+    if(mergeToBase)
+      LFV3(errs() << "Not using ancestor because target is base object\n");
+    if(mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
 
-    LFV3(errs() << "Merge: visit BB " << BB->invar->BB->getName() << "\n");
-
-    if(!seenMaps.insert(BB->localStore)) {
-      // We've already seen this exact map as a pred; drop the extra ref.
-      LFV3(errs() << "Seen map " << BB->localStore << " before; drop ref\n");
-      BB->localStore->dropReference();
-      return;
+      LHSAncestor = 0;
+      RHSAncestor = 0;
+	      
     }
+    LFV3(errs() << "Merging multi stores; use common ancestor " << LHSAncestor << "/" << RHSAncestor << "\n");
+  }
 
-    if(!newMapValid) {
-      // This is the first predecessor, borrow the incoming block's map / use the base map.
-      // Note that the refcount is already correct (blocks assume their map will be taken per default)
-      // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
-      newMap = BB->localStore;
-      LFV3(errs() << "Take incoming map " << BB->localStore << "\n");
-      newMapValid = true;
-      return;
+  {
+    SmallVector<IVSRange, 4> LHSVals;
+    SmallVector<IVSRange, 4> RHSVals;
+    uint64_t TotalBytes = MergeV.getAllocSize();
+
+    readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeToStore->store, LHSVals, LHSAncestor);
+    readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeFromStore->store, RHSVals, RHSAncestor);
+	  
+    SmallVector<IVSRange, 4> MergedVals;
+    // Algorithm:
+    // Where both ancestors cover some range, merge.
+    // Where neither ancestor covers, leave blank for deferral.
+    // Where only one covers, get that subrange from the common ancestor store.
+    // Where granularity of coverage differs, break apart into subvals.
+
+    SmallVector<IVSRange, 4>::iterator LHSit = LHSVals.begin(), RHSit = RHSVals.begin();
+    SmallVector<IVSRange, 4>::iterator LHSitend = LHSVals.end(), RHSitend = RHSVals.end();
+    uint64_t LastOffset = 0;
+    bool anyGaps = false;
+
+    while(LHSit != LHSitend || RHSit != RHSitend) {
+
+      // Pick earlier-starting, earlier-ending operand to consume from next:
+      SmallVector<IVSRange, 4>::iterator* consumeNext;
+      if(LHSit == LHSitend)
+	consumeNext = &RHSit;
+      else if(RHSit == RHSitend)
+	consumeNext = &LHSit;
+      else {
+
+	// Regard starting before now as equal to starting right now.
+	uint64_t consumeLHS = std::max(LHSit->first.first, LastOffset);
+	uint64_t consumeRHS = std::max(RHSit->first.first, LastOffset);
+
+	if(consumeLHS == consumeRHS)
+	  consumeNext = LHSit->first.second <= RHSit->first.second ? &LHSit : &RHSit;
+	else
+	  consumeNext = consumeLHS < consumeRHS ? &LHSit : &RHSit;
+
+      }
+      SmallVector<IVSRange, 4>::iterator& consumeit = *consumeNext;
+      SmallVector<IVSRange, 4>::iterator& otherit = (consumeNext == &LHSit ? RHSit : LHSit);
+      SmallVector<IVSRange, 4>::iterator& otherend = (consumeNext == &LHSit ? RHSitend : LHSitend);
+
+      LFV3(errs() << "Consume from " << ((consumeNext == &LHSit) ? "LHS" : "RHS") << " val at " << consumeit->first.first << "-" << consumeit->first.second << "\n");
+
+      // consumeit is now the input iterator that
+      // (a) is not at the end
+      // (b) is defined at LastOffset, in which case otherit is not defined here,
+      // (c) or it is defined and otherit is also defined here and otherit remains defined for longer,
+      // (d) or else both iterators are not defined here and consumeit becomes defined first.
+      // In short we should leave a gap until consumeit becomes defined, or merge the next
+      // consumeit object with either the base (if otherit is not defined) or with a partial
+      // otherit object.
+
+      // Find next event:
+      if(LastOffset < consumeit->first.first) {
+		
+	LFV3(errs() << "Gap " << LastOffset << "-" << LHSit->first.first << "\n");
+	// Case (d) Leave a gap
+	anyGaps = true;
+	LastOffset = consumeit->first.first;
+
+      }
+      else if(otherit == otherend || otherit->first.first > LastOffset) {
+
+	// consumeit entry begins here or earlier but otherit is not defined, case (b). 
+	// Merge it with base up to this entry's end or otherit becoming defined.
+	uint64_t stopAt;
+	bool bump;
+	if(otherit == otherend || otherit->first.first >= consumeit->first.second) {
+	  stopAt = consumeit->first.second;
+	  bump = true;
+	}
+	else {
+	  stopAt = otherit->first.first;
+	  bump = false;
+	}
+
+	LFV3(errs() << "Merge with base " << LastOffset << "-" << stopAt << "\n");
+	  
+	SmallVector<IVSRange, 4> baseVals;
+	readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, BB, LHSAncestor, baseVals, 0);
+		
+	for(SmallVector<IVSRange, 4>::iterator baseit = baseVals.begin(), baseend = baseVals.end();
+	    baseit != baseend; ++baseit) {
+
+	  ImprovedValSetSingle subVal;
+	  getIVSSubVal(consumeit->second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
+	  subVal.merge(baseit->second);
+	  MergedVals.push_back(IVSR(baseit->first.first, baseit->first.second, subVal));
+		    
+	}
+
+	LastOffset = stopAt;
+	if(bump)
+	  ++consumeit;
+		
+      }
+      else {
+
+	LFV3(errs() << "Merge two vals " << LastOffset << "-" << consumeit->first.second << "\n");
+
+	// Both entries are defined here, case (c), so consumeit finishes equal or sooner.
+	ImprovedValSetSingle consumeVal;
+	getIVSSubVal(consumeit->second, LastOffset - consumeit->first.first, consumeit->first.second - LastOffset, consumeVal);
+		
+	ImprovedValSetSingle otherVal;
+	getIVSSubVal(otherit->second, LastOffset - otherit->first.first, consumeit->first.second - LastOffset, otherVal);
+		
+	consumeVal.merge(otherVal);
+	MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, consumeVal));
+
+	LastOffset = consumeit->first.second;
+
+	if(consumeit->first.second == otherit->first.second)
+	  ++otherit;
+	++consumeit;
+
+      }
+	      
+    }
+      
+    // MergedVals is now an in-order extent list of values for the merged store
+    // except for gaps where LHSAncestor (or RHSAncestor) would show through.
+    // Figure out if we in fact have any gaps:
+
+    ImprovedValSet* newUnderlying;
+
+    if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes)) {
+      LFV3(errs() << "Using ancestor " << LHSAncestor << "\n");
+      newUnderlying = LHSAncestor->getReadableCopy();
     }
     else {
-
-      // Merge in the new map or base store values as appropriate.
-      // Create a local map if we didn't have one; COW break it if it was shared.
-      // The first time a real merge is necessary this might COW-break.
-      // After that it's a no-op.
-      LocalStoreMap* mergeMap = newMap->getWritableStoreMap();
-      LocalStoreMap* mergeFromMap = BB->localStore;
-
-      release_assert(mergeMap && "Must have a concrete destination map");
-
-      if(mergeFromMap) {
-
-	if(mergeFromMap->allOthersClobbered) {
-
-	  SmallVector<ShadowValue, 4> keysToRemove;
-
-	  // Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
-	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
-		itend = mergeMap->store.end(); it != itend; ++it) {
-
-	    if(!mergeFromMap->store.count(it->first)) {
-
-	      LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
-	      keysToRemove.push_back(it->first);
-	      it->second.store->dropReference();
-
-	    }
-
-	  }
-
-	  for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), delitend = keysToRemove.end();
-	      delit != delitend; ++delit) {
-
-	    mergeMap->store.erase(*delit);
-
-	  }
-
-	  mergeMap->allOthersClobbered = true;
-
-	}
-	else if(!mergeMap->allOthersClobbered) {
-
-	  LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
-
-	  // For any locations mentioned in mergeFromMap but not mergeMap,
-	  // move them over. We'll still need to merge in the base object below, this
-	  // just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
-	  
-	  SmallVector<ShadowValue, 4> toDelete;
-
-	  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
-		itend = mergeFromMap->store.end(); it != itend; ++it) {
-	
-	    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
-	      mergeMap->store.insert(std::make_pair(it->first, it->second));
-	
-	    if(ins.second)
-	      toDelete.push_back(ins.first->first);
-
-	  }
-      
-	  for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
-	      delit != delend; ++delit)
-	    mergeFromMap->store.erase(*delit);
-
-	}
-	else {
-	  
-	  LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
-	  
-	}
-	
-      }
-
-      // mergeMap now contains all information from one or other incoming branch;
-      // for each location it mentions merge in the other map's version or the base object.
-      // Note that in the mergeMap->allOthersClobbered case this only merges in
-      // information from locations explicitly mentioned in mergeMap.
-
-      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(),
-	    itend = mergeMap->store.end(); it != itend; ++it) {
-
-	LocStore* mergeFromStore;
-	if(!mergeFromMap)
-	  mergeFromStore = &it->first.getBaseStore();
-	else {
-	  DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
-	  if(found != mergeFromMap->store.end())
-	    mergeFromStore = &(found->second);
-	  else
-	    mergeFromStore = &it->first.getBaseStore();
-	}
-
-	// Right, merge it->second and mergeFromStore.
-	// If the pointers match these are two refs to the same Multi.
-	// Refcounting will be caught up when we deref mergeFromMap below:
-	if(mergeFromStore->store != it->second.store) {
-
-	  mergeStores(BB, mergeFromStore, &it->second, it->first);
-
-	}
-
-      }
-
-      if(mergeFromMap)
-	mergeFromMap->dropReference();
-
-      newMap = mergeMap;
-
+      LFV3(errs() << "No ancestor used (totally defined locally)\n");
+      newUnderlying = 0;
     }
+
+    // Get a Multi to populate: either clear an existing one or allocate one.
+
+    ImprovedValSetMulti* newStore;
+
+    if(mergeToStore->store->isWritableMulti()) {
+      ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(mergeToStore->store);
+      LFV3(errs() << "Using existing writable multi " << M << "\n");
+      M->Map.clear();
+      if(M->Underlying)
+	M->Underlying->dropReference();
+      newStore = M;
+    }
+    else {
+      mergeToStore->store->dropReference();
+      newStore = new ImprovedValSetMulti(MergeV);
+      LFV3(errs() << "Drop existing store " << mergeToStore->store << ", allocate new multi " << newStore << "\n");
+    }	
+
+    newStore->Underlying = newUnderlying;
+
+    ImprovedValSetMulti::MapIt insertit = newStore->Map.end();
+    for(SmallVector<IVSRange, 4>::iterator finalit = MergedVals.begin(), finalitend = MergedVals.end();
+	finalit != finalitend; ++finalit) {
+
+      insertit.insert(finalit->first.first, finalit->first.second, finalit->second);
+      insertit = newStore->Map.end();
+	
+    }
+
+    LFV3(errs() << "Merge result:\n");
+    LFV3(newStore->print(errs()));
+
+    mergeToStore->store = newStore;
 
   }
 
-};
+}
+
+void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+
+  LFV3(errs() << "Merge: visit BB " << BB->invar->BB->getName() << "\n");
+
+  if(!seenMaps.insert(BB->localStore)) {
+    // We've already seen this exact map as a pred; drop the extra ref.
+    LFV3(errs() << "Seen map " << BB->localStore << " before; drop ref\n");
+    BB->localStore->dropReference();
+    return;
+  }
+
+  if(!newMapValid) {
+    // This is the first predecessor, borrow the incoming block's map / use the base map.
+    // Note that the refcount is already correct (blocks assume their map will be taken per default)
+    // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
+    newMap = BB->localStore;
+    LFV3(errs() << "Take incoming map " << BB->localStore << "\n");
+    newMapValid = true;
+    return;
+  }
+  else {
+
+    // Merge in the new map or base store values as appropriate.
+    // Create a local map if we didn't have one; COW break it if it was shared.
+    // The first time a real merge is necessary this might COW-break.
+    // After that it's a no-op.
+    LocalStoreMap* mergeMap = newMap->getWritableStoreMap();
+    LocalStoreMap* mergeFromMap = BB->localStore;
+
+    release_assert(mergeMap && "Must have a concrete destination map");
+
+    if(mergeFromMap) {
+
+      if(mergeFromMap->allOthersClobbered) {
+
+	SmallVector<ShadowValue, 4> keysToRemove;
+
+	// Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
+	for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
+	      itend = mergeMap->store.end(); it != itend; ++it) {
+
+	  if(!mergeFromMap->store.count(it->first)) {
+
+	    LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
+	    keysToRemove.push_back(it->first);
+	    it->second.store->dropReference();
+
+	  }
+
+	}
+
+	for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
+	      delitend = keysToRemove.end(); delit != delitend; ++delit) {
+
+	  mergeMap->store.erase(*delit);
+
+	}
+
+	mergeMap->allOthersClobbered = true;
+
+      }
+      else if(!mergeMap->allOthersClobbered) {
+
+	LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
+
+	// For any locations mentioned in mergeFromMap but not mergeMap,
+	// move them over. We'll still need to merge in the base object below, this
+	// just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
+	  
+	SmallVector<ShadowValue, 4> toDelete;
+
+	for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
+	      itend = mergeFromMap->store.end(); it != itend; ++it) {
+	
+	  std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
+	    mergeMap->store.insert(std::make_pair(it->first, it->second));
+	
+	  if(ins.second)
+	    toDelete.push_back(ins.first->first);
+
+	}
+      
+	for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
+	    delit != delend; ++delit)
+	  mergeFromMap->store.erase(*delit);
+
+      }
+      else {
+	  
+	LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
+	  
+      }
+	
+    }
+
+    // mergeMap now contains all information from one or other incoming branch;
+    // for each location it mentions merge in the other map's version or the base object.
+    // Note that in the mergeMap->allOthersClobbered case this only merges in
+    // information from locations explicitly mentioned in mergeMap.
+
+    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(),
+	  itend = mergeMap->store.end(); it != itend; ++it) {
+
+      LocStore* mergeFromStore;
+      if(!mergeFromMap)
+	mergeFromStore = &it->first.getBaseStore();
+      else {
+	DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
+	if(found != mergeFromMap->store.end())
+	  mergeFromStore = &(found->second);
+	else
+	  mergeFromStore = &it->first.getBaseStore();
+      }
+
+      // Right, merge it->second and mergeFromStore.
+      // If the pointers match these are two refs to the same Multi.
+      // Refcounting will be caught up when we deref mergeFromMap below:
+      if(mergeFromStore->store != it->second.store) {
+
+	mergeStores(BB, mergeFromStore, &it->second, it->first);
+
+      }
+
+    }
+
+    if(mergeFromMap)
+      mergeFromMap->dropReference();
+
+    newMap = mergeMap;
+
+  }
+
+}
 
 void llvm::commitStoreToBase(LocalStoreMap* Map) {
 

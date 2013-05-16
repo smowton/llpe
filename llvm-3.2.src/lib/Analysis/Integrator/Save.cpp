@@ -217,16 +217,25 @@ void IntegrationAttempt::commitCFG() {
 
 static Value* getCommittedValue(ShadowValue SV) {
 
-  if(Value* V = SV.getVal())
-    return V;
+  switch(SV.t) {
+  case SHADOWVAL_OTHER:
+    return SV.u.V;
+  case SHADOWVAL_GV:
+    return SV.u.GV->G;
+  default:
+    break;
+  }
 
   release_assert((!willBeDeleted(SV)) && "Instruction depends on deleted value");
 
-  if(ShadowInstruction* SI = SV.getInst())
-    return SI->committedVal;
-  else {
-    ShadowArg* SA = SV.getArg();
-    return SA->committedVal;
+  switch(SV.t) {
+  case SHADOWVAL_INST:
+    return SV.u.I->committedVal;
+  case SHADOWVAL_ARG:
+    return SV.u.A->committedVal;
+  default:
+    release_assert(0 && "Bad SV type");
+    llvm_unreachable();
   }
   
 }

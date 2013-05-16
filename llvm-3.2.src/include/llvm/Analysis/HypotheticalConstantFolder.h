@@ -15,6 +15,7 @@
 #include "llvm/Instruction.h"
 #include "llvm/Instructions.h"
 #include "llvm/GlobalValue.h"
+#include "llvm/GlobalVariable.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <limits.h>
@@ -1051,6 +1052,7 @@ public:
   ShadowValue getLoopHeaderForwardedOperand(ShadowInstruction* SI); 
 
   void checkFinalIteration(); 
+  void dropExtraStoreRefs();
 
   virtual InlineAttempt* getFunctionRoot(); 
 
@@ -1380,6 +1382,20 @@ class InlineAttempt : public IntegrationAttempt {
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);
+
+ };
+
+ struct MergeBlockVisitor : public ShadowBBVisitor {
+   
+   bool newMapValid;
+   LocalStoreMap* newMap;
+   SmallPtrSet<LocalStoreMap*, 4> seenMaps;
+   bool mergeToBase;
+   
+ MergeBlockVisitor(bool mtb) : newMapValid(false), newMap(0), mergeToBase(mtb) { }
+   
+   void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
+   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx);
 
  };
 

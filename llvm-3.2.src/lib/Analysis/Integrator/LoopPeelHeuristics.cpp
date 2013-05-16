@@ -406,6 +406,35 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
 }
 
+// Drop store references that are no longer needed from a loop exploration
+// that failed to terminate.
+void PeelIteration::dropExtraStoreRefs() {
+
+  // We will never exit -- drop store refs that belong to exiting edges.
+  ShadowLoopInvar* LInfo = parentPA->invarInfo;
+
+  for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
+	itend = LInfo->exitEdges.end(); it != itend; ++it) {
+    
+    ShadowBB* BB = getBB(it->first);
+    if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second)))
+      BB->localStore->dropReference();
+    
+  }
+  
+  // If the last latch block was holding a store ref for the next iteration, drop it.
+  if(this == parentPA->Iterations.back()) {
+  
+    ShadowBB* LatchBB = getBB(parentPA->invarInfo->latchIdx);
+    ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->invarInfo->headerIdx);
+    
+    if(!edgeIsDead(LatchBB->invar, HeaderBBI))
+      LatchBB->localStore->dropReference();
+
+  }
+
+}
+
 void PeelIteration::checkFinalIteration() {
 
   // Check whether we now have evidence the loop terminates this time around

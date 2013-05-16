@@ -99,6 +99,9 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   Value* getVal() {
     return t == SHADOWVAL_OTHER ? u.V : 0;
   }
+  ShadowGV* getGV() {
+    return t == SHADOWVAL_GV ? u.GV : 0;
+  }
 
   Type* getType();
   ShadowValue stripPointerCasts();
@@ -127,6 +130,8 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
     return V1.u.A == V2.u.A;
   case SHADOWVAL_INST:
     return V1.u.I == V2.u.I;
+  case SHADOWVAL_GV:
+    return V1.u.GV == V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V == V2.u.V;
   default:
@@ -149,6 +154,8 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
     return V1.u.A < V2.u.A;
   case SHADOWVAL_INST:
     return V1.u.I < V2.u.I;
+  case SHADOWVAL_GV:
+    return V1.u.GV < V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V < V2.u.V;
   default:
@@ -437,7 +444,6 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   }
 
-  static ImprovedValSetSingle get(ShadowValue V);
   static ImprovedValSetSingle get(ImprovedVal V, ValSetType t) { return ImprovedValSetSingle(t).insert(V); }
   static ImprovedValSetSingle getOverdef() { return ImprovedValSetSingle(ValSetTypeUnknown, true); }
 
@@ -785,6 +791,8 @@ inline Type* ShadowValue::getType() {
     return u.A->getType();
   case SHADOWVAL_INST:
     return u.I->getType();
+  case SHADOWVAL_GV:
+    return u.GV->G->getType();
   case SHADOWVAL_OTHER:
     return u.V->getType();
   case SHADOWVAL_INVAL:
@@ -827,6 +835,8 @@ inline Value* ShadowValue::getBareVal() {
     return u.A->invar->A;
   case SHADOWVAL_INST:
     return u.I->invar->I;
+  case SHADOWVAL_GV:
+    return u.GV->G;
   case SHADOWVAL_OTHER:
     return u.V;
   default:
@@ -884,6 +894,8 @@ inline LLVMContext& ShadowValue::getLLVMContext() {
     return u.I->invar->I->getContext();
   case SHADOWVAL_ARG:
     return u.A->invar->A->getContext();
+  case SHADOWVAL_GV:
+    return u.GV->G->getContext();
   default:
     return u.V->getContext();
   }
@@ -1003,25 +1015,33 @@ std::pair<ValSetType, ImprovedVal> getValPB(Value* V);
 
 inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) {
 
-  if(ShadowInstruction* SI = V.getInst()) {
+  switch(V.t) {
 
-    OutPB = SI->i.PB;
+  case SHADOWVAL_INST:
+    OutPB = V.u.I->i.PB;
     return OutPB.isInitialised();
 
-  }
-  else if(ShadowArg* SA = V.getArg()) {
-
-    OutPB = SA->i.PB;
+  case SHADOWVAL_ARG:
+    OutPB = V.u.A->i.PB;
     return OutPB.isInitialised();
 
-  }
-  else {
-    
-    std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
-    if(VPB.first == ValSetTypeUnknown)
-      return false;
-    OutPB = ImprovedValSetSingle::get(VPB.second, VPB.first);
+  case SHADOWVAL_GV:
+    OutPB = ImprovedValSetSingle::get(ImprovedVal(V, 0), ValSetTypePB);
     return true;
+
+  case SHADOWVAL_OTHER:
+    {
+      std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
+      if(VPB.first == ValSetTypeUnknown)
+	return false;
+      OutPB = ImprovedValSetSingle::get(VPB.second, VPB.first);
+      return true;
+    }
+
+  case SHADOWVAL_INVAL:
+  default:
+    release_assert(0 && "getImprovedValSetSingle on uninit value");
+    llvm_unreachable();
 
   }
 

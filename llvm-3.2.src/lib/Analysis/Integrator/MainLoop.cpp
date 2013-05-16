@@ -122,6 +122,12 @@ bool PeelAttempt::analyse() {
   }
 
   Iterations.back()->checkFinalIteration();
+  if(!isTerminated()) {
+    for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end();
+	it != it2; ++it) {
+      (*it)->dropExtraStoreRefs();
+    }
+  }
   
   return anyChange;
 
@@ -275,30 +281,46 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
   bool firstIter = true;
   bool everChanged = false;
 
+  ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
+  ShadowBB* HBB = getBB(LInfo->headerIdx);
+  ShadowBB* LBB = getBB(LInfo->latchIdx);
+
   while(anyChange) {
 
-    if(!firstIter) {
+    // Give the preheader store an extra reference to ensure it is never modified.
+    // This ref will be consumed in the merge below.
+    PHBB->localStore->refCount++;
+    
+    {
+      MergeBlockVisitor V(false);
 
-      // Drop store references at exit edges: we're going around again.
-      for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
-	    itend = LInfo->exitEdges.end(); it != itend; ++it) {
+      if(!firstIter) {
 
-	ShadowBB* BB = getBB(it->first);
-	if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second)))
-	  BB->localStore->dropReference();
+	// Drop store references at exit edges: we're going around again.
+	for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
+	      itend = LInfo->exitEdges.end(); it != itend; ++it) {
+
+	  ShadowBB* BB = getBB(it->first);
+	  if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second)))
+	    BB->localStore->dropReference();
+
+	}
+
+	// Merge the latch store with the preheader store:
+	V.visit(getBB(LInfo->latchIdx), 0, false);
+	V.visit(PHBB, 0, false);
 
       }
-      
-      // Give the header block the latch store
-      getBB(LInfo->headerIdx)->localStore = getBB(LInfo->latchIdx)->localStore;
+      else {
 
-    }
-    else {
-
-      firstIter = false;
+	firstIter = false;
       
-      // Give the header block the store from the preheader
-      getBB(LInfo->headerIdx)->localStore = getBB(LInfo->preheaderIdx)->localStore;
+	// Give the header block the store from the preheader
+	V.visit(PHBB, 0, false);
+
+      }
+
+      HBB->localStore = V.newMap;
 
     }
 
@@ -316,6 +338,12 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
     everChanged |= anyChange;
 
   }
+
+  // Release the preheader store that was held for merging in each iteration:
+  PHBB->localStore->dropReference();
+
+  // Release the latch store that the header will not use again:
+  LBB->localStore->dropReference();
   
   return everChanged;
 

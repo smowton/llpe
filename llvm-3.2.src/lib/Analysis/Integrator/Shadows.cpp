@@ -100,23 +100,19 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
-  uint32_t nMutableGlobals = 0;
-  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it) {
-
-    if(!it->isConstant())
-      nMutableGlobals++;
-
-  }
-
   uint32_t i = 0;
-  shadowGlobals = new ShadowGV[nMutableGlobals];
+  shadowGlobals = new ShadowGV[std::distance(M.global_begin(), M.global_end())];
 
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
-    if(it->isConstant())
-      continue;
-    
     shadowGlobals[i].G = it;
+
+    if(it->isConstant()) {
+      shadowGlobals[i].store.store = 0;
+      shadowGlobals[i].storeSize = 0;
+      continue;
+    }
+
     ImprovedValSetSingle* Init = new ImprovedValSetSingle();
 
     if(it->hasDefinitiveInitializer()) {
@@ -132,7 +128,8 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
       }
       else {
 
-	(*Init) = ImprovedValSetSingle::get(I);
+	std::pair<ValSetType, ImprovedVal> InitIV = getValPB(I);
+	(*Init) = ImprovedValSetSingle::get(InitIV.second, InitIV.first);
 
       }
 
@@ -501,7 +498,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
     if(!parent->getBB(blockIdx)) {
       ShadowBB* parentBB = parent->createBB(blockIdx);
-      parent->analyseBlockInstructions(parentBB, true, true);
+      parent->analyseBlockInstructions(parentBB, true, false);
     }
 
   }
@@ -701,17 +698,25 @@ bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed) {
   bool foundDeadEdge = false;
   changed = false;
 
-  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size(); ++i) {
+  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size() && !foundDeadEdge; ++i) {
+
+    foundDeadEdge |= (!FromBB->succsAlive[i]);
+
+  }
+
+  if(!foundDeadEdge)
+    return false;
+
+  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size() && !foundDeadEdge; ++i) {
 
     if(ToBB->succsAlive[i] != FromBB->succsAlive[i]) {
       changed = true;
       ToBB->succsAlive[i] = FromBB->succsAlive[i];
     }
-    foundDeadEdge |= (!FromBB->succsAlive[i]);
 
   }
 
-  return foundDeadEdge;
+  return true;
 
 }
 

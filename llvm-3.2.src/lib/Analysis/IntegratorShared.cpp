@@ -5,6 +5,7 @@
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/DataLayout.h"
 #include "llvm/GlobalValue.h"
+#include "llvm/GlobalVariable.h"
 #include "llvm/Function.h"
 #include "llvm/Operator.h"
 
@@ -174,8 +175,11 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
     if(isa<Function>(C))
       return std::make_pair(ValSetTypeScalar, ImprovedVal(ShadowValue(C)));
-    
-    return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
+    else if(GlobalVariable* GV = dyn_cast<GlobalVariable>(C))
+      return std::make_pair(ValSetTypePB,
+			    ImprovedVal(&(GlobalIHP->shadowGlobals[GlobalIHP->getShadowGlobalIndex(GV)])));
+    else
+      return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
 
   }
   else if(C->getType()->isPointerTy() && C->isNullValue()) {
