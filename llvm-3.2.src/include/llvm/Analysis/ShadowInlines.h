@@ -625,6 +625,8 @@ struct ShadowInstruction {
     return invar->I->getType();
   }
 
+  bool resolved();
+
 };
 
 template<class X> inline bool inst_is(ShadowInstruction* SI) {
@@ -722,6 +724,7 @@ struct ShadowBB {
   LocalStoreMap* localStore;
   BasicBlock* committedHead;
   BasicBlock* committedTail;
+  bool useSpecialVarargMerge;
 
   bool edgeIsDead(ShadowBBInvar* BB2I) {
 
@@ -943,30 +946,49 @@ inline LocStore& ShadowValue::getBaseStore() {
 }
 
 template<class X> inline bool val_is(ShadowValue V) {
-  if(Value* V2 = V.getVal())
-    return isa<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return isa<X>(A->invar->A);
-  else
-    return inst_is<X>(V.getInst());
+  switch(V.t) {
+  case SHADOWVAL_OTHER:
+    return isa<X>(V.u.V);
+  case SHADOWVAL_GV:
+    return isa<X>(V.u.GV->G);
+  case SHADOWVAL_INST:
+    return inst_is<X>(V.u.I);
+  case SHADOWVAL_ARG:
+    return isa<X>(V.u.A->invar->A);
+  default:
+    return false;
+  }
 }
 
 template<class X> inline X* dyn_cast_val(ShadowValue V) {
-  if(Value* V2 = V.getVal())
-    return dyn_cast<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return dyn_cast<X>(A->invar->A);
-  else
-    return dyn_cast_inst<X>(V.getInst());
+  switch(V.t) {
+  case SHADOWVAL_OTHER:
+    return dyn_cast<X>(V.u.V);
+  case SHADOWVAL_GV:
+    return dyn_cast<X>(V.u.GV->G);
+  case SHADOWVAL_ARG:
+    return dyn_cast<X>(V.u.A->invar->A);
+  case SHADOWVAL_INST:
+    return dyn_cast_inst<X>(V.u.I);
+  default:
+    return 0;
+  }
 }
 
 template<class X> inline X* cast_val(ShadowValue V) {
-  if(Value* V2 = V.getVal())
-    return cast<X>(V2);
-  else if(ShadowArg* A = V.getArg())
-    return cast<X>(A->invar->A);
-  else
-    return cast_inst<X>(V.getInst());
+  switch(V.t) {
+  case SHADOWVAL_OTHER:
+    return cast<X>(V.u.V);
+  case SHADOWVAL_GV:
+    return cast<X>(V.u.GV->G);
+  case SHADOWVAL_ARG:
+    return cast<X>(V.u.A->invar->A);
+  case SHADOWVAL_INST:
+    return cast_inst<X>(V.u.I);
+  default:
+    release_assert(0 && "Cast of bad SV");
+    llvm_unreachable();
+  }
 }
 
 

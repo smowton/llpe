@@ -37,7 +37,8 @@ bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser) {
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SArg = &(argShadows[i]);
-    anyChange |= tryEvaluate(ShadowValue(SArg), inLoopAnalyser);
+    bool ign;
+    anyChange |= tryEvaluate(ShadowValue(SArg), inLoopAnalyser, ign);
 
   }
 
@@ -215,11 +216,12 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 }
 
 // Returns true if there was any change
-bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser) {
+bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTerminatorEval, bool inLoopAnalyser) {
 
   const Loop* MyL = L;
 
   bool anyChange = false;
+  bool loadedVarargsHere = false;
 
   for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
@@ -228,8 +230,10 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipSuccess
     Instruction* I = SII->I;
 
     if(inst_is<TerminatorInst>(SI)) {
+      if(skipTerminatorEval)
+	return anyChange;
       // Call tryEvalTerminator regardless of scope.
-      anyChange |= tryEvaluateTerminator(SI, skipSuccessorCreation);
+      anyChange |= tryEvaluateTerminator(SI, loadedVarargsHere);
       continue;
     }
 
@@ -266,7 +270,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipSuccess
 
     }
 
-    anyChange |= tryEvaluate(ShadowValue(SI), inLoopAnalyser);
+    anyChange |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
 
   }
 

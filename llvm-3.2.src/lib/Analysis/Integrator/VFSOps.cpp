@@ -17,6 +17,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <stdio.h>
 
 // Implement a backward walker to identify a VFS operation's predecessor, and a forward walker to identify open instructions
 // which can be shown pointless because along all paths it ends up at a close instruction.
@@ -949,5 +950,48 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 void IntegrationAttempt::markCloseCall(CallInst* CI) {
 
   resolvedCloseCalls[CI].MayDelete = true;
+
+}
+
+bool llvm::getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
+
+  FILE* fp = fopen(strFileName.c_str(), "r");
+  if(!fp) {
+    errors = "Couldn't open " + strFileName + ": " + strerror(errno);
+    return false;
+  }
+
+  int rc = fseek(fp, realFilePos, SEEK_SET);
+  if(rc == -1) {
+    errors = "Couldn't seek " + strFileName + ": " + strerror(errno);
+    return false;
+  }
+
+  uint64_t bytesRead = 0;
+  uint8_t buffer[4096];
+  Type* charType = IntegerType::get(Context, 8);
+  while(bytesRead < realBytes) {
+    uint64_t toRead = realBytes - bytesRead;
+    toRead = std::min(toRead, (uint64_t)4096);
+    size_t reallyRead = fread(buffer, 1, (size_t)toRead, fp);
+    if(reallyRead == 0) {
+      if(feof(fp))
+        break;
+      else {
+        errors = "Error reading from " + strFileName + ": " + strerror(errno);
+        fclose(fp);
+        return false;
+      }
+    }
+    for(size_t i = 0; i < reallyRead; i++) {
+      Constant* byteAsConst = ConstantInt::get(charType, buffer[i]);
+      arrayBytes.push_back(byteAsConst);
+    }
+    bytesRead += reallyRead;
+  }
+
+  fclose(fp);
+
+  return true;
 
 }

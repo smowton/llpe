@@ -518,6 +518,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].parent = newBB;
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
+  newBB->useSpecialVarargMerge = false;
 
   BBs[blockIdx - BBsOffset] = newBB;
   return newBB;
@@ -556,19 +557,26 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
 
 }
 
+bool ShadowInstruction::resolved() {
+  
+  if(getConstReplacement(this))
+    return true;
+  ShadowValue Ign1;
+  int64_t Ign2;
+  if(getBaseAndConstantOffset(ShadowValue(this), Ign1, Ign2))
+    return true;
+
+  return false;
+
+}
+
 bool IntegrationAttempt::instResolvedAsInvariant(ShadowInstruction* SI) {
 
   const Loop* SVScope = SI->invar->scope;
   if(L && SVScope != L && ((!SVScope) || SVScope->contains(L))) {
       
     ShadowInstruction* SI2 = getInstFalling(SI->parent->invar, SI->invar->idx);
-
-    if(getConstReplacement(SI2))
-      return true;
-    ShadowValue Ign1;
-    int64_t Ign2;
-    if(getBaseAndConstantOffset(ShadowValue(SI2), Ign1, Ign2))
-      return true;
+    return SI2->resolved();
 
   }
 
@@ -677,7 +685,7 @@ ShadowValue ShadowInstruction::getCommittedOperand(uint32_t i) {
   ShadowInstruction* opInst = normalOp.getInst();
   if(!opInst)
     return normalOp;
-  if(getConstReplacement(normalOp))
+  if(opInst->resolved())
     return normalOp;
 
   ShadowInstIdx& SII = invar->operandIdxs[i];
@@ -693,33 +701,6 @@ ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
 }
 
-bool llvm::tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed) {
-
-  bool foundDeadEdge = false;
-  changed = false;
-
-  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size() && !foundDeadEdge; ++i) {
-
-    foundDeadEdge |= (!FromBB->succsAlive[i]);
-
-  }
-
-  if(!foundDeadEdge)
-    return false;
-
-  for(uint32_t i = 0; i < FromBB->invar->succIdxs.size(); ++i) {
-
-    if(ToBB->succsAlive[i] != FromBB->succsAlive[i]) {
-      changed = true;
-      ToBB->succsAlive[i] = FromBB->succsAlive[i];
-    }
-
-  }
-
-  return true;
-
-}
-
 void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
   std::vector<std::pair<uint32_t, uint32_t> >& EE = LPA->invarInfo->exitEdges;
@@ -729,26 +710,13 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
     std::pair<uint32_t, uint32_t> E = EE[i];
     if(ShadowBB* BB = getBB(E.first)) {
 
-      // Target already known at this scope?
-      bool targetKnown = false;
-      for(uint32_t j = 0; j < BB->invar->succIdxs.size() && !targetKnown; ++j) {
-	if(!BB->succsAlive[j])
-	  targetKnown = true;
+      bool dead = edgeIsDeadRising(*BB->invar, *getBBInvar(E.second));
+      
+      for(uint32_t j = 0; j < BB->invar->succIdxs.size(); ++j) {
+	if(BB->invar->succIdxs[j] == E.second)
+	  BB->succsAlive[j] = dead;
       }
-
-      if(targetKnown)
-	continue;
-
-      // OK, copy it if possible:
-      if(edgeIsDeadRising(*BB->invar, *getBBInvar(E.second))) {
-
-	for(uint32_t j = 0; j < BB->invar->succIdxs.size(); ++j) {
-	  if(BB->invar->succIdxs[j] == E.second)
-	    BB->succsAlive[j] = false;
-	}
-	
-      }
-
+      
     }
 
   }

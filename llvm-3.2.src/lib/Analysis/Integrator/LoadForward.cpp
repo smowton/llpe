@@ -589,7 +589,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 }
 
 // Fish a value out of the block-local or value store for LI.
-bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB) {
+bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
 
   ImprovedValSetSingle ConstResult;
   std::string error;
@@ -608,6 +608,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
   if(shouldMultiload(LoadPtrPB)) {
     
     ret = tryMultiload(LI, NewPB, report);
+    if(NewPB.SetType == ValSetTypeVarArg)
+      loadedVararg = true;
 
   }
   else {
@@ -821,6 +823,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
 	M->Underlying = V.getBaseStore().store->getReadableCopy();
 	LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
+	M->print(errs());
 	ret->store = M;
       }
 
@@ -1160,7 +1163,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.SetType == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
   ShadowValue Val = StoreSI->getOperand(0);
   ImprovedValSetSingle ValPB;
@@ -1176,7 +1179,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert(PtrSet.SetType == ValSetTypePB && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
   
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(2)));
   ConstantInt* ValCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(1)));
@@ -1204,7 +1207,7 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
 
   // Subvals only allowed for scalars:
 
-  if(Src.Overdef) {
+  if(Src.Overdef || Src.Values.size() == 0) {
     Dest = Src;
     return;
   }
@@ -1213,9 +1216,19 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
   case ValSetTypeScalar:
     break;
   case ValSetTypeScalarSplat:
+  case ValSetTypeVarArg:
     Dest = Src;
     return;
   default:
+    if(Offset == 0) {
+      Type* SrcTy = Src.Values[0].V.getType();
+      uint64_t SrcSize = GlobalAA->getTypeStoreSize(SrcTy);
+      if(Size == SrcSize) {
+	Dest = Src;
+	return;
+      }
+    }
+    // Otherwise can't take a subvalue:
     Dest.setOverdef();
     return;
   }
@@ -1675,6 +1688,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
     // Otherwise do selective clobbering for annotated syscalls:
 
     if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+
+      if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
+	return;
       
       const LibCallFunctionInfo::LocationMRInfo *Details = 0;
 
@@ -2028,8 +2044,25 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 		
 	ImprovedValSetSingle otherVal;
 	getIVSSubVal(otherit->second, LastOffset - otherit->first.first, consumeit->first.second - LastOffset, otherVal);
+
+	LFV3(errs() << "Value 1:\n");
+	LFV3(printPB(errs(), consumeVal));
+	LFV3(errs() << "\nValue 2:\n");
+	LFV3(printPB(errs(), otherVal));
+	LFV3(errs() << "\n");
+
+	if(useVarargMerge && consumeVal.SetType == ValSetTypeVarArg && otherVal.SetType == ValSetTypeVarArg && consumeVal.Values.size() == 1 && otherVal.Values.size() == 1) {
+
+	  if(otherVal.Values[0].Offset > consumeVal.Values[0].Offset)
+	    consumeVal = otherVal;
+
+	}
+	else {
 		
-	consumeVal.merge(otherVal);
+	  consumeVal.merge(otherVal);
+
+	}
+
 	MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, consumeVal));
 
 	LastOffset = consumeit->first.second;
@@ -2252,7 +2285,7 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
-  MergeBlockVisitor V(mergeToBase);
+  MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
 
   // TODO: do this better

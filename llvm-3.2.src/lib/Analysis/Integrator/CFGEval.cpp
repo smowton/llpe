@@ -169,14 +169,6 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
     }
   }
 
-  // Easiest case: copy edge liveness from our parent.
-  // Can't ever result in a change at this scope.
-  if(L) {
-    bool changed;
-    if(tryCopyDeadEdges(parent->getBB(*(SI->parent->invar)), SI->parent, changed))
-      return changed;
-  }
-
   // Both switches and conditional branches use operand 0 for the condition.
   ShadowValue Condition = SI->getOperand(0);
       
@@ -291,13 +283,10 @@ void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newSta
 }
 
 // Return true if the result changes:
-bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation) {
+bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisBlockLoadedVararg) {
 
   // Clarify branch target if possible:
   bool anyChange = tryEvaluateTerminatorInst(SI);
-
-  if(skipSuccessorCreation)
-    return false;
 
   // Return instruction breaks early to avoid the refcount juggling below:
   // a live return always has one successor, the call-merge.
@@ -364,6 +353,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool skipS
       IA->createBBAndPostDoms(BB->invar->succIdxs[i], newStatus);
 
     }
+    
+    IA->getBB(BB->invar->succIdxs[i])->useSpecialVarargMerge = thisBlockLoadedVararg;
 
   }
 

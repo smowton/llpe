@@ -399,10 +399,11 @@ void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals,
   clearRange(Offset, Size);
   MapIt it = Map.find(Offset);
 
-  for(unsigned i = NewVals.size(); i != 0; --i, --it) {
+  for(unsigned i = 0, iend = NewVals.size(); i != iend; ++i) {
 
-    IVSRange& RangeVal = NewVals[i-1];
+    IVSRange& RangeVal = NewVals[i];
     it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
+    ++it;
 
   }
 
@@ -413,7 +414,7 @@ void ImprovedValSetMulti::replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals,
     Underlying->dropReference();
     Underlying = 0;
 
-  }  
+  }
 
 }
 

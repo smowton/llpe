@@ -1197,7 +1197,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB) {
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -1205,7 +1205,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& N
   switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
-    return tryForwardLoadPB(SI, NewPB);
+    return tryForwardLoadPB(SI, NewPB, loadedVararg);
   case Instruction::PHI:
     {
       bool Valid;
@@ -1270,7 +1270,7 @@ bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSetSingle& OutPB) 
 
 }
 
-bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser) {
+bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
   ImprovedValSetSingle OldPB;
   bool OldPBValid = getImprovedValSetSingle(V, OldPB);
@@ -1293,7 +1293,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser) {
   else {
 
     ShadowInstruction* SI = V.getInst();
-    NewPBValid = getNewPB(SI, NewPB);
+    NewPBValid = getNewPB(SI, NewPB, loadedVararg);
 
   }
 

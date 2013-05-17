@@ -802,8 +802,8 @@ protected:
   // Constant propagation:
 
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result);
-  bool tryEvaluate(ShadowValue V, bool inLoopAnalyser);
-  bool getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB);
+  bool tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg);
+  bool getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, bool& loadedVararg);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   void tryEvaluateResult(ShadowInstruction* SI, 
@@ -824,7 +824,7 @@ protected:
 
   bool createEntryBlock();
   void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
-  bool tryEvaluateTerminator(ShadowInstruction* SI, bool skipSuccessorCreation);
+  bool tryEvaluateTerminator(ShadowInstruction* SI, bool tagSuccVararg);
   bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
   IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
@@ -847,7 +847,7 @@ protected:
   // Load forwarding:
 
   bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string& error);
-  bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB);
+  bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
@@ -1393,8 +1393,9 @@ class InlineAttempt : public IntegrationAttempt {
    LocalStoreMap* newMap;
    SmallPtrSet<LocalStoreMap*, 4> seenMaps;
    bool mergeToBase;
+   bool useVarargMerge;
    
- MergeBlockVisitor(bool mtb) : newMapValid(false), newMap(0), mergeToBase(mtb) { }
+ MergeBlockVisitor(bool mtb, bool uvm = false) : newMapValid(false), newMap(0), mergeToBase(mtb), useVarargMerge(uvm) { }
    
    void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
    void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx);

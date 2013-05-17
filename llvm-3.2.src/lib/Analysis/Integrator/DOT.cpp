@@ -274,7 +274,10 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   Out << "<tr><td border=\"0\" align=\"left\" colspan=\"2\"";
   
-  if(BB && BB->status == BBSTATUS_CERTAIN) {
+  if(BB && BB->useSpecialVarargMerge) {
+    Out << " bgcolor=\"lightblue\"";
+  }
+  else if(BB && BB->status == BBSTATUS_CERTAIN) {
     Out << " bgcolor=\"yellow\"";
   }
   else if(BB && BB->status == BBSTATUS_ASSUMED) {
