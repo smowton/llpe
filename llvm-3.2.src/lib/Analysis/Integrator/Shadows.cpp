@@ -103,9 +103,18 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
   uint32_t i = 0;
   shadowGlobals = new ShadowGV[std::distance(M.global_begin(), M.global_end())];
 
+  // Assign them all numbers before computing initialisers, because the initialiser can
+  // reference another global, and getValPB will then lookup in shadowGlobalsIdx.
+
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     shadowGlobals[i].G = it;
+    shadowGlobalsIdx[it] = i;
+
+  }
+
+  i = 0;
+  for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     if(it->isConstant()) {
       shadowGlobals[i].store.store = 0;
@@ -141,10 +150,12 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
     }
 
+    errs() << "Init store for " << *it << " -> ";
+    printPB(errs(), *Init);
+    errs() << "\n";
+
     shadowGlobals[i].store.store = Init;
     shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
-
-    shadowGlobalsIdx[it] = i;
 
   }
 

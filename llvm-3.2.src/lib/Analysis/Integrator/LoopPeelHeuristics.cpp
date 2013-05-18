@@ -406,32 +406,79 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
 }
 
-// Drop store references that are no longer needed from a loop exploration
-// that failed to terminate.
-void PeelIteration::dropExtraStoreRefs() {
+void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
+
+  ShadowBB* BB = getBB(fromIdx);
+  if(BB && !edgeIsDead(BB->invar, getBBInvar(toIdx))) {
+
+    if(BB->invar->naturalScope != L) {
+
+      const Loop* ChildL = immediateChildLoop(L, BB->invar->naturalScope);
+      if(PeelAttempt* ChildPA = getPeelAttempt(ChildL)) {
+
+	if(ChildPA->isTerminated()) {
+
+	  // Exit directly from a child loop: drop each outgoing reference:
+	  for(std::vector<PeelIteration*>::iterator it = ChildPA->Iterations.begin(),
+		itend = ChildPA->Iterations.end(); it != itend; ++it) {
+
+	    (*it)->dropExitingStoreRef(fromIdx, toIdx);
+
+	  }
+
+	  return;
+
+	}
+
+      }
+
+    }
+
+    BB->localStore->dropReference();
+
+  }
+
+}
+
+void PeelIteration::dropExitingStoreRefs() {
 
   // We will never exit -- drop store refs that belong to exiting edges.
+
   ShadowLoopInvar* LInfo = parentPA->invarInfo;
 
   for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
 	itend = LInfo->exitEdges.end(); it != itend; ++it) {
     
-    ShadowBB* BB = getBB(it->first);
-    if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second)))
-      BB->localStore->dropReference();
+    dropExitingStoreRef(it->first, it->second);
     
   }
-  
-  // If the last latch block was holding a store ref for the next iteration, drop it.
-  if(this == parentPA->Iterations.back()) {
-  
-    ShadowBB* LatchBB = getBB(parentPA->invarInfo->latchIdx);
-    ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->invarInfo->headerIdx);
-    
-    if(!edgeIsDead(LatchBB->invar, HeaderBBI))
-      LatchBB->localStore->dropReference();
 
-  }
+}
+
+void PeelIteration::dropLatchStoreRef() {
+
+  // If the last latch block was holding a store ref for the next iteration, drop it.
+  ShadowBB* LatchBB = getBB(parentPA->invarInfo->latchIdx);
+  ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->invarInfo->headerIdx);
+  
+  if(!edgeIsDead(LatchBB->invar, HeaderBBI))
+    LatchBB->localStore->dropReference();
+
+}
+
+void PeelAttempt::dropExitingStoreRefs() {
+
+ for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
+    (*it)->dropExitingStoreRefs();
+
+}
+
+// Drop store references that are no longer needed from a loop exploration
+// that failed to terminate.
+void PeelAttempt::dropNonterminatedStoreRefs() {
+
+  dropExitingStoreRefs();
+  Iterations.back()->dropLatchStoreRef();
 
 }
 
@@ -669,14 +716,18 @@ bool IntegrationAttempt::isRootMainCall() {
 
 bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
-  if(ShadowInstruction* SI = V.getInst()) {
-    return isIdentifiedObject(SI->invar->I);
-  }
-  else if(ShadowArg* SA = V.getArg()) {
-    return SA->IA->isRootMainCall();
-  }
-  else {
-    return isIdentifiedObject(V.getVal());
+  switch(V.t) {
+  case SHADOWVAL_INST:
+    return isIdentifiedObject(V.u.I->invar->I);
+  case SHADOWVAL_ARG:
+    return V.u.A->IA->isRootMainCall();
+  case SHADOWVAL_GV:
+    return true;
+  case SHADOWVAL_OTHER:
+    return isIdentifiedObject(V.u.V);
+  default:
+    release_assert(0 && "Bad value type in isGlobalIdentifiedObject");
+    llvm_unreachable();
   }
 
 }
@@ -2002,6 +2053,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
+  initShadowGlobals(M);
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 
@@ -2019,8 +2071,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     IA->argShadows[argvIdx].i.PB = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
 
   }
-
-  initShadowGlobals(M);
 
   RootIA = IA;
 

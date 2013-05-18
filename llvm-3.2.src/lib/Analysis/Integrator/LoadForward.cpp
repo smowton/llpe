@@ -389,9 +389,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
       if(GV->isConstant()) {
 
-	uint64_t LoadSize = (GlobalTD->getTypeSizeInBits(LoadI->getType()) + 7) / 8;
+	uint64_t LoadSize = GlobalAA->getTypeStoreSize(LoadI->getType());
 	Type* FromType = GV->getInitializer()->getType();
-	uint64_t FromSize = (GlobalTD->getTypeSizeInBits(FromType) + 7) / 8;
+	uint64_t FromSize = GlobalAA->getTypeStoreSize(FromType);
 
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
 	  error = "Const out of range";
@@ -399,46 +399,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	  return true;
 	}
 
-	Constant* ExVal = extractAggregateMemberAt(GV->getInitializer(), PtrOffset, LoadI->getType(), LoadSize, GlobalTD);
-
-	if(ExVal) {
-      
-	  getImprovedValSetSingle(ShadowValue(ExVal), Result);
-	  if(!((!Result.Overdef) && Result.Values.size() > 0)) {
-	    error = "No PB for ExVal";
-	    Result = ImprovedValSetSingle::getOverdef();
-	  }
-
-	  return true;
-
-	}
-
-	int64_t CSize = GlobalTD->getTypeAllocSize(GV->getInitializer()->getType());
-	if(CSize < PtrOffset) {
-	  
-	  LPDEBUG("Can't forward from constant: read from global out of range\n");
-	  error = "Const out of range 2";
-	  Result = ImprovedValSetSingle::getOverdef();
-	  return true;
-	    
-	}
-
-	unsigned char* buf = (unsigned char*)alloca(LoadSize);
-	memset(buf, 0, LoadSize);
-	if(ReadDataFromGlobal(GV->getInitializer(), PtrOffset, buf, LoadSize, *GlobalTD)) {
-
-	  getImprovedValSetSingle(ShadowValue(constFromBytes(buf, LoadI->getType(), GlobalTD)), Result);
-	  return true;
-	    
-	}
-	else {
-
-	  LPDEBUG("ReadDataFromGlobal failed\n");
-	  error = "Const RDFG failed";
-	  Result = ImprovedValSetSingle::getOverdef();
-	  return true;
-
-	}
+	getConstSubVal(GV->getInitializer(), PtrOffset, LoadSize, LoadI->getType(), Result);
+	return true;
 
       }
 
@@ -1203,12 +1165,15 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   
 }
 
-void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
+#define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, Offset + OffsetAbove + y, ImprovedValSetSingle::get(V.second, V.first))); } while(0);
+
+void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
   // Subvals only allowed for scalars:
 
   if(Src.Overdef || Src.Values.size() == 0) {
-    Dest = Src;
+    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, Src));
     return;
   }
 
@@ -1217,54 +1182,527 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
     break;
   case ValSetTypeScalarSplat:
   case ValSetTypeVarArg:
-    Dest = Src;
+    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, Src));
     return;
   default:
     if(Offset == 0) {
       Type* SrcTy = Src.Values[0].V.getType();
       uint64_t SrcSize = GlobalAA->getTypeStoreSize(SrcTy);
       if(Size == SrcSize) {
-	Dest = Src;
+	Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, Src));
 	return;
       }
     }
     // Otherwise can't take a subvalue:
-    Dest.setOverdef();
+    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, ImprovedValSetSingle::getOverdef()));
     return;
   }
 
-  for(uint32_t i = 0, endi = Src.Values.size(); i != endi && !Dest.Overdef; ++i) {
+  if(Src.Values.size() == 1) {
+
+    // Grab sub-constants:
+    getConstSubVals(cast_val<Constant>(Src.Values[0].V), Offset, Size, OffsetAbove, Dest);
+
+  }
+  else {
+
+    // Punt on the tricky business of merging potentially misaligned sets of constants for now; only allow
+    // subvalues expressible as a single constant.
+
+    ImprovedValSetSingle DestSingle;
+
+    for(uint32_t i = 0, endi = Src.Values.size(); i != endi; ++i) {
 	
-    Constant* bigConst = cast<Constant>(Src.Values[i].V.getVal());
-
-    Constant* smallConst = extractAggregateMemberAt(bigConst, Offset, 0, Size, GlobalTD);
-
-    if(!smallConst) {
-
-      // Must do a reinterpret cast
-      PartialVal PV = PartialVal::getByteArray(Size);
-      std::string error;
-      PartialVal SrcPV = PartialVal::getPartial(bigConst, Offset);
-      if(!PV.combineWith(SrcPV, 0, Size, Size, GlobalTD, error)) {
-	Dest.setOverdef();
-	return;
+      Constant* bigConst = cast<Constant>(Src.Values[i].V.getVal());
+    
+      Constant* smallConst = getSubConst(bigConst, Offset, Size);
+      if(!smallConst) {
+	DestSingle.setOverdef();
+	break;
       }
 
-      Type* ReinterpType = Type::getIntNTy(bigConst->getContext(), Size * 8);
-      smallConst = constFromBytes((uint8_t*)PV.partialBuf, ReinterpType, GlobalTD);
-
-    }
-    
-    ShadowValue SV(smallConst);
-    ImprovedValSetSingle NewIVS;
-    getImprovedValSetSingle(SV, NewIVS);
-    Dest.merge(NewIVS);
+      ShadowValue SV(smallConst);
+      ImprovedValSetSingle NewIVS;
+      getImprovedValSetSingle(SV, NewIVS);
+      DestSingle.merge(NewIVS);
 					  
+    }
+
+    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, DestSingle));
+
   }
   
 }
 
-#define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
+
+  SmallVector<IVSRange, 4> Subvals;
+  getIVSSubVals(Src, Offset, Size, 0, Subvals);
+  if(Subvals.size() != 1)
+    Dest.setOverdef();
+  else
+    Dest = Subvals[0].second;
+  
+}
+
+// Describe FromC[Offset:Offset+TargetSize] as a series of PBs with extents.
+// Makes some effort to coalesce PBs (e.g. using a big ConstantArray rather than an extent per element) but could do more.
+// Writes Overdef extents where we couldn't read the source constant.
+// OffsetAbove specifies all recorded extents should have OffsetAbove added; saves post-processing when
+// making a subquery.
+void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
+
+  uint64_t FromSize = GlobalAA->getTypeStoreSize(FromC->getType());
+
+  if(Offset == 0 && TargetSize == FromSize) {
+    AddIVSConst(0, TargetSize, FromC);
+    return;
+  }
+
+  if(Offset + TargetSize > FromSize) {
+
+    // Out of bounds read on the right. Define as much as we can:
+    getConstSubVals(FromC, Offset, FromSize - Offset, OffsetAbove, Dest);
+    // ...then overdef the rest.
+    Dest.push_back(IVSR(FromSize, (Offset + TargetSize) - FromSize, ImprovedValSetSingle::getOverdef()));
+    return;
+
+  }
+
+  // Reading a sub-value. Cases:
+  // * Array type / Struct type: Grab sub-elements whole as far as possible.
+  // * ConstantDataSequential / ConstantAggregateZero / vectors / primitives: Do byte-wise constant extraction.
+
+  if(ConstantArray* CA = dyn_cast<ConstantArray>(FromC)) {
+
+    Type* EType = CA->getType()->getElementType();
+    uint64_t ESize = GlobalAA->getTypeStoreSize(EType);    
+
+    uint64_t StartE = Offset / ESize;
+    uint64_t StartOff = Offset % ESize;
+
+    uint64_t EndE = (Offset + TargetSize) / ESize;
+    uint64_t EndOff = (Offset + TargetSize) % ESize;
+
+    if(StartOff) {
+
+      // Read a partial on the left:
+      uint64_t ThisReadSize;
+      if(EndE == StartE)
+	ThisReadSize = EndOff - StartOff;
+      else
+	ThisReadSize = ESize - StartOff;
+
+      getConstSubVals(CA->getAggregateElement(StartE), StartOff, ThisReadSize, OffsetAbove + (ESize * StartE), Dest);
+
+      if(StartE == EndE)
+	return;
+
+      StartE++;
+      StartOff = 0;
+
+      if(StartE == EndE && EndOff == 0)
+	return;
+
+    }
+
+    // Read as many whole elements as possible:
+    if(EndE - StartE == 1) {
+
+      AddIVSConst(StartE * ESize, ESize, CA->getAggregateElement(StartE));
+
+    }
+    else if(EndE - StartE > 1) {
+
+      // Make a sub-array.
+      SmallVector<Constant*, 128> subArray(EndE - StartE);
+      for(uint64_t i = StartE, iend = EndE; i != iend; ++i)
+	subArray[i - StartE] = CA->getAggregateElement(i);
+
+      AddIVSConst(StartE * ESize, ESize * (EndE - StartE), ConstantArray::get(CA->getType(), subArray));
+
+    }
+
+    // Read final subelement
+    if(EndOff)
+      getConstSubVals(CA->getAggregateElement(EndE), EndOff, ESize - EndOff, OffsetAbove + (ESize * EndE), Dest);
+
+  }
+  else if(ConstantStruct* CS = dyn_cast<ConstantStruct>(FromC)) {
+
+    const StructLayout* SL = GlobalTD->getStructLayout(CS->getType());
+    if(!SL) {
+      DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
+      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle::getOverdef()));
+      return;
+    }
+
+    uint64_t StartE = SL->getElementContainingOffset(Offset);
+    uint64_t StartOff = Offset - SL->getElementOffset(StartE);
+    uint64_t EndE = SL->getElementContainingOffset(Offset + TargetSize);
+    uint64_t EndOff = (Offset + TargetSize) - SL->getElementOffset(EndE);
+
+    if(StartOff) {
+
+      // Read a partial on the left:
+      Constant* StartC = CS->getAggregateElement(StartE);
+      uint64_t StartCSize = GlobalAA->getTypeStoreSize(StartC->getType());
+      uint64_t ThisReadSize;
+
+      if(EndE == StartE)
+	ThisReadSize = EndOff - StartOff;
+      else
+	ThisReadSize = StartCSize - StartOff;
+
+      getConstSubVals(StartC, StartOff, ThisReadSize, OffsetAbove + SL->getElementOffset(StartE), Dest);
+
+      if(StartE == EndE)
+	return;
+
+      StartE++;
+      StartOff = 0;
+
+      if(StartE == EndE && EndOff == 0)
+	return;
+
+    }
+
+    // Read whole elements:
+    for(;StartE < EndE; ++StartE) {
+
+      Constant* E = CS->getAggregateElement(StartE);
+      uint64_t ESize = GlobalAA->getTypeStoreSize(E->getType());
+      AddIVSConst(SL->getElementOffset(StartE), ESize, E);
+
+    }
+
+    // Read final subelement
+    if(EndOff) {
+      Constant* E = CS->getAggregateElement(EndE);
+      uint64_t ESize = GlobalAA->getTypeStoreSize(E->getType());      
+      getConstSubVals(E, EndOff, ESize - EndOff, OffsetAbove + SL->getElementOffset(EndE), Dest);
+    }
+
+  }
+  else {
+
+    // C is a primitive, constant-aggregate-zero, constant-data-array or similar.
+    // Attempt bytewise extraction and present as an integer.
+    SmallVector<uint8_t, 16> Buffer(TargetSize);
+    if(ReadDataFromGlobal(FromC, Offset, Buffer.data(), TargetSize, *GlobalTD)) {
+
+      Type* Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+      Constant* SubC = constFromBytes((uint8_t*)Buffer.data(), Target, GlobalTD);
+      AddIVSConst(Offset, TargetSize, SubC);
+      
+    }
+    else {
+
+      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle::getOverdef()));      
+
+    }
+
+  }
+  
+}
+
+Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType) {
+
+  if(subVals.size() == 0)
+    return 0;
+
+  for(SmallVector<IVSRange, 4>::iterator it = subVals.begin(), itend = subVals.end();
+      it != itend; ++it) {
+
+    if(it->second.Overdef)
+      return 0;
+
+  }
+
+  if(subVals.size() == 1)
+    return cast_val<Constant>(subVals[0].second.Values[0].V);
+
+  // Otherwise attempt a big synthesis from bytes.
+  SmallVector<uint8_t, 16> buffer(TargetSize);
+
+  for(SmallVector<IVSRange, 4>::iterator it = subVals.begin(), itend = subVals.end();
+      it != itend; ++it) {
+
+    uint8_t* ReadPtr = &(buffer.data()[it->first.first]);
+    if(!ReadDataFromGlobal(cast_val<Constant>(it->second.Values[0].V), 0, ReadPtr, it->first.second - it->first.first, *GlobalTD))
+      return 0;
+
+  }
+
+  if(!targetType)
+    targetType = Type::getIntNTy(subVals[0].second.Values[0].V.getLLVMContext(), TargetSize * 8);
+
+  return constFromBytes((uint8_t*)buffer.data(), targetType, GlobalTD);
+
+}
+
+void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
+
+  SmallVector<IVSRange, 4> subVals;
+  getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
+
+  if(subVals.size() != 1) {
+    if(Constant* C = valsToConst(subVals, TargetSize, TargetType)) {
+      std::pair<ValSetType, ImprovedVal> V = getValPB(C);
+      Result = ImprovedValSetSingle::get(V.second, V.first);
+    }
+    else {
+      Result.setOverdef();
+    }
+  }
+  else {
+    Result = subVals[0].second;
+    if(TargetType) {
+      std::string ign;
+      Result.coerceToType(TargetType, TargetSize, ign);
+    }
+  }
+
+}
+
+Constant* llvm::getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType) {
+  
+  SmallVector<IVSRange, 4> subVals;
+  getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
+
+  return valsToConst(subVals, TargetSize, targetType);
+
+}
+
+void llvm::replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
+
+  if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
+    *S = NewVal;
+  }
+  else {
+    
+    ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(Target);
+
+    if(Size == ULONG_MAX) {
+
+      release_assert(NewVal.Overdef && "Indefinite write with non-clobber value?");
+      
+    }
+
+    clearRange(M, Offset, Size);
+    M->Map.insert(Offset, Offset + Size, NewVal);
+
+    M->CoveredBytes += Size;
+    if(M->Underlying && M->CoveredBytes == M->AllocSize) {
+
+      // This Multi now defines the whole object: drop the underlying object as it never shows through.
+      M->Underlying->dropReference();
+      M->Underlying = 0;
+
+    }
+
+  }
+
+}
+
+void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
+
+  ImprovedValSetMulti::MapIt found = M->Map.find(Offset);
+  if(found == M->Map.end())
+    return;
+
+  uint64_t LastByte = Offset + Size;
+
+  if(found.start() < Offset) {
+
+    ImprovedValSetSingle RHS;
+    if(LastByte < found.stop()) {
+
+      // Punching a hole in the middle of a large value:
+      // keep a copy to derive the RHS remainder later.
+      RHS = *found;
+
+    }
+
+    if(canTruncate(found.val())) {
+      M->CoveredBytes -= (found.stop() - Offset);
+      truncateRight(found, Offset - found.start());
+    }
+    else {
+      found.val().setOverdef();
+    }
+    uint64_t oldStop = found.stop();
+    found.setStopUnchecked(Offset);
+
+    if(RHS.isInitialised()) {
+
+      ++found;
+      found.insert(LastByte, oldStop, RHS);
+      truncateLeft(found, oldStop - LastByte);
+      M->CoveredBytes += (oldStop - LastByte);
+      return;
+
+    }
+
+    ++found;
+
+  }
+  
+  while(found != M->Map.end() && found.start() < LastByte && found.stop() <= LastByte) {
+
+    // Implicitly bumps the iterator forwards:
+    M->CoveredBytes -= (found.stop() - found.start());
+    found.erase();
+
+  }
+
+  if(found != M->Map.end() && found.start() < LastByte) {
+
+    if(canTruncate(found.val())) {
+      truncateLeft(found, found.stop() - LastByte);
+    }
+    else {
+      found.val().setOverdef();
+    }
+    M->CoveredBytes -= (LastByte - found.start());
+    found.setStartUnchecked(LastByte);
+
+  }
+
+}
+
+void llvm::replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+
+  if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
+    release_assert(NewVals.size() == 1 && Offset == 0);
+    *S = NewVals[0].second;
+  }
+  else {
+    
+    ImprovedValSetMulti* M = cast<ImprovedValSetMulti>(Target);
+
+    clearRange(M, Offset, Size);
+    ImprovedValSetMulti::MapIt it = M->Map.find(Offset);
+
+    for(unsigned i = 0, iend = NewVals.size(); i != iend; ++i) {
+
+      IVSRange& RangeVal = NewVals[i];
+      it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
+      ++it;
+
+    }
+
+    M->CoveredBytes += Size;
+    if(M->Underlying && M->CoveredBytes == M->AllocSize) {
+
+      // This Multi now defines the whole object: drop the underlying object as it never shows through.
+      M->Underlying->dropReference();
+      M->Underlying = 0;
+
+    }
+
+  }
+
+}
+
+void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size) {
+
+  ImprovedValSetSingle& S = it.val();
+
+  // Dodge problem of taking e.g. { complex_val, other_complex_val } that
+  // split into multiple values and then recombining: only allow value splitting for singleton sets.
+  if(S.Values.size() == 1) {
+
+    SmallVector<IVSRange, 4> SubVals;
+    Constant* OldC = cast<Constant>(S.Values[0].V.getVal());
+    getConstSubVals(OldC, off, size, /* reporting offset = */ it.start(), SubVals);
+    if(SubVals.size() == 1)
+      S = SubVals[0].second;
+    else {
+
+      // Replace single with several:
+      it.erase();
+
+      for(SmallVector<IVSRange, 4>::iterator valit = SubVals.begin(), valend = SubVals.end();
+	  valit != valend; ++valit) {
+
+	it.insert(valit->first.first, valit->first.second, valit->second);
+	++it;
+
+      }
+
+      // Pointer ends up aimed at the last part of the replacement.
+
+    }
+
+    return;
+
+  }
+
+  for(uint32_t i = 0; i < S.Values.size(); ++i) {
+
+    Constant* OldC = cast<Constant>(S.Values[i].V.getVal());
+    Constant* NewC = getSubConst(OldC, off, size);
+    if(NewC)
+      S.Values[i].V = ShadowValue(NewC);
+    else {
+      S.setOverdef();
+      return;
+    }
+
+  }
+
+}
+
+void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
+
+  // Remove bytes from the RHS, leaving a value of size n bytes.
+  // it points at the current value that should be altered.
+
+  ImprovedValSetSingle& S = it.val();
+
+  if(S.Overdef || S.Values.empty())
+    return;
+  if(S.SetType == ValSetTypeScalarSplat) {
+    release_assert(S.Values.size() == 1 && "Splat set can't be multivalued");
+    S.Values[0].Offset = (int64_t)n;
+    return;
+  }
+
+  truncateConstVal(it, 0, n);
+
+}
+
+
+void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
+
+  // Remove bytes from the LHS, leaving a value of size n bytes.
+  // it points at the current value that should be altered.
+
+  ImprovedValSetSingle& S = it.val();
+
+  if(S.Overdef || S.Values.empty())
+    return;
+  if(S.SetType == ValSetTypeScalarSplat) {
+    release_assert(S.Values.size() == 1 && "Splat value must be single-valued");
+    S.Values[0].Offset = (int64_t)n;
+    return;
+  }
+
+  Constant* C = cast<Constant>(S.Values[0].V.getVal());
+  uint64_t CSize = GlobalAA->getTypeStoreSize(C->getType());
+  truncateConstVal(it, CSize - n, n);
+
+}
+
+bool llvm::canTruncate(ImprovedValSetSingle& S) {
+
+  return 
+    S.Overdef || 
+    S.SetType == ValSetTypeScalar || 
+    S.SetType == ValSetTypeScalarSplat;
+  
+}
 
 void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore) {
 
@@ -1285,8 +1723,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
       
       LFV3(errs() << "Single val subval satisfies whole read\n");
       ImprovedValSetSingle SubVal;
-      getIVSSubVal(*IVS, Offset, Size, SubVal);
-      Results.push_back(IVSR(Offset, Offset+Size, SubVal));
+      getIVSSubVals(*IVS, Offset, Size, 0, Results);
       
     }
 
@@ -1305,9 +1742,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 
       LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << SubvalOffset << "-" << (SubvalOffset + SubvalSize) << "\n");
       
-      ImprovedValSetSingle SubVal;
-      getIVSSubVal(it.val(), SubvalOffset, SubvalSize, SubVal);
-      Results.push_back(IVSR(Offset, Offset + SubvalSize, SubVal));
+      getIVSSubVals(it.val(), SubvalOffset, SubvalSize, it.start(), Results);
       Offset += SubvalSize;
       Size -= SubvalSize;
       ++it;
@@ -1334,9 +1769,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 	LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << "0-" << Size << "\n");
 
 	// Overlap on the right: extract sub-val.
-	ImprovedValSetSingle SubVal;
-	getIVSSubVal(it.val(), 0, Size, SubVal);
-	Results.push_back(IVSR(it.start(), Offset+Size, SubVal));
+	getIVSSubVals(it.val(), 0, Size, it.start(), Results);
 	Offset += Size;
 	Size = 0;
 	break;
@@ -1377,6 +1810,18 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
 
   LFV3(errs() << "Start read-multi " << Offset << "-" << (Offset+Size) << "\n");
 
+  // Special case: read from constant global. Read the initialiser.
+  if(ShadowGV* G = V.getGV()) {
+    
+    if(G->G->isConstant()) {
+
+      getConstSubVals(G->G->getInitializer(), Offset, Size, 0, Results);
+
+    }
+    return;
+
+  }
+
   LocStore* firstStore;
 
   DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
@@ -1407,7 +1852,7 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
   release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
-  
+
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemcpySI->getCallArgOperand(2)));
 
   ShadowValue SrcPtr = MemcpySI->getCallArgOperand(1);
@@ -1462,8 +1907,12 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   if(AI->isArrayAllocation()) {
 
     ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
-    if(!N)
+    if(!N) {
+
+      SI->i.PB.setOverdef();
       return;
+
+    }
     allocType = ArrayType::get(allocType, N->getLimitedValue());
 
   }
@@ -1544,9 +1993,19 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
   SmallVector<IVSRange, 4> copyValues;
   readValRangeMulti(SrcPtrSet.Values[0].V, SrcPtrSet.Values[0].Offset, Size, BB, copyValues);
 
+  int64_t OffDiff = PtrSet.Values[0].Offset - SrcPtrSet.Values[0].Offset;
+  for(SmallVector<IVSRange, 4>::iterator it = copyValues.begin(), it2 = copyValues.end();
+      it != it2; ++it) {
+    
+    // The copied values are labelled according to source offsets; relabel for the destination.
+    it->first.first += OffDiff;
+    it->first.second += OffDiff;
+    
+  }
+
   // OK now blow a hole in the local map for that value and write this list of extents into the gap:
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, copyValues.size() == 1);
-  Store.store->replaceRangeWithPBs(copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
+  replaceRangeWithPBs(Store.store, copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
 
 }
 
@@ -1583,7 +2042,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   vaStartVals.push_back(IVSR(16, 24, StackBase));
 
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
-  Store.store->replaceRangeWithPBs(vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
+  replaceRangeWithPBs(Store.store, vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
 
 }
 
@@ -1613,7 +2072,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
     if(getFileBytes(OS.Name, FileOffset, Size, constBytes, Context,  errors)) {
       ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
       Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
-      WriteIVS = ImprovedValSetSingle::get(ImprovedVal(ByteArray, 0), ValSetTypePB);
+      WriteIVS = ImprovedValSetSingle::get(ImprovedVal(ByteArray, 0), ValSetTypeScalar);
     }
 
   }
@@ -1647,6 +2106,16 @@ void llvm::initSpecialFunctionsMap(Module& M) {
 }
 
 void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
+
+  if(MemIntrinsic* MI = dyn_cast_inst<MemIntrinsic>(SI)) {
+
+    if(isa<MemTransferInst>(MI))
+      executeMemcpyInst(SI);
+    else
+      executeMemsetInst(SI);
+    return;
+
+  }
 
   Function* F = getCalledFunction(SI);
 
@@ -1713,6 +2182,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	  ClobberSize = Details[i].Location->argSize;
 	}
 
+	if(ClobberV.isInval())
+	  continue;
+
 	ImprovedValSetSingle ClobberSet;
 	getImprovedValSetSingle(ClobberV, ClobberSet);
 	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
@@ -1749,7 +2221,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
     LFV3(errs() << "Write through certain pointer\n");
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
-    Store.store->replaceRangeWithPB(ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
+    replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
 
   }
   else {
@@ -1760,7 +2232,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	LFV3(errs() << "Write through vague pointer; clobber\n");
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
 	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
-	Store.store->replaceRangeWithPB(OD, 0, ULONG_MAX);
+	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
       }
       else {
 
@@ -1791,7 +2263,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	}
 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
-	Store.store->replaceRangeWithPB(oldValSet, (uint64_t)it->Offset, PtrSize); 
+	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize); 
 
       }
 

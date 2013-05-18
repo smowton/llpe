@@ -952,7 +952,7 @@ protected:
 
   void printRHS(ShadowValue, raw_ostream& Out);
   void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
-  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief);
+ void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief);
   void describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges);
   void describeLoopAsDOT(const Loop* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
   void describeAsDOT(raw_ostream& Out, bool brief);
@@ -1054,7 +1054,8 @@ public:
   ShadowValue getLoopHeaderForwardedOperand(ShadowInstruction* SI); 
 
   void checkFinalIteration(); 
-  void dropExtraStoreRefs();
+  void dropExitingStoreRefs();
+  void dropLatchStoreRef();
 
   virtual InlineAttempt* getFunctionRoot(); 
 
@@ -1093,6 +1094,7 @@ public:
 
   bool isOnlyExitingIteration(); 
   bool allExitEdgesDead(); 
+  void dropExitingStoreRef(uint32_t, uint32_t);
 
   virtual int getIterCount() {
     return iterationCount;
@@ -1187,6 +1189,9 @@ class PeelAttempt {
    }
 
    void getShadowInfo();
+
+   void dropExitingStoreRefs();
+   void dropNonterminatedStoreRefs();
 
  };
 
@@ -1354,7 +1359,20 @@ class InlineAttempt : public IntegrationAttempt {
  void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string& error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
+
+ void getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
+ void getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
+ Constant* valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType);
+ void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
+ Constant* getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType = 0);
+ void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
+ void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
+ void replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
+ void truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size);
+ void truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n);
+ void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n);
+ bool canTruncate(ImprovedValSetSingle& S);
 
  void readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore);
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);

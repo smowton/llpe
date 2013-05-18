@@ -123,13 +123,9 @@ bool PeelAttempt::analyse() {
   }
 
   Iterations.back()->checkFinalIteration();
-  if(!isTerminated()) {
-    for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end();
-	it != it2; ++it) {
-      (*it)->dropExtraStoreRefs();
-    }
-  }
-  
+  if(!isTerminated())
+    dropNonterminatedStoreRefs();
+ 
   return anyChange;
 
 }
@@ -287,7 +283,6 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
 
   ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
   ShadowBB* HBB = getBB(LInfo->headerIdx);
-  ShadowBB* LBB = getBB(LInfo->latchIdx);
 
   while(anyChange) {
 
@@ -347,6 +342,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L) {
   PHBB->localStore->dropReference();
 
   // Release the latch store that the header will not use again:
+  ShadowBB* LBB = getBB(LInfo->latchIdx);
   LBB->localStore->dropReference();
   
   return everChanged;

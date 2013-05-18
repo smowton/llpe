@@ -54,6 +54,35 @@ void IntegrationAttempt::prepareCommit() {
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
 
+    if(!it->second->isEnabled()) {
+    
+      if(it->second->isTerminated()) {
+
+	// Loop hasn't been analysed for the general case -- do a rough and ready approximation
+	// that emits any edge that is alive in any iteration.
+
+	ShadowLoopInvar* LInfo = it->second->invarInfo;
+	for(uint32_t i = LInfo->headerIdx; i < nBBs && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
+
+	  ShadowBB* BB = getBB(i);
+	  if(!BB) // Never analysed for invariants --> never alive in the loop.
+	    continue;
+
+	  ShadowBBInvar* BBI = BB->invar;
+	  for(uint32_t j = 0, jlim = BBI->succIdxs.size(); j != jlim; ++j) {
+
+	    BB->succsAlive[j] = edgeIsDeadRising(*BBI, *getBBInvar(BBI->succIdxs[j]));
+
+	  }
+
+	}
+
+      }
+
+      continue;
+      
+    }
+
     for(unsigned i = 0; i < iterLimit; ++i) {
 
       it->second->Iterations[i]->prepareCommit();
@@ -708,7 +737,12 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	// Create a memcpy from a constant, since someone is still using the read data.
 	std::vector<Constant*> constBytes;
 	std::string errors;
-	assert(getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors));
+	if(!getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors)) {
+
+	  errs() << "Failed to read file " << it->second.openArg->Name << " in commit\n";
+	  exit(1);
+
+	}
       
 	ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
 	Constant* ByteArray = ConstantArray::get(ArrType, constBytes);

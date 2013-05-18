@@ -288,8 +288,6 @@ ImprovedValSet(bool M) : isMulti(M) { }
   virtual void dropReference() = 0;
   virtual bool isWritableMulti() = 0;
   virtual ImprovedValSet* getReadableCopy() = 0;
-  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) = 0;
-  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) = 0;
   virtual void print(raw_ostream&, bool brief = false) = 0;
   virtual ~ImprovedValSet() {}
   
@@ -451,11 +449,6 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     return false;
   }
 
-  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
-  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
-  void truncateRight(uint64_t);
-  void truncateLeft(uint64_t);
-  bool canTruncate();
   bool coerceToType(llvm::Type* Target, uint64_t TargetSize, std::string& error);
   virtual void print(raw_ostream&, bool brief = false);
   
@@ -513,9 +506,6 @@ struct ImprovedValSetMulti : public ImprovedValSet {
     return this;
   }
 
-  virtual void replaceRangeWithPB(ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
-  virtual void replaceRangeWithPBs(SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
-  void clearRange(uint64_t Start, uint64_t Size);
   virtual void print(raw_ostream&, bool brief = false);
 
 };
@@ -1178,23 +1168,25 @@ inline void setReplacement(ShadowArg* SA, Constant* C) {
 
 inline ShadowValue ShadowValue::stripPointerCasts() {
 
-  if(isArg())
+  switch(t) {
+  case SHADOWVAL_ARG:
+  case SHADOWVAL_GV:
     return *this;
-  if(ShadowInstruction* SI = getInst()) {
+  case SHADOWVAL_INST:
 
-    if(inst_is<CastInst>(SI)) {
-      ShadowValue Op = SI->getOperand(0);
+    if(inst_is<CastInst>(u.I)) {
+      ShadowValue Op = u.I->getOperand(0);
       return Op.stripPointerCasts();
     }
     else {
       return *this;
     }
 
-  }
-  else {
-
-    return getVal()->stripPointerCasts();
-
+  case SHADOWVAL_OTHER:
+    return u.V->stripPointerCasts();
+  default:
+    release_assert(0 && "Bad val type in stripPointerCasts");
+    llvm_unreachable();
   }
 
 }

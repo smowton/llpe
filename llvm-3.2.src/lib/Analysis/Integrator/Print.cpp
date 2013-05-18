@@ -85,6 +85,9 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
   else if(ShadowArg* SA = V.getArg()) {
     printValue(Stream, SA->invar->A, brief);
   }
+  else if(ShadowGV* GV = V.getGV()) {
+    printValue(Stream, GV->G, brief);
+  }
 
 }
 
