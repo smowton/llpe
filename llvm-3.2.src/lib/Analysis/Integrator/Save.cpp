@@ -71,7 +71,7 @@ void IntegrationAttempt::prepareCommit() {
 	  ShadowBBInvar* BBI = BB->invar;
 	  for(uint32_t j = 0, jlim = BBI->succIdxs.size(); j != jlim; ++j) {
 
-	    BB->succsAlive[j] = edgeIsDeadRising(*BBI, *getBBInvar(BBI->succIdxs[j]));
+	    BB->succsAlive[j] = !edgeIsDeadRising(*BBI, *getBBInvar(BBI->succIdxs[j]), true);
 
 	  }
 

@@ -228,9 +228,9 @@ bool IntegrationAttempt::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
 
 }
 
-bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I) {
+bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope) {
 
-  if(edgeIsDead(&BB1I, &BB2I))
+  if((!ignoreThisScope) && edgeIsDead(&BB1I, &BB2I))
     return true;
 
   if(BB1I.naturalScope == L)
@@ -238,8 +238,7 @@ bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB
   
   if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BB1I.naturalScope))) {
 
-    PeelIteration* FinalIter = LPA->Iterations.back();
-    if(FinalIter->iterStatus == IterationStatusFinal) {
+    if(LPA->isTerminated()) {
 
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
 	  
@@ -738,6 +737,9 @@ void InlineAttempt::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
   uint32_t argIdx = idx - ImprovedVal::first_any_arg;
 
   CallInst* RawCI = cast_inst<CallInst>(CI);
+
+  // Skip past the normal args:
+  argIdx += F.arg_size();
 
   if(argIdx < RawCI->getNumArgOperands())
     getImprovedValSetSingle(CI->getCallArgOperand(argIdx), Result);

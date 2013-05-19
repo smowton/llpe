@@ -721,11 +721,11 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
     std::pair<uint32_t, uint32_t> E = EE[i];
     if(ShadowBB* BB = getBB(E.first)) {
 
-      bool dead = edgeIsDeadRising(*BB->invar, *getBBInvar(E.second));
+      bool dead = edgeIsDeadRising(*BB->invar, *getBBInvar(E.second), /* ignoreThisScope = */ true);
       
       for(uint32_t j = 0; j < BB->invar->succIdxs.size(); ++j) {
 	if(BB->invar->succIdxs[j] == E.second)
-	  BB->succsAlive[j] = dead;
+	  BB->succsAlive[j] = !dead;
       }
       
     }

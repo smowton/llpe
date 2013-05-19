@@ -755,7 +755,7 @@ protected:
 
   // virtual for external access:
   virtual bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
-  bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I);
+  bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope = false);
 
   const Loop* applyIgnoreLoops(const Loop*);
 
