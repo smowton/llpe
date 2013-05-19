@@ -381,10 +381,10 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     return 0;
   }
 
-  if(L != SI->invar->scope && !ignoreScope) {
+  //if(L != SI->invar->scope && !ignoreScope) {
     // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
-    return 0;
-  }
+  //return 0;
+  //}
 
   if(functionIsBlacklisted(FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");

@@ -1883,11 +1883,19 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
 
 void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize) {
 
-  // Represent the store by a big undef value at the start.
+  // Represent the store by a big undef value at the start, or if !AllocType (implying AllocSize
+  // == ULONG_MAX, unknown size), start with a big Overdef.
   release_assert((!SI->store.store) && "Allocation already initialised?");
-  Constant* Undef = UndefValue::get(AllocType);
-  ImprovedVal IV(ShadowValue(Undef), 0);
-  SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
+
+  if(AllocType) {
+    Constant* Undef = UndefValue::get(AllocType);
+    ImprovedVal IV(ShadowValue(Undef), 0);
+    SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
+  }
+  else {
+    SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
+  }
+
   SI->storeSize = AllocSize;
   
   SI->i.PB = ImprovedValSetSingle::get(ImprovedVal(SI, 0), ValSetTypePB);
@@ -1907,20 +1915,17 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   if(AI->isArrayAllocation()) {
 
     ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
-    if(!N) {
-
-      SI->i.PB.setOverdef();
-      return;
-
-    }
-    allocType = ArrayType::get(allocType, N->getLimitedValue());
+    if(!N)
+      allocType = 0;
+    else
+      allocType = ArrayType::get(allocType, N->getLimitedValue());
 
   }
 
   InlineAttempt* thisIA = SI->parent->IA->getFunctionRoot();
   thisIA->localAllocas.push_back(SI);
 
-  executeAllocInst(SI, allocType, GlobalAA->getTypeStoreSize(allocType));
+  executeAllocInst(SI, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX);
 
 }
 
@@ -1930,12 +1935,11 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
     return;
 
   ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
-  if(!AllocSize)
-    return;
+  Type* allocType = 0;
+  if(AllocSize)
+    allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
-  Type* allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
-
-  executeAllocInst(SI, allocType, AllocSize->getLimitedValue());
+  executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
 
 }
 
@@ -1945,11 +1949,10 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
     // Only alloc the first time; always carry out the copy implied by realloc.
     ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
-    if(!AllocSize)
-      return;
-    
-    Type* allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
-    executeAllocInst(SI, allocType, AllocSize->getLimitedValue());    
+    Type* allocType = 0;
+    if(AllocSize)
+      allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
+    executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);    
 
   }
 
