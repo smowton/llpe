@@ -2008,6 +2008,13 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 
 }
 
+LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
+
+  release_assert(A->IA == RootIA && "ShadowArg used as object but not root IA?");
+  return argvStore;
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<DataLayout>();
@@ -2056,6 +2063,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
   initShadowGlobals(M);
+
+  argvStore.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
 

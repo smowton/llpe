@@ -691,7 +691,8 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
        
 }
 
-#define LFV3(x) x
+#define LFV3(x) do {} while(0)
+//#define LFV3(x) x
 
 DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
 
@@ -785,7 +786,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
 	M->Underlying = V.getBaseStore().store->getReadableCopy();
 	LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
-	M->print(errs());
+	LFV3(M->print(errs()));
 	ret->store = M;
       }
 
@@ -1166,7 +1167,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 }
 
 #define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
-#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, Offset + OffsetAbove + y, ImprovedValSetSingle::get(V.second, V.first))); } while(0);
+#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle::get(V.second, V.first))); } while(0);
 
 void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
@@ -1325,7 +1326,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
 
     // Read final subelement
     if(EndOff)
-      getConstSubVals(CA->getAggregateElement(EndE), EndOff, ESize - EndOff, OffsetAbove + (ESize * EndE), Dest);
+      getConstSubVals(CA->getAggregateElement(EndE), 0, EndOff, OffsetAbove + (ESize * EndE), Dest);
 
   }
   else if(ConstantStruct* CS = dyn_cast<ConstantStruct>(FromC)) {
@@ -1372,15 +1373,28 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
 
       Constant* E = CS->getAggregateElement(StartE);
       uint64_t ESize = GlobalAA->getTypeStoreSize(E->getType());
-      AddIVSConst(SL->getElementOffset(StartE), ESize, E);
+      uint64_t ThisOff = SL->getElementOffset(StartE);
+      AddIVSConst(ThisOff, ESize, E);
+
+      // Padding?
+      if(StartE + 1 < CS->getType()->getNumElements()) {
+	uint64_t NextOff = SL->getElementOffset(StartE + 1);
+	uint64_t PaddingBytes = (NextOff - (ThisOff + ESize));
+	if(PaddingBytes) {
+
+	  Type* PaddingType = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+	  Constant* Padding = UndefValue::get(PaddingType);
+	  AddIVSConst(ThisOff + ESize, PaddingBytes, Padding);
+
+	}
+      }
 
     }
 
     // Read final subelement
     if(EndOff) {
       Constant* E = CS->getAggregateElement(EndE);
-      uint64_t ESize = GlobalAA->getTypeStoreSize(E->getType());      
-      getConstSubVals(E, EndOff, ESize - EndOff, OffsetAbove + SL->getElementOffset(EndE), Dest);
+      getConstSubVals(E, 0, EndOff, OffsetAbove + SL->getElementOffset(EndE), Dest);
     }
 
   }
@@ -2202,7 +2216,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   }
 
   // Finally clobber all locations; this call is entirely unhandled
-  errs() << "Warning: unhandled call clobbers all locations\n";
+  errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
   ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
   executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
 
@@ -2325,7 +2339,7 @@ void LocalStoreMap::dropReference() {
 
 static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti*, 4>& Seen) {
 
-  errs() << "gca " << LHS << " " << RHS << " " << isa<ImprovedValSetSingle>(LHS) << " " << isa<ImprovedValSetSingle>(RHS) << "\n";
+  LFV3(errs() << "gca " << LHS << " " << RHS << " " << isa<ImprovedValSetSingle>(LHS) << " " << isa<ImprovedValSetSingle>(RHS) << "\n");
 
   if(ImprovedValSetSingle* LHSS = dyn_cast<ImprovedValSetSingle>(LHS)) {
 

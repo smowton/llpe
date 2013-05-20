@@ -254,7 +254,7 @@ Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
 }
 
-#define LFV3(x) x
+#define LFV3(x) do {} while(0);
 
 void ImprovedValSetSingle::dropReference() {
 

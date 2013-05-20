@@ -150,9 +150,9 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
     }
 
-    errs() << "Init store for " << *it << " -> ";
-    printPB(errs(), *Init);
-    errs() << "\n";
+    //errs() << "Init store for " << *it << " -> ";
+    //printPB(errs(), *Init);
+    //errs() << "\n";
 
     shadowGlobals[i].store.store = Init;
     shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());

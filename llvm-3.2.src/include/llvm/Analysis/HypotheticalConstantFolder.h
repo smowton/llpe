@@ -81,15 +81,16 @@ inline void release_assert_fail(const char* str) {
 
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
 
-// Include structures and functions for working with instruction and argument shadows.
-#include "ShadowInlines.h"
-
-class VFSCallModRef;
-
 extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
 extern VFSCallAliasAnalysis* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
+extern IntegrationHeuristicsPass* GlobalIHP;
+
+// Include structures and functions for working with instruction and argument shadows.
+#include "ShadowInlines.h"
+
+class VFSCallModRef;
 
 class IntegrationHeuristicsPass : public ModulePass {
 
@@ -122,6 +123,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
 
    DenseMap<GlobalVariable*, uint64_t> shadowGlobalsIdx;
+
+   LocStore argvStore;
 
    bool cacheDisabled;
 
@@ -236,6 +239,8 @@ class IntegrationHeuristicsPass : public ModulePass {
      return shadowGlobalsIdx[GV];
    }
 
+   LocStore& getArgStore(ShadowArg*);
+
    uint64_t getSeq() {
      return SeqNumber++;
    }
@@ -244,8 +249,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void commit();
   
 };
-
-extern IntegrationHeuristicsPass* GlobalIHP;
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
 template<class T> class PrintCacheWrapper {
@@ -264,6 +267,23 @@ template<class T> class PrintCacheWrapper {
   }
 
 };
+
+inline LocStore& ShadowValue::getBaseStore() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    release_assert(u.I->store.store && "getBaseStore on instruction without one");
+    return u.I->store;
+  case SHADOWVAL_GV:
+    return u.GV->store;
+  case SHADOWVAL_ARG:
+    return GlobalIHP->getArgStore(u.A);
+  default:
+    assert(0 && "getBaseStore on non-inst, non-GV value");
+    llvm_unreachable();
+  }
+
+}
 
 template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T> Wrapper) {
   Wrapper.printTo(ROS);

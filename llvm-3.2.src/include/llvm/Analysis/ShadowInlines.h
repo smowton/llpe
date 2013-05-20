@@ -921,20 +921,6 @@ inline uint64_t ShadowValue::getAllocSize() {
 
 }
 
-inline LocStore& ShadowValue::getBaseStore() {
-
-  switch(t) {
-  case SHADOWVAL_INST:
-    release_assert(u.I->store.store && "getBaseStore on instruction without one");
-    return u.I->store;
-  case SHADOWVAL_GV:
-    return u.GV->store;
-  default:
-    llvm_unreachable("getBaseStore on non-inst, non-GV value");
-  }
-
-}
-
 template<class X> inline bool val_is(ShadowValue V) {
   switch(V.t) {
   case SHADOWVAL_OTHER:
