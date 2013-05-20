@@ -304,8 +304,6 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   ShadowBB* BB = SI->parent;
   ShadowBBInvar* BBI = BB->invar;
   
-  uint32_t uniqueSucc = 0xffffffff;
-
   for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
 
     if(!BB->succsAlive[i])
@@ -313,6 +311,15 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
     // Create a store reference for each live successor
     ++SI->parent->localStore->refCount;
+
+  }
+
+  // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
+  SI->parent->localStore->dropReference();
+
+  uint32_t uniqueSucc = 0xffffffff;
+
+  for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
     
     if(uniqueSucc == BBI->succIdxs[i] || uniqueSucc == 0xffffffff)
       uniqueSucc = BBI->succIdxs[i];
@@ -322,9 +329,6 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
     }
 
   }
-
-  // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
-  SI->parent->localStore->dropReference();
 
   if(!anyChange)
     return false;

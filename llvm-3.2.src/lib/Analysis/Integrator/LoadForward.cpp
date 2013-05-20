@@ -777,16 +777,21 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
       // There wasn't an entry in the local map. Make a Single or Multi store depending on
       // whether we're about to cover the whole store or not:
-      if(writeWholeObject) {
+      if(writeWholeObject && willWriteSingleObject) {
 	LFV3(errs() << "Create new store with blank single\n");
 	ret->store = new ImprovedValSetSingle();
       }
       else {
 	// Defer the rest of the multimap to the base object.
 	ImprovedValSetMulti* M = new ImprovedValSetMulti(V);
-	M->Underlying = V.getBaseStore().store->getReadableCopy();
-	LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
-	LFV3(M->print(errs()));
+	if(writeWholeObject) {
+	  M->Underlying = 0;
+	}
+	else {
+	  M->Underlying = V.getBaseStore().store->getReadableCopy();
+	  LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
+	  LFV3(M->print(errs()));
+	}
 	ret->store = M;
       }
 
@@ -834,10 +839,16 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
       if(isa<ImprovedValSetMulti>(ret->store))
 	LFV3(errs() << "Break shared multi " << ret->store << " -> " << NewIMap << "\n");
       else
-	LFV3(errs() << "Break single -> multi " << ret->store << " -> " << NewIMap << "\n");	
-      NewIMap->Underlying = ret->store;
-      // M's refcount remains unchanged, it's just now referenced as a base rather than
-      // being directly used here.
+	LFV3(errs() << "Break single -> multi " << ret->store << " -> " << NewIMap << "\n");
+      if(writeWholeObject) {
+	NewIMap->Underlying = 0;
+	ret->store->dropReference();
+      }
+      else {
+	NewIMap->Underlying = ret->store;
+	// M's refcount remains unchanged, it's just now referenced as a base rather than
+	// being directly used here.
+      }
       ret->store = NewIMap;
 	
     }
