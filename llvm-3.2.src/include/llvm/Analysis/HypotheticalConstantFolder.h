@@ -816,7 +816,8 @@ protected:
   bool analyse(bool inLoopAnalyser);
   bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL);
   bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser);
-  bool analyseLoop(const Loop*);
+  bool analyseLoop(const Loop*, bool nestedLoop);
+  void releaseLatchStores(const Loop*);
   virtual void getInitialStore() = 0;
 
   // Constant propagation:

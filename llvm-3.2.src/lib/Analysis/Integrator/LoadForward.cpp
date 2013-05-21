@@ -1076,6 +1076,8 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
   }
 
+  release_assert(Result.isInitialised());
+
 }
 
 bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string& error) {
@@ -1288,7 +1290,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
   if(ConstantArray* CA = dyn_cast<ConstantArray>(FromC)) {
 
     Type* EType = CA->getType()->getElementType();
-    uint64_t ESize = GlobalAA->getTypeStoreSize(EType);    
+    uint64_t ESize = GlobalTD->getTypeAllocSize(EType);    
 
     uint64_t StartE = Offset / ESize;
     uint64_t StartOff = Offset % ESize;
@@ -2234,6 +2236,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 }
 
 void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
+
+  if(!ValPB.isInitialised())
+    ValPB.setOverdef();
 
   if(PtrSet.Overdef) {
 

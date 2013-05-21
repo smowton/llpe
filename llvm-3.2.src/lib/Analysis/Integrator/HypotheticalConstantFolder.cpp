@@ -127,7 +127,7 @@ void IntegrationAttempt::markContextDead() {
 
 bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB) {
 
-  // The case for a resolved select instruction is already resolved.
+  // The case for a resolved select instruction has already been handled.
 
   bool verbose = false;
   
