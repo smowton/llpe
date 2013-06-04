@@ -800,7 +800,6 @@ protected:
   ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
   virtual ShadowInstruction* getInst(ShadowInstructionInvar* SII);
-  bool instResolvedAsInvariant(ShadowInstruction* SI);
   ShadowInstruction* getMostLocalInst(uint32_t blockIdx, uint32_t instIdx);
 
   // The toplevel loop:

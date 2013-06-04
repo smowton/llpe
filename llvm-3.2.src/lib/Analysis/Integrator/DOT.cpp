@@ -48,13 +48,6 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
   if(getConstReplacement(SV))
     return "green";
   
-  if(ShadowInstruction* SI = SV.getInst()) {
-
-    if(instResolvedAsInvariant(SI))
-      return "limegreen";
-
-  }
-  
   if(IAI->PB.Values.size() != 0 && !IAI->PB.Overdef)
     return "darkgreen";
   
@@ -266,7 +259,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   }
   else if(BB && BB->status == BBSTATUS_CERTAIN) {
     if(!BB->inAnyLoop)
-      Out << " bgcolor=\"lightgreen\"";
+      Out << " bgcolor=\"green\"";
     else
       Out << " bgcolor=\"yellow\"";
   }

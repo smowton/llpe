@@ -636,7 +636,7 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
   for(uint32_t i = 0; i < EE.size(); ++i) {
 
     std::pair<uint32_t, uint32_t> E = EE[i];
-    if(ShadowBB* BB = getBB(E.first)) {
+    if(ShadowBB* BB = getOrCreateBB(E.first)) {
 
       bool dead = edgeIsDeadRising(*BB->invar, *getBBInvar(E.second), /* ignoreThisScope = */ true);
       

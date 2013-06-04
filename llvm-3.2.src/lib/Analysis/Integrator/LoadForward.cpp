@@ -553,12 +553,6 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 // Fish a value out of the block-local or value store for LI.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
 
-  if(LI->parent->IA->SeqNumber >= 7086 && LI->parent->invar->BB->getName() == "8thread-pre-split") {
-
-    errs() << "HIT!\n";
-
-  }
-
   ImprovedValSetSingle ConstResult;
   std::string error;
   if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
@@ -2405,7 +2399,7 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
   ImprovedValSetMulti* LHSM = cast<ImprovedValSetMulti>(LHS);
   if(LHS == RHS || Seen.count(LHSM)) {
     LHSResult = LHS;
-    RHSResult = RHS;
+    RHSResult = LHS;
     return true;
   }
 
@@ -2685,69 +2679,66 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
     LocalStoreMap* mergeFromMap = BB->localStore;
 
     release_assert(mergeMap && "Must have a concrete destination map");
+    release_assert(mergeFromMap && "Incoming block must have a map");
 
-    if(mergeFromMap) {
+    if(mergeFromMap->allOthersClobbered) {
 
-      if(mergeFromMap->allOthersClobbered) {
+      SmallVector<ShadowValue, 4> keysToRemove;
 
-	SmallVector<ShadowValue, 4> keysToRemove;
+      // Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
+      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
+	    itend = mergeMap->store.end(); it != itend; ++it) {
 
-	// Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
-	for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
-	      itend = mergeMap->store.end(); it != itend; ++it) {
+	if(!mergeFromMap->store.count(it->first)) {
 
-	  if(!mergeFromMap->store.count(it->first)) {
-
-	    LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
-	    keysToRemove.push_back(it->first);
-	    it->second.store->dropReference();
-
-	  }
+	  LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
+	  keysToRemove.push_back(it->first);
+	  it->second.store->dropReference();
 
 	}
-
-	for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
-	      delitend = keysToRemove.end(); delit != delitend; ++delit) {
-
-	  mergeMap->store.erase(*delit);
-
-	}
-
-	mergeMap->allOthersClobbered = true;
 
       }
-      else if(!mergeMap->allOthersClobbered) {
 
-	LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
+      for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
+	    delitend = keysToRemove.end(); delit != delitend; ++delit) {
 
-	// For any locations mentioned in mergeFromMap but not mergeMap,
-	// move them over. We'll still need to merge in the base object below, this
-	// just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
+	mergeMap->store.erase(*delit);
+
+      }
+
+      mergeMap->allOthersClobbered = true;
+
+    }
+    else if(!mergeMap->allOthersClobbered) {
+
+      LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
+
+      // For any locations mentioned in mergeFromMap but not mergeMap,
+      // move them over. We'll still need to merge in the base object below, this
+      // just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
 	  
-	SmallVector<ShadowValue, 4> toDelete;
+      SmallVector<ShadowValue, 4> toDelete;
 
-	for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
-	      itend = mergeFromMap->store.end(); it != itend; ++it) {
+      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
+	    itend = mergeFromMap->store.end(); it != itend; ++it) {
 	
-	  std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
-	    mergeMap->store.insert(std::make_pair(it->first, it->second));
+	std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
+	  mergeMap->store.insert(std::make_pair(it->first, it->second));
 	
-	  if(ins.second)
-	    toDelete.push_back(ins.first->first);
+	if(ins.second)
+	  toDelete.push_back(ins.first->first);
 
-	}
+      }
       
-	for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
-	    delit != delend; ++delit)
-	  mergeFromMap->store.erase(*delit);
+      for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
+	  delit != delend; ++delit)
+	mergeFromMap->store.erase(*delit);
 
-      }
-      else {
+    }
+    else {
 	  
-	LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
+      LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
 	  
-      }
-	
     }
 
     // mergeMap now contains all information from one or other incoming branch;
@@ -2759,15 +2750,11 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 	  itend = mergeMap->store.end(); it != itend; ++it) {
 
       LocStore* mergeFromStore;
-      if(!mergeFromMap)
+      DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
+      if(found != mergeFromMap->store.end())
+	mergeFromStore = &(found->second);
+      else
 	mergeFromStore = &it->first.getBaseStore();
-      else {
-	DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
-	if(found != mergeFromMap->store.end())
-	  mergeFromStore = &(found->second);
-	else
-	  mergeFromStore = &it->first.getBaseStore();
-      }
 
       // Right, merge it->second and mergeFromStore.
       // If the pointers match these are two refs to the same Multi.
@@ -2780,8 +2767,7 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 
     }
 
-    if(mergeFromMap)
-      mergeFromMap->dropReference();
+    mergeFromMap->dropReference();
 
     newMap = mergeMap;
 
