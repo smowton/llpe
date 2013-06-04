@@ -530,8 +530,6 @@ struct ShadowInstructionInvar {
   uint32_t idx;
   Instruction* I;
   ShadowBBInvar* parent;
-  const Loop* scope;
-  const Loop* naturalScope;
   ImmutableArray<ShadowInstIdx> operandIdxs;
   ImmutableArray<ShadowInstIdx> userIdxs;
   ImmutableArray<uint32_t> operandBBs;
@@ -678,7 +676,6 @@ struct ShadowBBInvar {
   ImmutableArray<uint32_t> predIdxs;
   ImmutableArray<ShadowInstructionInvar> insts;
   const Loop* outerScope;
-  const Loop* scope;
   const Loop* naturalScope;
 
   inline ShadowBBInvar* getPred(uint32_t i);
@@ -715,6 +712,7 @@ struct ShadowBB {
   BasicBlock* committedHead;
   BasicBlock* committedTail;
   bool useSpecialVarargMerge;
+  bool inAnyLoop;
 
   bool edgeIsDead(ShadowBBInvar* BB2I) {
 
@@ -842,7 +840,7 @@ inline const Loop* ShadowValue::getScope() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    return u.I->invar->scope;
+    return u.I->invar->parent->outerScope;
   default:
     return 0;
   }

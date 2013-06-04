@@ -321,6 +321,8 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "llvm.va_start", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, VAStartMR, 0 },
   { "llvm.va_copy", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, VACopyMR, 0 },
   { "llvm.va_end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
+  { "llvm.lifetime.start", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
+  { "llvm.lifetime.end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
   { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
   { "__libc_fcntl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "__fcntl_nocancel", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },

@@ -553,6 +553,12 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 // Fish a value out of the block-local or value store for LI.
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
 
+  if(LI->parent->IA->SeqNumber >= 7086 && LI->parent->invar->BB->getName() == "8thread-pre-split") {
+
+    errs() << "HIT!\n";
+
+  }
+
   ImprovedValSetSingle ConstResult;
   std::string error;
   if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
@@ -758,8 +764,8 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   // Can write direct to the base store if we're sure this write is "for good".
   LocStore* ret = 0;
-  if(status == BBSTATUS_CERTAIN && !localStore->allOthersClobbered) {
-    LFV3(errs() << "Use base store\n");
+  if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && !localStore->allOthersClobbered) {
+    LFV3(errs() << "Use base store for " << IA->F.getName() << " / " << IA->SeqNumber << " / " << invar->BB->getName() << "\n");
     ret = &V.getBaseStore();
   }
 
@@ -941,7 +947,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       }
       
       // Otherwise we need to extract a sub-value: only works on constants:
-      bool rejectHere = IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat;
+      bool rejectHere = IVS->Overdef || (IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat);
       if(rejectHere) {
 	LFV3(errs() << "Reject: non-scalar\n");
 	Result = ImprovedValSetSingle::getOverdef();
@@ -1843,9 +1849,9 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
     if(G->G->isConstant()) {
 
       getConstSubVals(G->G->getInitializer(), Offset, Size, 0, Results);
+      return;
 
     }
-    return;
 
   }
 
@@ -2019,6 +2025,12 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
     return;
 
   }
+
+  if(val_is<ConstantPointerNull>(SrcPtrSet.Values[0].V))
+    return;
+
+  if(val_is<ConstantPointerNull>(PtrSet.Values[0].V))
+    return;
 
   SmallVector<IVSRange, 4> copyValues;
   readValRangeMulti(SrcPtrSet.Values[0].V, SrcPtrSet.Values[0].Offset, Size, BB, copyValues);
@@ -2202,6 +2214,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
       for (unsigned i = 0; Details[i].Location; ++i) {
 
+	if(!(Details[i].MRInfo & AliasAnalysis::Mod))
+	  continue;
+
 	ShadowValue ClobberV;
 	uint64_t ClobberSize = 0;
 	if(Details[i].Location->getLocation) {
@@ -2253,6 +2268,10 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
     LFV3(errs() << "Write through certain pointer\n");
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
+
+    if(val_is<ConstantPointerNull>(PtrSet.Values[0].V))
+      return;
+
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
     replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
 
@@ -2260,6 +2279,9 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
   else {
 
     for(SmallVector<ImprovedVal, 1>::iterator it = PtrSet.Values.begin(), it2 = PtrSet.Values.end(); it != it2; ++it) {
+
+      if(val_is<ConstantPointerNull>(it->V))
+	continue;
 
       if(it->Offset == LLONG_MAX) {
 	LFV3(errs() << "Write through vague pointer; clobber\n");
@@ -2779,19 +2801,33 @@ void llvm::commitStoreToBase(LocalStoreMap* Map) {
 
 }
 
-void llvm::doBlockStoreMerge(ShadowBB* BB) {
+// Return false if this block turns out to have no live predecessors at the moment.
+// This is possible in the unusual case that a per-iteration loop exploration has
+// created the block to find invariants but it isn't yet reachable according to the
+// fixed point analyser -- e.g. this block only becomes reachable on iteration 2.
+bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   // We're entering BB; one or more live predecessor blocks exist and we must produce an appropriate
   // localStore from them.
 
   LFV3(errs() << "Start block store merge\n");
 
-  bool mergeToBase = BB->status == BBSTATUS_CERTAIN;
+  bool mergeToBase = BB->status == BBSTATUS_CERTAIN && !BB->inAnyLoop;
+  if(mergeToBase) {
+
+    LFV3(errs() << "MERGE to base store for " << BB->IA->F.getName() << " / " << BB->IA->SeqNumber << " / " << BB->invar->BB->getName() << "\n");
+
+  }
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
   MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
+
+  if(!V.newMap) {
+    BB->localStore = 0;
+    return false;
+  }
 
   // TODO: do this better
   if(mergeToBase && !V.newMap->allOthersClobbered) {
@@ -2801,19 +2837,29 @@ void llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   BB->localStore = V.newMap;
 
+  return true;
+
 }
 
 void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   LFV3(errs() << "Start call-return store merge\n");
 
-  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN;
+  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN && !SI->parent->inAnyLoop;
+  if(mergeToBase) {
+
+    LFV3(errs() << "MERGE to base store for " << SI->parent->IA->F.getName() << " / " << SI->parent->IA->SeqNumber << " / " << SI->parent->invar->BB->getName() << "\n");
+
+  }
+
   InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(cast_inst<CallInst>(SI));
 
   MergeBlockVisitor V(mergeToBase);
   CallIA->visitLiveReturnBlocks(V);
-
-  if(mergeToBase && !V.newMap->allOthersClobbered) {
+  
+  // If V.newMap is not set this must be an unreachable block
+  // and our caller will bail out rather than use SI->parent->localStore.
+  if(mergeToBase && V.newMap && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
     V.newMap = V.newMap->getEmptyMap();
   }

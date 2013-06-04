@@ -268,7 +268,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 
 }
 
-void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
+void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
 
   if(edgeIsDead(ExitingBB, ExitedBB))
     return;
@@ -278,16 +278,17 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
     // Read from child loop if appropriate:
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
 
-      if(PA->isEnabled() && PA->isTerminated()) {
+      if(PA->isEnabled() && (readFromNonTerminatedLoop || PA->isTerminated())) {
 
 	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 
 	  PeelIteration* Iter = PA->Iterations[i];
-	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs);
+	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs, readFromNonTerminatedLoop);
 
 	}
 
-	return;
+	if(PA->isTerminated())
+	  return;
 
       }
 
@@ -313,7 +314,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
 
 }
 
-void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
+void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
 
   ShadowInstructionInvar* SII = SI->invar;
   ShadowBBInvar* BB = SII->parent;
@@ -325,7 +326,7 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   ShadowBBInvar* OpBB = getBBInvar(blockIdx);
 
   if(OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
-    getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
+    getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs, readFromNonTerminatedLoop);
   else {
 
     // Arg is local (can't be lower or this is a header phi)

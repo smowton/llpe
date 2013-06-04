@@ -95,9 +95,6 @@ class VFSCallModRef;
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
-   DenseMap<Function*, DenseMap<Instruction*, const Loop*>* > invariantInstScopes;
-   DenseMap<Function*, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>* > invariantEdgeScopes;
-   DenseMap<Function*, DenseMap<BasicBlock*, const Loop*>* > invariantBlockScopes;
    DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
 
    DenseMap<const Loop*, std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> > LoopPDTs;
@@ -152,11 +149,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void print(raw_ostream &OS, const Module* M) const;
 
    void releaseMemory(void);
-
-   void createInvariantScopes(Function*, DenseMap<Instruction*, const Loop*>*&, DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>*&, DenseMap<BasicBlock*, const Loop*>*&);
-   DenseMap<Instruction*, const Loop*>& getInstScopes(Function* F);
-   DenseMap<std::pair<BasicBlock*, BasicBlock*>, const Loop*>& getEdgeScopes(Function* F);
-   DenseMap<BasicBlock*, const Loop*>& getBlockScopes(Function* F);
 
    DomTreeNodeBase<BBWrapper>* getPostDomTreeNode(const Loop*, ShadowBBInvar*, ShadowFunctionInvar&);
 
@@ -813,9 +805,9 @@ protected:
 
   // The toplevel loop:
   void analyse();
-  bool analyse(bool inLoopAnalyser);
-  bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL);
-  bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser);
+  bool analyse(bool inLoopAnalyser, bool inAnyLoop);
+  bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL);
+  bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser, bool inAnyLoop);
   bool analyseLoop(const Loop*, bool nestedLoop);
   void releaseLatchStores(const Loop*);
   virtual void getInitialStore() = 0;
@@ -835,10 +827,9 @@ protected:
   bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
-  void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
-  void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0);
-  void getCommittedOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
+  void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0, bool readFromNonTerminatedLoop = false);
+  void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop);
+  void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB);
 
   // CFG analysis:
@@ -1022,7 +1013,6 @@ protected:
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool synthCommittedPointer(ShadowValue, BasicBlock* emitBB);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
-  void commitLoopInvariants(PeelAttempt*, uint32_t startIdx);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 
@@ -1282,7 +1272,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool entryBlockIsCertain(); 
   virtual bool entryBlockAssumed(); 
 
-  bool analyseWithArgs(bool withinUnboundedLoop); 
+  bool analyseWithArgs(bool withinUnboundedLoop, bool inAnyLoop); 
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
@@ -1322,9 +1312,6 @@ class InlineAttempt : public IntegrationAttempt {
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);
  uint32_t getInitialBytesOnStack(Function& F);
  uint32_t getInitialFPBytesOnStack(Function& F);
-
- ImprovedValSetSingle tryForwardLoadSubquery(ShadowInstruction* StartInst, ShadowValue LoadPtr, ShadowValue LoadPtrBase, int64_t LoadPtrOffset, uint64_t LoadSize, Type* originalType, PartialVal& ResolvedSoFar, std::string& error, DenseSet<BackwardIAWalker::WLItem>&);
- ImprovedValSetSingle tryForwardLoadArtificial(ShadowInstruction* StartInst, ShadowValue LoadBase, int64_t LoadOffset, uint64_t LoadSize, Type* targetType, bool* alreadyValidBytes, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA, bool inAnalyser, bool optimistic);
 
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
 		      ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
@@ -1413,7 +1400,7 @@ class InlineAttempt : public IntegrationAttempt {
  ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
 
  void commitStoreToBase(LocalStoreMap* Map);
- void doBlockStoreMerge(ShadowBB* BB);
+ bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
  
  void initSpecialFunctionsMap(Module& M);

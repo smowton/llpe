@@ -442,74 +442,20 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
 }
 
-void IntegrationAttempt::getCommittedOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
-
-  if(edgeIsDead(ExitingBB, ExitedBB))
-    return;
-
-  if(ExitingBB->naturalScope != L) {
-    
-    // Read from child loop if appropriate:
-    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
-
-      if(PA->isEnabled()) {
-
-	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
-	    
-	  PeelIteration* Iter = PA->Iterations[i];
-	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs);
-	  
-	}
-
-	if(PA->isTerminated())
-	  return;
-
-      }
-
-    }
-
-  }
-
-  // Loop unexpanded or value local or lower:
-
-  ShadowInstIdx valOp = SI->invar->operandIdxs[valOpIdx];
-  ShadowValue NewOp;
-  if(valOp.instIdx != INVALID_INSTRUCTION_IDX && valOp.blockIdx != INVALID_BLOCK_IDX) {
-    NewOp = getInst(valOp.blockIdx, valOp.instIdx);
-    if(!getConstReplacement(NewOp))
-      NewOp = getMostLocalInst(valOp.blockIdx, valOp.instIdx);
-  }
-  else
-    NewOp = SI->getOperand(valOpIdx);
-
-  ops.push_back(NewOp);
-  if(BBs) {
-    ShadowBB* NewBB = getBB(*ExitingBB);
-    release_assert(NewBB);
-    BBs->push_back(NewBB);
-  }
-
-}
-
 void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
-  ShadowInstructionInvar* SII = SI->invar;
-  ShadowBBInvar* BB = SII->parent;
-  
-  uint32_t blockOp = SII->operandBBs[valOpIdx];
+  uint32_t blockIdx = SI->invar->operandBBs[valOpIdx];
 
-  assert(blockOp != INVALID_BLOCK_IDX);
+  assert(blockIdx != INVALID_BLOCK_IDX);
 
-  ShadowBBInvar* OpBB = getBBInvar(blockOp);
+  ShadowBBInvar* OpBB = getBBInvar(blockIdx);
 
-  // SI->parent->invar->scope == L checks that we're not emitting a PHI for a residual loop body.
-  if(SI->parent->invar->scope == L && OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
-    getCommittedOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
-  else {
+  // SI->parent->invar->scope != L checks if we're emitting a PHI for a residual loop body.
+  if(SI->parent->invar->naturalScope != L) {
 
     // Arg is local (can't be lower or this is a header phi)
-    if(!edgeIsDead(OpBB, BB)) {
-      ops.push_back(SI->getCommittedOperand(valOpIdx));
+    if(!edgeIsDead(OpBB, SI->invar->parent)) {
+      ops.push_back(SI->getOperand(valOpIdx));
       if(BBs) {
 	ShadowBB* NewBB = getBBFalling(OpBB);
 	release_assert(NewBB);
@@ -517,7 +463,12 @@ void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint
       }
     }
 
+    return;
+
   }
+
+  getExitPHIOperands(SI, valOpIdx, ops, BBs, true);
+
 
 }
 
@@ -639,7 +590,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
       if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
-	Value* PHIVal = getValAsType(getCommittedValue(I->getCommittedOperand(0)), F.getFunctionType()->getReturnType(), BI);
+	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
 	IA->returnPHI->addIncoming(PHIVal, BB->committedTail);
       }
 
@@ -710,7 +661,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       }
       else { 
 
-	ShadowValue op = I->getCommittedOperand(i);
+	ShadowValue op = I->getOperand(i);
 	Value* opV = getCommittedValue(op);
 	newTerm->setOperand(i, opV);
 
@@ -937,7 +888,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   // Normal instruction: no BB arguments, and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
-    ShadowValue op = I->getCommittedOperand(i);
+    ShadowValue op = I->getOperand(i);
     Value* opV = getCommittedValue(op);
     Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
@@ -1044,9 +995,6 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
   if(willBeDeleted(ShadowValue(I)) && !inst_is<TerminatorInst>(I))
     return;
 
-  if(instResolvedAsInvariant(I))
-    return;
-
   if(Constant* C = getConstReplacement(ShadowValue(I))) {
     I->committedVal = C;
     return;
@@ -1074,46 +1022,6 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
 
 }
 
-void IntegrationAttempt::commitLoopInvariants(PeelAttempt* PA, uint32_t i) {
-
-  BasicBlock* invarEmitBB = getBB(PA->invarInfo->preheaderIdx)->committedTail;
-  // For simplicity remove the terminator for now and put it back when we're done:
-  Instruction* preheaderBranch = invarEmitBB->getTerminator();
-  preheaderBranch->removeFromParent();
-       
-  uint32_t invari = i;
-  while(invari < nBBs) {
-
-    ShadowBBInvar* InvarBBI = getBBInvar(invari + BBsOffset);
-    if(!PA->L->contains(InvarBBI->naturalScope))
-      break;
-
-    if(ShadowBB* InvarBB = BBs[invari]) {
-
-      for(uint32_t j = 0; j < InvarBB->insts.size(); ++j) {
-
-	ShadowInstruction* InvarSI = &(InvarBB->insts[j]);
-	if(InvarSI->invar->scope == L) {
-
-	  if(Constant* C = getConstReplacement(InvarSI))
-	    InvarSI->committedVal = C;
-	  else 
-	    synthCommittedPointer(InvarSI, invarEmitBB);
-
-	}
-
-      }
-	    
-    }
-
-    ++invari;
-
-  }
-
-  invarEmitBB->getInstList().push_back(preheaderBranch);
-
-}
-
 void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
 
   uint32_t thisLoopHeaderIdx = i;
@@ -1132,13 +1040,6 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled()) {
-
-	// First create any synth'd pointers (and note synth'd constants) that
-	// may be used within the loop:
-
-	commitLoopInvariants(PA, i);
-
-	// Now commit the individual iterations:
 
 	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
 	  PA->Iterations[j]->commitInstructions();

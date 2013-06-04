@@ -66,7 +66,8 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     std::string fwdError;
 
-    ImprovedValSetSingle byte = tryForwardLoadArtificial(SearchFrom, StrBase, StrOffset, 1, byteType, 0, fwdError, 0, 0, false, false);
+    ImprovedValSetSingle byte;
+    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, fwdError);
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
@@ -74,6 +75,8 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
       
     }
     else {
+
+      byte.coerceToType(byteType, 1, fwdError);
 
       DEBUG(dbgs() << "Open forwarding success: ");
       DEBUG(printPB(dbgs(), byte));

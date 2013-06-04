@@ -321,6 +321,9 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
   for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
     
+    if(!BB->succsAlive[i])
+      continue;
+
     if(uniqueSucc == BBI->succIdxs[i] || uniqueSucc == 0xffffffff)
       uniqueSucc = BBI->succIdxs[i];
     else {

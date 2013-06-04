@@ -98,7 +98,7 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, VisitorCont
 
 void PeelIteration::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor) {
 
-  const Loop* immediateChild = immediateChildLoop(L, VI->scope);
+  const Loop* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
 
   PeelAttempt* LPA = getPeelAttempt(immediateChild);
   if(LPA && LPA->isEnabled())
@@ -114,7 +114,7 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
     Visitor.notifyUsersMissed();
 
   // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
-  if(VI->scope == L && VI->I->getParent() == L->getHeader() && isa<PHINode>(VI->I)) {
+  if(VI->parent->naturalScope == L && VI->I->getParent() == L->getHeader() && isa<PHINode>(VI->I)) {
 
     Visitor.visit(Iterations[0]->getInst(VI));
     return;
@@ -123,7 +123,7 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visit
 
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
 
-    if(VI->scope == L) {
+    if(VI->parent->outerScope == L) {
       Visitor.visit((*it)->getInst(VI));
     }
     else
@@ -165,7 +165,7 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
     return;
 
   ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
-  const Loop* UserL = SII->scope; // The innermost loop on which the user has dependencies (distinct from the loop it actually occupies).
+  const Loop* UserL = SII->parent->outerScope;
 
   if(UserL == L) {
 	  

@@ -127,22 +127,9 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
 
   InstArgImprovement* IAI = SV.getIAI();
 
-  const Loop* MyScope = L;
-  const Loop* VScope = SV.getScope();
-  bool isInvariant = (MyScope != VScope && ((!VScope) || VScope->contains(MyScope)));
   ShadowInstruction* SI = SV.getInst();
-  ShadowInstruction* InvarSI;
-  
-  if(isInvariant) {
-    InvarSI = getInst(SI->invar);
-    IAI = &(InvarSI->i);
-  }  
-  else
-    InvarSI = SI;
 
   if(Constant* C = getConstReplacement(SV)) {
-    if(isInvariant)
-      Out << "(invar) ";
     if(isa<Function>(C))
       Out << "@" << C->getName();
     else
@@ -278,7 +265,10 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     Out << " bgcolor=\"lightblue\"";
   }
   else if(BB && BB->status == BBSTATUS_CERTAIN) {
-    Out << " bgcolor=\"yellow\"";
+    if(!BB->inAnyLoop)
+      Out << " bgcolor=\"lightgreen\"";
+    else
+      Out << " bgcolor=\"yellow\"";
   }
   else if(BB && BB->status == BBSTATUS_ASSUMED) {
     Out << " bgcolor=\"orange\"";

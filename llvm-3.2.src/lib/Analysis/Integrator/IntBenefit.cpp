@@ -105,7 +105,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
     if(!BB)
       continue;
 
-    const Loop* BBL = BB->invar->scope;
+    const Loop* BBL = BB->invar->outerScope;
     if(L != BBL)
       continue;
 
@@ -279,7 +279,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
     if(!BB)
       continue;
    
-    const Loop* BBL = BB->invar->scope;
+    const Loop* BBL = BB->invar->outerScope;
     
     if(L != BBL && ((!L) || L->contains(BBL))) {
 

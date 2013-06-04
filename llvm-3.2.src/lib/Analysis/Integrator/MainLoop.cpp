@@ -2,18 +2,16 @@
 // Algorithm:
 // For each BB in a topologically ordered walk of the CFG:
 // Check scope (see if we need to enter a loop, ignore because out of scope, etc)
-// checkBlock it. If it's now dead, bail.
+// checkBlock it. If it hasn't been created then it has no live predecessors; skip.
 // If it's the top of a loop:
-//   For outright invariants that aren't loads, do a topo walk through the loop blocks
-//     ignoring the backedge (i.e. treating the blocks like they're non-loop blocks).
 //   Open up the loop, investigate within the loop according to the same rules.
-//   If we never made it past iteration 1, ditch the investigation so far.
-//   If we didn't establish it terminates, do an invariant investigation.
+//   If we didn't establish that it terminates analyse for invariants (in parent scope).
 // Otherwise, for each instruction:
-//   If it's a load instruction, try conventional LF, or if that doesn't work, PBLF.
+//   If it's a store, memcpy, memset or other memory-writing instruction (including read from file), modify the local store.
+//   Elif it's a load instruction, try to read from the block-local store
 //   Elif it's a VFS call, try to forward it.
 //   Elif it's an expandable call (and e.g. certainty / recursion doesn't forbid it), expand it and recurse.
-//   Else, (or if it's a load not yet resolved), try to constant fold it, or if that doesn't work, PBCF.
+//   Else, (or if it's a load not yet resolved), try to constant fold it.
 //
 // For the topo walk, use reverse postorder DFS, where loop headers are entered in the ordering
 // implying that we should at that point enter the loop rather than listing all blocks in some order.
@@ -30,7 +28,7 @@
 
 using namespace llvm;
 
-bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser) {
+bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
 
@@ -42,7 +40,7 @@ bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser) {
 
   }
 
-  anyChange |= analyse(inLoopAnalyser);
+  anyChange |= analyse(inLoopAnalyser, inAnyLoop);
   return anyChange;
 
 }
@@ -85,7 +83,7 @@ void InlineAttempt::cleanupLocalStore() {
 
 }
 
-bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
+bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
 
@@ -96,7 +94,7 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
   for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
     // analyseBlock can increment i past loops
-    anyChange |= analyseBlock(i, inLoopAnalyser, i == BBsOffset, L);
+    anyChange |= analyseBlock(i, inLoopAnalyser, inAnyLoop, i == BBsOffset, L);
 
   }
 
@@ -108,7 +106,7 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser) {
 
 void IntegrationAttempt::analyse() {
 
-  analyse(false);
+  analyse(false, false);
 
 }
 
@@ -118,7 +116,7 @@ bool PeelAttempt::analyse() {
 
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
-    anyChange |= PI->analyse(false);
+    anyChange |= PI->analyse(false, true);
 
   }
 
@@ -132,7 +130,7 @@ bool PeelAttempt::analyse() {
 
 #define LFV3(x) do {} while(0);
 
-bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool skipStoreMerge, const Loop* MyL) {
+bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL) {
 
   ShadowBB* BB = getBB(blockIdx);
   if(!BB)
@@ -144,20 +142,15 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   // ignored we want to notice that it exists so we can call analyseLoop
   ShadowBBInvar* BBI = BB->invar;
   const Loop* BBL = BBI->naturalScope;
-   
+
   if(BBL != MyL) {
+
+    BB->inAnyLoop = true;
+    inAnyLoop = true;
 
     // By construction of our top-ordering, must be a loop entry block.
     release_assert(BBL && "Walked into root context?");
 
-    // Loop invariants used to be found here, but are now explored on demand whenever a block
-    // gets created that doesn't yet exist in parent scope.
-
-    // Calculate invariants for the header block, which uniquely is created in its invariant scope
-    // before being created in any child loops.
-
-    anyChange |= analyseBlockInstructions(BB, true, false);
-   
     // Now explore the loop, if possible.
     // At the moment can't ever happen inside the loop analyser.
     PeelAttempt* LPA = 0;
@@ -194,10 +187,15 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   }
 
+  BB->inAnyLoop = inAnyLoop;
+   
   if(!skipStoreMerge) {
 
     // Loop headers and entry blocks are given their stores in other ways
-    doBlockStoreMerge(BB);
+    // If doBlockStoreMerge returned false this block isn't currently reachable.
+    // See comments in that function for reasons why that can happen.
+    if(!doBlockStoreMerge(BB))
+      return false;
 
   }
 
@@ -207,7 +205,9 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   LFV3(BB->localStore->print(errs()));
 
   // Else we should just analyse this block here.
-  anyChange |= analyseBlockInstructions(BB, false, inLoopAnalyser);
+  anyChange |= analyseBlockInstructions(BB, 
+					/* skip successor creation = */ false, 
+					inLoopAnalyser, inAnyLoop);
 
   LFV3(errs() << "  End block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 
@@ -216,9 +216,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 }
 
 // Returns true if there was any change
-bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTerminatorEval, bool inLoopAnalyser) {
-
-  const Loop* MyL = L;
+bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTerminatorEval, bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
   bool loadedVarargsHere = false;
@@ -237,10 +235,6 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
       continue;
     }
 
-    // Could the instruction have out-of-loop dependencies?
-    if((!inLoopAnalyser) && SII->naturalScope != MyL)
-      continue;
-    
     switch(I->getOpcode()) {
 
     case Instruction::Alloca:
@@ -259,7 +253,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 	bool created;
 	if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, created)) {
 	  anyChange |= created;
-	  anyChange |= IA->analyseWithArgs(inLoopAnalyser);
+	  anyChange |= IA->analyseWithArgs(inLoopAnalyser, inAnyLoop);
 	  doCallStoreMerge(SI);
 	  if(!SI->parent->localStore) {
 
@@ -269,8 +263,11 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 
 	  }
 	}
-	else
+	else {
+	  // For special calls like malloc this might define a return value.
 	  executeUnexpandedCall(SI);
+	  continue;
+	}
       }
 
       // Fall through to try to get the call's return value
@@ -437,7 +434,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
       if(!L->contains(getBBInvar(i)->naturalScope))
 	break;
       
-      anyChange |= analyseBlock(i, true, i == LInfo->headerIdx, L);
+      anyChange |= analyseBlock(i, true, true, i == LInfo->headerIdx, L);
 
     }
 

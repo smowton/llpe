@@ -478,7 +478,7 @@ void IntegrationAttempt::tryKillAllStores() {
 
     if(!BB)
       continue;
-    if(BB->invar->scope != L)
+    if(BB->invar->outerScope != L)
       continue;
     
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
@@ -536,7 +536,7 @@ void IntegrationAttempt::tryKillAllAllocs() {
 
     if(!BB)
       continue;
-    if(BB->invar->scope != L)
+    if(BB->invar->outerScope != L)
       continue;
     
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {

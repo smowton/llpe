@@ -167,9 +167,6 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   if(findit != functionInfo.end())
     return findit->second;
 
-  DenseMap<Instruction*, const Loop*>& instScopes = getInstScopes(&F);
-  DenseMap<BasicBlock*, const Loop*>& blockScopes = getBlockScopes(&F);
-
   LoopInfo* LI = LIs[&F];
 
   ShadowFunctionInvar* RetInfoP = new ShadowFunctionInvar();
@@ -217,11 +214,6 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
     SBB.BB = BB;
     SBB.naturalScope = LI->getLoopFor(BB);
     SBB.outerScope = applyIgnoreLoops(SBB.naturalScope);
-    DenseMap<BasicBlock*, const Loop*>::iterator it = blockScopes.find(BB);
-    if(it == blockScopes.end())
-      SBB.scope = SBB.outerScope;
-    else
-      SBB.scope = applyIgnoreLoops(it->second);
 
     // Find successor block indices:
 
@@ -259,12 +251,6 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       SI.idx = j;
       SI.parent = &SBB;
       SI.I = I;
-      DenseMap<Instruction*, const Loop*>::iterator it = instScopes.find(I);
-      if(it != instScopes.end())
-	SI.naturalScope = it->second;
-      else
-	SI.naturalScope = SBB.naturalScope;
-      SI.scope = applyIgnoreLoops(SI.naturalScope);
       
       // Get operands indices:
       uint32_t NumOperands;
@@ -505,15 +491,6 @@ ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
 
 ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
-  if(L) {
-
-    if(!parent->getBB(blockIdx)) {
-      ShadowBB* parentBB = parent->createBB(blockIdx);
-      parent->analyseBlockInstructions(parentBB, true, false);
-    }
-
-  }
-
   release_assert((!BBs[blockIdx - BBsOffset]) && "Creating block for the second time");
   ShadowBB* newBB = new ShadowBB();
   newBB->invar = &(invarInfo->BBs[blockIdx]);
@@ -551,9 +528,7 @@ ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint
 
 ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
 
-  ShadowInstructionInvar* SII = &(BB->insts[instIdx]);
-
-  if(SII->scope == L) {
+  if(BB->outerScope == L) {
 
     ShadowBB* LocalBB = getBB(*BB);
     if(!LocalBB)
@@ -582,58 +557,15 @@ bool ShadowInstruction::resolved() {
 
 }
 
-bool IntegrationAttempt::instResolvedAsInvariant(ShadowInstruction* SI) {
-
-  const Loop* SVScope = SI->invar->scope;
-  if(L && SVScope != L && ((!SVScope) || SVScope->contains(L))) {
-      
-    ShadowInstruction* SI2 = getInstFalling(SI->parent->invar, SI->invar->idx);
-    return SI2->resolved();
-
-  }
-
-  return false;
-
-}
-
-ShadowInstruction* IntegrationAttempt::getMostLocalInst(uint32_t blockIdx, uint32_t instIdx) {
-
-  bool inScope;
-  ShadowBB* OpBB = getBB(blockIdx, &inScope);
-  if(!inScope) {
-
-    // Access to parent context.
-    if(!parent)
-      return 0;
-    return parent->getMostLocalInst(blockIdx, instIdx);
-
-  }
-  else if(!OpBB) {
-    
-    return 0;
-
-  }
-  else {
-
-    return &(OpBB->insts[instIdx]);
-
-  }
-
-}
-
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;
-  ShadowBBInvar* OpBBI = &(invarInfo->BBs[blockIdx]);
-  ShadowInstructionInvar* OpII = &(OpBBI->insts[instIdx]);
-
-  if(OpII->scope != L && ((!OpII->scope) || OpII->scope->contains(L)))
-    return getInstFalling(OpBBI, instIdx);
-
   ShadowBB* OpBB = getBB(blockIdx, &inScope);
+
   if(!inScope) {
 
     // Access to parent context.
+    ShadowBBInvar* OpBBI = &(invarInfo->BBs[blockIdx]);
     return getInstFalling(OpBBI, instIdx);
 
   }
@@ -689,22 +621,6 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
 
 }
 
-// Like getOperand, but we need to only return invariant versions of instructions
-// if they're resolved.
-ShadowValue ShadowInstruction::getCommittedOperand(uint32_t i) {
-
-  ShadowValue normalOp = getOperand(i);
-  ShadowInstruction* opInst = normalOp.getInst();
-  if(!opInst)
-    return normalOp;
-  if(opInst->resolved())
-    return normalOp;
-
-  ShadowInstIdx& SII = invar->operandIdxs[i];
-  uint32_t blockOpIdx = SII.blockIdx;
-  return ShadowValue(parent->IA->getMostLocalInst(blockOpIdx, SII.instIdx));
-
-}
 
 ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
