@@ -97,12 +97,26 @@ void IntegrationHeuristicsPass::disableValueCache() {
   
 }
 
-void LocalStoreMap::print(raw_ostream& RSO, bool brief) {
+void SharedStoreMap::print(raw_ostream& RSO, bool brief) {
 
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
 
     it->second.store->print(RSO, brief);
 
   }
+
+}
+
+void LocalStoreMap::print(raw_ostream& RSO, bool brief) {
+
+  errs() << "--- Stack ---\n";
+  for(uint32_t i = 0; i < frames.size(); ++i) {
+    if(i != 0)
+      errs() << "---frame boundary---\n";
+    frames[i]->print(RSO, brief);
+  }
+  errs() << "--- End stack ---\n--- Heap ---\n";
+  heap->print(RSO, brief);
+  errs() << "--- End heap ---\n";
 
 }

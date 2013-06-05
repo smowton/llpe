@@ -117,6 +117,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   const MDNode* getTBAATag();
   uint64_t getAllocSize();
   LocStore& getBaseStore();
+  int32_t getFrameNo();
 
 };
 
@@ -684,18 +685,43 @@ struct ShadowBBInvar {
 
 };
 
+struct SharedStoreMap {
+
+  DenseMap<ShadowValue, LocStore> store;  
+  uint32_t refCount;
+
+SharedStoreMap() : refCount(1) { }
+
+  SharedStoreMap* getWritableStoreMap();
+  void dropReference();
+  void clear();
+  SharedStoreMap* getEmptyMap();
+  void print(raw_ostream&, bool brief);
+
+};
+
 struct LocalStoreMap {
 
-  DenseMap<ShadowValue, LocStore> store;
+  SmallVector<SharedStoreMap*, 4> frames;
+  uint32_t nFrames;
+  SharedStoreMap* heap;
   bool allOthersClobbered;
   uint32_t refCount;
 
-LocalStoreMap() : allOthersClobbered(false), refCount(1) {}
+LocalStoreMap(uint32_t s) : frames(s), allOthersClobbered(false), refCount(1) {}
+
   void clear();
   LocalStoreMap* getEmptyMap();
   void dropReference();
-  LocalStoreMap* getWritableStoreMap();
+  LocalStoreMap* getWritableFrameList();
   void print(raw_ostream&, bool brief = false);
+  bool empty();
+  void createEmptyFrames();
+  void copyFramesFrom(const LocalStoreMap&);
+  DenseMap<ShadowValue, LocStore>& getWritableHeap();
+  DenseMap<ShadowValue, LocStore>& getWritableFrame(int32_t frameNo);
+  void pushStackFrame();
+  void popStackFrame();
   
 };
 
@@ -731,8 +757,11 @@ struct ShadowBB {
 
   }
 
-  DenseMap<ShadowValue, LocStore>& getWritableStoreMap();
+  DenseMap<ShadowValue, LocStore>& getWritableStoreMapFor(ShadowValue&);
+  DenseMap<ShadowValue, LocStore>& getReadableStoreMapFor(ShadowValue&);
   LocStore& getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
+  void pushStackFrame();
+  void popStackFrame();
 
 };
 

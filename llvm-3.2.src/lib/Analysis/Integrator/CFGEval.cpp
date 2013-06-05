@@ -292,12 +292,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   // a live return always has one successor, the call-merge.
   if(inst_is<ReturnInst>(SI)) {
     // Drop local allocas from the store:
-    InlineAttempt* thisIA = getFunctionRoot();
-    for(SmallVector<ShadowInstruction*, 4>::iterator it = thisIA->localAllocas.begin(),
-	  it2 = thisIA->localAllocas.end(); it != it2; ++it) {
-      //errs() << "Drop val " << itcache(*it) << " from local map\n";
-      SI->parent->localStore->store.erase(ShadowValue(*it));
-    }
+    SI->parent->popStackFrame();
     return false;
   }
 

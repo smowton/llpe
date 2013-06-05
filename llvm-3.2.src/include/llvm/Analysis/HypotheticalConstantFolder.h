@@ -694,9 +694,10 @@ protected:
 
   std::string nestingIndent() const;
 
-  int nesting_depth;
-
  public:
+
+  int nesting_depth;
+  int stack_depth;
 
   IntegrationHeuristicsPass* pass;
 
@@ -727,7 +728,7 @@ protected:
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
     
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth) : 
+		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
     LI(_LI),
     improvableInstructions(0),
     improvedInstructions(0),
@@ -741,6 +742,7 @@ protected:
     commitStarted(false),
     contextTaintedByVarargs(false),
     nesting_depth(depth),
+    stack_depth(sdepth),
     pass(Pass),
     F(_F),
     L(_L),
@@ -768,6 +770,7 @@ protected:
   // virtual for external access:
   virtual bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
   bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope = false);
+  bool blockIsDeadRising(ShadowBBInvar& BBI);
 
   const Loop* applyIgnoreLoops(const Loop*);
 
@@ -1052,7 +1055,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth);
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth);
 
   IterationStatus iterStatus;
 
@@ -1139,6 +1142,7 @@ class PeelAttempt {
    int64_t residualInstructions;
 
    int nesting_depth;
+   int stack_depth;
    int debugIndent;
 
  public:
@@ -1154,7 +1158,7 @@ class PeelAttempt {
 
    std::vector<PeelIteration*> Iterations;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth, int sdepth);
    ~PeelAttempt();
 
    bool analyse();
@@ -1211,7 +1215,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int stack_depth);
 
   Function* CommitF;
   BasicBlock* returnBlock;
@@ -1399,6 +1403,7 @@ class InlineAttempt : public IntegrationAttempt {
  ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
 
  void commitStoreToBase(LocalStoreMap* Map);
+ void commitFrameToBase(SharedStoreMap* Map);
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
  
@@ -1417,12 +1422,15 @@ class InlineAttempt : public IntegrationAttempt {
    bool newMapValid;
    LocalStoreMap* newMap;
    SmallPtrSet<LocalStoreMap*, 4> seenMaps;
+   SmallPtrSet<SharedStoreMap*, 16> seenFrames;
    bool mergeToBase;
    bool useVarargMerge;
    
  MergeBlockVisitor(bool mtb, bool uvm = false) : newMapValid(false), newMap(0), mergeToBase(mtb), useVarargMerge(uvm) { }
    
    void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
+   void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);
+   void mergeFrame(SharedStoreMap*& mergeToFrame, SharedStoreMap* mergeFromFrame, bool mergeToAllClobbered, bool mergeFromAllClobbered, ShadowBB* BB);
    void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx);
 
  };

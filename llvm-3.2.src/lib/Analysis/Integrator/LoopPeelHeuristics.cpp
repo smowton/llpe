@@ -76,10 +76,6 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 						 false /* Only looks at CFG */,
 						 true /* Analysis Pass */);
 
-// This whole thing is basically a constant propagation simulation -- rather than modifying the code in place like the real constant prop,
-// we maintain shadow structures indicating which instructions have been folded and which basic blocks eliminated.
-// It might turn out to be a better idea to find out whether peeling is useful by just doing it and optimising! I'll see...
-
 IntegrationAttempt::~IntegrationAttempt() {
   for(DenseMap<CallInst*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
     delete (II->second);
@@ -90,8 +86,8 @@ IntegrationAttempt::~IntegrationAttempt() {
 }
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth) : 
-  IntegrationAttempt(Pass, P, F, 0, LI, depth),
+			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int sdepth) : 
+  IntegrationAttempt(Pass, P, F, 0, LI, depth, sdepth),
   CI(_CI)
   { 
     raw_string_ostream OS(HeaderStr);
@@ -104,8 +100,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
-			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth) :
-  IntegrationAttempt(Pass, P, F, PP->L, _LI, depth),
+			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth) :
+  IntegrationAttempt(Pass, P, F, PP->L, _LI, depth, sdepth),
   iterationCount(iter),
   parentPA(PP),
   iterStatus(IterationStatusUnknown)
@@ -118,9 +114,9 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 }
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth) 
+			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth, int sdepth) 
   : pass(Pass), parent(P), F(_F), LI(_LI), 
-    residualInstructions(-1), nesting_depth(depth), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
+    residualInstructions(-1), nesting_depth(depth), stack_depth(sdepth), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
   this->tag.ptr = (void*)this;
@@ -254,6 +250,35 @@ bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB
   }
     
   return false;
+
+}
+
+bool IntegrationAttempt::blockIsDeadRising(ShadowBBInvar& BBI) {
+
+  if(getBB(BBI))
+    return false;
+
+  if(BBI.naturalScope == L)
+    return true;
+
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BBI.naturalScope))) {
+
+    if(LPA->isTerminated()) {
+
+      for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
+	  
+	if(!LPA->Iterations[i]->blockIsDeadRising(BBI))
+	  return false;
+	
+      }
+
+      return true;
+
+    }
+
+  }
+
+  return true;
 
 }
 
@@ -396,7 +421,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   created = true;
 
-  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1, this->stack_depth + 1);
   inlineChildren[CI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -520,7 +545,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   assert(iter == Iterations.size());
 
-  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth);
+  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth, stack_depth);
   Iterations.push_back(NewIter);
     
   return NewIter;
@@ -640,7 +665,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
     LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
-    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1);
+    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1, stack_depth);
     peelChildren[NewL] = LPA;
 
     return LPA;
@@ -1846,7 +1871,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   argvStore.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
 
-  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0);
+  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0, 0);
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 

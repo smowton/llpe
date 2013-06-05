@@ -568,7 +568,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
   ImprovedValSetSingle LoadPtrPB;
   getImprovedValSetSingle(LI->getOperand(0), LoadPtrPB);
   if(shouldMultiload(LoadPtrPB)) {
-    
+
     ret = tryMultiload(LI, NewPB, report);
     if(NewPB.SetType == ValSetTypeVarArg)
       loadedVararg = true;
@@ -694,23 +694,74 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
 #define LFV3(x) do {} while(0)
 //#define LFV3(x) x
 
-DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMap() {
+int32_t ShadowValue::getFrameNo() {
 
-  release_assert(localStore && "getWritableStoreMap without a local store?");
-  LocalStoreMap* newMap = localStore->getWritableStoreMap();
-  if(newMap != localStore) {
-    
-    // Store the new one:
-    LFV3(errs() << "Stored new map " << newMap << "\n");
-    localStore = newMap;
+  ShadowInstruction* SI = getInst();
+  if(!SI)
+    return -1;
 
-  }
+  if(inst_is<AllocaInst>(SI))
+    return SI->parent->IA->getFunctionRoot()->stack_depth;
 
-  return newMap->store;
+  return -1;
 
 }
 
-LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
+DenseMap<ShadowValue, LocStore>& ShadowBB::getReadableStoreMapFor(ShadowValue& V) {
+
+  int32_t frameNo = V.getFrameNo();
+  if(frameNo == -1)
+    return localStore->heap->store;
+  else
+    return localStore->frames[frameNo]->store;
+  
+}
+
+DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMapFor(ShadowValue& V) {
+
+  localStore = localStore->getWritableFrameList();
+
+  int32_t frameNo = V.getFrameNo();
+  if(frameNo == -1)
+    return localStore->getWritableHeap();
+  else
+    return localStore->getWritableFrame(frameNo);
+
+}
+
+LocalStoreMap* LocalStoreMap::getWritableFrameList() {
+
+  if(refCount == 1)
+    return this;
+
+  LocalStoreMap* newMap = new LocalStoreMap(frames.size());
+  newMap->copyFramesFrom(*this);
+
+  newMap->allOthersClobbered = allOthersClobbered;
+
+  // Can't destory, as refCount > 1
+  --refCount;
+
+  return newMap;
+
+}
+
+DenseMap<ShadowValue, LocStore>& LocalStoreMap::getWritableHeap() {
+
+  heap = heap->getWritableStoreMap();
+  return heap->store;
+
+}
+
+DenseMap<ShadowValue, LocStore>& LocalStoreMap::getWritableFrame(int32_t frameNo) {
+
+  release_assert(frameNo >= 0 && frameNo < (int32_t)frames.size());
+  frames[frameNo] = frames[frameNo]->getWritableStoreMap();
+  return frames[frameNo]->store;
+
+}
+
+SharedStoreMap* SharedStoreMap::getWritableStoreMap() {
 
   // Refcount == 1 means we can just write in place.
   if(refCount == 1) {
@@ -720,7 +771,7 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
 
   // COW break: copy the map and either share or copy its entries.
   LFV3(errs() << "COW break local map " << this << " with " << store.size() << " entries\n");
-  LocalStoreMap* newMap = new LocalStoreMap();
+  SharedStoreMap* newMap = new SharedStoreMap();
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it) {
 
     if(ImprovedValSetSingle* OldSet = dyn_cast<ImprovedValSetSingle>(it->second.store)) {
@@ -741,8 +792,6 @@ LocalStoreMap* LocalStoreMap::getWritableStoreMap() {
     }
 
   }
-
-  newMap->allOthersClobbered = allOthersClobbered;
 
   // Drop reference on the existing map (can't destroy it):
   refCount--;
@@ -768,7 +817,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
    
   if(!ret) {
 
-    DenseMap<ShadowValue, LocStore>& storeMap = getWritableStoreMap();
+    DenseMap<ShadowValue, LocStore>& storeMap = getWritableStoreMapFor(V);
     LocStore newStore;
     std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = storeMap.insert(std::make_pair(V, newStore));
     ret = &(insResult.first->second);
@@ -1049,8 +1098,9 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
   LFV3(errs() << "Start read " << Offset << "-" << (Offset + Size) << "\n");
 
-  DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
-  if(it == ReadBB->localStore->store.end()) {
+  DenseMap<ShadowValue, LocStore>& frame = ReadBB->getReadableStoreMapFor(V);
+  DenseMap<ShadowValue, LocStore>::iterator it = frame.find(V);
+  if(it == frame.end()) {
     if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Result.setOverdef();
@@ -1851,8 +1901,9 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
 
   LocStore* firstStore;
 
-  DenseMap<ShadowValue, LocStore>::iterator it = ReadBB->localStore->store.find(V);
-  if(it == ReadBB->localStore->store.end()) {
+  DenseMap<ShadowValue, LocStore>& frame = ReadBB->getReadableStoreMapFor(V);
+  DenseMap<ShadowValue, LocStore>::iterator it = frame.find(V);
+  if(it == frame.end()) {
     if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle::getOverdef()));
@@ -2322,7 +2373,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
 }
 
-void LocalStoreMap::clear() {
+void SharedStoreMap::clear() {
 
   release_assert(refCount <= 1 && "clear() against shared map?");
 
@@ -2336,7 +2387,7 @@ void LocalStoreMap::clear() {
 
 }
 
-LocalStoreMap* LocalStoreMap::getEmptyMap() {
+SharedStoreMap* SharedStoreMap::getEmptyMap() {
 
   if(store.empty())
     return this;
@@ -2346,7 +2397,88 @@ LocalStoreMap* LocalStoreMap::getEmptyMap() {
   }
   else {
     dropReference();
-    return new LocalStoreMap();
+    return new SharedStoreMap();
+  }
+
+}
+
+void LocalStoreMap::clear() {
+
+  heap = heap->getEmptyMap();
+  for(uint32_t i = 0; i < frames.size(); ++i)
+    frames[i] = frames[i]->getEmptyMap();
+
+}
+
+bool LocalStoreMap::empty() {
+
+  if(!heap->store.empty())
+    return false;
+
+  for(uint32_t i = 0; i < frames.size(); ++i) {
+    if(!frames[i]->store.empty())
+      return false;
+  }
+
+  return true;
+
+}
+
+LocalStoreMap* LocalStoreMap::getEmptyMap() {
+
+  if(empty())
+    return this;
+  else if(refCount == 1) {
+    clear();
+    return this;
+  }
+  else {
+    dropReference();
+    LocalStoreMap* newMap = new LocalStoreMap(frames.size());
+    newMap->createEmptyFrames();
+    return newMap;
+  }
+
+}
+
+void LocalStoreMap::createEmptyFrames() {
+
+  heap = new SharedStoreMap();
+  for(uint32_t i = 0; i < frames.size(); ++i)
+    frames[i] = new SharedStoreMap();
+
+}
+
+void LocalStoreMap::copyFramesFrom(const LocalStoreMap& other) {
+
+  // Frames array already allocated. Borrow all the other side's frames.
+
+  heap = other.heap;
+  heap->refCount++;
+
+  for(uint32_t i = 0; i < frames.size(); ++i) {
+
+    frames[i] = other.frames[i];
+    frames[i]->refCount++;
+
+  }
+
+}
+
+void SharedStoreMap::dropReference() {
+
+  if(!--refCount) {
+
+    LFV3(errs() << "Local map " << this << " freed\n");
+    clear();
+
+    delete this;
+
+  }
+  else {
+
+    LFV3(errs() << "Local map " << this << " refcount down to " << refCount << "\n");
+
   }
 
 }
@@ -2356,7 +2488,9 @@ void LocalStoreMap::dropReference() {
   if(!--refCount) {
 
     LFV3(errs() << "Local map " << this << " freed\n");
-    clear();
+    heap->dropReference();
+    for(uint32_t i = 0; i < frames.size(); ++i)
+      frames[i]->dropReference();
 
     delete this;
 
@@ -2421,7 +2555,37 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 
 }
 
+void MergeBlockVisitor::mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& otherVal) {
+
+  if(useVarargMerge && 
+     consumeVal.SetType == ValSetTypeVarArg && 
+     otherVal.SetType == ValSetTypeVarArg && 
+     consumeVal.Values.size() == 1 && 
+     otherVal.Values.size() == 1) {
+
+    if(otherVal.Values[0].Offset > consumeVal.Values[0].Offset)
+      consumeVal = otherVal;
+
+  }
+  else {
+		
+    consumeVal.merge(otherVal);
+
+  }
+
+}
+
 void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
+
+  if(BB->IA->F.getName() == "_ppfs_setargs" && (BB->invar->BB->getName() == "21" || BB->invar->BB->getName() == "20")) {
+
+    errs() << "Merge in " << BB->IA->SeqNumber << ":\n";
+    mergeFromStore->store->print(errs());
+    errs() << "\nwith:\n";
+    mergeToStore->store->print(errs());
+    errs() << "\n---\n";
+
+  }
 
   if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
 
@@ -2545,7 +2709,7 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 
 	  ImprovedValSetSingle subVal;
 	  getIVSSubVal(consumeit->second, baseit->first.first - consumeit->first.first, baseit->first.second - baseit->first.first, subVal);
-	  subVal.merge(baseit->second);
+	  mergeValues(subVal, baseit->second);
 	  MergedVals.push_back(IVSR(baseit->first.first, baseit->first.second, subVal));
 		    
 	}
@@ -2572,18 +2736,7 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 	LFV3(printPB(errs(), otherVal));
 	LFV3(errs() << "\n");
 
-	if(useVarargMerge && consumeVal.SetType == ValSetTypeVarArg && otherVal.SetType == ValSetTypeVarArg && consumeVal.Values.size() == 1 && otherVal.Values.size() == 1) {
-
-	  if(otherVal.Values[0].Offset > consumeVal.Values[0].Offset)
-	    consumeVal = otherVal;
-
-	}
-	else {
-		
-	  consumeVal.merge(otherVal);
-
-	}
-
+	mergeValues(consumeVal, otherVal);
 	MergedVals.push_back(IVSR(LastOffset, consumeit->first.second, consumeVal));
 
 	LastOffset = consumeit->first.second;
@@ -2649,6 +2802,95 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 
 }
 
+void MergeBlockVisitor::mergeFrame(SharedStoreMap*& mergeToFrame, SharedStoreMap* mergeFromFrame, bool mergeToAllClobbered, bool mergeFromAllClobbered, ShadowBB* BB) {
+  
+  if(!seenFrames.insert(mergeFromFrame)) {
+
+    // Frame already seen (surely, in the same context!), no need to merge.
+    // Don't drop-ref here, that will happen when the merge-from store is dropped.
+    return;
+
+  }
+
+  mergeToFrame = mergeToFrame->getWritableStoreMap();
+
+  if(mergeFromAllClobbered) {
+
+    SmallVector<ShadowValue, 4> keysToRemove;
+
+    // Remove any existing mappings in mergeToFrame that do not occur in mergeFromFrame:
+    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(), 
+	  itend = mergeToFrame->store.end(); it != itend; ++it) {
+
+      if(!mergeFromFrame->store.count(it->first)) {
+
+	LFV3(errs() << "Merge from " << mergeFromFrame << " with allOthersClobbered; drop local obj\n");
+	keysToRemove.push_back(it->first);
+	it->second.store->dropReference();
+
+      }
+
+    }
+
+    for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
+	  delitend = keysToRemove.end(); delit != delitend; ++delit) {
+
+      mergeToFrame->store.erase(*delit);
+
+    }
+
+  }
+  else if(!mergeToAllClobbered) {
+
+    LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
+
+    // For any locations mentioned in mergeFromFrame but not mergeToFrame,
+    // add a copy of the base object to mergeToFrame. This will get overwritten below but
+    // creates the asymmetry that x in mergeFromFrame -> x in mergeToFrame.
+	  
+    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromFrame->store.begin(),
+	  itend = mergeFromFrame->store.end(); it != itend; ++it) {
+
+      if(!mergeToFrame->store.count(it->first))
+	mergeToFrame->store[it->first] = LocStore(it->first.getBaseStore().store->getReadableCopy());
+
+    }
+      
+  }
+  else {
+	  
+    LFV3(errs() << "Merge frame " << mergeToFrame << " has allOthersClobbered; only common objects will merge\n");
+	  
+  }
+
+  // mergeMap now contains all information from one or other incoming branch;
+  // for each location it mentions merge in the other map's version or the base object.
+  // Note that in the mergeMap->allOthersClobbered case this only merges in
+  // information from locations explicitly mentioned in mergeToFrame.
+
+  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(),
+	itend = mergeToFrame->store.end(); it != itend; ++it) {
+
+    LocStore* mergeFromStore;
+    DenseMap<ShadowValue, LocStore>::iterator found = mergeFromFrame->store.find(it->first);
+    if(found != mergeFromFrame->store.end())
+      mergeFromStore = &(found->second);
+    else
+      mergeFromStore = &it->first.getBaseStore();
+
+    // Right, merge it->second and mergeFromStore.
+    // If the pointers match these are two refs to the same Multi.
+    // Refcounting will be caught up when we deref mergeFromMap below:
+    if(mergeFromStore->store != it->second.store) {
+
+      mergeStores(BB, mergeFromStore, &it->second, it->first);
+
+    }
+
+  }
+
+}
+
 void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 
   LFV3(errs() << "Merge: visit BB " << BB->invar->BB->getName() << "\n");
@@ -2661,7 +2903,7 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
   }
 
   if(!newMapValid) {
-    // This is the first predecessor, borrow the incoming block's map / use the base map.
+    // This is the first predecessor, borrow the incoming block's map.
     // Note that the refcount is already correct (blocks assume their map will be taken per default)
     // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
     newMap = BB->localStore;
@@ -2669,113 +2911,34 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
     newMapValid = true;
     return;
   }
-  else {
 
-    // Merge in the new map or base store values as appropriate.
-    // Create a local map if we didn't have one; COW break it if it was shared.
-    // The first time a real merge is necessary this might COW-break.
-    // After that it's a no-op.
-    LocalStoreMap* mergeMap = newMap->getWritableStoreMap();
-    LocalStoreMap* mergeFromMap = BB->localStore;
+  // Merge in the new map or base store values as appropriate.
+  // Create a local map if we didn't have one; COW break it if it was shared.
+  // The first time a real merge is necessary this might COW-break.
+  // After that it's a no-op.
+  LocalStoreMap* mergeMap = newMap->getWritableFrameList();
+  LocalStoreMap* mergeFromMap = BB->localStore;
 
-    release_assert(mergeMap && "Must have a concrete destination map");
-    release_assert(mergeFromMap && "Incoming block must have a map");
+  release_assert(mergeMap && "Must have a concrete destination map");
+  release_assert(mergeFromMap && "Incoming block must have a map");
+  release_assert(mergeMap->frames.size() == mergeFromMap->frames.size() && "Differing frame counts?");
 
-    if(mergeFromMap->allOthersClobbered) {
+  for(uint32_t i = 0; i < mergeMap->frames.size(); ++i)
+    mergeFrame(mergeMap->frames[i], mergeFromMap->frames[i],
+	       mergeMap->allOthersClobbered, mergeFromMap->allOthersClobbered, BB);
 
-      SmallVector<ShadowValue, 4> keysToRemove;
+  mergeFrame(mergeMap->heap, mergeFromMap->heap, 
+	     mergeMap->allOthersClobbered, mergeFromMap->allOthersClobbered, BB);
 
-      // Remove any existing mappings in mergeMap that do not occur in mergeFromMap:
-      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(), 
-	    itend = mergeMap->store.end(); it != itend; ++it) {
+  if(mergeFromMap->allOthersClobbered)
+    mergeMap->allOthersClobbered = true;
 
-	if(!mergeFromMap->store.count(it->first)) {
-
-	  LFV3(errs() << "Merge from " << mergeFromMap << " with allOthersClobbered; drop local obj\n");
-	  keysToRemove.push_back(it->first);
-	  it->second.store->dropReference();
-
-	}
-
-      }
-
-      for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
-	    delitend = keysToRemove.end(); delit != delitend; ++delit) {
-
-	mergeMap->store.erase(*delit);
-
-      }
-
-      mergeMap->allOthersClobbered = true;
-
-    }
-    else if(!mergeMap->allOthersClobbered) {
-
-      LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
-
-      // For any locations mentioned in mergeFromMap but not mergeMap,
-      // move them over. We'll still need to merge in the base object below, this
-      // just creates the asymmetry that x in mergeFromMap -> x in mergeMap.
-	  
-      SmallVector<ShadowValue, 4> toDelete;
-
-      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromMap->store.begin(),
-	    itend = mergeFromMap->store.end(); it != itend; ++it) {
-	
-	std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> ins = 
-	  mergeMap->store.insert(std::make_pair(it->first, it->second));
-	
-	if(ins.second)
-	  toDelete.push_back(ins.first->first);
-
-      }
-      
-      for(SmallVector<ShadowValue, 4>::iterator delit = toDelete.begin(), delend = toDelete.end();
-	  delit != delend; ++delit)
-	mergeFromMap->store.erase(*delit);
-
-    }
-    else {
-	  
-      LFV3(errs() << "Merge map " << mergeMap << " has allOthersClobbered; only common objects will merge\n");
-	  
-    }
-
-    // mergeMap now contains all information from one or other incoming branch;
-    // for each location it mentions merge in the other map's version or the base object.
-    // Note that in the mergeMap->allOthersClobbered case this only merges in
-    // information from locations explicitly mentioned in mergeMap.
-
-    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeMap->store.begin(),
-	  itend = mergeMap->store.end(); it != itend; ++it) {
-
-      LocStore* mergeFromStore;
-      DenseMap<ShadowValue, LocStore>::iterator found = mergeFromMap->store.find(it->first);
-      if(found != mergeFromMap->store.end())
-	mergeFromStore = &(found->second);
-      else
-	mergeFromStore = &it->first.getBaseStore();
-
-      // Right, merge it->second and mergeFromStore.
-      // If the pointers match these are two refs to the same Multi.
-      // Refcounting will be caught up when we deref mergeFromMap below:
-      if(mergeFromStore->store != it->second.store) {
-
-	mergeStores(BB, mergeFromStore, &it->second, it->first);
-
-      }
-
-    }
-
-    mergeFromMap->dropReference();
-
-    newMap = mergeMap;
-
-  }
+  mergeFromMap->dropReference();
+  newMap = mergeMap;
 
 }
 
-void llvm::commitStoreToBase(LocalStoreMap* Map) {
+void llvm::commitFrameToBase(SharedStoreMap* Map) {
 
   for(DenseMap<ShadowValue, LocStore>::iterator it = Map->store.begin(), itend = Map->store.end(); it != itend; ++it) {
 
@@ -2783,7 +2946,15 @@ void llvm::commitStoreToBase(LocalStoreMap* Map) {
     baseStore.store->dropReference();
     baseStore.store = it->second.store->getReadableCopy();
 
-  }
+  }  
+
+}
+
+void llvm::commitStoreToBase(LocalStoreMap* Map) {
+
+  commitFrameToBase(Map->heap);
+  for(uint32_t i = 0; i < Map->frames.size(); ++i)
+    commitFrameToBase(Map->frames[i]);
 
 }
 
@@ -2791,6 +2962,8 @@ void llvm::commitStoreToBase(LocalStoreMap* Map) {
 // This is possible in the unusual case that a per-iteration loop exploration has
 // created the block to find invariants but it isn't yet reachable according to the
 // fixed point analyser -- e.g. this block only becomes reachable on iteration 2.
+// TODO: invariants like that have been removed, so could probably drop the return value
+// and tests on same.
 bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   // We're entering BB; one or more live predecessor blocks exist and we must produce an appropriate
@@ -2815,7 +2988,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
     return false;
   }
 
-  // TODO: do this better
+  // TODO: do this better; currently creates an intermediate block-local map for no good reason.
   if(mergeToBase && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
     V.newMap = V.newMap->getEmptyMap();
@@ -2827,6 +3000,36 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
 }
 
+void LocalStoreMap::popStackFrame() {
+
+  frames.back()->dropReference();
+  frames.pop_back();
+
+}
+
+void ShadowBB::popStackFrame() {
+
+  localStore = localStore->getWritableFrameList();
+  localStore->popStackFrame();  
+
+}
+
+void LocalStoreMap::pushStackFrame() {
+
+  frames.push_back(new SharedStoreMap());
+
+}
+
+void ShadowBB::pushStackFrame() {
+
+  localStore = localStore->getWritableFrameList();
+  localStore->pushStackFrame();
+
+}
+
+// Merge the stores presented at SI's callee's return blocks into a single store
+// to analyse the remainder of the program.
+// Note that the callee has already popped the top stack frame from each one.
 void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   LFV3(errs() << "Start call-return store merge\n");

@@ -60,13 +60,19 @@ void IntegrationAttempt::prepareCommit() {
 
 	// Loop hasn't been analysed for the general case -- do a rough and ready approximation
 	// that emits any edge that is alive in any iteration.
+	
 
 	ShadowLoopInvar* LInfo = it->second->invarInfo;
 	for(uint32_t i = LInfo->headerIdx; i < nBBs && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
 
 	  ShadowBB* BB = getBB(i);
-	  if(!BB) // Never analysed for invariants --> never alive in the loop.
-	    continue;
+	  if(!BB) {
+
+	    // See if block is ever live:
+	    if(!blockIsDeadRising(*getBBInvar(i)))
+	      BB = createBB(getBBInvar(i));
+
+	  }
 
 	  ShadowBBInvar* BBI = BB->invar;
 	  for(uint32_t j = 0, jlim = BBI->succIdxs.size(); j != jlim; ++j) {
