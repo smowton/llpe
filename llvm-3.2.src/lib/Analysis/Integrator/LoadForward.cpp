@@ -2909,6 +2909,11 @@ void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
     newMap = BB->localStore;
     LFV3(errs() << "Take incoming map " << BB->localStore << "\n");
     newMapValid = true;
+
+    for(uint32_t i = 0; i < newMap->frames.size(); ++i)
+      seenFrames.insert(newMap->frames[i]);
+    seenFrames.insert(newMap->heap);
+
     return;
   }
 
