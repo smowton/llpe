@@ -118,6 +118,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   uint64_t getAllocSize();
   LocStore& getBaseStore();
   int32_t getFrameNo();
+  int32_t getHeapKey();
 
 };
 
@@ -583,6 +584,7 @@ struct ShadowInstruction {
   // Storage for allocation instructions:
   LocStore store;
   uint64_t storeSize;
+  int32_t allocIdx;
 
   uint32_t getNumOperands() {
     return invar->operandIdxs.size();
@@ -640,6 +642,7 @@ struct ShadowGV {
   GlobalVariable* G;
   LocStore store;
   uint64_t storeSize;
+  int32_t allocIdx;
 
 };
 
@@ -685,6 +688,50 @@ struct ShadowBBInvar {
 
 };
 
+#define HEAPTREEORDER 16
+#define HEAPTREEORDERLOG2 4
+
+class MergeBlockVisitor;
+
+struct SharedTreeNode {
+
+  // These point to SharedTreeNodes or LocStores if this is the bottom layer.
+  void* children[HEAPTREEORDER];
+  int refCount;
+
+SharedTreeNode() : refCount(1) {
+
+  memset(children, 0, sizeof(void*) * HEAPTREEORDER);
+
+}
+
+  void dropReference(uint32_t height);
+  LocStore* getReadableStoreFor(uint32_t idx, uint32_t height);
+  LocStore* getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore);
+  SharedTreeNode* getWritableNode(uint32_t height);
+  void mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor);
+  void dropReference();
+  void commitToBase(uint32_t height, uint32_t idx);
+  void print(raw_ostream&, bool brief, uint32_t height, uint32_t idx);
+
+};
+
+struct SharedTreeRoot {
+
+  SharedTreeNode* root;
+  uint32_t height;
+
+SharedTreeRoot() : root(0), height(0) { }
+  void clear();
+  void dropReference();
+  LocStore* getReadableStoreFor(ShadowValue& V);
+  LocStore* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
+  void growToHeight(uint32_t newHeight);
+  void grow(uint32_t idx);
+  bool mustGrowFor(uint32_t idx);
+
+};
+
 struct SharedStoreMap {
 
   DenseMap<ShadowValue, LocStore> store;  
@@ -703,12 +750,11 @@ SharedStoreMap() : refCount(1) { }
 struct LocalStoreMap {
 
   SmallVector<SharedStoreMap*, 4> frames;
-  uint32_t nFrames;
-  SharedStoreMap* heap;
+  SharedTreeRoot heap;
   bool allOthersClobbered;
   uint32_t refCount;
 
-LocalStoreMap(uint32_t s) : frames(s), allOthersClobbered(false), refCount(1) {}
+LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCount(1) {}
 
   void clear();
   LocalStoreMap* getEmptyMap();
@@ -718,7 +764,6 @@ LocalStoreMap(uint32_t s) : frames(s), allOthersClobbered(false), refCount(1) {}
   bool empty();
   void createEmptyFrames();
   void copyFramesFrom(const LocalStoreMap&);
-  DenseMap<ShadowValue, LocStore>& getWritableHeap();
   DenseMap<ShadowValue, LocStore>& getWritableFrame(int32_t frameNo);
   void pushStackFrame();
   void popStackFrame();
@@ -760,6 +805,8 @@ struct ShadowBB {
   DenseMap<ShadowValue, LocStore>& getWritableStoreMapFor(ShadowValue&);
   DenseMap<ShadowValue, LocStore>& getReadableStoreMapFor(ShadowValue&);
   LocStore& getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
+  LocStore* getOrCreateStoreFor(ShadowValue&, bool* isNewStore);
+  LocStore* getReadableStoreFor(ShadowValue& V);
   void pushStackFrame();
   void popStackFrame();
 

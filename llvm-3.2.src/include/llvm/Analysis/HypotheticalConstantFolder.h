@@ -136,6 +136,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    ShadowGV* shadowGlobals;
 
+   std::vector<ShadowValue> heap;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -1385,7 +1387,7 @@ class InlineAttempt : public IntegrationAttempt {
  void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n);
  bool canTruncate(ImprovedValSetSingle& S);
 
- void readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore);
+ void readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore);
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);
  void executeMemcpyInst(ShadowInstruction* MemcpySI);
  void executeVaCopyInst(ShadowInstruction* SI);
@@ -1411,6 +1413,9 @@ class InlineAttempt : public IntegrationAttempt {
  
  void printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief = false);
 
+ ShadowValue& getAllocWithIdx(int32_t);
+ void addHeapAlloc(ShadowInstruction*);
+
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);
@@ -1419,19 +1424,21 @@ class InlineAttempt : public IntegrationAttempt {
 
  struct MergeBlockVisitor : public ShadowBBVisitor {
    
-   bool newMapValid;
    LocalStoreMap* newMap;
-   SmallPtrSet<LocalStoreMap*, 4> seenMaps;
-   SmallPtrSet<SharedStoreMap*, 16> seenFrames;
    bool mergeToBase;
    bool useVarargMerge;
+   SmallVector<ShadowBB*, 4> incomingBlocks;
    
- MergeBlockVisitor(bool mtb, bool uvm = false) : newMapValid(false), newMap(0), mergeToBase(mtb), useVarargMerge(uvm) { }
+ MergeBlockVisitor(bool mtb, bool uvm = false) : newMap(0), mergeToBase(mtb), useVarargMerge(uvm) { }
    
-   void mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
+   void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
    void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);
-   void mergeFrame(SharedStoreMap*& mergeToFrame, SharedStoreMap* mergeFromFrame, bool mergeToAllClobbered, bool mergeFromAllClobbered, ShadowBB* BB);
-   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx);
+   void mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd, uint32_t idx);
+   void mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd);
+   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+     incomingBlocks.push_back(BB);
+   }
+   void doMerge();
 
  };
 

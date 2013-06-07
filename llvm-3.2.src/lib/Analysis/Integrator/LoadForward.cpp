@@ -694,6 +694,27 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
 #define LFV3(x) do {} while(0)
 //#define LFV3(x) x
 
+int32_t ShadowValue::getHeapKey() {
+
+  switch(t) {
+
+  case SHADOWVAL_INST:
+    return u.I->allocIdx;
+  case SHADOWVAL_GV:
+    return u.GV->allocIdx;
+  default:
+    return -1;
+
+  }
+
+}
+
+ShadowValue& llvm::getAllocWithIdx(int32_t idx) {
+
+  return GlobalIHP->heap[idx];
+
+}
+
 int32_t ShadowValue::getFrameNo() {
 
   ShadowInstruction* SI = getInst();
@@ -707,25 +728,223 @@ int32_t ShadowValue::getFrameNo() {
 
 }
 
-DenseMap<ShadowValue, LocStore>& ShadowBB::getReadableStoreMapFor(ShadowValue& V) {
+LocStore* SharedTreeNode::getReadableStoreFor(uint32_t idx, uint32_t height) {
+
+  uint32_t nextChild = (idx >> (height * HEAPTREEORDER)) & (HEAPTREEORDER-1);
+
+  if(height == 0) {
+
+    // Our children are leaves. They're actually ImprovedValSet*s,
+    // but ImprovedValSet** aliases with LocStore*.
+
+    if(!children[nextChild])
+      return 0;
+    else
+      return (LocStore*)&(children[nextChild]);
+
+  }
+  else {
+
+    // Walk further down the tree if possible.
+
+    if(!children[nextChild])
+      return 0;
+    else
+      return ((SharedTreeNode*)children[nextChild])->getReadableStoreFor(idx, height - 1);
+
+  }
+
+}
+
+LocStore* SharedTreeRoot::getReadableStoreFor(ShadowValue& V) {
+
+  // Empty heap?
+  if(height == 0)
+    return 0;
+
+  // Is a valid allocation instruction?
+  int32_t idx = V.getHeapKey();
+  if(idx < 0)
+    return 0;
+
+  // OK search:
+  return root->getReadableStoreFor((uint32_t)idx, height - 1);
+
+}
+
+LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
 
   int32_t frameNo = V.getFrameNo();
   if(frameNo == -1)
-    return localStore->heap->store;
-  else
-    return localStore->frames[frameNo]->store;
+    return localStore->heap.getReadableStoreFor(V);
+  else {
+
+    DenseMap<ShadowValue, LocStore>::iterator it = localStore->frames[frameNo]->store.find(V);
+    if(it == localStore->frames[frameNo]->store.end())
+      return 0;
+    else
+      return &it->second;
+
+  }
   
 }
 
-DenseMap<ShadowValue, LocStore>& ShadowBB::getWritableStoreMapFor(ShadowValue& V) {
+LocStore* SharedTreeNode::getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore) {
+
+  // This node already known writable.
+
+  uint32_t nextChild = (idx >> (height * HEAPTREEORDER)) & (HEAPTREEORDER-1);
+  
+  if(height == 0) {
+    
+    *isNewStore = (children[nextChild] == 0);
+    return (LocStore*)(&(children[nextChild]));
+
+  }
+  else {
+
+    SharedTreeNode* child;
+
+    if(!children[nextChild])
+      child = new SharedTreeNode();
+    else
+      child = ((SharedTreeNode*)children[nextChild])->getWritableNode(height - 1);
+
+    children[nextChild] = child;
+    return child->getOrCreateStoreFor(idx, height - 1, isNewStore);
+
+  }
+
+}
+
+SharedTreeNode* SharedTreeNode::getWritableNode(uint32_t height) {
+
+  if(refCount == 1)
+    return this;
+
+  // COW break this node.
+  SharedTreeNode* newNode = new SharedTreeNode();
+
+  if(height == 0) {
+
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+
+      if(children[i])
+	newNode->children[i] = ((ImprovedValSet*)children[i])->getReadableCopy();	
+      
+    }
+
+  }
+  else {
+
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+
+      if(children[i]) {
+	((SharedTreeNode*)children[i])->refCount++;
+	newNode->children[i] = children[i];
+      }
+
+    }
+
+  }
+
+  // Drop ref to this node.
+  --refCount;
+
+  return newNode;
+
+}
+
+static uint32_t getRequiredHeight(uint32_t idx) {
+
+  uint32_t height = 0;
+
+  do {
+
+    idx >>= HEAPTREEORDERLOG2;
+    ++height;
+
+  } while(idx);
+
+  return height;
+
+}
+
+void SharedTreeRoot::growToHeight(uint32_t newHeight) {
+
+  for(uint32_t i = 0, ilim = (newHeight - height); i != ilim; ++i) {
+
+    SharedTreeNode* newNode = new SharedTreeNode();
+    newNode->children[0] = root;
+    root = newNode;
+
+  }
+
+  height = newHeight;
+
+}
+
+void SharedTreeRoot::grow(uint32_t idx) {
+
+  // Need to make the tree taller first (hopefully the above test is cheaper than getReqdHeight)
+  uint32_t newHeight = getRequiredHeight(idx);
+  growToHeight(newHeight);
+
+}
+
+bool SharedTreeRoot::mustGrowFor(uint32_t idx) {
+
+  return idx >= (uint32_t)(HEAPTREEORDER << ((height - 1) * HEAPTREEORDERLOG2));
+
+}
+
+LocStore* SharedTreeRoot::getOrCreateStoreFor(ShadowValue& V, bool* isNewStore) {
+
+  int32_t idx = V.getHeapKey();
+  if(idx < 0)
+    release_assert(0 && "Tried to write to non-allocation?");
+
+  if(!root) {
+
+    // Empty heap.
+    root = new SharedTreeNode();
+    height = getRequiredHeight(idx);
+
+  }
+  else if(mustGrowFor(idx)) {
+
+    grow(idx);
+
+  }
+  else {
+
+    root = root->getWritableNode(height - 1);
+
+  }
+
+  return root->getOrCreateStoreFor(idx, height - 1, isNewStore);
+
+}
+
+LocStore* ShadowBB::getOrCreateStoreFor(ShadowValue& V, bool* isNewStore) {
 
   localStore = localStore->getWritableFrameList();
 
   int32_t frameNo = V.getFrameNo();
-  if(frameNo == -1)
-    return localStore->getWritableHeap();
-  else
-    return localStore->getWritableFrame(frameNo);
+  if(frameNo != -1) {
+
+    DenseMap<ShadowValue, LocStore>& frameMap = localStore->getWritableFrame(frameNo);
+    LocStore newStore;
+    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = frameMap.insert(std::make_pair(V, newStore));
+    *isNewStore = insResult.second;
+    return  &(insResult.first->second);
+
+  }
+  else {
+
+    return localStore->heap.getOrCreateStoreFor(V, isNewStore);
+
+  }
 
 }
 
@@ -743,13 +962,6 @@ LocalStoreMap* LocalStoreMap::getWritableFrameList() {
   --refCount;
 
   return newMap;
-
-}
-
-DenseMap<ShadowValue, LocStore>& LocalStoreMap::getWritableHeap() {
-
-  heap = heap->getWritableStoreMap();
-  return heap->store;
 
 }
 
@@ -772,26 +984,9 @@ SharedStoreMap* SharedStoreMap::getWritableStoreMap() {
   // COW break: copy the map and either share or copy its entries.
   LFV3(errs() << "COW break local map " << this << " with " << store.size() << " entries\n");
   SharedStoreMap* newMap = new SharedStoreMap();
-  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it) {
 
-    if(ImprovedValSetSingle* OldSet = dyn_cast<ImprovedValSetSingle>(it->second.store)) {
-
-      LFV3(errs() << "Copy single val\n");
-      // Individual valsets are not sharable: copy.
-      ImprovedValSetSingle* NewSet = new ImprovedValSetSingle(*OldSet);
-      newMap->store[it->first] = LocStore(NewSet);
-
-    }
-    else {
-
-      ImprovedValSetMulti* SharedSet = cast<ImprovedValSetMulti>(it->second.store);
-      LFV3(errs() << "Share multimap " << SharedSet << "\n");
-      SharedSet->MapRefCount++;
-      newMap->store[it->first] = LocStore(SharedSet);
-
-    }
-
-  }
+  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it)
+    newMap->store[it->first] = LocStore(it->second.store->getReadableCopy());
 
   // Drop reference on the existing map (can't destroy it):
   refCount--;
@@ -817,12 +1012,10 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
    
   if(!ret) {
 
-    DenseMap<ShadowValue, LocStore>& storeMap = getWritableStoreMapFor(V);
-    LocStore newStore;
-    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = storeMap.insert(std::make_pair(V, newStore));
-    ret = &(insResult.first->second);
+    bool isNewStore;
+    ret = getOrCreateStoreFor(V, &isNewStore);
   
-    if(insResult.second) {
+    if(isNewStore) {
 
       // There wasn't an entry in the local map. Make a Single or Multi store depending on
       // whether we're about to cover the whole store or not:
@@ -849,7 +1042,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
     }
     else {
 
-      LFV3(errs() << "Use existing store " << insResult.first->second.store << "\n");
+      LFV3(errs() << "Use existing store " << ret->store << "\n");
 
     }
 
@@ -1094,13 +1287,10 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
   // Limitations for now: because our output is a single IVS, non-scalar types may only be described
   // if they correspond to a whole object.
 
-  LocStore* firstStore;
-
   LFV3(errs() << "Start read " << Offset << "-" << (Offset + Size) << "\n");
 
-  DenseMap<ShadowValue, LocStore>& frame = ReadBB->getReadableStoreMapFor(V);
-  DenseMap<ShadowValue, LocStore>::iterator it = frame.find(V);
-  if(it == frame.end()) {
+  LocStore* firstStore = ReadBB->getReadableStoreFor(V);
+  if(!firstStore) {
     if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Result.setOverdef();
@@ -1111,7 +1301,6 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
   }
   else {
     LFV3(errs() << "Starting at local store\n");
-    firstStore = &(it->second);
   }
 
   PartialVal* ResultPV = 0;
@@ -1781,7 +1970,7 @@ bool llvm::canTruncate(ImprovedValSetSingle& S) {
   
 }
 
-void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore) {
+void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore) {
 
   if(ignoreBelowStore && ignoreBelowStore == store) {
     LFV3(errs() << "Leaving a gap due to threshold store " << ignoreBelowStore << "\n");
@@ -1835,7 +2024,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 	// Gap -- defer this bit to our parent map (which must exist)
 	release_assert(IVM->Underlying && "Gap but no underlying map?");
 	LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << it.start() << "\n");
-	readValRangeMultiFrom(V, Offset, it.start() - Offset, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
+	readValRangeMultiFrom(V, Offset, it.start() - Offset, IVM->Underlying, Results, ignoreBelowStore);
 	Size -= (it.start() - Offset);
 	Offset = it.start();
 	
@@ -1871,7 +2060,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 
       release_assert(IVM->Underlying && "Gap but no underlying map/2?");
       LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << (Offset+Size) << " (end path)\n");      
-      readValRangeMultiFrom(V, Offset, Size, ReadBB, IVM->Underlying, Results, ignoreBelowStore);
+      readValRangeMultiFrom(V, Offset, Size, IVM->Underlying, Results, ignoreBelowStore);
 
     }
 
@@ -1899,11 +2088,8 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
 
   }
 
-  LocStore* firstStore;
-
-  DenseMap<ShadowValue, LocStore>& frame = ReadBB->getReadableStoreMapFor(V);
-  DenseMap<ShadowValue, LocStore>::iterator it = frame.find(V);
-  if(it == frame.end()) {
+  LocStore* firstStore = ReadBB->getReadableStoreFor(V);
+  if(!firstStore) {
     if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle::getOverdef()));
@@ -1916,10 +2102,9 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
   }
   else {
     LFV3(errs() << "Starting at local store\n");
-    firstStore = &(it->second);
   }
 
-  readValRangeMultiFrom(V, Offset, Size, ReadBB, firstStore->store, Results, 0);
+  readValRangeMultiFrom(V, Offset, Size, firstStore->store, Results, 0);
 
 }
 
@@ -2007,6 +2192,13 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
 
 }
 
+void llvm::addHeapAlloc(ShadowInstruction* SI) {
+
+  SI->allocIdx = GlobalIHP->heap.size();
+  GlobalIHP->heap.push_back(ShadowValue(SI));
+
+}
+
 void llvm::executeMallocInst(ShadowInstruction* SI) {
 
   if(SI->store.store)
@@ -2018,6 +2210,7 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
   executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
+  addHeapAlloc(SI);
 
 }
 
@@ -2030,7 +2223,8 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
     Type* allocType = 0;
     if(AllocSize)
       allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
-    executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);    
+    executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
+    addHeapAlloc(SI);
 
   }
 
@@ -2387,6 +2581,50 @@ void SharedStoreMap::clear() {
 
 }
 
+void SharedTreeNode::dropReference(uint32_t height) {
+
+  if(!--refCount) {
+
+    // This node goes away! Drop our children.
+    if(height == 0) {
+
+      for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+	if(children[i])
+	  ((ImprovedValSet*)children[i])->dropReference();
+      }
+
+    }
+    else {
+
+      for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+	if(children[i])
+	  ((SharedTreeNode*)children[i])->dropReference(height - 1);
+      }
+
+    }
+
+    delete this;
+
+  }
+
+}
+
+void SharedTreeRoot::clear() {
+
+  if(height == 0)
+    return;
+  root->dropReference(height - 1);
+  root = 0;
+  height = 0;
+
+}
+
+void SharedTreeRoot::dropReference() {
+
+  clear();
+
+}
+
 SharedStoreMap* SharedStoreMap::getEmptyMap() {
 
   if(store.empty())
@@ -2404,7 +2642,7 @@ SharedStoreMap* SharedStoreMap::getEmptyMap() {
 
 void LocalStoreMap::clear() {
 
-  heap = heap->getEmptyMap();
+  heap.clear();
   for(uint32_t i = 0; i < frames.size(); ++i)
     frames[i] = frames[i]->getEmptyMap();
 
@@ -2412,7 +2650,7 @@ void LocalStoreMap::clear() {
 
 bool LocalStoreMap::empty() {
 
-  if(!heap->store.empty())
+  if(heap.height != 0)
     return false;
 
   for(uint32_t i = 0; i < frames.size(); ++i) {
@@ -2433,7 +2671,8 @@ LocalStoreMap* LocalStoreMap::getEmptyMap() {
     return this;
   }
   else {
-    dropReference();
+    // Can't free the map (refcount > 1)
+    --refCount;
     LocalStoreMap* newMap = new LocalStoreMap(frames.size());
     newMap->createEmptyFrames();
     return newMap;
@@ -2443,7 +2682,7 @@ LocalStoreMap* LocalStoreMap::getEmptyMap() {
 
 void LocalStoreMap::createEmptyFrames() {
 
-  heap = new SharedStoreMap();
+  // Heap starts in empty state.
   for(uint32_t i = 0; i < frames.size(); ++i)
     frames[i] = new SharedStoreMap();
 
@@ -2454,7 +2693,8 @@ void LocalStoreMap::copyFramesFrom(const LocalStoreMap& other) {
   // Frames array already allocated. Borrow all the other side's frames.
 
   heap = other.heap;
-  heap->refCount++;
+  if(heap.root)
+    heap.root->refCount++;
 
   for(uint32_t i = 0; i < frames.size(); ++i) {
 
@@ -2488,7 +2728,7 @@ void LocalStoreMap::dropReference() {
   if(!--refCount) {
 
     LFV3(errs() << "Local map " << this << " freed\n");
-    heap->dropReference();
+    heap.dropReference();
     for(uint32_t i = 0; i < frames.size(); ++i)
       frames[i]->dropReference();
 
@@ -2575,17 +2815,7 @@ void MergeBlockVisitor::mergeValues(ImprovedValSetSingle& consumeVal, ImprovedVa
 
 }
 
-void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
-
-  if(BB->IA->F.getName() == "_ppfs_setargs" && (BB->invar->BB->getName() == "21" || BB->invar->BB->getName() == "20")) {
-
-    errs() << "Merge in " << BB->IA->SeqNumber << ":\n";
-    mergeFromStore->store->print(errs());
-    errs() << "\nwith:\n";
-    mergeToStore->store->print(errs());
-    errs() << "\n---\n";
-
-  }
+void MergeBlockVisitor::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV) {
 
   if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeToStore->store)) {
 
@@ -2625,8 +2855,8 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
     SmallVector<IVSRange, 4> RHSVals;
     uint64_t TotalBytes = MergeV.getAllocSize();
 
-    readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeToStore->store, LHSVals, LHSAncestor);
-    readValRangeMultiFrom(MergeV, 0, TotalBytes, BB, mergeFromStore->store, RHSVals, RHSAncestor);
+    readValRangeMultiFrom(MergeV, 0, TotalBytes, mergeToStore->store, LHSVals, LHSAncestor);
+    readValRangeMultiFrom(MergeV, 0, TotalBytes, mergeFromStore->store, RHSVals, RHSAncestor);
 	  
     SmallVector<IVSRange, 4> MergedVals;
     // Algorithm:
@@ -2702,7 +2932,7 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 	LFV3(errs() << "Merge with base " << LastOffset << "-" << stopAt << "\n");
 	  
 	SmallVector<IVSRange, 4> baseVals;
-	readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, BB, LHSAncestor, baseVals, 0);
+	readValRangeMultiFrom(MergeV, LastOffset, stopAt - LastOffset, LHSAncestor, baseVals, 0);
 		
 	for(SmallVector<IVSRange, 4>::iterator baseit = baseVals.begin(), baseend = baseVals.end();
 	    baseit != baseend; ++baseit) {
@@ -2802,88 +3032,121 @@ void MergeBlockVisitor::mergeStores(ShadowBB* BB, LocStore* mergeFromStore, LocS
 
 }
 
-void MergeBlockVisitor::mergeFrame(SharedStoreMap*& mergeToFrame, SharedStoreMap* mergeFromFrame, bool mergeToAllClobbered, bool mergeFromAllClobbered, ShadowBB* BB) {
-  
-  if(!seenFrames.insert(mergeFromFrame)) {
+void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor) {
 
-    // Frame already seen (surely, in the same context!), no need to merge.
-    // Don't drop-ref here, that will happen when the merge-from store is dropped.
-    return;
+  // All members of others are known to differ from this node. This node is writable already.
+  // Like the frames case, merge in base objects when objects are missing from this or the other tree
+  // if !allOthersClobbered; otherwise intersect the trees.
+  // Note the special case that others might contain a null pointer, which describes the empty tree.
 
-  }
+  if(allOthersClobbered) {
 
-  mergeToFrame = mergeToFrame->getWritableStoreMap();
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 
-  if(mergeFromAllClobbered) {
+      for(SmallVector<SharedTreeNode*, 4>::iterator it = others.begin(), itend = others.end();
+	  it != itend && children[i]; ++it) {
 
-    SmallVector<ShadowValue, 4> keysToRemove;
+	if((!*it) || !((*it)->children[i])) {
 
-    // Remove any existing mappings in mergeToFrame that do not occur in mergeFromFrame:
-    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(), 
-	  itend = mergeToFrame->store.end(); it != itend; ++it) {
+	  if(height == 0)
+	    ((ImprovedValSet*)children[i])->dropReference();
+	  else
+	    ((SharedTreeNode*)children[i])->dropReference();
+	  children[i] = 0;
 
-      if(!mergeFromFrame->store.count(it->first)) {
-
-	LFV3(errs() << "Merge from " << mergeFromFrame << " with allOthersClobbered; drop local obj\n");
-	keysToRemove.push_back(it->first);
-	it->second.store->dropReference();
+	}
 
       }
 
     }
 
-    for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
-	  delitend = keysToRemove.end(); delit != delitend; ++delit) {
-
-      mergeToFrame->store.erase(*delit);
-
-    }
-
-  }
-  else if(!mergeToAllClobbered) {
-
-    LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
-
-    // For any locations mentioned in mergeFromFrame but not mergeToFrame,
-    // add a copy of the base object to mergeToFrame. This will get overwritten below but
-    // creates the asymmetry that x in mergeFromFrame -> x in mergeToFrame.
-	  
-    for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromFrame->store.begin(),
-	  itend = mergeFromFrame->store.end(); it != itend; ++it) {
-
-      if(!mergeToFrame->store.count(it->first))
-	mergeToFrame->store[it->first] = LocStore(it->first.getBaseStore().store->getReadableCopy());
-
-    }
-      
   }
   else {
-	  
-    LFV3(errs() << "Merge frame " << mergeToFrame << " has allOthersClobbered; only common objects will merge\n");
-	  
+
+    // Populate this node with base versions of nodes that are missing but present in any other tree. 
+    // Just add blank nodes for now and then the recursion will catch the rest.
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+
+      for(SmallVector<SharedTreeNode*, 4>::iterator it = others.begin(), itend = others.end();
+	  it != itend && !children[i]; ++it) {
+
+	if((*it) && (*it)->children[i]) {
+
+	  if(height == 0)
+	    children[i] = getAllocWithIdx(idx + i).getBaseStore().store->getReadableCopy();
+	  else
+	    children[i] = new SharedTreeNode();
+
+	}
+
+      }
+
+    }
+
   }
 
-  // mergeMap now contains all information from one or other incoming branch;
-  // for each location it mentions merge in the other map's version or the base object.
-  // Note that in the mergeMap->allOthersClobbered case this only merges in
-  // information from locations explicitly mentioned in mergeToFrame.
+  // OK now merge each child that exists according to the same rules.
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(),
-	itend = mergeToFrame->store.end(); it != itend; ++it) {
+  for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 
-    LocStore* mergeFromStore;
-    DenseMap<ShadowValue, LocStore>::iterator found = mergeFromFrame->store.find(it->first);
-    if(found != mergeFromFrame->store.end())
-      mergeFromStore = &(found->second);
-    else
-      mergeFromStore = &it->first.getBaseStore();
+    if(!children[i])
+      continue;
 
-    // Right, merge it->second and mergeFromStore.
-    // If the pointers match these are two refs to the same Multi.
-    // Refcounting will be caught up when we deref mergeFromMap below:
-    if(mergeFromStore->store != it->second.store) {
+    // Unique children regardless of whether they're further levels of TreeNode
+    // or ImprovedValSets. In the former case this avoids merges of identical subtrees
+    // in the latter it skips merging ValSetMultis that are shared.
+    // In either case refcounting is caught up when unused maps are released at the top level.
+    SmallVector<void*, 4> incomingPtrs;
+    incomingPtrs.push_back(children[i]);
 
-      mergeStores(BB, mergeFromStore, &it->second, it->first);
+    for(SmallVector<SharedTreeNode*, 4>::iterator it = others.begin(), itend = others.end();
+	it != itend; ++it) {
+
+      if((!*it) || !(*it)->children[i])
+	incomingPtrs.push_back(0);
+      else
+	incomingPtrs.push_back((*it)->children[i]);
+
+    }
+
+    std::sort(incomingPtrs.begin(), incomingPtrs.end());
+    SmallVector<void*, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end());
+
+    // This subtree never differs?
+    if(std::distance(incomingPtrs.begin(), incomingPtrs.end()) == 1)
+      continue;
+
+    if(height == 0) {
+
+      // Merge each child value.
+      for(SmallVector<void*, 4>::iterator it = incomingPtrs.begin(); it != uniqend; ++it) {
+	
+	if(*it == children[i])
+	  continue;
+
+	ShadowValue& MergeV = getAllocWithIdx(idx + i);
+
+	LocStore* mergeFromStore;
+	if(!*it)
+	  mergeFromStore = &(MergeV.getBaseStore());
+	else
+	  mergeFromStore = (LocStore*)(&*it);
+
+	// mergeStores takes care of CoW break if necessary.
+	visitor->mergeStores(mergeFromStore, (LocStore*)(&children[i]), MergeV);
+      
+      }
+
+    }
+    else {
+
+      // Recursively merge this child.
+      // CoW break this subtree if necessary.
+      children[i] = ((SharedTreeNode*)children[i])->getWritableNode(height - 1);
+
+      uint32_t newIdx = idx | (i << (HEAPTREEORDERLOG2 * height));
+      ((SharedTreeNode*)children[i])->mergeHeaps(*(SmallVector<SharedTreeNode*, 4>*)&incomingPtrs, 
+						 allOthersClobbered, height - 1, newIdx, visitor);
 
     }
 
@@ -2891,55 +3154,303 @@ void MergeBlockVisitor::mergeFrame(SharedStoreMap*& mergeToFrame, SharedStoreMap
 
 }
 
-void MergeBlockVisitor::visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+// Comparator for finding the best target heap: we want the tallest heap, and of those, we favour a writable one. Finally compare pointers.
+static bool rootTallerThan(const LocalStoreMap* r1, const LocalStoreMap* r2) {
 
-  LFV3(errs() << "Merge: visit BB " << BB->invar->BB->getName() << "\n");
+  if(r1->heap.height != r2->heap.height)
+    return r1->heap.height > r2->heap.height;
 
-  if(!seenMaps.insert(BB->localStore)) {
-    // We've already seen this exact map as a pred; drop the extra ref.
-    LFV3(errs() << "Seen map " << BB->localStore << " before; drop ref\n");
-    BB->localStore->dropReference();
+  return r1->heap.root > r2->heap.root;
+  
+}
+
+static bool rootsEqual(const LocalStoreMap* r1, const LocalStoreMap* r2) {
+
+  return r1->heap.root == r2->heap.root && r1->heap.height == r2->heap.height;
+
+}
+
+void MergeBlockVisitor::mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd) {
+
+  SmallVector<LocalStoreMap*, 4> incomingRoots;
+  incomingRoots.push_back(toMap);
+  for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
+    incomingRoots.push_back(*it);
+
+  // This sorts first by heap height, then by pointer address, so it also finds the tallest heap.
+  std::sort(incomingRoots.begin(), incomingRoots.end(), rootTallerThan);
+  SmallVector<LocalStoreMap*, 4>::iterator uniqend = std::unique(incomingRoots.begin(), incomingRoots.end(), rootsEqual);
+  
+  // Heaps never differ?
+  if(std::distance(incomingRoots.begin(), uniqend) == 1)
     return;
+
+  release_assert(incomingRoots[0]->heap.height != 0 && "If heaps differ at least one must be initialised!");
+
+  if(!toMap->heap.root) {
+
+    // Target has no heap at all yet -- make one.
+    toMap->heap.root = new SharedTreeNode();
+    toMap->heap.height = 1;
+
+  }
+  else {
+
+    // If necessary, CoW break the target heap.
+    toMap->heap.root = toMap->heap.root->getWritableNode(toMap->heap.height - 1);
+
   }
 
-  if(!newMapValid) {
-    // This is the first predecessor, borrow the incoming block's map.
-    // Note that the refcount is already correct (blocks assume their map will be taken per default)
-    // Also note if the incoming block shadowed nothing this might still leave newMap == 0.
-    newMap = BB->localStore;
-    LFV3(errs() << "Take incoming map " << BB->localStore << "\n");
-    newMapValid = true;
+  // Grow the target heap to the tallest height seen.
+  if(toMap->heap.height != incomingRoots[0]->heap.height)
+    toMap->heap.growToHeight(incomingRoots[0]->heap.height);
 
-    for(uint32_t i = 0; i < newMap->frames.size(); ++i)
-      seenFrames.insert(newMap->frames[i]);
-    seenFrames.insert(newMap->heap);
+  // Start the tree merge:
+  SmallVector<SharedTreeNode*, 4> roots;
+  for(SmallVector<LocalStoreMap*, 4>::iterator it = incomingRoots.begin(); it != uniqend; ++it) {
 
-    return;
+    if(toMap->heap.root == (*it)->heap.root)
+      continue;
+
+    LocalStoreMap* thisMap = *it;
+
+    // Temporarily grow heaps that are shorter than the target to make the merge easier to code.
+    // Leave their height attribute unchanged as an indicator we need to undo this shortly.
+    // These maps might be shared so it's important they are seen unmodified ouside this function.
+    if(thisMap->heap.height != 0 && thisMap->heap.height < toMap->heap.height) {
+      uint32_t oldHeight = thisMap->heap.height;
+      thisMap->heap.growToHeight(toMap->heap.height);
+      thisMap->heap.height = oldHeight;
+    }
+
+    roots.push_back(thisMap->heap.root);
+
   }
 
-  // Merge in the new map or base store values as appropriate.
-  // Create a local map if we didn't have one; COW break it if it was shared.
-  // The first time a real merge is necessary this might COW-break.
-  // After that it's a no-op.
-  LocalStoreMap* mergeMap = newMap->getWritableFrameList();
-  LocalStoreMap* mergeFromMap = BB->localStore;
+  toMap->heap.root->mergeHeaps(roots, toMap->allOthersClobbered, toMap->heap.height - 1, 0, this);
 
-  release_assert(mergeMap && "Must have a concrete destination map");
-  release_assert(mergeFromMap && "Incoming block must have a map");
-  release_assert(mergeMap->frames.size() == mergeFromMap->frames.size() && "Differing frame counts?");
+  for(SmallVector<LocalStoreMap*, 4>::iterator it = incomingRoots.begin(); it != uniqend; ++it) {
 
-  for(uint32_t i = 0; i < mergeMap->frames.size(); ++i)
-    mergeFrame(mergeMap->frames[i], mergeFromMap->frames[i],
-	       mergeMap->allOthersClobbered, mergeFromMap->allOthersClobbered, BB);
+    if((*it)->heap.height == 0)
+      continue;
 
-  mergeFrame(mergeMap->heap, mergeFromMap->heap, 
-	     mergeMap->allOthersClobbered, mergeFromMap->allOthersClobbered, BB);
+    LocalStoreMap* thisMap = *it;
+    uint32_t tempFramesToRemove = incomingRoots[0]->heap.height - thisMap->heap.height;
 
-  if(mergeFromMap->allOthersClobbered)
-    mergeMap->allOthersClobbered = true;
+    for(uint32_t i = 0; i < tempFramesToRemove; ++i) {
+      SharedTreeNode* removeNode = thisMap->heap.root;
+      thisMap->heap.root = (SharedTreeNode*)thisMap->heap.root->children[0];
+      release_assert(removeNode->refCount == 1 && "Removing shared node in post-treemerge cleanup?");
+      delete removeNode;
+    }
 
-  mergeFromMap->dropReference();
-  newMap = mergeMap;
+  }  
+
+}
+
+static bool storeLT(const LocStore* a, const LocStore* b) {
+
+  return a->store < b->store;
+
+}
+
+static bool storeEQ(const LocStore* a, const LocStore* b) {
+
+  return a->store == b->store;
+
+}
+
+void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd, uint32_t idx) {
+
+  SmallVector<SharedStoreMap*, 4> incomingFrames;
+  incomingFrames.push_back(toMap->frames[idx]);
+  for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
+    incomingFrames.push_back((*it)->frames[idx]);
+
+  std::sort(incomingFrames.begin(), incomingFrames.end());
+  SmallVector<SharedStoreMap*, 4>::iterator uniqend = std::unique(incomingFrames.begin(), incomingFrames.end());
+
+  // Frames never differ?
+  if(std::distance(incomingFrames.begin(), uniqend) == 1)
+    return;
+
+  // CoW break stack frame if necessary
+  SharedStoreMap* mergeToFrame = toMap->frames[idx] = toMap->frames[idx]->getWritableStoreMap();
+
+  // Merge in each other frame. Note toMap->allOthersClobbered has been set to big-or over all maps already.
+  for(SmallVector<SharedStoreMap*, 4>::iterator it = incomingFrames.begin(); it != uniqend; ++it) {
+
+    SharedStoreMap* mergeFromFrame = *it;
+    if(mergeFromFrame == mergeToFrame)
+      continue;
+
+    if(toMap->allOthersClobbered) {
+      
+      // Incremental big intersection of the incoming frames
+      // Remove any in mergeTo that do not occur in mergeFrom.
+
+      SmallVector<ShadowValue, 4> keysToRemove;
+
+      // Remove any existing mappings in mergeToFrame that do not occur in mergeFromFrame:
+      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(), 
+	    itend = mergeToFrame->store.end(); it != itend; ++it) {
+
+	if(!mergeFromFrame->store.count(it->first)) {
+
+	  LFV3(errs() << "Merge from " << mergeFromFrame << " with allOthersClobbered; drop local obj\n");
+	  keysToRemove.push_back(it->first);
+	  it->second.store->dropReference();
+
+	}
+
+      }
+
+      for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
+	    delitend = keysToRemove.end(); delit != delitend; ++delit) {
+
+	mergeToFrame->store.erase(*delit);
+
+      }
+
+    }
+    else {
+
+      LFV3(errs() << "Both maps don't have allOthersClobbered; reading through allowed\n");
+
+      // For any locations mentioned in mergeFromFrame but not mergeToFrame,
+      // add a copy of the base object to mergeToFrame. This will get overwritten below but
+      // creates the asymmetry that x in mergeFromFrame -> x in mergeToFrame.
+	  
+      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromFrame->store.begin(),
+	    itend = mergeFromFrame->store.end(); it != itend; ++it) {
+
+	if(!mergeToFrame->store.count(it->first))
+	  mergeToFrame->store[it->first] = LocStore(it->first.getBaseStore().store->getReadableCopy());
+
+      }
+      
+    }
+
+  }
+
+  // mergeToFrame now contains all objects that should be merged.
+  // Note that in the allOthersClobbered case this only merges in
+  // information from locations explicitly mentioned in all incoming frames.
+
+  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(),
+	itend = mergeToFrame->store.end(); it != itend; ++it) {
+
+    SmallVector<LocStore*, 4> incomingStores;
+
+    for(SmallVector<SharedStoreMap*, 4>::iterator incit = incomingFrames.begin(); incit != uniqend; ++incit) {
+
+      SharedStoreMap* mergeFromFrame = *incit;
+      if(mergeFromFrame == mergeToFrame)
+	continue;
+
+      LocStore* mergeFromStore;
+
+      DenseMap<ShadowValue, LocStore>::iterator found = mergeFromFrame->store.find(it->first);
+      if(found != mergeFromFrame->store.end())
+	mergeFromStore = &(found->second);
+      else
+	mergeFromStore = &it->first.getBaseStore();
+
+      incomingStores.push_back(mergeFromStore);
+
+    }
+
+    std::sort(incomingStores.begin(), incomingStores.end(), storeLT);
+    SmallVector<LocStore*, 4>::iterator storeuniqend = 
+      std::unique(incomingStores.begin(), incomingStores.end(), storeEQ);
+
+    for(SmallVector<LocStore*, 4>::iterator incit = incomingStores.begin(), incitend = incomingStores.end();
+	incit != incitend; ++incit) {
+
+      LocStore* mergeFromStore = *incit;
+
+      // Right, merge it->second and mergeFromStore.
+      if(mergeFromStore->store != it->second.store) {
+      
+	mergeStores(mergeFromStore, &it->second, it->first);
+
+      }
+
+    }
+
+  }
+
+}
+
+void MergeBlockVisitor::doMerge() {
+
+  // Discard wholesale block duplicates:
+  SmallVector<LocalStoreMap*, 4> incomingStores;
+
+  for(SmallVector<ShadowBB*, 4>::iterator it = incomingBlocks.begin(), itend = incomingBlocks.end();
+      it != itend; ++it) {
+
+    incomingStores.push_back((*it)->localStore);
+
+  }
+
+  std::sort(incomingStores.begin(), incomingStores.end());
+  SmallVector<LocalStoreMap*, 4>::iterator uniqend = std::unique(incomingStores.begin(), incomingStores.end());
+  
+  if(std::distance(incomingStores.begin(), uniqend) > 1) {
+
+    // At least some stores differ; need to make a new one.
+
+    // See if we can avoid a CoW break by using a writable incoming store as the target.
+    for(SmallVector<LocalStoreMap*, 4>::iterator it = incomingStores.begin(); it != uniqend; ++it) {
+      
+      if((*it)->refCount == 1) {
+
+	if(it != incomingStores.begin())
+	  std::swap(incomingStores[0], *it);
+	break;
+
+      }
+
+    }
+
+    // Position 0 is the target; the rest should be merged in. CoW break if still necessary:
+    LocalStoreMap* mergeMap = incomingStores[0] = incomingStores[0]->getWritableFrameList();
+
+    SmallVector<LocalStoreMap*, 4>::iterator firstMergeFrom = incomingStores.begin();
+    ++firstMergeFrom;
+
+    for(SmallVector<LocalStoreMap*, 4>::iterator it = firstMergeFrom; 
+	it != uniqend && !mergeMap->allOthersClobbered; ++it) {
+
+      if((*it)->allOthersClobbered)
+	mergeMap->allOthersClobbered = true;
+
+    }
+   
+    // Merge each frame:
+    for(uint32_t i = 0; i < mergeMap->frames.size(); ++i)
+      mergeFrames(mergeMap, firstMergeFrom, uniqend, i);
+
+    mergeHeaps(mergeMap, firstMergeFrom, uniqend);
+
+    newMap = mergeMap;
+
+  }
+  else {
+
+    // No stores differ; just use #0
+    newMap = incomingStores[0];
+
+  }
+
+  // Drop refs against all but #0 (note this includes those excluded by uniquing).
+
+  SmallVector<LocalStoreMap*, 4>::iterator it = incomingStores.begin(), itend = incomingStores.end();
+  ++it;
+
+  for(; it != itend; ++it)
+    (*it)->dropReference();
 
 }
 
@@ -2955,9 +3466,40 @@ void llvm::commitFrameToBase(SharedStoreMap* Map) {
 
 }
 
+void SharedTreeNode::commitToBase(uint32_t height, uint32_t idx) {
+
+  if(height == 0) {
+
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+
+      if(!children[i])
+	continue;
+      LocStore& baseStore = getAllocWithIdx(idx + i).getBaseStore();
+      baseStore.store->dropReference();
+      baseStore.store = ((ImprovedValSet*)children[i])->getReadableCopy();
+
+    }
+
+  }
+  else {
+    
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+
+      if(!children[i])
+	continue;
+      uint32_t newIdx = idx | (i << (HEAPTREEORDERLOG2 * height));
+      ((SharedTreeNode*)children[i])->commitToBase(height, newIdx);
+
+    }    
+
+  }
+
+}
+
 void llvm::commitStoreToBase(LocalStoreMap* Map) {
 
-  commitFrameToBase(Map->heap);
+  if(Map->heap.root)
+    Map->heap.root->commitToBase(Map->heap.height - 1, 0);
   for(uint32_t i = 0; i < Map->frames.size(); ++i)
     commitFrameToBase(Map->frames[i]);
 
@@ -2987,6 +3529,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
+  V.doMerge();
 
   if(!V.newMap) {
     BB->localStore = 0;
@@ -3050,6 +3593,7 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   MergeBlockVisitor V(mergeToBase);
   CallIA->visitLiveReturnBlocks(V);
+  V.doMerge();
   
   // If V.newMap is not set this must be an unreachable block
   // and our caller will bail out rather than use SI->parent->localStore.

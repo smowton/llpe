@@ -101,9 +101,37 @@ void SharedStoreMap::print(raw_ostream& RSO, bool brief) {
 
   for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
 
+    RSO << itcache(it->first) << ": ";
     it->second.store->print(RSO, brief);
+    RSO << "\n";
 
   }
+
+}
+
+void SharedTreeNode::print(raw_ostream& RSO, bool brief, uint32_t height, uint32_t idx) {
+
+  if(height == 0) {
+    
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+      if(!children[i])
+	continue;
+      RSO << itcache(getAllocWithIdx(idx + i)) << ": ";
+      ((ImprovedValSet*)children[i])->print(RSO, brief);
+      RSO << "\n";
+    }
+
+  }
+  else {
+  
+    for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
+      if(!children[i])
+	continue;
+      uint32_t newIdx = idx | (i << (HEAPTREEORDERLOG2 * height));
+      ((SharedTreeNode*)children[i])->print(RSO, brief, height - 1, newIdx);
+    }
+     
+  } 
 
 }
 
@@ -116,7 +144,10 @@ void LocalStoreMap::print(raw_ostream& RSO, bool brief) {
     frames[i]->print(RSO, brief);
   }
   errs() << "--- End stack ---\n--- Heap ---\n";
-  heap->print(RSO, brief);
+  if(!heap.root)
+    errs() << "(empty)\n";
+  else
+    heap.root->print(RSO, brief, heap.height - 1, 0);
   errs() << "--- End heap ---\n";
 
 }

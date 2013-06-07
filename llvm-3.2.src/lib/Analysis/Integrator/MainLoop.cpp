@@ -425,6 +425,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
       }
 
+      V.doMerge();
       HBB->localStore = V.newMap;
 
     }

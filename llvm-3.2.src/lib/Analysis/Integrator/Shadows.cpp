@@ -109,6 +109,8 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     shadowGlobals[i].G = it;
+    shadowGlobals[i].allocIdx = (int32_t)i;
+    heap.push_back(ShadowValue(&(shadowGlobals[i])));
     shadowGlobalsIdx[it] = i;
 
   }
