@@ -730,7 +730,7 @@ int32_t ShadowValue::getFrameNo() {
 
 LocStore* SharedTreeNode::getReadableStoreFor(uint32_t idx, uint32_t height) {
 
-  uint32_t nextChild = (idx >> (height * HEAPTREEORDER)) & (HEAPTREEORDER-1);
+  uint32_t nextChild = (idx >> (height * HEAPTREEORDERLOG2)) & (HEAPTREEORDER-1);
 
   if(height == 0) {
 
@@ -793,7 +793,7 @@ LocStore* SharedTreeNode::getOrCreateStoreFor(uint32_t idx, uint32_t height, boo
 
   // This node already known writable.
 
-  uint32_t nextChild = (idx >> (height * HEAPTREEORDER)) & (HEAPTREEORDER-1);
+  uint32_t nextChild = (idx >> (height * HEAPTREEORDERLOG2)) & (HEAPTREEORDER-1);
   
   if(height == 0) {
     
@@ -901,6 +901,7 @@ bool SharedTreeRoot::mustGrowFor(uint32_t idx) {
 LocStore* SharedTreeRoot::getOrCreateStoreFor(ShadowValue& V, bool* isNewStore) {
 
   int32_t idx = V.getHeapKey();
+
   if(idx < 0)
     release_assert(0 && "Tried to write to non-allocation?");
 
@@ -3177,6 +3178,18 @@ void MergeBlockVisitor::mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreM
   for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
     incomingRoots.push_back(*it);
 
+  /*
+  errs() << "Target heap:\n";
+  if(toMap->heap.root)
+    toMap->heap.root->print(errs(), false, toMap->heap.height - 1, 0);
+
+  for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it) {
+    errs() << "Merging in:\n";
+    if((*it)->heap.root)
+      (*it)->heap.root->print(errs(), false, (*it)->heap.height - 1, 0);
+  }
+  */
+
   // This sorts first by heap height, then by pointer address, so it also finds the tallest heap.
   std::sort(incomingRoots.begin(), incomingRoots.end(), rootTallerThan);
   SmallVector<LocalStoreMap*, 4>::iterator uniqend = std::unique(incomingRoots.begin(), incomingRoots.end(), rootsEqual);
@@ -3488,7 +3501,7 @@ void SharedTreeNode::commitToBase(uint32_t height, uint32_t idx) {
       if(!children[i])
 	continue;
       uint32_t newIdx = idx | (i << (HEAPTREEORDERLOG2 * height));
-      ((SharedTreeNode*)children[i])->commitToBase(height, newIdx);
+      ((SharedTreeNode*)children[i])->commitToBase(height - 1, newIdx);
 
     }    
 

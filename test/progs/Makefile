@@ -9,7 +9,7 @@ TARGETS = arrayloop deepnesting dependent_loops elim_if inline inline-nested inl
 	  fpalign read read-indirect-fd varargs varargs-param varargs-copy pointerbase pointerarith \
 	  pointerarithfail pointerarithnested multidef invarcall stdiowrite realstdio optimistloop \
 	  ptrornull unboundloop varargs-dyn varargs-fp varargs-mix vfs-dyn invar-exit-edge deadalloc \
-	  beforearray realloc punload xmlpush multibreak frames
+	  beforearray realloc punload xmlpush multibreak frames heapmerge heapstress
 
 LLVM_TARGETS = load-struct load-array switch-loop
 
