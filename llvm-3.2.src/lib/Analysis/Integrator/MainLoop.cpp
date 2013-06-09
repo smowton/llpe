@@ -80,13 +80,6 @@ void PeelIteration::getInitialStore() {
 
 }
 
-void IntegrationAttempt::cleanupLocalStore() {}
-void InlineAttempt::cleanupLocalStore() {
-
-  localAllocas.clear();
-
-}
-
 bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
@@ -101,8 +94,6 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
     anyChange |= analyseBlock(i, inLoopAnalyser, inAnyLoop, i == BBsOffset, L);
 
   }
-
-  cleanupLocalStore();
 
   return anyChange;
 
@@ -202,6 +193,8 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       return false;
 
   }
+
+  LFV3(errs() << "Block " << F.getName() << "/" << BB->invar->BB->getName() << " stack height " << BB->localStore->frames.size() << "\n");
 
   LFV3(errs() << "  Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 

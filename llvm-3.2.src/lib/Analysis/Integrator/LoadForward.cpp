@@ -2186,9 +2186,6 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
 
   }
 
-  InlineAttempt* thisIA = SI->parent->IA->getFunctionRoot();
-  thisIA->localAllocas.push_back(SI);
-
   executeAllocInst(SI, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX);
 
 }
@@ -2585,6 +2582,8 @@ void SharedStoreMap::clear() {
 void SharedTreeNode::dropReference(uint32_t height) {
 
   if(!--refCount) {
+
+    LFV3(errs() << "Freeing node " << this << "\n");
 
     // This node goes away! Drop our children.
     if(height == 0) {
@@ -3033,6 +3032,26 @@ void MergeBlockVisitor::mergeStores(LocStore* mergeFromStore, LocStore* mergeToS
 
 }
 
+static bool derefLT(void** a, void** b) {
+  if(!a)
+    return !!b;
+  else if(!b)
+    return false;
+  else
+    return *a < *b;
+}
+
+static bool derefEQ(void** a, void** b) {
+
+  if(!a)
+    return !b;
+  else if(!b)
+    return false;
+  else
+    return (*a == *b);
+
+}
+
 void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor) {
 
   // All members of others are known to differ from this node. This node is writable already.
@@ -3052,7 +3071,7 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	  if(height == 0)
 	    ((ImprovedValSet*)children[i])->dropReference();
 	  else
-	    ((SharedTreeNode*)children[i])->dropReference();
+	    ((SharedTreeNode*)children[i])->dropReference(height - 1);
 	  children[i] = 0;
 
 	}
@@ -3097,8 +3116,8 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
     // or ImprovedValSets. In the former case this avoids merges of identical subtrees
     // in the latter it skips merging ValSetMultis that are shared.
     // In either case refcounting is caught up when unused maps are released at the top level.
-    SmallVector<void*, 4> incomingPtrs;
-    incomingPtrs.push_back(children[i]);
+    SmallVector<void**, 4> incomingPtrs;
+    incomingPtrs.push_back(&(children[i]));
 
     for(SmallVector<SharedTreeNode*, 4>::iterator it = others.begin(), itend = others.end();
 	it != itend; ++it) {
@@ -3106,12 +3125,12 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
       if((!*it) || !(*it)->children[i])
 	incomingPtrs.push_back(0);
       else
-	incomingPtrs.push_back((*it)->children[i]);
+	incomingPtrs.push_back(&((*it)->children[i]));
 
     }
 
-    std::sort(incomingPtrs.begin(), incomingPtrs.end());
-    SmallVector<void*, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end());
+    std::sort(incomingPtrs.begin(), incomingPtrs.end(), derefLT);
+    SmallVector<void**, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end(), derefEQ);
 
     // This subtree never differs?
     if(std::distance(incomingPtrs.begin(), incomingPtrs.end()) == 1)
@@ -3120,9 +3139,9 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
     if(height == 0) {
 
       // Merge each child value.
-      for(SmallVector<void*, 4>::iterator it = incomingPtrs.begin(); it != uniqend; ++it) {
+      for(SmallVector<void**, 4>::iterator it = incomingPtrs.begin(); it != uniqend; ++it) {
 	
-	if(*it == children[i])
+	if(*it == &(children[i]))
 	  continue;
 
 	ShadowValue& MergeV = getAllocWithIdx(idx + i);
@@ -3131,10 +3150,10 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	if(!*it)
 	  mergeFromStore = &(MergeV.getBaseStore());
 	else
-	  mergeFromStore = (LocStore*)(&*it);
+	  mergeFromStore = (LocStore*)(*it);
 
 	// mergeStores takes care of CoW break if necessary.
-	visitor->mergeStores(mergeFromStore, (LocStore*)(&children[i]), MergeV);
+	visitor->mergeStores(mergeFromStore, (LocStore*)&(children[i]), MergeV);
       
       }
 
@@ -3146,8 +3165,18 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
       children[i] = ((SharedTreeNode*)children[i])->getWritableNode(height - 1);
 
       uint32_t newIdx = idx | (i << (HEAPTREEORDERLOG2 * height));
-      ((SharedTreeNode*)children[i])->mergeHeaps(*(SmallVector<SharedTreeNode*, 4>*)&incomingPtrs, 
-						 allOthersClobbered, height - 1, newIdx, visitor);
+      SmallVector<SharedTreeNode*, 4> otherChildren;
+      for(SmallVector<void**, 4>::iterator it = incomingPtrs.begin(), itend = incomingPtrs.end();
+	  it != itend; ++it) {
+	
+	if(!*it)
+	  otherChildren.push_back(0);
+	else
+	  otherChildren.push_back((SharedTreeNode*)**it);
+
+      }
+
+      ((SharedTreeNode*)children[i])->mergeHeaps(otherChildren, allOthersClobbered, height - 1, newIdx, visitor);
 
     }
 
@@ -3397,6 +3426,9 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 
 void MergeBlockVisitor::doMerge() {
 
+  if(incomingBlocks.empty())
+    return;
+
   // Discard wholesale block duplicates:
   SmallVector<LocalStoreMap*, 4> incomingStores;
 
@@ -3409,6 +3441,8 @@ void MergeBlockVisitor::doMerge() {
 
   std::sort(incomingStores.begin(), incomingStores.end());
   SmallVector<LocalStoreMap*, 4>::iterator uniqend = std::unique(incomingStores.begin(), incomingStores.end());
+
+  LocalStoreMap* retainMap;
   
   if(std::distance(incomingStores.begin(), uniqend) > 1) {
 
@@ -3428,7 +3462,11 @@ void MergeBlockVisitor::doMerge() {
     }
 
     // Position 0 is the target; the rest should be merged in. CoW break if still necessary:
+    // Note retainMap is set to the original map rather than the new one as the CoW break drops
+    // a reference to it so it should not be unref'd again below.
+    retainMap = incomingStores[0];
     LocalStoreMap* mergeMap = incomingStores[0] = incomingStores[0]->getWritableFrameList();
+    LFV3(errs() << "Merge target will be " << mergeMap << "\n");
 
     SmallVector<LocalStoreMap*, 4>::iterator firstMergeFrom = incomingStores.begin();
     ++firstMergeFrom;
@@ -3454,16 +3492,23 @@ void MergeBlockVisitor::doMerge() {
 
     // No stores differ; just use #0
     newMap = incomingStores[0];
+    retainMap = newMap;
 
   }
 
-  // Drop refs against all but #0 (note this includes those excluded by uniquing).
+  // Drop refs against each incoming store apart from the store that was either used or
+  // implicitly unref'd as part of the CoW break at getWritableFrameMap.
 
-  SmallVector<LocalStoreMap*, 4>::iterator it = incomingStores.begin(), itend = incomingStores.end();
-  ++it;
+  for(SmallVector<ShadowBB*, 4>::iterator it = incomingBlocks.begin(), itend = incomingBlocks.end();
+      it != itend; ++it) {
 
-  for(; it != itend; ++it)
-    (*it)->dropReference();
+    LocalStoreMap* thisMap = (*it)->localStore;
+    if(thisMap == retainMap)
+      retainMap = 0;
+    else
+      thisMap->dropReference();
+
+  }
 
 }
 
@@ -3563,6 +3608,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
 void LocalStoreMap::popStackFrame() {
 
+  release_assert(frames.size() && "Pop from empty stack?");
   frames.back()->dropReference();
   frames.pop_back();
 

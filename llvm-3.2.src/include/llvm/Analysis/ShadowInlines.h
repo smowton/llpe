@@ -710,7 +710,6 @@ SharedTreeNode() : refCount(1) {
   LocStore* getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore);
   SharedTreeNode* getWritableNode(uint32_t height);
   void mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor);
-  void dropReference();
   void commitToBase(uint32_t height, uint32_t idx);
   void print(raw_ostream&, bool brief, uint32_t height, uint32_t idx);
 

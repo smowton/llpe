@@ -309,6 +309,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
   }
 
+  //errs() << "Leaving block " << SI->parent->invar->BB->getParent()->getName() << "/" << SI->parent->invar->BB->getName() << " with store " << SI->parent->localStore << " refcount " << SI->parent->localStore->refCount << "\n";
+
   // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
   SI->parent->localStore->dropReference();
 

@@ -874,7 +874,6 @@ protected:
   void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
-  virtual void cleanupLocalStore();
 
   // VFS call forwarding:
 
@@ -1225,8 +1224,6 @@ class InlineAttempt : public IntegrationAttempt {
 
   ShadowArg* argShadows;
 
-  SmallVector<ShadowInstruction*, 4> localAllocas;
-
   virtual BasicBlock* getEntryBlock(); 
 
   virtual InlineAttempt* getFunctionRoot(); 
@@ -1293,7 +1290,6 @@ class InlineAttempt : public IntegrationAttempt {
   void resetDeadArgsAndInstructions();
 
   virtual void getInitialStore();
-  virtual void cleanupLocalStore();
   
 };
 
