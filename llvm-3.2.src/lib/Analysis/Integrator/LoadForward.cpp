@@ -304,24 +304,7 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
-ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
-
-  ShadowValue NewSV = PVToSV(PV, RSO, Size, Ctx);
-  if(NewSV.isInval())
-    return ImprovedValSetSingle();
-
-  ImprovedValSetSingle NewPB;
-  if(!getImprovedValSetSingle(NewSV, NewPB)) {
-    if(RSO)
-      *RSO << "PVToPB";
-    return ImprovedValSetSingle();
-  }
-
-  return NewPB;
-
-}
-
-ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
+Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
 
   // Otherwise try to use a sub-value:
   if(PV.isTotal() || PV.isPartial()) {
@@ -340,14 +323,14 @@ ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size,
       uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
       Constant* extr = extractAggregateMemberAt(SalvageC, Offset, 0, Size, GlobalTD);
       if(extr)
-	return ShadowValue(extr);
+	return extr;
 
     }
     else {
 
       if(RSO)
 	*RSO << "NonConstBOps";
-      return ShadowValue();
+      return 0;
 
     }
 
@@ -358,13 +341,13 @@ ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size,
   if(!PV.convertToBytes(Size, GlobalTD, error.get())) {
     if(RSO)
       *RSO << *error;
-    return ShadowValue();
+    return 0;
   }
 
   assert(PV.isByteArray());
 
   Type* targetType = Type::getIntNTy(Ctx, Size * 8);
-  return ShadowValue(constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD));
+  return constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD);
 
 }
 
@@ -1332,7 +1315,11 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
     LFV3(errs() << "Read used a PV\n");
     std::auto_ptr<raw_string_ostream> RSO(error ? new raw_string_ostream(*error) : 0);
-    Result = PVToPB(*ResultPV, RSO.get(), Size, V.getLLVMContext());
+
+    Constant* PVConst = PVToConst(*ResultPV, RSO.get(), Size, V.getLLVMContext());
+    if(!getImprovedValSetSingle(ShadowValue(PVConst), Result))
+      Result.setOverdef();
+
     delete ResultPV;
 
   }

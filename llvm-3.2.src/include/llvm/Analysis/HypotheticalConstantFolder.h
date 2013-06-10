@@ -1399,8 +1399,7 @@ class InlineAttempt : public IntegrationAttempt {
  void executeUnexpandedCall(ShadowInstruction* SI);
  void executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
 
- ImprovedValSetSingle PVToPB(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
- ShadowValue PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
+ Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
 
  void commitStoreToBase(LocalStoreMap* Map);
  void commitFrameToBase(SharedStoreMap* Map);
