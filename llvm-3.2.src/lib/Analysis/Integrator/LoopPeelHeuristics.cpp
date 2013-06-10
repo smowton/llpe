@@ -1887,7 +1887,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   initShadowGlobals(M);
   initBlacklistedFunctions(M);
 
-  argvStore.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
+  argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
   InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0, 0);
 
@@ -1902,7 +1902,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   if(argvIdx != 0xffffffff) {
 
-    IA->argShadows[argvIdx].i.PB = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
+    IA->argShadows[argvIdx].i.PB = ImprovedValSetSingle(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
 
   }
 

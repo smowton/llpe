@@ -1263,8 +1263,8 @@ bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSetSingle& OutPB) 
 
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
-  ImprovedValSetSingle OldPB;
-  bool OldPBValid = getImprovedValSetSingle(V, OldPB);
+  ImprovedValSetSingle& OldPB = getIVSRef(V);
+  bool OldPBValid = OldPB.isInitialised();
 
   if(inLoopAnalyser) {
     // Values can only get worse, and overdef is as bad as it gets:

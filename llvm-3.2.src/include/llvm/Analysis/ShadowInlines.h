@@ -321,6 +321,9 @@ struct ImprovedValSetSingle : public ImprovedValSet {
  ImprovedValSetSingle() : ImprovedValSet(false), SetType(ValSetTypeUnknown), Overdef(false) { }
  ImprovedValSetSingle(ValSetType T) : ImprovedValSet(false), SetType(T), Overdef(false) { }
  ImprovedValSetSingle(ValSetType T, bool OD) : ImprovedValSet(false), SetType(T), Overdef(OD) { }
+ ImprovedValSetSingle(ImprovedVal V, ValSetType T) : ImprovedValSet(false), SetType(T), Overdef(false) {
+    Values.push_back(V);
+  }
 
   virtual ~ImprovedValSetSingle() {}
 
@@ -490,14 +493,19 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   }
 
+  void set(ImprovedVal V, ValSetType T) {
+
+    Values.clear();
+    Values.push_back(V);
+    SetType = T;
+
+  }
+
   ImprovedValSet* getReadableCopy() {
 
     return new ImprovedValSetSingle(*this);
 
   }
-
-  static ImprovedValSetSingle get(ImprovedVal V, ValSetType t) { return ImprovedValSetSingle(t).insert(V); }
-  static ImprovedValSetSingle getOverdef() { return ImprovedValSetSingle(ValSetTypeUnknown, true); }
 
   bool isWritableMulti() {
     return false;
@@ -1142,7 +1150,7 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
     return OutPB.isInitialised();
 
   case SHADOWVAL_GV:
-    OutPB = ImprovedValSetSingle::get(ImprovedVal(V, 0), ValSetTypePB);
+    OutPB.set(ImprovedVal(V, 0), ValSetTypePB);
     return true;
 
   case SHADOWVAL_OTHER:
@@ -1150,7 +1158,7 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
       std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
       if(VPB.first == ValSetTypeUnknown)
 	return false;
-      OutPB = ImprovedValSetSingle::get(VPB.second, VPB.first);
+      OutPB.set(VPB.second, VPB.first);
       return true;
     }
 
@@ -1159,6 +1167,20 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
     release_assert(0 && "getImprovedValSetSingle on uninit value");
     llvm_unreachable();
 
+  }
+
+}
+
+inline ImprovedValSetSingle& getIVSRef(ShadowValue V) {
+
+  switch(V.t) {
+  case SHADOWVAL_INST:
+    return V.u.I->i.PB;
+  case SHADOWVAL_ARG:
+    return V.u.A->i.PB;    
+  default:
+    release_assert(0 && "getIVSRef only applicable to instructions and arguments");
+    llvm_unreachable();
   }
 
 }

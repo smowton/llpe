@@ -392,7 +392,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
 	  if(error)
 	    *error = "Const out of range";
-	  Result = ImprovedValSetSingle::getOverdef();
+	  Result.setOverdef();
 	  return true;
 	}
 
@@ -436,7 +436,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	Type* defType = LoadI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	Result = ImprovedValSetSingle::get(ResultIV.second, ResultIV.first);
+	Result.set(ResultIV.second, ResultIV.first);
 	return true;
 
       }
@@ -445,7 +445,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
 	if(error)
 	  *error = "Const pointer vague";
-	Result = ImprovedValSetSingle::getOverdef();
+	Result.setOverdef();
 	return true;
 
       }
@@ -505,7 +505,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 	Type* defType = LI->getType();
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	ImprovedValSetSingle NullPB = ImprovedValSetSingle::get(ResultIV.second, ResultIV.first);
+	ImprovedValSetSingle NullPB(ResultIV.second, ResultIV.first);
 	NewPB.merge(NullPB);
 	continue;
 
@@ -1191,7 +1191,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       bool rejectHere = IVS->Overdef || (IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat);
       if(rejectHere) {
 	LFV3(errs() << "Reject: non-scalar\n");
-	Result = ImprovedValSetSingle::getOverdef();
+	Result.setOverdef();
 	return;
       }
       
@@ -1237,7 +1237,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       LFV3(errs() << "Partial build failed\n");
       delete ResultPV;
       ResultPV = 0;
-      Result = ImprovedValSetSingle::getOverdef();
+      Result.setOverdef();
 
     }
     else {
@@ -1269,7 +1269,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
     if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), FirstReadByte - Offset, LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
       ResultPV = 0;
-      Result = ImprovedValSetSingle::getOverdef();
+      Result.setOverdef();
       return;
     }
 
@@ -1430,7 +1430,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 }
 
 #define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
-#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle::get(V.second, V.first))); } while(0);
+#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
 
 void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
@@ -1458,7 +1458,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
       }
     }
     // Otherwise can't take a subvalue:
-    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, ImprovedValSetSingle::getOverdef()));
+    Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
     return;
   }
 
@@ -1528,7 +1528,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
     // Out of bounds read on the right. Define as much as we can:
     getConstSubVals(FromC, Offset, FromSize - Offset, OffsetAbove, Dest);
     // ...then overdef the rest.
-    Dest.push_back(IVSR(FromSize, (Offset + TargetSize) - FromSize, ImprovedValSetSingle::getOverdef()));
+    Dest.push_back(IVSR(FromSize, (Offset + TargetSize) - FromSize, ImprovedValSetSingle(ValSetTypeUnknown, true)));
     return;
 
   }
@@ -1597,7 +1597,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
     const StructLayout* SL = GlobalTD->getStructLayout(CS->getType());
     if(!SL) {
       DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
-      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle::getOverdef()));
+      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle(ValSetTypeUnknown, true)));
       return;
     }
 
@@ -1675,7 +1675,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
     }
     else {
 
-      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle::getOverdef()));      
+      Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle(ValSetTypeUnknown, true)));      
 
     }
 
@@ -1726,7 +1726,7 @@ void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize,
   if(subVals.size() != 1) {
     if(Constant* C = valsToConst(subVals, TargetSize, TargetType)) {
       std::pair<ValSetType, ImprovedVal> V = getValPB(C);
-      Result = ImprovedValSetSingle::get(V.second, V.first);
+      Result = ImprovedValSetSingle(V.second, V.first);
     }
     else {
       Result.setOverdef();
@@ -2102,7 +2102,7 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
   if(!firstStore) {
     if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
-      Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle::getOverdef()));
+      Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
       return;
     }
     else {
@@ -2163,15 +2163,15 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   if(AllocType) {
     Constant* Undef = UndefValue::get(AllocType);
     ImprovedVal IV(ShadowValue(Undef), 0);
-    SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::get(IV, ValSetTypeScalar));
+    SI->store.store = new ImprovedValSetSingle(IV, ValSetTypeScalar);
   }
   else {
-    SI->store.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
+    SI->store.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
   }
 
   SI->storeSize = AllocSize;
   
-  SI->i.PB = ImprovedValSetSingle::get(ImprovedVal(SI, 0), ValSetTypePB);
+  SI->i.PB = ImprovedValSetSingle(ImprovedVal(SI, 0), ValSetTypePB);
 
 }
 
@@ -2253,7 +2253,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
   }
 
-  ImprovedValSetSingle ThisInst = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
+  ImprovedValSetSingle ThisInst = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
 
   executeCopyInst(ThisInst, SrcPtrSet, CopySize, SI->parent);
 
@@ -2266,7 +2266,7 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
   if(Size == ULONG_MAX || PtrSet.Overdef || PtrSet.Values.size() != 1 || SrcPtrSet.Overdef || SrcPtrSet.Values.size() != 1) {
 
     // Only support memcpy from single pointer to single pointer for the time being:
-    ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
     executeWriteInst(PtrSet, OD, Size, BB);
     return;
 
@@ -2310,23 +2310,23 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
   if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
 
-    ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
     executeWriteInst(PtrSet, OD, 24, BB);
     return;
 
   }
 
   SmallVector<IVSRange, 4> vaStartVals;
-  ImprovedValSetSingle nonFPOffset = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_nonfp_arg), ValSetTypeVarArg);
+  ImprovedValSetSingle nonFPOffset = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), ImprovedVal::first_nonfp_arg), ValSetTypeVarArg);
   vaStartVals.push_back(IVSR(0, 4, nonFPOffset));
 
-  ImprovedValSetSingle FPOffset = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_fp_arg), ValSetTypeVarArg);
+  ImprovedValSetSingle FPOffset = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), ImprovedVal::first_fp_arg), ValSetTypeVarArg);
   vaStartVals.push_back(IVSR(4, 8, FPOffset));
 
-  ImprovedValSetSingle AnyPtr = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::first_any_arg), ValSetTypeVarArg);
+  ImprovedValSetSingle AnyPtr = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), ImprovedVal::first_any_arg), ValSetTypeVarArg);
   vaStartVals.push_back(IVSR(8, 16, AnyPtr));
   
-  ImprovedValSetSingle StackBase = ImprovedValSetSingle::get(ImprovedVal(ShadowValue(SI), ImprovedVal::va_baseptr), ValSetTypeVarArg);
+  ImprovedValSetSingle StackBase = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), ImprovedVal::va_baseptr), ValSetTypeVarArg);
   vaStartVals.push_back(IVSR(16, 24, StackBase));
 
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
@@ -2349,7 +2349,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
   
   if(PtrSet.Overdef || PtrSet.Values.size() != 1) {
 
-    WriteIVS = ImprovedValSetSingle::getOverdef();
+    WriteIVS.setOverdef();
 
   }
   else {
@@ -2360,7 +2360,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
     if(getFileBytes(OS.Name, FileOffset, Size, constBytes, Context,  errors)) {
       ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
       Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
-      WriteIVS = ImprovedValSetSingle::get(ImprovedVal(ByteArray, 0), ValSetTypeScalar);
+      WriteIVS = ImprovedValSetSingle(ImprovedVal(ByteArray, 0), ValSetTypeScalar);
     }
 
   }
@@ -2478,7 +2478,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
 	ImprovedValSetSingle ClobberSet;
 	getImprovedValSetSingle(ClobberV, ClobberSet);
-	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	executeWriteInst(ClobberSet, OD, ClobberSize, SI->parent);
 
       }
@@ -2491,7 +2491,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
   // Finally clobber all locations; this call is entirely unhandled
   errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
-  ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+  ImprovedValSetSingle OD(ValSetTypeUnknown, true);
   executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
 
 }
@@ -2532,7 +2532,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
       if(it->Offset == LLONG_MAX) {
 	LFV3(errs() << "Write through vague pointer; clobber\n");
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
-	ImprovedValSetSingle OD = ImprovedValSetSingle::getOverdef();
+	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
       }
       else {

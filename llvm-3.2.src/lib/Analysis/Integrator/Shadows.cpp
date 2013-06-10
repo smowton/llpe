@@ -141,7 +141,7 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
       else {
 
 	std::pair<ValSetType, ImprovedVal> InitIV = getValPB(I);
-	(*Init) = ImprovedValSetSingle::get(InitIV.second, InitIV.first);
+	(*Init) = ImprovedValSetSingle(InitIV.second, InitIV.first);
 
       }
 
