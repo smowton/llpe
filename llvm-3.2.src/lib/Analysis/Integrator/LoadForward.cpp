@@ -2490,7 +2490,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   }
 
   // Finally clobber all locations; this call is entirely unhandled
-  errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
+  //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
   ImprovedValSetSingle OD(ValSetTypeUnknown, true);
   executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
 
