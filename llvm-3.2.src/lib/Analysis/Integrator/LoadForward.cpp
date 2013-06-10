@@ -12,6 +12,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 
+#include <memory>
+
 using namespace llvm;
 
 ImprovedValSetMulti::ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0) {
@@ -175,7 +177,7 @@ bool PartialVal::isComplete() {
 
 }
 
-bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string& error) {
+bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string* error) {
 
   if(isByteArray())
     return true;
@@ -190,7 +192,7 @@ bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string& erro
 
 }
 
-bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string& error) {
+bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string* error) {
 
   if(isEmpty()) {
 
@@ -217,7 +219,8 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
     Constant* TotalC = dyn_cast_or_null<Constant>(Other.TotalIV.V.getVal());
     if(!TotalC) {
       //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
-      error = "PP2";
+      if(error)
+	*error = "PP2";
       return false;
     }
     Other.C = TotalC;
@@ -240,7 +243,8 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
     if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
       DEBUG(dbgs() << "ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
-      error = "RDFG";
+      if(error)
+	*error = "RDFG";
       return false;
     }
 
@@ -300,7 +304,7 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
-ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext& Ctx) {
+ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
 
   ShadowValue NewSV = PVToSV(PV, RSO, Size, Ctx);
   if(NewSV.isInval())
@@ -308,7 +312,8 @@ ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint6
 
   ImprovedValSetSingle NewPB;
   if(!getImprovedValSetSingle(NewSV, NewPB)) {
-    RSO << "PVToPB";
+    if(RSO)
+      *RSO << "PVToPB";
     return ImprovedValSetSingle();
   }
 
@@ -316,7 +321,7 @@ ImprovedValSetSingle llvm::PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint6
 
 }
 
-ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext& Ctx) {
+ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
 
   // Otherwise try to use a sub-value:
   if(PV.isTotal() || PV.isPartial()) {
@@ -340,7 +345,8 @@ ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size,
     }
     else {
 
-      RSO << "NonConstBOps";
+      if(RSO)
+	*RSO << "NonConstBOps";
       return ShadowValue();
 
     }
@@ -348,9 +354,10 @@ ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size,
   }
 
   // Finally build it from bytes.
-  std::string error;
-  if(!PV.convertToBytes(Size, GlobalTD, error)) {
-    RSO << error;
+  std::auto_ptr<std::string> error(RSO ? new std::string() : 0);
+  if(!PV.convertToBytes(Size, GlobalTD, error.get())) {
+    if(RSO)
+      *RSO << *error;
     return ShadowValue();
   }
 
@@ -361,7 +368,7 @@ ShadowValue llvm::PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size,
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string& error) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string* error) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -400,7 +407,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	uint64_t FromSize = GlobalAA->getTypeStoreSize(FromType);
 
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
-	  error = "Const out of range";
+	  if(error)
+	    *error = "Const out of range";
 	  Result = ImprovedValSetSingle::getOverdef();
 	  return true;
 	}
@@ -452,7 +460,8 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
       else if(!foundNonConst) {
 
 	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
-	error = "Const pointer vague";
+	if(error)
+	  *error = "Const pointer vague";
 	Result = ImprovedValSetSingle::getOverdef();
 	return true;
 
@@ -494,7 +503,7 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
 }
 
-static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std::string& report) {
+static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std::string* report) {
 
   uint64_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
 
@@ -503,7 +512,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
   ImprovedValSetSingle LIPB;
   getImprovedValSetSingle(LI->getOperand(0), LIPB);
 
-  raw_string_ostream RSO(report); 
+  std::auto_ptr<raw_string_ostream> RSO(report ? new raw_string_ostream(*report) : 0);
 
   for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB.Overdef; ++i) {
 
@@ -520,13 +529,13 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
       }
     }
 
-    std::string ThisError;
+    std::auto_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
     ImprovedValSetSingle ThisPB;
 
-    readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, ThisError);
+    readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, ThisError.get());
 
     if(!ThisPB.Overdef) {
-      if(!ThisPB.coerceToType(LI->getType(), LoadSize, ThisError)) {
+      if(!ThisPB.coerceToType(LI->getType(), LoadSize, ThisError.get())) {
 	NewPB.setOverdef();
       }
       else {
@@ -537,16 +546,20 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
       NewPB.merge(ThisPB);
     }
 
-    if(ThisPB.Overdef) {
-	
-      RSO << "Load " << itcache(LIPB.Values[i].V, true) << " -> " << ThisError;
+    if(RSO.get()) {
 
-    }
-    else if(NewPB.Overdef) {
+      if(ThisPB.Overdef) {
 	
-      RSO << "Loaded ";
-      printPB(RSO, ThisPB, true);
-      RSO << " -merge-> " << ThisError;
+	*RSO << "Load " << itcache(LIPB.Values[i].V, true) << " -> " << *ThisError;
+
+      }
+      else if(NewPB.Overdef) {
+	
+	*RSO << "Loaded ";
+	printPB(*RSO, ThisPB, true);
+	*RSO << " -merge-> " << *ThisError;
+
+      }
 
     }
 
@@ -560,22 +573,21 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
 
   ImprovedValSetSingle ConstResult;
-  std::string error;
-  if(tryResolveLoadFromConstant(LI, ConstResult, error)) {
-    NewPB = ConstResult;
-    if(NewPB.Overdef)
-      optimisticForwardStatus[LI->invar->I] = error;
+  std::auto_ptr<std::string> error(pass->verboseOverdef ? new std::string() : 0);
+
+  if(tryResolveLoadFromConstant(LI, NewPB, error.get())) {
+    if(NewPB.Overdef && pass->verboseOverdef)
+      optimisticForwardStatus[LI->invar->I] = *error;
     return NewPB.isInitialised();
   }
 
   bool ret;
-  std::string report;
 
   ImprovedValSetSingle LoadPtrPB;
   getImprovedValSetSingle(LI->getOperand(0), LoadPtrPB);
   if(shouldMultiload(LoadPtrPB)) {
 
-    ret = tryMultiload(LI, NewPB, report);
+    ret = tryMultiload(LI, NewPB, error.get());
     if(NewPB.SetType == ValSetTypeVarArg)
       loadedVararg = true;
 
@@ -584,14 +596,17 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
 
     // Load from a vague pointer -> Overdef.
     ret = true;
-    raw_string_ostream RSO(report);
-    RSO << "Load vague ";
-    printPB(RSO, LoadPtrPB, true);
+    if(error.get()) {
+      raw_string_ostream RSO(*error);
+      RSO << "Load vague ";
+      printPB(RSO, LoadPtrPB, true);
+    }
     NewPB.setOverdef();
 
   }
 
-  optimisticForwardStatus[LI->invar->I] = report;
+  if(error.get())
+    optimisticForwardStatus[LI->invar->I] = *error;
    
   return ret;
 
@@ -1112,7 +1127,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   
 }
 
-bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string& error) {
+bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
 
   release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVSToPartialVal");
 
@@ -1151,7 +1166,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uin
 
 }
 
-void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string& error) {
+void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string* error) {
 
   ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
   uint64_t IVSSize = V.getAllocSize();
@@ -1288,7 +1303,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
 }
 
-void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string& error) {
+void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string* error) {
 
   // Try to make an IVS representing the block-local value of V+Offset -> Size.
   // Limitations for now: because our output is a single IVS, non-scalar types may only be described
@@ -1316,8 +1331,8 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
   if(ResultPV) {
 
     LFV3(errs() << "Read used a PV\n");
-    raw_string_ostream RSO(error);
-    Result = PVToPB(*ResultPV, RSO, Size, V.getLLVMContext());
+    std::auto_ptr<raw_string_ostream> RSO(error ? new raw_string_ostream(*error) : 0);
+    Result = PVToPB(*ResultPV, RSO.get(), Size, V.getLLVMContext());
     delete ResultPV;
 
   }
@@ -1326,7 +1341,7 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
 }
 
-bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string& error) {
+bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string* error) {
 
   Type* Source = Values[0].V.getType();
   
@@ -1342,7 +1357,8 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
     return true;
 
   if(SetType != ValSetTypeScalar) {
-    error = "Non-scalar coercion";
+    if(error)
+      *error = "Non-scalar coercion";
     return false;
   }
 
@@ -1360,7 +1376,8 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
       for(unsigned i = 0; i < PV.partialBufBytes; ++i) {
 	
 	if(checkBuf[i]) {
-	  error = "Cast non-zero to pointer";
+	  if(error)
+	    *error = "Cast non-zero to pointer";
 	  return false;
 	}
 	
@@ -1731,8 +1748,7 @@ void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize,
   else {
     Result = subVals[0].second;
     if(TargetType) {
-      std::string ign;
-      Result.coerceToType(TargetType, TargetSize, ign);
+      Result.coerceToType(TargetType, TargetSize, 0);
     }
   }
 
@@ -2543,14 +2559,12 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	}
 	else {
 
-	  std::string ignoreErrorHere;
 	  LFV3(errs() << "Write through maybe pointer; merge\n");
-	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, ignoreErrorHere);
+	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, 0);
 
 	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
 
-	    std::string ignoredError;
-	    if(!ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, ignoredError)) {
+	    if(!ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0)) {
 	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldValSet.Values[0].V.getType()) << "\n");
 	    }
 

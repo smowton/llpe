@@ -67,6 +67,7 @@ static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
+static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1792,6 +1793,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     maxLoopIters[std::make_pair(LF, HBB)] = Count;
 
   }
+
+  this->verboseOverdef = VerboseOverdef;
 
 }
 

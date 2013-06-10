@@ -142,6 +142,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    std::vector<ShadowValue> heap;
 
+   bool verboseOverdef;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -377,11 +379,11 @@ struct PartialVal {
 
   uint64_t markPaddingBytes(Type*);
 
-  bool addPartialVal(PartialVal& PV, DataLayout* TD, std::string& error);
+  bool addPartialVal(PartialVal& PV, DataLayout* TD, std::string* error);
   bool isComplete();
   bool* getValidArray(uint64_t);
-  bool convertToBytes(uint64_t, DataLayout*, std::string& error);
-  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string& error);
+  bool convertToBytes(uint64_t, DataLayout*, std::string* error);
+  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string* error);
 
   void initByteArray(uint64_t);
   
@@ -866,7 +868,7 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string& error);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string* error);
   bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
@@ -1363,9 +1365,9 @@ class InlineAttempt : public IntegrationAttempt {
 
 
  // Load forwarding v3 functions:
- bool addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string& error);
- void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string& error);
- void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string& error);
+ bool addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
+ void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string* error);
+ void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string* error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
 
@@ -1397,8 +1399,8 @@ class InlineAttempt : public IntegrationAttempt {
  void executeUnexpandedCall(ShadowInstruction* SI);
  void executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
 
- ImprovedValSetSingle PVToPB(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
- ShadowValue PVToSV(PartialVal& PV, raw_string_ostream& RSO, uint64_t Size, LLVMContext&);
+ ImprovedValSetSingle PVToPB(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
+ ShadowValue PVToSV(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
 
  void commitStoreToBase(LocalStoreMap* Map);
  void commitFrameToBase(SharedStoreMap* Map);

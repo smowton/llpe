@@ -64,10 +64,10 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     // Create a GEP to access the next byte:
 
-    std::string fwdError;
+    //std::string* fwdError = 0;
 
     ImprovedValSetSingle byte;
-    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, fwdError);
+    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, 0 /* fwdError */);
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
@@ -76,7 +76,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     }
     else {
 
-      byte.coerceToType(byteType, 1, fwdError);
+      byte.coerceToType(byteType, 1, 0);
 
       DEBUG(dbgs() << "Open forwarding success: ");
       DEBUG(printPB(dbgs(), byte));

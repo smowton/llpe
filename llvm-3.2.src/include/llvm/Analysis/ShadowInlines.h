@@ -451,7 +451,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     return false;
   }
 
-  bool coerceToType(llvm::Type* Target, uint64_t TargetSize, std::string& error);
+  bool coerceToType(llvm::Type* Target, uint64_t TargetSize, std::string* error);
   virtual void print(raw_ostream&, bool brief = false);
   
 };

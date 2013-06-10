@@ -1318,13 +1318,15 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
     }
 
-    if(ShadowInstruction* I = V.getInst()) {
-      if(!inst_is<LoadInst>(I)) {
-	std::string RStr;
-	raw_string_ostream RSO(RStr);
-	printPB(RSO, NewPB, true);
-	RSO.flush();
-	optimisticForwardStatus[I->invar->I] = RStr;
+    if(pass->verboseOverdef) {
+      if(ShadowInstruction* I = V.getInst()) {
+	if(!inst_is<LoadInst>(I)) {
+	  std::string RStr;
+	  raw_string_ostream RSO(RStr);
+	  printPB(RSO, NewPB, true);
+	  RSO.flush();
+	  optimisticForwardStatus[I->invar->I] = RStr;
+	}
       }
     }
 
