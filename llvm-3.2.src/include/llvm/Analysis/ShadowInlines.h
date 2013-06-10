@@ -483,18 +483,13 @@ struct ImprovedValSetMulti : public ImprovedValSet {
 
   typedef IntervalMap<uint64_t, ImprovedValSetSingle, IntervalMapImpl::NodeSizer<uint64_t, ImprovedValSetSingle>::LeafSize, HalfOpenNoMerge> MapTy;
   typedef MapTy::iterator MapIt;
-  MapTy::Allocator MapAllocator;
   MapTy Map;
   uint32_t MapRefCount;
   ImprovedValSet* Underlying;
   uint64_t CoveredBytes;
   uint64_t AllocSize;
 
- ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), MapAllocator(), Map(MapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0) {
-    
-    AllocSize = V.getAllocSize();
-
-  }
+  ImprovedValSetMulti(ShadowValue& V);
 
   virtual ~ImprovedValSetMulti() {}
 

@@ -507,6 +507,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
   for(uint32_t i = 0, ilim = newBB->invar->insts.size(); i != ilim; ++i) {
     insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
+    insts[i].allocIdx = -1;
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
   newBB->useSpecialVarargMerge = false;

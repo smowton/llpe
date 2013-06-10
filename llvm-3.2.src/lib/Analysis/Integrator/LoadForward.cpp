@@ -14,6 +14,12 @@
 
 using namespace llvm;
 
+ImprovedValSetMulti::ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0) {
+
+  AllocSize = V.getAllocSize();
+
+}
+
 bool IntAAProxy::isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size) {
 
   return (tryResolveImprovedValSetSingles(Ptr1Base, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true) == SVNoAlias);

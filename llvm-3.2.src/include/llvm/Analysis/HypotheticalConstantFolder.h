@@ -8,6 +8,7 @@
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
 #include "llvm/Constant.h"
@@ -70,8 +71,6 @@ class ShadowLoopInvar;
 class TargetLibraryInfo;
  class VFSCallAliasAnalysis;
 
-bool functionIsBlacklisted(Function*);
-
 inline void release_assert_fail(const char* str) {
 
   errs() << "Assertion failed: " << str << "\n";
@@ -128,6 +127,11 @@ class IntegrationHeuristicsPass : public ModulePass {
    unsigned mallocAlignment;
 
  public:
+
+   ImprovedValSetMulti::MapTy::Allocator IMapAllocator;
+
+   SmallPtrSet<Function*, 8> blacklistedFunctions;
+   void initBlacklistedFunctions(Module&);
 
    static char ID;
 
@@ -241,7 +245,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    InlineAttempt* getRoot() { return RootIA; }
    void commit();
-  
+
 };
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
@@ -1035,10 +1039,6 @@ protected:
   virtual std::string getFunctionName();
   virtual int getIterCount() = 0;
 
-  virtual bool isBlacklisted(Function* F) {
-    return functionIsBlacklisted(F);
-  }
-
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
   }
@@ -1437,6 +1437,12 @@ class InlineAttempt : public IntegrationAttempt {
    void doMerge();
 
  };
+
+ inline bool functionIsBlacklisted(Function* F) {
+   
+   return GlobalIHP->blacklistedFunctions.count(F);
+   
+ }
 
 } // Namespace LLVM
 

@@ -390,7 +390,9 @@ bool IntegrationAttempt::isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I) 
     }
 
   }
-  else if(isMallocLikeFn(Alloc.getBareVal(), GlobalTLI, false, true)) {
+  else if(I->allocIdx != -1) { 
+
+    // allocIdx being set for a non-alloca means this is malloc or realloc.
 
     const CallInst* Free = isFreeCall(I->invar->I, GlobalTLI, true);
     if(Free) {

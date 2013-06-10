@@ -292,55 +292,69 @@ InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
 
 }
 
-bool llvm::functionIsBlacklisted(Function* F) {
+static const char* blacklistedFnNames[] = {
+  
+   "malloc" ,  "free" ,
+   "realloc" ,  "ioctl" ,
+   "gettimeofday" ,  "clock_gettime" ,
+   "time" ,
+   "open" ,  "read" ,
+   "llseek" ,  "lseek" ,
+   "lseek64" ,  "close" ,
+   "write" , 
+   "__libc_fcntl" ,
+   "posix_fadvise" ,
+   "stat" ,
+   "isatty" ,
+   "__libc_sigaction" ,
+   "socket" ,  "bind" ,
+   "listen" ,  "setsockopt" ,
+   "_exit" ,  "__libc_accept" ,
+   "poll" ,  "shutdown" ,
+   "mkdir" ,
+   "__libc_nanosleep" ,
+   "rename" ,
+   "setgid" ,
+   "setuid" ,
+   "__fcntl_nocancel" ,
+   "closedir" ,
+   "opendir" ,
+   "getsockname" ,
+   "__libc_recvfrom" ,
+   "__libc_sendto" ,
+   "mmap" ,
+   "munmap" ,
+   "mremap" ,
+   "clock_getres" ,
+   "fstat" ,
+   "getegid" ,
+   "geteuid" ,
+   "getgid" ,
+   "getrlimit" ,
+   "getuid" ,
+   "rmdir" ,
+   "sigprocmask" ,
+   "unlink" ,
+   "__getdents64" ,
+   "brk" ,
+   "getpid" ,
+   "kill" ,
+   "uname"
+   
+};
 
-  return (F->getName() == "malloc" || F->getName() == "free" ||
-	  F->getName() == "realloc" || F->getName() == "ioctl" ||
-	  F->getName() == "gettimeofday" || F->getName() == "clock_gettime" ||
-	  F->getName() == "time" ||
-	  F->getName() == "open" || F->getName() == "read" ||
-	  F->getName() == "llseek" || F->getName() == "lseek" ||
-	  F->getName() == "lseek64" || F->getName() == "close" ||
-	  F->getName() == "write" || 
-	  F->getName() == "__libc_fcntl" ||
-	  F->getName() == "posix_fadvise" ||
-	  F->getName() == "stat" ||
-	  F->getName() == "isatty" ||
-	  F->getName() == "__libc_sigaction" ||
-	  F->getName() == "socket" || F->getName() == "bind" ||
-	  F->getName() == "listen" || F->getName() == "setsockopt" ||
-	  F->getName() == "_exit" || F->getName() == "__libc_accept" ||
-	  F->getName() == "poll" || F->getName() == "shutdown" ||
-	  F->getName() == "mkdir" ||
-	  F->getName() == "__libc_nanosleep" ||
-	  F->getName() == "rename" ||
-	  F->getName() == "setgid" ||
-	  F->getName() == "setuid" ||
-	  F->getName() == "__fcntl_nocancel" ||
-	  F->getName() == "closedir" ||
-	  F->getName() == "opendir" ||
-	  F->getName() == "getsockname" ||
-	  F->getName() == "__libc_recvfrom" ||
-	  F->getName() == "__libc_sendto" ||
-	  F->getName() == "mmap" ||
-	  F->getName() == "munmap" ||
-	  F->getName() == "mremap" ||
-	  F->getName() == "clock_getres" ||
-	  F->getName() == "fstat" ||
-	  F->getName() == "getegid" ||
-	  F->getName() == "geteuid" ||
-	  F->getName() == "getgid" ||
-	  F->getName() == "getrlimit" ||
-	  F->getName() == "getuid" ||
-	  F->getName() == "rmdir" ||
-	  F->getName() == "sigprocmask" ||
-	  F->getName() == "unlink" ||
-	  F->getName() == "__getdents64" ||
-	  F->getName() == "brk" ||
-	  F->getName() == "getpid" ||
-	  F->getName() == "kill" ||
-	  F->getName() == "uname");
 
+void IntegrationHeuristicsPass::initBlacklistedFunctions(Module& M) {
+
+  uint32_t nfns = sizeof(blacklistedFnNames) / sizeof(blacklistedFnNames[0]);
+
+  for(uint32_t i = 0; i != nfns; ++i) {
+
+    if(Function* F = M.getFunction(blacklistedFnNames[i]))
+      blacklistedFunctions.insert(F);
+
+  }
+   
 }
 
 bool PeelIteration::stackIncludesCallTo(Function* FCalled) {
@@ -1868,6 +1882,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
   initShadowGlobals(M);
+  initBlacklistedFunctions(M);
 
   argvStore.store = new ImprovedValSetSingle(ImprovedValSetSingle::getOverdef());
 
