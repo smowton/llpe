@@ -1127,9 +1127,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
     }
     else {
 
-      ImprovedValSetSingle ThisPB(ThisVST);
-      ThisPB.insert(ThisV);
-      NewPB.merge(ThisPB);
+      NewPB.mergeOne(ThisVST, ThisV);
       return true;
 
     }
@@ -1139,34 +1137,43 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
   // Else queue up the next operand:
 
   ShadowValue OpV = SI->getOperand(OpIdx);
-  if(Value* V = OpV.getVal()) {
 
-    Ops[OpIdx] = getValPB(V);
+  switch(OpV.t) {
+  case SHADOWVAL_OTHER:
+    
+    Ops[OpIdx] = getValPB(OpV.u.V);
     return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
 
-  }
-  else {
+  case SHADOWVAL_GV:
 
-    ImprovedValSetSingle ArgPB;
-    bool ArgPBValid = getImprovedValSetSingle(OpV, ArgPB);
-    if((!ArgPBValid) || ArgPB.Overdef) {
-      Ops[OpIdx].first = ArgPB.Overdef ? ValSetTypeOverdef : ValSetTypeUnknown;
-      Ops[OpIdx].second.V = ShadowValue();
-      return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
-    }
-    else {
-      
-      Ops[OpIdx].first = ArgPB.SetType;
-      for(uint32_t i = 0; i < ArgPB.Values.size(); ++i) {
-	
-	Ops[OpIdx].second = ArgPB.Values[i];
-	tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
-	if(NewPB.Overdef)
-	  break;
-	
+    Ops[OpIdx] = std::make_pair(ValSetTypePB, ImprovedVal(OpV, 0));
+    return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+
+  default:
+
+    {
+
+      ImprovedValSetSingle& ArgPB = OpV.t == SHADOWVAL_INST ? OpV.u.I->i.PB : OpV.u.A->i.PB;
+      if((!ArgPB.isInitialised()) || ArgPB.Overdef) {
+	Ops[OpIdx].first = ArgPB.Overdef ? ValSetTypeOverdef : ValSetTypeUnknown;
+	Ops[OpIdx].second.V = ShadowValue();
+	return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
       }
+      else {
+      
+	Ops[OpIdx].first = ArgPB.SetType;
+	for(uint32_t i = 0; i < ArgPB.Values.size(); ++i) {
+	
+	  Ops[OpIdx].second = ArgPB.Values[i];
+	  tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+	  if(NewPB.Overdef)
+	    break;
+	  
+	}
+	
+	return true;
 
-      return true;
+      }
 
     }
 
