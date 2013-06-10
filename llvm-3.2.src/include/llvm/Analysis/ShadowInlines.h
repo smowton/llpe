@@ -251,6 +251,21 @@ ImprovedVal(ShadowValue _V, int64_t _O = LLONG_MAX) : V(_V), Offset(_O) { }
 
   }
 
+  bool isNull() {
+
+    if(Constant* C = dyn_cast_or_null<Constant>(V.getVal()))
+      return C->isNullValue();
+    else
+      return false;
+
+  }
+
+  bool isFunction() {
+
+    return !!dyn_cast_or_null<Function>(V.getVal());
+
+  }
+
 };
 
 inline bool operator==(ImprovedVal V1, ImprovedVal V2) {
@@ -327,17 +342,12 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   }
 
-
   bool onlyContainsNulls() {
 
-    if(SetType == ValSetTypePB && Values.size() == 1) {
-      
-      if(Constant* C = dyn_cast_or_null<Constant>(Values[0].V.getVal()))
-	return C->isNullValue();
-      
-    }
-    
-    return false;
+    if(SetType == ValSetTypePB && Values.size() == 1)
+      return Values[0].isNull();
+    else
+      return false;
     
   }
 
@@ -347,9 +357,8 @@ struct ImprovedValSetSingle : public ImprovedValSet {
       return false;
     
     for(uint32_t i = 0; i < Values.size(); ++i) {
-      
-      Function* F = dyn_cast_or_null<Function>(Values[i].V.getVal());
-      if(!F)
+
+      if(!Values[i].isFunction())
 	return false;
       
     }
@@ -358,7 +367,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   }
 
-  virtual ImprovedValSetSingle& insert(ImprovedVal V) {
+  ImprovedValSetSingle& insert(ImprovedVal V) {
 
     release_assert(V.V.t != SHADOWVAL_INVAL);
 
@@ -392,6 +401,49 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     if(Values.size() > PBMAX)
       setOverdef();
     
+    return *this;
+
+  }
+
+  ImprovedValSetSingle& mergeOne(ValSetType OtherType, ImprovedVal OtherVal) {
+
+    if(OtherType == ValSetTypeUnknown)
+      return *this;
+
+    if(OtherType == ValSetTypeOverdef) {
+      setOverdef();
+      return *this;
+    }
+
+    if(isInitialised() && OtherType != SetType) {
+
+      if(onlyContainsFunctions() && OtherVal.isNull()) {
+
+	insert(OtherVal);
+	return *this;
+
+      }
+      else if(onlyContainsNulls() && OtherVal.isFunction()) {
+
+	SetType = ValSetTypeScalar;
+	insert(OtherVal);
+	return *this;
+
+      }
+      else {
+
+	setOverdef();
+
+      }
+
+    }
+    else {
+
+      SetType = OtherType;
+      insert(OtherVal);
+
+    }
+
     return *this;
 
   }
@@ -1105,6 +1157,44 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
   case SHADOWVAL_INVAL:
   default:
     release_assert(0 && "getImprovedValSetSingle on uninit value");
+    llvm_unreachable();
+
+  }
+
+}
+
+inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
+
+  switch(V.t) {
+
+  case SHADOWVAL_INST:
+    if(!V.u.I->i.PB.isInitialised())
+      ResultPB.setOverdef();
+    else
+      ResultPB.merge(V.u.I->i.PB);
+    return;
+  case SHADOWVAL_ARG:
+    if(!V.u.A->i.PB.isInitialised())
+      ResultPB.setOverdef();
+    else
+      ResultPB.merge(V.u.A->i.PB);
+    return;
+  case SHADOWVAL_GV:
+    ResultPB.mergeOne(ValSetTypePB, ImprovedVal(V, 0));
+    return;
+  case SHADOWVAL_OTHER:
+    {
+      std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
+      if(VPB.first == ValSetTypeUnknown)
+	ResultPB.setOverdef();
+      else
+	ResultPB.mergeOne(VPB.first, VPB.second);
+    }
+    return;
+
+  case SHADOWVAL_INVAL:
+  default:
+    release_assert(0 && "addValToPB on uninit value");
     llvm_unreachable();
 
   }

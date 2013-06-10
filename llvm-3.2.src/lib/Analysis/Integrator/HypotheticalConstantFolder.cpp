@@ -185,24 +185,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSi
 
   for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
     
-    ImprovedValSetSingle VPB;
-    if(!getImprovedValSetSingle(*it, VPB)) {
-      if(verbose)
-	errs() << "Predecessor " << itcache(*it) << " undefined\n";
-      NewPB = ImprovedValSetSingle::getOverdef();
-      if(verbose)
-	errs() << "=== END PHI MERGE\n";
-      return true;
-    }
-
-    if(verbose) {
-      errs() << "Predecessor " << itcache(I) << " defined by ";
-      printPB(errs(), VPB, false);
-      errs() << "\n";
-    }
-
-    anyInfo = true;
-    NewPB.merge(VPB);
+    addValToPB(*it, NewPB);
 
   }
 
