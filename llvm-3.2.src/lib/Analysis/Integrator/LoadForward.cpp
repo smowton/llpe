@@ -3145,6 +3145,8 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
     // in the latter it skips merging ValSetMultis that are shared.
     // In either case refcounting is caught up when unused maps are released at the top level.
     SmallVector<void**, 4> incomingPtrs;
+    incomingPtrs.reserve(std::distance(others.begin(), others.end()) + 1);
+
     incomingPtrs.push_back(&(children[i]));
 
     for(SmallVector<SharedTreeNode*, 4>::iterator it = others.begin(), itend = others.end();
@@ -3231,6 +3233,8 @@ static bool rootsEqual(const LocalStoreMap* r1, const LocalStoreMap* r2) {
 void MergeBlockVisitor::mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd) {
 
   SmallVector<LocalStoreMap*, 4> incomingRoots;
+  incomingRoots.reserve(std::distance(fromBegin, fromEnd) + 1);
+
   incomingRoots.push_back(toMap);
   for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
     incomingRoots.push_back(*it);
@@ -3333,6 +3337,8 @@ static bool storeEQ(const LocStore* a, const LocStore* b) {
 void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd, uint32_t idx) {
 
   SmallVector<SharedStoreMap*, 4> incomingFrames;
+  incomingFrames.reserve(std::distance(fromBegin, fromEnd) + 1);
+
   incomingFrames.push_back(toMap->frames[idx]);
   for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
     incomingFrames.push_back((*it)->frames[idx]);
@@ -3461,6 +3467,7 @@ void MergeBlockVisitor::doMerge() {
 
   // Discard wholesale block duplicates:
   SmallVector<LocalStoreMap*, 4> incomingStores;
+  incomingStores.reserve(std::distance(incomingBlocks.begin(), incomingBlocks.end()));
 
   for(SmallVector<ShadowBB*, 4>::iterator it = incomingBlocks.begin(), itend = incomingBlocks.end();
       it != itend; ++it) {
