@@ -468,27 +468,6 @@ ShadowBB* IntegrationAttempt::getOrCreateBB(ShadowBBInvar* BBI) {
 
 }
 
-ShadowBB* IntegrationAttempt::getBB(ShadowBBInvar& BBI, bool* inScope) {
-
-  return getBB(BBI.idx, inScope);
-  
-}
-
-ShadowBB* IntegrationAttempt::getBB(uint32_t idx, bool* inScope) {
-
-  if(!(idx >= BBsOffset && idx < (BBsOffset + nBBs))) {
-    if(inScope)
-      *inScope = false;
-    return 0;
-  }
-  else {
-    if(inScope)
-      *inScope = true;
-    return BBs[idx - BBsOffset];
-  }
-
-}
-
 ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
 
   return &(invarInfo->BBs[idx]);

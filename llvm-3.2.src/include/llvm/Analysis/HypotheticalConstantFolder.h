@@ -798,8 +798,28 @@ protected:
   // Simple state-tracking helpers:
 
   virtual InlineAttempt* getFunctionRoot() = 0;
-  ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0);
-  ShadowBB* getBB(uint32_t idx, bool* inScope = 0);
+
+  ShadowBB* getBB(uint32_t idx, bool* inScope = 0) {
+
+    if(!(idx >= BBsOffset && idx < (BBsOffset + nBBs))) {
+      if(inScope)
+	*inScope = false;
+      return 0;
+    }
+    else {
+      if(inScope)
+	*inScope = true;
+      return BBs[idx - BBsOffset];
+    }
+
+  }
+
+  ShadowBB* getBB(ShadowBBInvar& BBI, bool* inScope = 0) {
+
+    return getBB(BBI.idx, inScope);
+
+  }
+
   ShadowBB* getOrCreateBB(ShadowBBInvar* BBI);
   ShadowBB* getOrCreateBB(uint32_t);
   // virtual for external access:
