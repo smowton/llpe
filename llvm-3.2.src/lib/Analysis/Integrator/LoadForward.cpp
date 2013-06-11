@@ -726,7 +726,7 @@ int32_t ShadowValue::getFrameNo() {
     return -1;
 
   if(inst_is<AllocaInst>(SI))
-    return SI->parent->IA->getFunctionRoot()->stack_depth;
+    return SI->parent->IA->stack_depth;
 
   return -1;
 
@@ -783,11 +783,16 @@ LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
     return localStore->heap.getReadableStoreFor(V);
   else {
 
-    DenseMap<ShadowValue, LocStore>::iterator it = localStore->frames[frameNo]->store.find(V);
-    if(it == localStore->frames[frameNo]->store.end())
+    std::vector<LocStore>& frame = localStore->frames[frameNo]->store;
+    uint32_t frameIdx = V.u.I->allocIdx;
+    if(frame.size() <= frameIdx)
+      return 0;
+
+    LocStore* ret = &(frame[frameIdx]);
+    if(!ret->store)
       return 0;
     else
-      return &it->second;
+      return ret;
 
   }
   
@@ -938,11 +943,14 @@ LocStore* ShadowBB::getOrCreateStoreFor(ShadowValue& V, bool* isNewStore) {
   int32_t frameNo = V.getFrameNo();
   if(frameNo != -1) {
 
-    DenseMap<ShadowValue, LocStore>& frameMap = localStore->getWritableFrame(frameNo);
-    LocStore newStore;
-    std::pair<DenseMap<ShadowValue, LocStore>::iterator, bool> insResult = frameMap.insert(std::make_pair(V, newStore));
-    *isNewStore = insResult.second;
-    return  &(insResult.first->second);
+    std::vector<LocStore>& frameMap = localStore->getWritableFrame(frameNo);
+    localStore->frames[frameNo]->empty = false;
+    int32_t framePos = V.u.I->allocIdx;
+    release_assert(framePos >= 0 && "Stack entry without an index?");
+    if(frameMap.size() <= (uint32_t)framePos)
+      frameMap.resize(framePos + 1);
+    *isNewStore = frameMap[framePos].store == 0;
+    return &(frameMap[framePos]);
 
   }
   else {
@@ -970,7 +978,7 @@ LocalStoreMap* LocalStoreMap::getWritableFrameList() {
 
 }
 
-DenseMap<ShadowValue, LocStore>& LocalStoreMap::getWritableFrame(int32_t frameNo) {
+std::vector<LocStore>& LocalStoreMap::getWritableFrame(int32_t frameNo) {
 
   release_assert(frameNo >= 0 && frameNo < (int32_t)frames.size());
   frames[frameNo] = frames[frameNo]->getWritableStoreMap();
@@ -988,14 +996,18 @@ SharedStoreMap* SharedStoreMap::getWritableStoreMap() {
 
   // COW break: copy the map and either share or copy its entries.
   LFV3(errs() << "COW break local map " << this << " with " << store.size() << " entries\n");
-  SharedStoreMap* newMap = new SharedStoreMap();
+  SharedStoreMap* newMap = new SharedStoreMap(IA, store.size());
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it)
-    newMap->store[it->first] = LocStore(it->second.store->getReadableCopy());
+  uint32_t i = 0;
+  for(std::vector<LocStore>::iterator it = store.begin(), it2 = store.end(); it != it2; ++it, ++i) {
+    if(!it->store)
+      continue;
+    newMap->store[i] = LocStore(it->store->getReadableCopy());
+  }
 
   // Drop reference on the existing map (can't destroy it):
   refCount--;
-
+  
   return newMap;
 
 }
@@ -2184,6 +2196,10 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
 
   AllocaInst* AI = cast_inst<AllocaInst>(SI);
   Type* allocType = AI->getAllocatedType();
+
+  InlineAttempt* parentIA = SI->parent->IA->getFunctionRoot();
+  SI->allocIdx = parentIA->localAllocas.size();
+  parentIA->localAllocas.push_back(SI);
  
   if(AI->isArrayAllocation()) {
 
@@ -2577,12 +2593,16 @@ void SharedStoreMap::clear() {
   release_assert(refCount <= 1 && "clear() against shared map?");
 
   // Drop references to any maps this points to;
-  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
-    LFV3(errs() << "Drop ref to " << it->second.store << "\n");
-    it->second.store->dropReference();
+  for(std::vector<LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+    if(!it->store)
+      continue;
+    LFV3(errs() << "Drop ref to " << it->store << "\n");
+    it->store->dropReference();
   }
 
   store.clear();
+  store.resize(IA->invarInfo->frameSize);
+  empty = true;
 
 }
 
@@ -2634,7 +2654,7 @@ void SharedTreeRoot::dropReference() {
 
 SharedStoreMap* SharedStoreMap::getEmptyMap() {
 
-  if(store.empty())
+  if(!store.size())
     return this;
   else if(refCount == 1) {
     clear();
@@ -2642,7 +2662,7 @@ SharedStoreMap* SharedStoreMap::getEmptyMap() {
   }
   else {
     dropReference();
-    return new SharedStoreMap();
+    return new SharedStoreMap(IA, store.size());
   }
 
 }
@@ -2661,7 +2681,7 @@ bool LocalStoreMap::empty() {
     return false;
 
   for(uint32_t i = 0; i < frames.size(); ++i) {
-    if(!frames[i]->store.empty())
+    if(!frames[i]->empty)
       return false;
   }
 
@@ -2681,17 +2701,18 @@ LocalStoreMap* LocalStoreMap::getEmptyMap() {
     // Can't free the map (refcount > 1)
     --refCount;
     LocalStoreMap* newMap = new LocalStoreMap(frames.size());
-    newMap->createEmptyFrames();
+    newMap->copyEmptyFrames(frames);
     return newMap;
   }
 
 }
 
-void LocalStoreMap::createEmptyFrames() {
+void LocalStoreMap::copyEmptyFrames(SmallVector<SharedStoreMap*, 4>& copyFrom) {
 
   // Heap starts in empty state.
+  // Copy metadata per frame but don't populate any objects.
   for(uint32_t i = 0; i < frames.size(); ++i)
-    frames[i] = new SharedStoreMap();
+    frames[i] = new SharedStoreMap(copyFrom[i]->IA, copyFrom[i]->IA->invarInfo->frameSize);
 
 }
 
@@ -3325,6 +3346,9 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 
   // CoW break stack frame if necessary
   SharedStoreMap* mergeToFrame = toMap->frames[idx] = toMap->frames[idx]->getWritableStoreMap();
+  std::vector<LocStore>& mergeToStore = mergeToFrame->store;
+
+  InlineAttempt* thisFrameIA = mergeToFrame->IA;
 
   // Merge in each other frame. Note toMap->allOthersClobbered has been set to big-or over all maps already.
   for(SmallVector<SharedStoreMap*, 4>::iterator it = incomingFrames.begin(); it != uniqend; ++it) {
@@ -3332,34 +3356,26 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
     SharedStoreMap* mergeFromFrame = *it;
     if(mergeFromFrame == mergeToFrame)
       continue;
+    std::vector<LocStore>& mergeFromStore = mergeFromFrame->store;
 
     if(toMap->allOthersClobbered) {
       
       // Incremental big intersection of the incoming frames
       // Remove any in mergeTo that do not occur in mergeFrom.
 
-      SmallVector<ShadowValue, 4> keysToRemove;
-
       // Remove any existing mappings in mergeToFrame that do not occur in mergeFromFrame:
-      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(), 
-	    itend = mergeToFrame->store.end(); it != itend; ++it) {
 
-	if(!mergeFromFrame->store.count(it->first)) {
+      for(uint32_t i = 0, ilim = mergeToStore.size(); i != ilim; ++i) {
 
-	  LFV3(errs() << "Merge from " << mergeFromFrame << " with allOthersClobbered; drop local obj\n");
-	  keysToRemove.push_back(it->first);
-	  it->second.store->dropReference();
-
+	if(mergeToStore[i].store && (i > mergeFromStore.size() || !mergeFromStore[i].store)) {
+	  mergeToStore[i].store->dropReference();
+	  mergeToStore[i] = LocStore();
 	}
 
       }
 
-      for(SmallVector<ShadowValue, 4>::iterator delit = keysToRemove.begin(), 
-	    delitend = keysToRemove.end(); delit != delitend; ++delit) {
-
-	mergeToFrame->store.erase(*delit);
-
-      }
+      if(mergeToStore.size() > mergeFromStore.size())
+	mergeToStore.resize(mergeFromStore.size());
 
     }
     else {
@@ -3369,12 +3385,14 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
       // For any locations mentioned in mergeFromFrame but not mergeToFrame,
       // add a copy of the base object to mergeToFrame. This will get overwritten below but
       // creates the asymmetry that x in mergeFromFrame -> x in mergeToFrame.
-	  
-      for(DenseMap<ShadowValue, LocStore>::iterator it = mergeFromFrame->store.begin(),
-	    itend = mergeFromFrame->store.end(); it != itend; ++it) {
 
-	if(!mergeToFrame->store.count(it->first))
-	  mergeToFrame->store[it->first] = LocStore(it->first.getBaseStore().store->getReadableCopy());
+      if(mergeFromStore.size() > mergeToStore.size())
+	mergeToStore.resize(mergeFromStore.size());
+
+      for(uint32_t i = 0, ilim = mergeFromStore.size(); i != ilim; ++i) {
+	  
+	if(mergeFromStore[i].store && !mergeToStore[i].store)
+	  mergeToStore[i] = LocStore(thisFrameIA->getAllocaWithIdx(i)->store.store->getReadableCopy());
 
       }
       
@@ -3386,8 +3404,14 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
   // Note that in the allOthersClobbered case this only merges in
   // information from locations explicitly mentioned in all incoming frames.
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = mergeToFrame->store.begin(),
-	itend = mergeToFrame->store.end(); it != itend; ++it) {
+  for(uint32_t i = 0, ilim = mergeToStore.size(); i != ilim; ++i) {
+
+    if(!mergeToStore[i].store)
+      continue;
+
+    LocStore* mergeToLoc = &(mergeToStore[i]);
+
+    ShadowValue mergeSV = ShadowValue(thisFrameIA->getAllocaWithIdx(i));
 
     SmallVector<LocStore*, 4> incomingStores;
 
@@ -3397,15 +3421,14 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
       if(mergeFromFrame == mergeToFrame)
 	continue;
 
-      LocStore* mergeFromStore;
+      LocStore* mergeFromLoc;
 
-      DenseMap<ShadowValue, LocStore>::iterator found = mergeFromFrame->store.find(it->first);
-      if(found != mergeFromFrame->store.end())
-	mergeFromStore = &(found->second);
+      if(mergeFromFrame->store.size() > i && mergeFromFrame->store[i].store)
+	mergeFromLoc = &(mergeFromFrame->store[i]);
       else
-	mergeFromStore = &it->first.getBaseStore();
+	mergeFromLoc = &((*incit)->IA->getAllocaWithIdx(i)->store);
 
-      incomingStores.push_back(mergeFromStore);
+      incomingStores.push_back(mergeFromLoc);
 
     }
 
@@ -3416,12 +3439,12 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
     for(SmallVector<LocStore*, 4>::iterator incit = incomingStores.begin(), incitend = incomingStores.end();
 	incit != incitend; ++incit) {
 
-      LocStore* mergeFromStore = *incit;
+      LocStore* mergeFromLoc = *incit;
 
-      // Right, merge it->second and mergeFromStore.
-      if(mergeFromStore->store != it->second.store) {
+      // Right, merge it->second and mergeFromLoc.
+      if(mergeFromLoc->store != mergeToLoc->store) {
       
-	mergeStores(mergeFromStore, &it->second, it->first);
+	mergeStores(mergeFromLoc, mergeToLoc, mergeSV);
 
       }
 
@@ -3486,7 +3509,7 @@ void MergeBlockVisitor::doMerge() {
 
     }
    
-    // Merge each frame:
+    // Merge each frame, passing the InlineAttempt corresponding to each frame in turn.
     for(uint32_t i = 0; i < mergeMap->frames.size(); ++i)
       mergeFrames(mergeMap, firstMergeFrom, uniqend, i);
 
@@ -3521,11 +3544,15 @@ void MergeBlockVisitor::doMerge() {
 
 void llvm::commitFrameToBase(SharedStoreMap* Map) {
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = Map->store.begin(), itend = Map->store.end(); it != itend; ++it) {
+  uint32_t i = 0;
+  for(std::vector<LocStore>::iterator it = Map->store.begin(), itend = Map->store.end(); it != itend; ++it, ++i) {
 
-    LocStore& baseStore = it->first.getBaseStore();
+    if(!it->store)
+      continue;
+
+    LocStore& baseStore = Map->IA->getAllocaWithIdx(i)->store;
     baseStore.store->dropReference();
-    baseStore.store = it->second.store->getReadableCopy();
+    baseStore.store = it->store->getReadableCopy();
 
   }  
 
@@ -3628,16 +3655,16 @@ void ShadowBB::popStackFrame() {
 
 }
 
-void LocalStoreMap::pushStackFrame() {
+void LocalStoreMap::pushStackFrame(InlineAttempt* IA) {
 
-  frames.push_back(new SharedStoreMap());
+  frames.push_back(new SharedStoreMap(IA, IA->invarInfo->frameSize));
 
 }
 
-void ShadowBB::pushStackFrame() {
+void ShadowBB::pushStackFrame(InlineAttempt* IA) {
 
   localStore = localStore->getWritableFrameList();
-  localStore->pushStackFrame();
+  localStore->pushStackFrame(IA);
 
 }
 

@@ -292,7 +292,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   // a live return always has one successor, the call-merge.
   if(inst_is<ReturnInst>(SI)) {
     // Drop local allocas from the store:
-    SI->parent->popStackFrame();
+    if(invarInfo->frameSize != -1)
+      SI->parent->popStackFrame();
     return false;
   }
 

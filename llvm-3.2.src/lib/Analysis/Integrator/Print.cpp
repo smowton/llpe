@@ -99,10 +99,11 @@ void IntegrationHeuristicsPass::disableValueCache() {
 
 void SharedStoreMap::print(raw_ostream& RSO, bool brief) {
 
-  for(DenseMap<ShadowValue, LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+  uint32_t i = 0;
+  for(std::vector<LocStore>::iterator it = store.begin(), itend = store.end(); it != itend; ++it, ++i) {
 
-    RSO << itcache(it->first) << ": ";
-    it->second.store->print(RSO, brief);
+    RSO << itcache(IA->getAllocaWithIdx(i)) << ": ";
+    it->store->print(RSO, brief);
     RSO << "\n";
 
   }

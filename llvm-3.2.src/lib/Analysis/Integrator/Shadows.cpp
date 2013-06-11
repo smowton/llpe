@@ -8,6 +8,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Support/InstIterator.h"
 
 using namespace llvm;
 
@@ -379,6 +380,27 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
     getLoopInfo(RetInfo.LInfo, BBIndices, *it);
+
+  // Count alloca instructions at the start of the function; this will control how
+  // large the std::vector that represents the frame will be initialised.
+  RetInfo.frameSize = 0;
+  for(BasicBlock::iterator it = F.getEntryBlock().begin(), itend = F.getEntryBlock().end(); it != itend && isa<AllocaInst>(it); ++it)
+    ++RetInfo.frameSize;
+
+  if(!RetInfo.frameSize) {
+
+    // Magic value indicating the function will never alloca anything and we can skip all frame processing.
+    RetInfo.frameSize = -1;
+
+    for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E && RetInfo.frameSize == -1; ++I) {
+      
+      if(isa<AllocaInst>(*I))
+	RetInfo.frameSize = 0;
+
+    }
+      
+
+  }
 
   return RetInfoP;
 

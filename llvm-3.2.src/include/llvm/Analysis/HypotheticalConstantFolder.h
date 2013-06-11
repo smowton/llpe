@@ -1226,6 +1226,11 @@ class InlineAttempt : public IntegrationAttempt {
 
   ShadowArg* argShadows;
 
+  std::vector<ShadowInstruction*> localAllocas;
+  ShadowInstruction* getAllocaWithIdx(uint32_t i) {
+    return localAllocas[i];
+  }
+
   virtual BasicBlock* getEntryBlock(); 
 
   virtual InlineAttempt* getFunctionRoot(); 

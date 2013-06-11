@@ -119,6 +119,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   LocStore& getBaseStore();
   int32_t getFrameNo();
   int32_t getHeapKey();
+  int32_t getFramePos();
 
 };
 
@@ -788,10 +789,12 @@ SharedTreeRoot() : root(0), height(0) { }
 
 struct SharedStoreMap {
 
-  DenseMap<ShadowValue, LocStore> store;  
+  std::vector<LocStore> store;
   uint32_t refCount;
+  InlineAttempt* IA;
+  bool empty;
 
-SharedStoreMap() : refCount(1) { }
+SharedStoreMap(InlineAttempt* _IA, uint32_t initSize) : store(initSize), refCount(1), IA(_IA), empty(true) { }
 
   SharedStoreMap* getWritableStoreMap();
   void dropReference();
@@ -816,10 +819,10 @@ LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCou
   LocalStoreMap* getWritableFrameList();
   void print(raw_ostream&, bool brief = false);
   bool empty();
-  void createEmptyFrames();
+  void copyEmptyFrames(SmallVector<SharedStoreMap*, 4>&);
   void copyFramesFrom(const LocalStoreMap&);
-  DenseMap<ShadowValue, LocStore>& getWritableFrame(int32_t frameNo);
-  void pushStackFrame();
+  std::vector<LocStore>& getWritableFrame(int32_t frameNo);
+  void pushStackFrame(InlineAttempt*);
   void popStackFrame();
   
 };
@@ -861,7 +864,7 @@ struct ShadowBB {
   LocStore& getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
   LocStore* getOrCreateStoreFor(ShadowValue&, bool* isNewStore);
   LocStore* getReadableStoreFor(ShadowValue& V);
-  void pushStackFrame();
+  void pushStackFrame(InlineAttempt*);
   void popStackFrame();
 
 };
@@ -884,6 +887,7 @@ struct ShadowFunctionInvar {
   ImmutableArray<ShadowBBInvar> BBs;
   ImmutableArray<ShadowArgInvar> Args;
   DenseMap<const Loop*, ShadowLoopInvar*> LInfo;
+  int32_t frameSize;
 
 };
 

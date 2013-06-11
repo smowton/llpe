@@ -52,11 +52,12 @@ void InlineAttempt::getInitialStore() {
 
   if(CI) {
     BBs[0]->localStore = CI->parent->localStore;
-    BBs[0]->pushStackFrame();
+    if(invarInfo->frameSize != -1)
+      BBs[0]->pushStackFrame(this);
   }
   else {
-    BBs[0]->localStore = new LocalStoreMap(1);
-    BBs[0]->localStore->createEmptyFrames();
+    BBs[0]->localStore = new LocalStoreMap(0);
+    BBs[0]->pushStackFrame(this);
   }
 
 }

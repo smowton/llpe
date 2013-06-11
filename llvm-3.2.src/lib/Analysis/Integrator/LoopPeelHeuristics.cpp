@@ -98,6 +98,12 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
     prepareShadows();
+
+    // If this function can't allocate stack memory don't give it a frame number.
+    if(invarInfo->frameSize == -1)
+      --stack_depth;
+
+
   }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
