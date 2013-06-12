@@ -67,7 +67,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     //std::string* fwdError = 0;
 
     ImprovedValSetSingle byte;
-    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, 0 /* fwdError */);
+    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, 0, 0 /* fwdError */);
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
@@ -118,6 +118,10 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
 	if(FCalled == SysOpen) {
 
+	  if(SI->i.PB)
+	    deleteIV(SI->i.PB);
+	  SI->i.PB = newOverdefIVS();
+
 	  if(ConstantInt* ModeValue = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(1)))) {
 	    int RawMode = (int)ModeValue->getLimitedValue();
 	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
@@ -156,11 +160,12 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  bool exists = sys::Path(Filename).exists();
 	  forwardableOpenCalls[CI] = new OpenStatus(Filename, exists, FDEscapes);
 	  if(exists) {
-	    SI->i.PB = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
+	    cast<ImprovedValSetSingle>(SI->i.PB)->set(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
 	  }
 	  else {
-	    setReplacement(SI, ConstantInt::get(SI->invar->I->getType(), (uint64_t)-1, true));
+	    Constant* negOne = ConstantInt::get(SI->invar->I->getType(), (uint64_t)-1, true);
+	    cast<ImprovedValSetSingle>(SI->i.PB)->set(ImprovedVal(ShadowValue(negOne)), ValSetTypeScalar);
 	    LPDEBUG("Open of " << Filename << " returning ENOENT\n");
 	  }
 
@@ -359,6 +364,10 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
        F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat" ||
        F->getName() == "isatty"))
     return false;
+
+  if(SI->i.PB)
+    deleteIV(SI->i.PB);
+  SI->i.PB = newOverdefIVS();
 
   if(F->getName() == "stat") {
 

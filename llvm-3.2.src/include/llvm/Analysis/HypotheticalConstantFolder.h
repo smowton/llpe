@@ -18,6 +18,8 @@
 #include "llvm/GlobalValue.h"
 #include "llvm/GlobalVariable.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/RecyclingAllocator.h"
 
 #include <limits.h>
 #include <string>
@@ -142,6 +144,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    std::vector<ShadowValue> heap;
 
+   RecyclingAllocator<BumpPtrAllocator, ImprovedValSetSingle> IVSAllocator;
+
    bool verboseOverdef;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
@@ -249,6 +253,88 @@ class IntegrationHeuristicsPass : public ModulePass {
    void commit();
 
 };
+
+inline ImprovedValSetSingle* newIVS() {
+
+  return new (GlobalIHP->IVSAllocator.Allocate()) ImprovedValSetSingle();
+
+}
+
+inline ImprovedValSetSingle* newOverdefIVS() {
+
+  return new (GlobalIHP->IVSAllocator.Allocate()) ImprovedValSetSingle(ValSetTypeUnknown, true);
+
+}
+
+inline void deleteIVS(ImprovedValSetSingle* I) {
+
+  GlobalIHP->IVSAllocator.Deallocate(I);
+
+}
+
+inline void deleteIV(ImprovedValSet* I) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(I))
+    deleteIVS(IVS);
+  else
+    delete cast<ImprovedValSetMulti>(I);
+  
+}
+
+inline ImprovedValSetSingle* copyIVS(ImprovedValSetSingle* IVS) {
+
+  return new (GlobalIHP->IVSAllocator.Allocate()) ImprovedValSetSingle(*IVS);  
+
+}
+
+inline ImprovedValSet* copyIV(ImprovedValSet* IV) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV))
+    return copyIVS(IVS);
+  else
+    return new ImprovedValSetMulti(*cast<ImprovedValSetMulti>(IV));
+
+}
+
+inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
+
+  switch(V.t) {
+
+  case SHADOWVAL_INST:
+    OutPB = copyIV(V.u.I->i.PB);
+    return IVIsInitialised(OutPB);
+
+  case SHADOWVAL_ARG:
+    OutPB = copyIV(V.u.A->i.PB);
+    return IVIsInitialised(OutPB);
+
+  case SHADOWVAL_GV:
+    {
+      ImprovedValSetSingle* NewIVS = newIVS();
+      OutPB = NewIVS;
+      NewIVS->set(ImprovedVal(V, 0), ValSetTypePB);
+      return true;
+    }
+
+  case SHADOWVAL_OTHER:
+    {
+      std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
+      if(VPB.first == ValSetTypeUnknown)
+	return false;
+      ImprovedValSetSingle* NewIVS = newIVS();
+      OutPB = NewIVS;
+      NewIVS->set(VPB.second, VPB.first);
+      return true;
+    }
+
+  case SHADOWVAL_INVAL:
+  default:
+    release_assert(0 && "getImprovedValSetSingle on uninit value");
+    llvm_unreachable();
+
+  }
+
+}
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
 template<class T> class PrintCacheWrapper {
@@ -550,9 +636,23 @@ inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
 }
 
+bool operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2);
+
 inline bool operator!=(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
   return !(PB1 == PB2);
+
+}
+
+inline bool IVsEqual(ImprovedValSet* IV1, ImprovedValSet* IV2) {
+
+  if(IV1->isMulti != IV2->isMulti)
+    return false;
+
+  if(!IV1->isMulti)
+    return (*(cast<ImprovedValSetSingle>(IV1))) == (*(cast<ImprovedValSetSingle>(IV2)));
+  else
+    return (*(cast<ImprovedValSetMulti>(IV1))) == (*(cast<ImprovedValSetMulti>(IV2)));    
 
 }
 
@@ -844,10 +944,10 @@ protected:
 
   // Constant propagation:
 
-  virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result);
+  virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   bool tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg);
-  bool getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, bool& loadedVararg);
-  bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB);
+  bool getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB, bool& loadedVararg);
+  bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSet*& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   void tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
@@ -860,7 +960,8 @@ protected:
   void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0, bool readFromNonTerminatedLoop = false);
   void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop);
   void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
-  bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB);
+  bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB);
+  bool tryEvaluateMultiInst(ShadowInstruction* I, ImprovedValSet*& NewPB);
 
   // CFG analysis:
 
@@ -888,8 +989,8 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSetSingle& Result, std::string* error);
-  bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSet*& Result, std::string* error);
+  bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
 
   // Support functions for the generic IA graph walkers:
@@ -922,7 +1023,7 @@ protected:
   void markCloseCall(CallInst*);
 
   // Load forwarding extensions for varargs:
-  virtual void getVarArg(int64_t, ImprovedValSetSingle&) = 0;
+  virtual void getVarArg(int64_t, ImprovedValSet*&) = 0;
   void disableChildVarargsContexts();
   bool isVarargsTainted();
   
@@ -957,7 +1058,6 @@ protected:
   void resetDeadInstructions();
 
   virtual bool ctxContains(IntegrationAttempt*) = 0;
-  bool tryForwardLoadPB(LoadInst*, bool finalise, ImprovedValSetSingle& out, BasicBlock* optBB, IntegrationAttempt* optIA);
   bool shouldCheckPB(ShadowValue);
   void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
 
@@ -1114,7 +1214,7 @@ public:
 
   virtual bool isOptimisticPeel(); 
 
-  virtual void getVarArg(int64_t, ImprovedValSetSingle&); 
+  virtual void getVarArg(int64_t, ImprovedValSet*&); 
 
   virtual bool ctxContains(IntegrationAttempt*); 
 
@@ -1140,7 +1240,7 @@ public:
   virtual std::string getCommittedBlockPrefix();
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result);
+  virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
   virtual void getInitialStore();
@@ -1274,11 +1374,11 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool isOptimisticPeel(); 
 
-  virtual void getVarArg(int64_t, ImprovedValSetSingle&); 
+  virtual void getVarArg(int64_t, ImprovedValSet*&); 
 
   virtual bool ctxContains(IntegrationAttempt*); 
 
-  bool getArgBasePointer(Argument*, ImprovedValSetSingle&); 
+  bool getArgBasePointer(Argument*, ImprovedValSet*&); 
 
   int64_t NonFPArgIdxToArgIdx(int64_t idx);
   int64_t FPArgIdxToArgIdx(int64_t idx);
@@ -1391,8 +1491,8 @@ class InlineAttempt : public IntegrationAttempt {
 
  // Load forwarding v3 functions:
  bool addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
- void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string* error);
- void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string* error);
+ void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, bool& shouldTryMulti, std::string* error);
+ void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
 
@@ -1400,7 +1500,7 @@ class InlineAttempt : public IntegrationAttempt {
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
  void getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  Constant* valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType);
- void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
+ void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSet*& Result);
  Constant* getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType = 0);
  void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
  void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
@@ -1423,6 +1523,7 @@ class InlineAttempt : public IntegrationAttempt {
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
  void executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
+ void writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB);
 
  Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
 

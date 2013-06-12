@@ -47,9 +47,12 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
 
   if(getConstReplacement(SV))
     return "green";
-  
-  if(IAI->PB.Values.size() != 0 && !IAI->PB.Overdef)
-    return "darkgreen";
+
+  if(IAI->PB) {
+    ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IAI->PB);
+    if((!IVS) || (IVS->Values.size() != 0 && !IVS->Overdef))
+      return "darkgreen";
+  }
   
   return "white";
 
@@ -138,9 +141,12 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
   }
   */
   bool PBPrinted = false;
-  if(IAI->PB.Values.size() > 0 && !IAI->PB.Overdef) {
-    printPB(Out, IAI->PB, true);
-    PBPrinted = true;
+  if(IAI->PB) {
+    ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IAI->PB);
+    if((!IVS) || (IVS->Values.size() > 0 && !IVS->Overdef)) {
+      IAI->PB->print(Out, true);
+      PBPrinted = true;
+    }
   }
 
   if(!SI)

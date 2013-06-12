@@ -1006,12 +1006,20 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
     return;
   }
 
-  else if(I->i.PB.SetType == ValSetTypeFD && I->i.PB.Values.size() == 1 && I != I->i.PB.Values[0].V.getInst() && I->i.PB.Values[0].V.isAvailableFromCtx(this)) {
-    I->committedVal = I->i.PB.Values[0].V.getInst()->committedVal;
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
+
+  if(IVS && 
+     IVS->SetType == ValSetTypeFD && 
+     IVS->Values.size() == 1 && 
+     I != IVS->Values[0].V.getInst() && 
+     IVS->Values[0].V.isAvailableFromCtx(this)) {
+
+    I->committedVal = IVS->Values[0].V.getInst()->committedVal;
     return;
+
   }
       
-  else if(synthCommittedPointer(ShadowValue(I), emitBB))
+  if(synthCommittedPointer(ShadowValue(I), emitBB))
     return;
 
   // Already emitted calls above:

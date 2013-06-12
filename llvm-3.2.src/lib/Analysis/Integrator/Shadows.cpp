@@ -426,8 +426,6 @@ void InlineAttempt::prepareShadows() {
 
     argShadows[i].invar = &(invarInfo->Args[i]);
     argShadows[i].IA = this;
-    argShadows[i].i.PB = ImprovedValSetSingle();
-    argShadows[i].i.dieStatus = INSTSTATUS_ALIVE;
 
   }
 

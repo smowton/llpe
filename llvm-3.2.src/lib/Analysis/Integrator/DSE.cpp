@@ -179,9 +179,11 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(mayBeReplaced(I) && isAvailable()) {
 
-      if(I->i.PB.SetType == ValSetTypePB || I->i.PB.SetType == ValSetTypeFD) {
+      // mayBeReplaced implies a single value.
+      ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(I->i.PB);
+      if(IVS->SetType == ValSetTypePB || IVS->SetType == ValSetTypeFD) {
 
-	ShadowValue Base = I->i.PB.Values[0].V;
+	ShadowValue Base = IVS->Values[0].V;
 	if((!Base.getCtx()) || Base.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))
 	  return WIRContinue;
 

@@ -777,7 +777,7 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
 
 }
 
-void InlineAttempt::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
+void InlineAttempt::getVarArg(int64_t idx, ImprovedValSet*& Result) {
 
   release_assert(idx >= ImprovedVal::first_any_arg && idx < ImprovedVal::max_arg);
   uint32_t argIdx = idx - ImprovedVal::first_any_arg;
@@ -788,17 +788,17 @@ void InlineAttempt::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
   argIdx += F.arg_size();
 
   if(argIdx < RawCI->getNumArgOperands())
-    getImprovedValSetSingle(CI->getCallArgOperand(argIdx), Result);
+    copyImprovedVal(CI->getCallArgOperand(argIdx), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
-    Result = ImprovedValSetSingle();
+    Result = newOverdefIVS();
 
   }
 
 }
 
-void PeelIteration::getVarArg(int64_t idx, ImprovedValSetSingle& Result) {
+void PeelIteration::getVarArg(int64_t idx, ImprovedValSet*& Result) {
 
   parent->getVarArg(idx, Result);
 
@@ -1541,9 +1541,9 @@ void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* 
 
   }
 
-  ImprovedValSetSingle ArgPB;
-  getImprovedValSetSingle(ShadowValue(Val), ArgPB);
-  if(ArgPB.Overdef || ArgPB.Values.size() != 1) {
+  ImprovedValSetSingle* ArgPB = newIVS();
+  getImprovedValSetSingle(ShadowValue(Val), *ArgPB);
+  if(ArgPB->Overdef || ArgPB->Values.size() != 1) {
 
     errs() << "Couldn't get a PB for " << *Val << "\n";
     exit(1);
@@ -1902,13 +1902,15 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     if(argConstants[i])
       setParam(IA, i, argConstants[i]);
     else 
-      IA->argShadows[i].i.PB.setOverdef();
+      IA->argShadows[i].i.PB = newOverdefIVS();
 
   }
 
   if(argvIdx != 0xffffffff) {
 
-    IA->argShadows[argvIdx].i.PB = ImprovedValSetSingle(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
+    ImprovedValSetSingle* NewIVS = newIVS();
+    NewIVS->set(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
+    IA->argShadows[argvIdx].i.PB = NewIVS;
 
   }
 

@@ -50,15 +50,13 @@ void InlineAttempt::getInitialStore() {
   // Take our caller's store; they will make a new one
   // upon return.
 
-  if(CI) {
+  if(CI)
     BBs[0]->localStore = CI->parent->localStore;
-    if(invarInfo->frameSize != -1)
-      BBs[0]->pushStackFrame(this);
-  }
-  else {
+  else
     BBs[0]->localStore = new LocalStoreMap(0);
+
+  if(invarInfo->frameSize != -1)
     BBs[0]->pushStackFrame(this);
-  }
 
 }
 

@@ -22,6 +22,44 @@ ImprovedValSetMulti::ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true),
 
 }
 
+ImprovedValSetMulti::ImprovedValSetMulti(uint64_t ASize) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0), AllocSize(ASize) { }
+
+ImprovedValSetMulti::ImprovedValSetMulti(const ImprovedValSetMulti& other) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(other.Underlying), CoveredBytes(other.CoveredBytes), AllocSize(other.AllocSize) {
+
+  if(Underlying)
+    Underlying = Underlying->getReadableCopy();
+
+  for(ImprovedValSetMulti::ConstMapIt it = other.Map.begin(), itend = other.Map.end(); it != itend; ++it) {
+
+    Map.insert(it.start(), it.stop(), *it);
+
+  }
+
+}
+
+// Only declare multis equal when the topmost map is trivially equal.
+// It still might be possible to flatten the maps to discover they represent the same information.
+bool operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2) {
+
+  ImprovedValSetMulti::MapIt 
+    it1 = PB1.Map.begin(), it1end = PB1.Map.end(), 
+    it2 = PB2.Map.begin(), it2end = PB2.Map.end();
+
+  for(; it1 != it1end && it2 != it2end; ++it1, ++it2) {
+
+    if(it1.start() != it2.start() || it1.stop() != it2.stop() || it1.val() != it2.val())
+      return false;
+
+  }
+
+  // Lengths differed?
+  if(it1 != it1end || it2 != it2end)
+    return false;
+
+  return true;
+
+}
+
 bool IntAAProxy::isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size) {
 
   return (tryResolveImprovedValSetSingles(Ptr1Base, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true) == SVNoAlias);
@@ -351,7 +389,7 @@ Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSetSingle& Result, std::string* error) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSet*& Result, std::string* error) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -392,7 +430,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
 	  if(error)
 	    *error = "Const out of range";
-	  Result.setOverdef();
+	  Result = newOverdefIVS();
 	  return true;
 	}
 
@@ -410,43 +448,49 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
   if(ShadowInstruction* SI = LoadI->getOperand(0).getInst()) {
 
-    if(SI->i.PB.Values.size() > 0 && SI->i.PB.SetType == ValSetTypePB) {
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI->i.PB)) {
 
-      bool foundNonNull = false;
-      bool foundNonConst = false;
-      for(unsigned i = 0; i < SI->i.PB.Values.size(); ++i) {
+      if(IVS->Values.size() > 0 && IVS->SetType == ValSetTypePB) {
 
-	Value* BaseV = SI->i.PB.Values[i].V.getVal();
+	bool foundNonNull = false;
+	bool foundNonConst = false;
+	for(unsigned i = 0; i < IVS->Values.size(); ++i) {
 
-	if(BaseV && isa<ConstantPointerNull>(BaseV))
-	  continue;
+	  Value* BaseV = IVS->Values[i].V.getVal();
 
-	foundNonNull = true;
+	  if(BaseV && isa<ConstantPointerNull>(BaseV))
+	    continue;
 
-	GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(BaseV);
-	if((!GV) || !GV->isConstant())
-	  foundNonConst = true;
+	  foundNonNull = true;
 
-      }
+	  GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(BaseV);
+	  if((!GV) || !GV->isConstant())
+	    foundNonConst = true;
 
-      if(!foundNonNull) {
+	}
 
-	// Suppose that loading from a known null returns a null result.
-	// TODO: convert this to undef, and thus rationalise the multi-load path.
-	Type* defType = LoadI->getType();
-	Constant* nullVal = Constant::getNullValue(defType);
-	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	Result.set(ResultIV.second, ResultIV.first);
-	return true;
+	if(!foundNonNull) {
 
-      }
-      else if(!foundNonConst) {
+	  // Suppose that loading from a known null returns a null result.
+	  // TODO: convert this to undef, and thus rationalise the multi-load path.
+	  Type* defType = LoadI->getType();
+	  Constant* nullVal = Constant::getNullValue(defType);
+	  std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
+	  ImprovedValSetSingle* NewIVS = newIVS();
+	  Result = NewIVS;
+	  NewIVS->set(ResultIV.second, ResultIV.first);
+	  return true;
 
-	LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
-	if(error)
-	  *error = "Const pointer vague";
-	Result.setOverdef();
-	return true;
+	}
+	else if(!foundNonConst) {
+
+	  LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
+	  if(error)
+	    *error = "Const pointer vague";
+	  Result = newOverdefIVS();
+	  return true;
+
+	}
 
       }
 
@@ -486,18 +530,20 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
 }
 
-static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std::string* report) {
+static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::string* report) {
 
   uint64_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
 
-  // We already know that LI's PB is made up entirely of nulls and definite pointers.
-  NewPB = ImprovedValSetSingle();
+  // We already know that LI's IVSet is made up entirely of nulls and definite pointers.
+  ImprovedValSetSingle* NewPB = newIVS();
+  NewIV = NewPB;
+
   ImprovedValSetSingle LIPB;
   getImprovedValSetSingle(LI->getOperand(0), LIPB);
 
   std::auto_ptr<raw_string_ostream> RSO(report ? new raw_string_ostream(*report) : 0);
 
-  for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB.Overdef; ++i) {
+  for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB->Overdef; ++i) {
 
     if(Value* V = LIPB.Values[i].V.getVal()) {
       if(isa<ConstantPointerNull>(V)) {
@@ -506,7 +552,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 	Constant* nullVal = Constant::getNullValue(defType);
 	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
 	ImprovedValSetSingle NullPB(ResultIV.second, ResultIV.first);
-	NewPB.merge(NullPB);
+	NewPB->merge(NullPB);
 	continue;
 
       }
@@ -514,19 +560,30 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 
     std::auto_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
     ImprovedValSetSingle ThisPB;
+    ImprovedValSetMulti* ThisMulti = 0;
 
-    readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, ThisError.get());
+    // Permit readValRange to allocate and return a multi if appropriate (i.e. if it finds the desired
+    // range includes a non-scalar value)
+    readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, LIPB.Values.size() == 1 ? &ThisMulti : 0, ThisError.get());
+
+    if(ThisMulti) {
+
+      deleteIVS(NewPB);
+      NewIV = ThisMulti;
+      return true;
+
+    }
 
     if(!ThisPB.Overdef) {
       if(!ThisPB.coerceToType(LI->getType(), LoadSize, ThisError.get())) {
-	NewPB.setOverdef();
+	NewPB->setOverdef();
       }
       else {
-	NewPB.merge(ThisPB);
+	NewPB->merge(ThisPB);
       }
     }
     else {
-      NewPB.merge(ThisPB);
+      NewPB->merge(ThisPB);
     }
 
     if(RSO.get()) {
@@ -536,7 +593,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 	*RSO << "Load " << itcache(LIPB.Values[i].V, true) << " -> " << *ThisError;
 
       }
-      else if(NewPB.Overdef) {
+      else if(NewPB->Overdef) {
 	
 	*RSO << "Loaded ";
 	printPB(*RSO, ThisPB, true);
@@ -548,20 +605,24 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, std
 
   }
 
-  return NewPB.isInitialised();
+  return NewPB->isInitialised();
 
 }
 
 // Fish a value out of the block-local or value store for LI.
-bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
+bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg) {
 
   ImprovedValSetSingle ConstResult;
   std::auto_ptr<std::string> error(pass->verboseOverdef ? new std::string() : 0);
 
   if(tryResolveLoadFromConstant(LI, NewPB, error.get())) {
-    if(NewPB.Overdef && pass->verboseOverdef)
+    ImprovedValSetSingle* NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB);
+    if(NewIVS && NewIVS->Overdef && pass->verboseOverdef)
       optimisticForwardStatus[LI->invar->I] = *error;
-    return NewPB.isInitialised();
+    if(NewIVS)
+      return NewIVS->isInitialised();
+    else
+      return true;
   }
 
   bool ret;
@@ -571,8 +632,10 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
   if(shouldMultiload(LoadPtrPB)) {
 
     ret = tryMultiload(LI, NewPB, error.get());
-    if(NewPB.SetType == ValSetTypeVarArg)
-      loadedVararg = true;
+    if(ImprovedValSetSingle* NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
+      if(NewIVS->SetType == ValSetTypeVarArg)
+	loadedVararg = true;
+    }
 
   }
   else {
@@ -584,7 +647,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSetS
       RSO << "Load vague ";
       printPB(RSO, LoadPtrPB, true);
     }
-    NewPB.setOverdef();
+    NewPB = newOverdefIVS();
 
   }
 
@@ -1161,7 +1224,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uin
 
 }
 
-void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, std::string* error) {
+void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, bool& shouldTryMulti, std::string* error) {
 
   ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
   uint64_t IVSSize = V.getAllocSize();
@@ -1200,6 +1263,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       }
       
       // Otherwise we need to extract a sub-value: only works on constants:
+      
       bool rejectHere = IVS->Overdef || (IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat);
       if(rejectHere) {
 	LFV3(errs() << "Reject: non-scalar\n");
@@ -1282,6 +1346,18 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       delete ResultPV;
       ResultPV = 0;
       Result.setOverdef();
+
+      if((it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) 
+	 && FirstReadByte == it.start() 
+	 && LastReadByte == it.stop()) {
+
+	// This read would read a whole FD or pointer, but can't because we can't express those
+	// as bytes. It's therefore worth trying again with a more expensive multi descriptor.
+
+	shouldTryMulti = true;
+      
+      }
+
       return;
     }
 
@@ -1292,13 +1368,13 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
     // Try the next linked map (one should exist:)
     release_assert(IVM->Underlying && "Value not complete, but no underlying map?");
     LFV3(errs() << "Defer to next map: " << IVM->Underlying << "\n");
-    readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, error);
+    readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, shouldTryMulti, error);
       
   }
 
 }
 
-void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, std::string* error) {
+void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {
 
   // Try to make an IVS representing the block-local value of V+Offset -> Size.
   // Limitations for now: because our output is a single IVS, non-scalar types may only be described
@@ -1321,7 +1397,8 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
   }
 
   PartialVal* ResultPV = 0;
-  readValRangeFrom(V, Offset, Size, ReadBB, firstStore->store, Result, ResultPV, error);
+  bool shouldTryMulti = false;
+  readValRangeFrom(V, Offset, Size, ReadBB, firstStore->store, Result, ResultPV, shouldTryMulti, error);
 
   if(ResultPV) {
 
@@ -1329,14 +1406,53 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
     std::auto_ptr<raw_string_ostream> RSO(error ? new raw_string_ostream(*error) : 0);
 
     Constant* PVConst = PVToConst(*ResultPV, RSO.get(), Size, V.getLLVMContext());
-    if(!getImprovedValSetSingle(ShadowValue(PVConst), Result))
-      Result.setOverdef();
+    ShadowValue PVConstV(PVConst);
+    addValToPB(PVConstV, Result);
 
     delete ResultPV;
 
   }
+  else if(shouldTryMulti && ResultMulti) {
 
-  release_assert(Result.isInitialised());
+    // The read covered an FD or pointer. Try to load a multi instead.
+    SmallVector<IVSRange, 4> Results;
+    readValRangeMulti(V, Offset, Size, ReadBB, Results);
+
+    // Relabel offsets relative to this read, and check whether we're returning anything worthwhile
+    // (i.e. not overdef'd).
+    bool anyGoodValues = false;
+    for(SmallVector<IVSRange, 4>::iterator it = Results.begin(), itend = Results.end(); it != itend; ++it) {
+      
+      if(it->second.isInitialised())
+	anyGoodValues = true;
+      it->first.first -= Offset;
+      it->first.second -= Offset;
+
+    }
+
+    if(anyGoodValues) {
+
+      ImprovedValSetMulti* IVM = new ImprovedValSetMulti(Size);
+      ImprovedValSetMulti::MapIt it = IVM->Map.begin();
+
+      for(unsigned i = 0, iend = Results.size(); i != iend; ++i) {
+
+	IVSRange& RangeVal = Results[i];
+	it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
+	++it;
+
+      }
+
+      *ResultMulti = IVM;
+
+    }
+    else {
+
+      Result.setOverdef();
+      
+    }
+    
+  }
 
 }
 
@@ -1392,6 +1508,9 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 
 }
 
+#define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
+
 void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   // Get written location:
@@ -1404,10 +1523,36 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
   release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
   ShadowValue Val = StoreSI->getOperand(0);
-  ImprovedValSetSingle ValPB;
-  getImprovedValSetSingle(Val, ValPB);
+  if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(Val))) {
 
-  executeWriteInst(PtrSet, ValPB, PtrSize, StoreBB);
+    if(PtrSet.Values.size() != 0) {
+
+      ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+      executeWriteInst(PtrSet, OD, PtrSize, StoreBB);
+
+    }
+    else {
+
+      SmallVector<IVSRange, 4> Vals;
+      for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+	
+	Vals.push_back(IVSR(it.start() + PtrSet.Values[0].Offset, it.stop() + PtrSet.Values[0].Offset, it.val()));
+
+      }
+
+      writeExtents(Vals, PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, StoreBB);
+
+    }
+
+  }
+  else {
+
+    ImprovedValSetSingle ValPB;
+    getImprovedValSetSingle(Val, ValPB);
+
+    executeWriteInst(PtrSet, ValPB, PtrSize, StoreBB);
+
+  }
 
 }
 
@@ -1440,9 +1585,6 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   executeWriteInst(PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetBB);
   
 }
-
-#define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
-#define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
 
 void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
@@ -1730,7 +1872,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
 
 }
 
-void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
+void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSet*& Result) {
 
   SmallVector<IVSRange, 4> subVals;
   getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
@@ -1738,17 +1880,19 @@ void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize,
   if(subVals.size() != 1) {
     if(Constant* C = valsToConst(subVals, TargetSize, TargetType)) {
       std::pair<ValSetType, ImprovedVal> V = getValPB(C);
-      Result = ImprovedValSetSingle(V.second, V.first);
+      ImprovedValSetSingle* NewIVS = newIVS();
+      Result = NewIVS;
+      NewIVS->set(V.second, V.first);
     }
     else {
-      Result.setOverdef();
+      Result = newOverdefIVS();
     }
   }
   else {
-    Result = subVals[0].second;
-    if(TargetType) {
-      Result.coerceToType(TargetType, TargetSize, 0);
-    }
+    ImprovedValSetSingle* NewIVS = copyIVS(&(subVals[0].second));
+    Result = NewIVS;
+    if(TargetType)
+      NewIVS->coerceToType(TargetType, TargetSize, 0);
   }
 
 }
@@ -2183,7 +2327,9 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
   SI->storeSize = AllocSize;
   
-  SI->i.PB = ImprovedValSetSingle(ImprovedVal(SI, 0), ValSetTypePB);
+  ImprovedValSetSingle* NewIVS = newIVS();
+  SI->i.PB = NewIVS;
+  NewIVS->set(ImprovedVal(SI, 0), ValSetTypePB);
 
 }
 
@@ -2275,6 +2421,14 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
 }
 
+void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB) {
+
+  LocStore& Store = BB->getWritableStoreFor(Ptr, Offset, Size, copyValues.size() == 1);
+  replaceRangeWithPBs(Store.store, copyValues, (uint64_t)Offset, Size);
+
+
+}
+
 void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
 
   LFV3(errs() << "Start copy inst\n");
@@ -2308,8 +2462,7 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
   }
 
   // OK now blow a hole in the local map for that value and write this list of extents into the gap:
-  LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, copyValues.size() == 1);
-  replaceRangeWithPBs(Store.store, copyValues, (uint64_t)PtrSet.Values[0].Offset, Size);
+  writeExtents(copyValues, PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, BB);
 
 }
 
@@ -2452,7 +2605,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
     }
 
     // All unannotated calls return an unknown value:
-    SI->i.PB.setOverdef();
+    if(SI->i.PB)
+      deleteIV(SI->i.PB);
+    SI->i.PB = newOverdefIVS();
 
     // See if we can discard the call because it's annotated read-only:
     if(F->onlyReadsMemory())
@@ -2502,6 +2657,14 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
       return;
 
     }
+
+  }
+  else {
+
+    // Unknown calls return unknown
+    if(SI->i.PB)
+      deleteIV(SI->i.PB);
+    SI->i.PB = newOverdefIVS();
 
   }
 
@@ -2563,7 +2726,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	else {
 
 	  LFV3(errs() << "Write through maybe pointer; merge\n");
-	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, 0);
+	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, 0, 0);
 
 	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
 

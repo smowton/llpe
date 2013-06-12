@@ -125,7 +125,7 @@ void IntegrationAttempt::markContextDead() {
 
 }
 
-bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSingle& NewPB) {
+bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB) {
 
   // The case for a resolved select instruction has already been handled.
 
@@ -149,7 +149,9 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSi
 
     }
     else {
+
       return false;
+
     }
 
   }
@@ -183,16 +185,48 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSetSi
 
   }
 
-  for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewPB.Overdef; ++it) {
-    
-    addValToPB(*it, NewPB);
+  // For now, only support straight copying of multis; otherwise just return overdef.
+
+  bool anyMultis = false;
+  for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2; ++it) {
+
+    switch(it->t) {
+    case SHADOWVAL_ARG:
+    case SHADOWVAL_INST:
+      anyMultis |= isa<ImprovedValSetMulti>(getIVSRef(*it));
+      break;
+    default:
+      break;
+    }
 
   }
 
-  if(verbose)
-    errs() << "=== END PHI MERGE\n";
+  if(anyMultis) {
 
-  return anyInfo;
+    if(Vals.size() > 1)
+      NewPB = newOverdefIVS();
+    else
+      NewPB = new ImprovedValSetMulti(*cast<ImprovedValSetMulti>(getIVSRef(Vals[0])));
+    return true;
+
+  }
+  else {
+
+    ImprovedValSetSingle* NewIVS = newIVS();
+    NewPB = NewIVS;
+  
+    for(SmallVector<ShadowValue, 4>::iterator it = Vals.begin(), it2 = Vals.end(); it != it2 && !NewIVS->Overdef; ++it) {
+    
+      addValToPB(*it, *NewIVS);
+
+    }
+
+    if(verbose)
+      errs() << "=== END PHI MERGE\n";
+
+    return anyInfo;
+
+  }
 
 }
 
@@ -228,13 +262,13 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
 }
 
 
-bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result) {
+bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result) {
 
   return false;
 
 }
 
-bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSetSingle& result) {
+bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result) {
 
   PHINode* PN = cast_inst<PHINode>(SI);
   bool isHeaderPHI = PN->getParent() == L->getHeader();
@@ -242,7 +276,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
   if(isHeaderPHI) {
 
     ShadowValue predValue = getLoopHeaderForwardedOperand(SI);
-    resultValid = getImprovedValSetSingle(predValue, result);
+    resultValid = copyImprovedVal(predValue, result);
     return true;
 
   }
@@ -1112,6 +1146,7 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
+// All Ops are known not to have multi values.
 bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
 
   if(OpIdx == SI->getNumOperands()) {
@@ -1153,7 +1188,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
     {
 
-      ImprovedValSetSingle& ArgPB = OpV.t == SHADOWVAL_INST ? OpV.u.I->i.PB : OpV.u.A->i.PB;
+      ImprovedValSetSingle& ArgPB = *(cast<ImprovedValSetSingle>(getIVSRef(OpV)));
       if((!ArgPB.isInitialised()) || ArgPB.Overdef) {
 	Ops[OpIdx].first = ArgPB.Overdef ? ValSetTypeOverdef : ValSetTypeUnknown;
 	Ops[OpIdx].second.V = ShadowValue();
@@ -1181,14 +1216,210 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
 }
 
-bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB) {
+bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedValSet*& NewIV) {
 
-  std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
-  return tryEvaluateOrdinaryInst(SI, NewPB, Ops, 0);
+  // Currently supported operations on multis:
+  // * Shift right and left by constant amount
+  // * Truncate
+  // * PHI, select, and other copies (but these are implemented in the merge-instruction path)
+  
+  unsigned opcode = SI->invar->I->getOpcode();
+  switch(opcode) {
+    
+  case Instruction::LShr:
+  case Instruction::AShr:
+  case Instruction::Shl:
+  case Instruction::Trunc:
+    {
+
+      int64_t resSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getType());
+      int64_t ShiftInt;
+
+      if(opcode != Instruction::Trunc) {
+
+	ConstantInt* ShiftAmt = cast_or_null<ConstantInt>(getConstReplacement(SI->getOperand(1)));
+	if(!ShiftAmt) {
+	  NewIV = newOverdefIVS();
+	  return true;
+	}
+	ShiftInt = (int64_t)ShiftAmt->getLimitedValue();
+	if(ShiftInt % 8 != 0) {
+	  NewIV = newOverdefIVS();
+	  return true;
+	}
+	ShiftInt /= 8;
+
+	if(opcode == Instruction::Shl)
+	  ShiftInt = -ShiftInt;
+
+      }
+      else {
+
+	// For a trunc instruction value indices need to be bumped like for a left-shift
+	// but unlike left-shift the valid range is smaller in the output.
+	int64_t inSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getOperand(0).getType());
+	ShiftInt = -(inSize - resSize);
+	
+      }
+
+      ImprovedValSetMulti* InIVM = cast<ImprovedValSetMulti>(getIVSRef(SI->getOperand(0)));
+
+      // Discounting items that will be out of range, will the new value be a simple integer?
+      // How many items will remain visible post shift?
+      bool NonScalarsInRange = false;
+      bool uniqueValid = false;
+      ImprovedValSetSingle* uniqueVal = 0;
+      for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
+
+	// Out of range left?
+	if(((int64_t)it.stop()) + ShiftInt <= 0)
+	  continue;
+	
+	// Out of range right?
+	if(it.start() + ShiftInt >= (uint64_t)resSize)
+	  continue;
+
+	if(!(it.val().SetType == ValSetTypeScalar || it.val().Overdef || !it.val().isInitialised()))
+	  NonScalarsInRange = true;
+
+	if(!uniqueValid) {
+	  uniqueVal = &(it.val());
+	  uniqueValid = true;
+	}
+	else
+	  uniqueVal = 0;
+
+      }
+
+      if(uniqueVal) {
+
+	NewIV = copyIV(uniqueVal);
+
+      }
+      else if(!NonScalarsInRange) {
+	
+	// Flatten to single value.
+	PartialVal PV(resSize);
+	for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
+
+	  // Out of range left?
+	  if(((int64_t)it.stop()) + ShiftInt <= 0)
+	    continue;
+	
+	  // Out of range right?
+	  if(it.start() + ShiftInt >= (uint64_t)resSize)
+	    continue;
+
+	  int64_t ShiftedStart = ((int64_t)it.start()) + ShiftInt;
+	  int64_t ShiftedStop = ((int64_t)it.stop()) + ShiftInt;
+
+	  if(!addIVSToPartialVal(it.val(), std::max(-ShiftedStart, (int64_t)0), std::max(ShiftedStart, (int64_t)0), std::min(ShiftedStop, resSize) - std::max(ShiftedStart, (int64_t)0), &PV, 0)) {
+
+	    NewIV = newOverdefIVS();
+	    return true;    
+
+	  }
+
+	}
+
+	ImprovedValSetSingle* NewIVS = newIVS();
+	NewIV = NewIVS;
+	Constant* PVConst = PVToConst(PV, 0, resSize, SI->invar->I->getContext());
+	ShadowValue PVConstV(PVConst);
+	addValToPB(PVConstV, *NewIVS);
+
+      }
+      else {
+
+	// Make a new IVM, but offset and trimmed.
+	ImprovedValSetMulti* NewIVM = new ImprovedValSetMulti(InIVM->AllocSize);
+	NewIV = NewIVM;
+
+	for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {	
+	  // Out of range left?
+	  if(((int64_t)it.stop()) + ShiftInt <= 0)
+	    continue;
+	
+	  // Out of range right?
+	  if(it.start() + ShiftInt >= (uint64_t)resSize)
+	    continue;
+
+	  int64_t ShiftedStart = ((int64_t)it.start()) + ShiftInt;
+	  int64_t ShiftedStop = ((int64_t)it.stop()) + ShiftInt;
+
+	  NewIVM->Map.insert(it.start(), it.stop(), *it);
+	  ImprovedValSetMulti::MapIt newVal = NewIVM->Map.find(it.start());
+
+	  if(ShiftedStart < 0) {
+	    if(canTruncate(newVal.val()))
+	      truncateRight(newVal, -ShiftedStart);
+	    else
+	      newVal.val().setOverdef();
+	  }
+	  else if(ShiftedStop > resSize) {
+	    if(canTruncate(newVal.val()))
+	      truncateLeft(newVal, ShiftedStop - resSize);
+	    else
+	      newVal.val().setOverdef();
+	  }
+	 
+	}
+
+	// Iterate again because the truncate options can break composites into many entries.
+	// All values are now in appropriate range.
+	for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {	
+
+	  it.setStart(it.start() + ShiftInt);
+	  it.setStop(it.stop() + ShiftInt);
+
+	}
+
+      }
+
+    }
+    break;
+
+    // Unhandled instructions:
+  default:
+    NewIV = newOverdefIVS();
+
+  }
+
+  return true;
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, bool& loadedVararg) {
+bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSet*& NewPB) {
+
+  bool anyMultis = false;
+
+  for(uint32_t i = 0, ilim = SI->getNumOperands(); i != ilim && !anyMultis; ++i) {
+    
+    ShadowValue OpV = SI->getOperand(i);
+    switch(OpV.t) {
+    case SHADOWVAL_INST:
+    case SHADOWVAL_ARG:
+      anyMultis |= isa<ImprovedValSetMulti>(getIVSRef(OpV));
+      break;
+    default:
+      break;
+    }
+
+  }
+
+  if(anyMultis) {
+    return tryEvaluateMultiInst(SI, NewPB);
+  }
+  else {
+    ImprovedValSetSingle* NewIVS = newIVS();
+    NewPB = NewIVS;
+    std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
+    return tryEvaluateOrdinaryInst(SI, *NewIVS, Ops, 0);
+  }
+
+}
+
+bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB, bool& loadedVararg) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -1210,9 +1441,9 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& N
       Constant* Cond = getConstReplacement(SI->getOperand(0));
       if(Cond) {
 	if(cast<ConstantInt>(Cond)->isZero())
-	  return getImprovedValSetSingle(SI->getOperand(2), NewPB);
+	  return copyImprovedVal(SI->getOperand(2), NewPB);
 	else
-	  return getImprovedValSetSingle(SI->getOperand(1), NewPB);
+	  return copyImprovedVal(SI->getOperand(1), NewPB);
       }
       else {
 	tryMerge = true;
@@ -1238,41 +1469,48 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSetSingle& N
   if(tryMerge) {
 
     tryEvaluateMerge(SI, NewPB);
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB))
+      return IVS->isInitialised();
+    else
+      return true;
 
   }
   else {
 
     tryEvaluateOrdinaryInst(SI, NewPB);
-    if(!NewPB.isInitialised())
-      NewPB.setOverdef();
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
+      if(!IVS->isInitialised())
+	IVS->setOverdef();
+    }
+    return true;
 
   }
 
-  return NewPB.isInitialised();
-
 }
 
-bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSetSingle& OutPB) {
+bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSet*& OutPB) {
 
   if(!parent)
     return false;
   ShadowValue Arg = CI->getCallArgOperand(A->getArgNo());
-  return getImprovedValSetSingle(Arg, OutPB);
+  return copyImprovedVal(Arg, OutPB);
 
 }
 
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
-  ImprovedValSetSingle& OldPB = getIVSRef(V);
-  bool OldPBValid = OldPB.isInitialised();
+  ImprovedValSet* OldPB = getIVSRef(V);
+  ImprovedValSetSingle* OldPBSingle = dyn_cast_or_null<ImprovedValSetSingle>(OldPB);
+  // The latter case here implies a multi which is always defined.
+  bool OldPBValid = (OldPBSingle && OldPBSingle->isInitialised()) || (OldPB && !OldPBSingle);
 
   if(inLoopAnalyser) {
     // Values can only get worse, and overdef is as bad as it gets:
-    if(OldPBValid && OldPB.Overdef)
+    if(OldPBSingle && OldPBSingle->Overdef)
       return false;
   }
 
-  ImprovedValSetSingle NewPB;
+  ImprovedValSet* NewPB;
   bool NewPBValid;
 
   if(ShadowArg* SA = V.getArg()) {
@@ -1288,21 +1526,22 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
   }
 
-  if(!NewPBValid)
-    return false;
+  release_assert(NewPBValid);
 
-  release_assert(NewPB.Overdef || (NewPB.SetType != ValSetTypeUnknown));
+  if((!OldPBValid) || !IVsEqual(OldPB, NewPB)) {
 
-  if((!OldPBValid) || OldPB != NewPB) {
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
 
-    if(NewPB.SetType == ValSetTypeFD) {
+      if(IVS->SetType == ValSetTypeFD) {
+	
+	for(uint32_t i = 0; i < IVS->Values.size(); ++i) {
 
-      for(uint32_t i = 0; i < NewPB.Values.size(); ++i) {
+	  ShadowInstruction* OpenCall = IVS->Values[i].V.getInst();
+	  if(std::find(OpenCall->indirectDIEUsers.begin(), OpenCall->indirectDIEUsers.end(), V) 
+	     == OpenCall->indirectDIEUsers.end())
+	    OpenCall->indirectDIEUsers.push_back(V);
 
-	ShadowInstruction* OpenCall = NewPB.Values[i].V.getInst();
-	if(std::find(OpenCall->indirectDIEUsers.begin(), OpenCall->indirectDIEUsers.end(), V) 
-	   == OpenCall->indirectDIEUsers.end())
-	  OpenCall->indirectDIEUsers.push_back(V);
+	}
 
       }
 
@@ -1313,7 +1552,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 	if(!inst_is<LoadInst>(I)) {
 	  std::string RStr;
 	  raw_string_ostream RSO(RStr);
-	  printPB(RSO, NewPB, true);
+	  NewPB->print(RSO, true);
 	  RSO.flush();
 	  optimisticForwardStatus[I->invar->I] = RStr;
 	}
@@ -1321,10 +1560,14 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
     }
 
     if(ShadowInstruction* SI = V.getInst()) {
+      if(SI->i.PB)
+	deleteIV(SI->i.PB);
       SI->i.PB = NewPB;
     }
     else {
       ShadowArg* SA = V.getArg();
+      if(SA->i.PB)
+	deleteIV(SA->i.PB);
       SA->i.PB = NewPB;
     }
 
@@ -1332,7 +1575,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
     if(verbose) {
       errs() << "Updated dep to ";
-      printPB(errs(), NewPB);
+      NewPB->print(errs(), false);
       errs() << "\n";
     }
   
@@ -1344,6 +1587,12 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
     */
 
     return true;
+
+  }
+  else {
+
+    // New result not needed.
+    deleteIV(NewPB);
 
   }
 

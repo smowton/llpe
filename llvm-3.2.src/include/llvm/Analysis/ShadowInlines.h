@@ -499,6 +499,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     Values.clear();
     Values.push_back(V);
     SetType = T;
+    Overdef = false;
 
   }
 
@@ -544,6 +545,7 @@ struct ImprovedValSetMulti : public ImprovedValSet {
 
   typedef IntervalMap<uint64_t, ImprovedValSetSingle, IntervalMapImpl::NodeSizer<uint64_t, ImprovedValSetSingle>::LeafSize, HalfOpenNoMerge> MapTy;
   typedef MapTy::iterator MapIt;
+  typedef MapTy::const_iterator ConstMapIt;
   MapTy Map;
   uint32_t MapRefCount;
   ImprovedValSet* Underlying;
@@ -551,6 +553,8 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   uint64_t AllocSize;
 
   ImprovedValSetMulti(ShadowValue& V);
+  ImprovedValSetMulti(uint64_t ASize);
+  ImprovedValSetMulti(const ImprovedValSetMulti& other);
 
   virtual ~ImprovedValSetMulti() {}
 
@@ -567,6 +571,14 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   virtual void print(raw_ostream&, bool brief = false);
 
 };
+
+inline bool IVIsInitialised(ImprovedValSet* IV) {
+
+  if(IV->isMulti)
+    return true;
+  return cast<ImprovedValSetSingle>(IV)->isInitialised();
+
+}
 
 #define INVALID_BLOCK_IDX 0xffffffff
 #define INVALID_INSTRUCTION_IDX 0xffffffff
@@ -612,10 +624,10 @@ template<class X> inline X* cast_inst(ShadowInstructionInvar* SII) {
 
 struct InstArgImprovement {
 
-  ImprovedValSetSingle PB;
+  ImprovedValSet* PB;
   uint32_t dieStatus;
 
-InstArgImprovement() : PB(), dieStatus(INSTSTATUS_ALIVE) { }
+InstArgImprovement() : PB(0), dieStatus(INSTSTATUS_ALIVE) { }
 
 };
 
@@ -1097,35 +1109,51 @@ template<class X> inline X* cast_val(ShadowValue V) {
   }
 }
 
+inline Constant* getSingleConstant(ImprovedValSet* IV) {
+
+  ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV);
+  if(!IVS)
+    return 0;
+  if(IVS->Overdef || IVS->Values.size() != 1 || IVS->SetType != ValSetTypeScalar)
+    return 0;
+  return cast_val<Constant>(IVS->Values[0].V);  
+
+}
 
 inline Constant* getConstReplacement(ShadowArg* SA) {
- 
-  if(SA->i.PB.Overdef || SA->i.PB.Values.size() != 1 || SA->i.PB.SetType != ValSetTypeScalar)
+
+  if(!SA->i.PB)
     return 0;
-  else
-    return cast<Constant>(SA->i.PB.Values[0].V.getVal());
+  return getSingleConstant(SA->i.PB);
 
 }
 
 inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
-  if(SI->i.PB.Overdef || SI->i.PB.Values.size() != 1 || SI->i.PB.SetType != ValSetTypeScalar)
+  if(!SI->i.PB)
     return 0;
-  else
-    return cast<Constant>(SI->i.PB.Values[0].V.getVal());
+  return getSingleConstant(SI->i.PB);
 
 }
 
+inline ImprovedValSet* getIVSRef(ShadowValue V);
+
 inline Constant* getConstReplacement(ShadowValue SV) {
 
-  if(ShadowInstruction* SI = SV.getInst()) {
-    return getConstReplacement(SI);
-  }
-  else if(ShadowArg* SA = SV.getArg()) {
-    return getConstReplacement(SA);
-  }
-  else {
+  switch(SV.t) {
+
+  case SHADOWVAL_ARG:
+  case SHADOWVAL_INST: 
+    {
+      ImprovedValSet* IVS = getIVSRef(SV);
+      if(!IVS)
+	return 0;
+      return getSingleConstant(IVS);
+    }
+
+  default:
     return dyn_cast_or_null<Constant>(SV.getVal());
+
   }
 
 }
@@ -1146,12 +1174,18 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
   switch(V.t) {
 
   case SHADOWVAL_INST:
-    OutPB = V.u.I->i.PB;
-    return OutPB.isInitialised();
-
   case SHADOWVAL_ARG:
-    OutPB = V.u.A->i.PB;
-    return OutPB.isInitialised();
+    {
+      ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V));
+      if(!IVS) {
+	OutPB.setOverdef();
+	return true;
+      }
+      else {
+	OutPB = *IVS;
+	return OutPB.isInitialised();
+      }	
+    }
 
   case SHADOWVAL_GV:
     OutPB.set(ImprovedVal(V, 0), ValSetTypePB);
@@ -1175,7 +1209,7 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
 
 }
 
-inline ImprovedValSetSingle& getIVSRef(ShadowValue V) {
+inline ImprovedValSet* tryGetIVSRef(ShadowValue V) {
 
   switch(V.t) {
   case SHADOWVAL_INST:
@@ -1183,28 +1217,35 @@ inline ImprovedValSetSingle& getIVSRef(ShadowValue V) {
   case SHADOWVAL_ARG:
     return V.u.A->i.PB;    
   default:
-    release_assert(0 && "getIVSRef only applicable to instructions and arguments");
-    llvm_unreachable();
+    return 0;
   }
 
 }
 
+inline ImprovedValSet* getIVSRef(ShadowValue V) {
+
+  release_assert((V.t == SHADOWVAL_INST || V.t == SHADOWVAL_ARG) 
+		 && "getIVSRef only applicable to instructions and arguments");
+  
+  return tryGetIVSRef(V);
+
+}
+
+// V must have an IVS.
 inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
 
   switch(V.t) {
 
   case SHADOWVAL_INST:
-    if(!V.u.I->i.PB.isInitialised())
-      ResultPB.setOverdef();
-    else
-      ResultPB.merge(V.u.I->i.PB);
-    return;
   case SHADOWVAL_ARG:
-    if(!V.u.A->i.PB.isInitialised())
-      ResultPB.setOverdef();
-    else
-      ResultPB.merge(V.u.A->i.PB);
-    return;
+    {
+      ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(getIVSRef(V));
+      if(!IVS->isInitialised())
+	ResultPB.setOverdef();
+      else
+	ResultPB.merge(*IVS);
+      return;
+    }
   case SHADOWVAL_GV:
     ResultPB.mergeOne(ValSetTypePB, ImprovedVal(V, 0));
     return;
@@ -1222,7 +1263,7 @@ inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
   default:
     release_assert(0 && "addValToPB on uninit value");
     llvm_unreachable();
-
+    
   }
 
 }
@@ -1290,9 +1331,12 @@ inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t&
 }
 
 inline bool mayBeReplaced(InstArgImprovement& IAI) {
-  return IAI.PB.Values.size() == 1 && (IAI.PB.SetType == ValSetTypeScalar ||
-				       (IAI.PB.SetType == ValSetTypePB && IAI.PB.Values[0].Offset != LLONG_MAX) ||
-				       IAI.PB.SetType == ValSetTypeFD);
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(IAI.PB);
+  if(!IVS)
+    return false;
+  return IVS->Values.size() == 1 && (IVS->SetType == ValSetTypeScalar ||
+				       (IVS->SetType == ValSetTypePB && IVS->Values[0].Offset != LLONG_MAX) ||
+				       IVS->SetType == ValSetTypeFD);
 }
 
 inline bool mayBeReplaced(ShadowInstruction* SI) {
@@ -1316,21 +1360,32 @@ inline bool mayBeReplaced(ShadowValue SV) {
 
 }
 
+inline void deleteIV(ImprovedValSet* I);
+inline ImprovedValSetSingle* newIVS();
+
+inline void setReplacement(InstArgImprovement& IAI, Constant* C) {
+
+  if(IAI.PB)
+    deleteIV(IAI.PB);
+
+  ImprovedValSetSingle* NewIVS = newIVS();
+  IAI.PB = NewIVS;
+
+  std::pair<ValSetType, ImprovedVal> P = getValPB(C);
+  NewIVS->Values.push_back(P.second);
+  NewIVS->SetType = P.first;
+
+}
+
 inline void setReplacement(ShadowInstruction* SI, Constant* C) {
 
-  SI->i.PB.Values.clear();
-  std::pair<ValSetType, ImprovedVal> P = getValPB(C);
-  SI->i.PB.Values.push_back(P.second);
-  SI->i.PB.SetType = P.first;
+  setReplacement(SI->i, C);
 
 }
 
 inline void setReplacement(ShadowArg* SA, Constant* C) {
 
-  SA->i.PB.Values.clear();
-  std::pair<ValSetType, ImprovedVal> P = getValPB(C);
-  SA->i.PB.Values.push_back(P.second);
-  SA->i.PB.SetType = P.first;
+  setReplacement(SA->i, C);
 
 }
 
