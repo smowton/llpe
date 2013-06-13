@@ -21,6 +21,7 @@
 #include "llvm/BasicBlock.h"
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -241,6 +242,15 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
       continue;
     case Instruction::Call: 
       {
+	
+	// Certain intrinsics manifest as calls but fold like ordinary instructions.
+	if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
+	  if(canConstantFoldCallTo(F)) {
+	    errs() << "HERE " << itcache(SI) << "\n";
+	    break;
+	  }
+	}
+
 	if(tryPromoteOpenCall(SI))
 	  continue;
 	if(tryResolveVFSCall(SI))
@@ -264,6 +274,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 	  executeUnexpandedCall(SI);
 	  continue;
 	}
+
       }
 
       // Fall through to try to get the call's return value

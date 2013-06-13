@@ -39,7 +39,7 @@ ImprovedValSetMulti::ImprovedValSetMulti(const ImprovedValSetMulti& other) : Imp
 
 // Only declare multis equal when the topmost map is trivially equal.
 // It still might be possible to flatten the maps to discover they represent the same information.
-bool operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2) {
+bool llvm::operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2) {
 
   ImprovedValSetMulti::MapIt 
     it1 = PB1.Map.begin(), it1end = PB1.Map.end(), 
@@ -1921,6 +1921,9 @@ void llvm::replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewV
       
     }
 
+    if(Size == ULONG_MAX)
+      Size = M->AllocSize - Offset;
+
     clearRange(M, Offset, Size);
     M->Map.insert(Offset, Offset + Size, NewVal);
 
@@ -1966,6 +1969,8 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
     uint64_t oldStop = found.stop();
     found.setStopUnchecked(Offset);
 
+    release_assert(found.start() < found.stop());
+
     if(RHS.isInitialised()) {
 
       ++found;
@@ -1998,6 +2003,7 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
     }
     M->CoveredBytes -= (LastByte - found.start());
     found.setStartUnchecked(LastByte);
+    release_assert(found.start() < found.stop());
 
   }
 
@@ -2675,6 +2681,18 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
 }
 
+static void checkStore(ImprovedValSet* IV) {
+
+  if(IV->isMulti) {
+
+    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IV);
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
+      release_assert(it.start() <= it.stop());
+
+  }
+
+}
+
 void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
 
   if(!ValPB.isInitialised())
@@ -2699,6 +2717,8 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
     replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
+
+    DEBUG(checkStore(Store.store));
 
   }
   else {
@@ -2742,6 +2762,8 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
 	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize); 
+
+	DEBUG(checkStore(Store.store));
 
       }
 

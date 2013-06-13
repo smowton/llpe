@@ -37,8 +37,9 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   if(!getBaseAndConstantOffset(Ptr, StrBase, StrOffset))
     return false;
 
-  if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(StrBase.getVal())) {
+  if(ShadowGV* G = StrBase.getGV()) {
       
+    GlobalVariable* GV = G->G;
     if(GV->isConstant()) {
       Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
       Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
@@ -54,7 +55,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   
   // Try to LF one character at a time until we get null or a failure.
 
-  LPDEBUG("forwarding off " << itcache(Ptr) << "\n");
+  LPDEBUG("forwarding off " << itcache(StrBase) << "\n");
 
   Type* byteType = Type::getInt8Ty(SearchFrom->invar->I->getContext());
 
@@ -67,7 +68,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
     //std::string* fwdError = 0;
 
     ImprovedValSetSingle byte;
-    readValRange(Ptr, StrOffset, 1, SearchFrom->parent, byte, 0, 0 /* fwdError */);
+    readValRange(StrBase, StrOffset, 1, SearchFrom->parent, byte, 0, 0 /* fwdError */);
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");

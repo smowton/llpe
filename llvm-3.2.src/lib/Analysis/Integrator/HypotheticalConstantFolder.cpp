@@ -845,6 +845,11 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
+// Defined in VMCore/ConstantFold.cpp but never prototyped:
+namespace llvm {
+  Constant* ConstantFoldExtractValueInstruction(Constant *Agg, ArrayRef<unsigned> Idxs);
+}
+
  bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
    
   Instruction* BOp = SI->invar->I;
@@ -1052,6 +1057,28 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	    
   }
 
+  else if(I->getOpcode() == Instruction::ExtractValue) {
+
+    // Missing from ConstantFoldInstOperands for some reason.
+
+    if(Ops[0].first != ValSetTypeScalar) {
+      ImpType = ValSetTypeOverdef;
+      return;
+    }
+
+    Constant* Agg = cast<Constant>(Ops[0].second.V.u.V);
+    Constant* Ext = ConstantFoldExtractValueInstruction(Agg, cast<ExtractValueInst>(SI->invar->I)->getIndices());
+    if(Ext) {
+      ImpType = ValSetTypeScalar;
+      Improved = ImprovedVal(Ext, 0);
+      return;
+    }
+
+    ImpType = ValSetTypeOverdef;
+    return;
+
+  }
+
   // Try ordinary constant folding?
 
   SmallVector<Constant*, 4> instOperands;
@@ -1224,6 +1251,8 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
   // * PHI, select, and other copies (but these are implemented in the merge-instruction path)
   
   unsigned opcode = SI->invar->I->getOpcode();
+  int64_t resSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getType());
+
   switch(opcode) {
     
   case Instruction::LShr:
@@ -1232,7 +1261,6 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
   case Instruction::Trunc:
     {
 
-      int64_t resSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getType());
       int64_t ShiftInt;
 
       if(opcode != Instruction::Trunc) {
@@ -1249,16 +1277,14 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	}
 	ShiftInt /= 8;
 
-	if(opcode == Instruction::Shl)
+	if(opcode == Instruction::LShr || opcode == Instruction::AShr)
 	  ShiftInt = -ShiftInt;
 
       }
       else {
 
-	// For a trunc instruction value indices need to be bumped like for a left-shift
-	// but unlike left-shift the valid range is smaller in the output.
-	int64_t inSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getOperand(0).getType());
-	ShiftInt = -(inSize - resSize);
+	// Trunc (on LE systems) selects the lowest-numbered bytes.
+	ShiftInt = 0;
 	
       }
 
@@ -1379,6 +1405,156 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
     }
     break;
 
+  case Instruction::And:
+    {
+
+      // Evaluate against each subcomponent. Any mask against a non-scalar except 0x00 and 0xff -> overdef.
+      ImprovedValSetMulti* IVM;
+      Constant* MaskC;
+      if(!(IVM = dyn_cast<ImprovedValSetMulti>(getIVSRef(SI->getOperand(0))))) {
+	IVM = cast<ImprovedValSetMulti>(getIVSRef(SI->getOperand(1)));
+	MaskC = getConstReplacement(SI->getOperand(0));
+      }
+      else {
+	MaskC = getConstReplacement(SI->getOperand(1));
+      }
+
+      if(!MaskC) {
+	NewIV = newOverdefIVS();
+	break;
+      }
+
+      uint64_t MaskInt = cast<ConstantInt>(MaskC)->getLimitedValue();
+      uint8_t* Mask = (uint8_t*)&MaskInt;
+      
+      bool anyNonScalarVisible = false;
+      bool anyNonScalarPreserved = false;
+
+      for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
+
+	if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	  for(uint32_t i = it.start(), ilim = it.stop(); i != ilim; ++i) {
+	    if(Mask[i])
+	      anyNonScalarVisible = true;
+	  }
+	  bool thisPreserved = true;
+	  for(uint32_t i = it.start(), ilim = it.stop(); i != ilim; ++i) {
+	    if(Mask[i] != 0xff)
+	      thisPreserved = false;
+	  }
+	  anyNonScalarPreserved |= thisPreserved;
+	}
+
+      }
+
+      if(!anyNonScalarVisible) {
+
+	// Now wholly scalar, so flatten and eval.
+
+	PartialVal PV(resSize);	  	
+
+	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
+
+	  if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	    
+	    Type* valType = Type::getIntNTy(SI->invar->I->getContext(), it.stop() - it.start());
+	    Constant* Zero = Constant::getNullValue(valType);
+	    PartialVal NewPV = PartialVal::getPartial(Zero, 0);
+	    PV.combineWith(NewPV, it.start(), it.stop(), PV.partialBufBytes, GlobalTD, 0);
+
+	  }
+	  else {
+
+	    if(!addIVSToPartialVal(it.val(), 0, it.start(), it.stop() - it.start(), &PV, 0)) {
+	      NewIV = newOverdefIVS();
+	      return true;
+	    }
+
+	  }
+
+	}
+
+	ImprovedValSetSingle* NewIVS = newIVS();
+	NewIV = NewIVS;
+	Constant* PVConst = PVToConst(PV, 0, resSize, SI->invar->I->getContext());
+
+	Constant* MaskedConst = ConstantExpr::getAnd(PVConst, MaskC);
+	if(ConstantExpr* MaskedCE = dyn_cast<ConstantExpr>(MaskedConst))
+	  MaskedConst = ConstantFoldConstantExpression(MaskedCE);
+
+	ShadowValue MaskedConstV(MaskedConst);
+	addValToPB(MaskedConstV, *NewIVS);
+
+      }
+      else if(!anyNonScalarPreserved) {
+
+	// FD or pointer components all clobbered. Call it overdef.
+	NewIV = newOverdefIVS();
+
+      }
+      else {
+
+	// FD or pointer components retained, but necessarily aren't the whole thing.
+	// Create a new multi, with each individual part masked appropriately.
+
+	ImprovedValSetMulti* NewIVM = new ImprovedValSetMulti(IVM->AllocSize);
+	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
+
+	  if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+
+	    bool thisPreserved = true;
+	    for(uint32_t i = it.start(), ilim = it.stop(); i != ilim; ++i) {
+	      if(Mask[i] != 0xff)
+		thisPreserved = false;
+	    }
+
+	    if(thisPreserved)
+	      NewIVM->Map.insert(it.start(), it.stop(), it.val());
+	    else
+	      NewIVM->Map.insert(it.start(), it.stop(), ImprovedValSetSingle(ValSetTypeUnknown, true));
+
+	  }
+	  else if(it.val().SetType == ValSetTypeScalar) {
+	    
+	    ImprovedValSetSingle newIVS;
+
+	    std::pair<ValSetType, ImprovedVal> Ops[2];
+	    Type* SubMaskType = Type::getIntNTy(SI->invar->I->getContext(), it.stop() - it.start());
+	    Constant* SubMask = constFromBytes(&(Mask[it.start()]), SubMaskType, GlobalTD);
+	    Ops[0] = std::make_pair(ValSetTypeScalar, ImprovedVal(SubMask));
+
+	    for(uint32_t i = 0; i < it.val().Values.size(); ++i) {
+
+	      ValSetType ThisVST;
+	      ImprovedVal ThisV;
+	      Ops[1] = std::make_pair(ValSetTypeScalar, it.val().Values[i]);
+	      tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+	      if(ThisVST != ValSetTypeScalar) {
+		newIVS.setOverdef();
+		break;
+	      }
+	      else {
+		newIVS.mergeOne(ThisVST, ThisV);
+	      }
+
+	    }
+
+	    NewIVM->Map.insert(it.start(), it.stop(), newIVS);
+
+	  }
+	  else {
+
+	    NewIVM->Map.insert(it.start(), it.stop(), ImprovedValSetSingle(ValSetTypeUnknown, true));
+
+	  }
+
+	}
+
+      }
+
+    }
+    break;
+
     // Unhandled instructions:
   default:
     NewIV = newOverdefIVS();
@@ -1453,7 +1629,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
   case Instruction::Call: 
     {
       CallInst* CI = cast_inst<CallInst>(SI);
-      if(inlineChildren.count(CI) || !isNoAliasCall(CI))
+      if(inlineChildren.count(CI))
 	tryMerge = true;
       break;
     }
@@ -1469,6 +1645,8 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
   if(tryMerge) {
 
     tryEvaluateMerge(SI, NewPB);
+    if(!NewPB)
+      return true;
     if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB))
       return IVS->isInitialised();
     else
@@ -1510,7 +1688,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
       return false;
   }
 
-  ImprovedValSet* NewPB;
+  ImprovedValSet* NewPB = 0;
   bool NewPBValid;
 
   if(ShadowArg* SA = V.getArg()) {
@@ -1525,6 +1703,10 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
     NewPBValid = getNewPB(SI, NewPB, loadedVararg);
 
   }
+
+  // AFAIK only void calls can be rejected this way.
+  if(!NewPB)
+    return false;
 
   release_assert(NewPBValid);
 
