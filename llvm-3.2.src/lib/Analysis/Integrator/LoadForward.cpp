@@ -566,6 +566,13 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
     // range includes a non-scalar value)
     readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, LIPB.Values.size() == 1 ? &ThisMulti : 0, ThisError.get());
 
+    // Sharing now contingent on this object!
+    if(ThisMulti || !ThisPB.Overdef) {
+
+      LI->parent->IA->noteDependency(LIPB.Values[i].V);
+
+    }
+
     if(ThisMulti) {
 
       deleteIVS(NewPB);
@@ -769,6 +776,9 @@ int32_t ShadowValue::getHeapKey() {
     return u.I->allocIdx;
   case SHADOWVAL_GV:
     return u.GV->allocIdx;
+  case SHADOWVAL_ARG:
+    release_assert((!u.A->IA->parent) && "getHeapKey on arg other than root argv?");
+    return 0;
   default:
     return -1;
 
@@ -839,14 +849,14 @@ LocStore* SharedTreeRoot::getReadableStoreFor(ShadowValue& V) {
 
 }
 
-LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
-
+LocStore* LocalStoreMap::getReadableStoreFor(ShadowValue& V) {
+  
   int32_t frameNo = V.getFrameNo();
   if(frameNo == -1)
-    return localStore->heap.getReadableStoreFor(V);
+    return heap.getReadableStoreFor(V);
   else {
 
-    std::vector<LocStore>& frame = localStore->frames[frameNo]->store;
+    std::vector<LocStore>& frame = frames[frameNo]->store;
     uint32_t frameIdx = V.u.I->allocIdx;
     if(frame.size() <= frameIdx)
       return 0;
@@ -859,6 +869,12 @@ LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
 
   }
   
+}
+
+LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
+
+  return localStore->getReadableStoreFor(V);
+
 }
 
 LocStore* SharedTreeNode::getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore) {
@@ -1082,7 +1098,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   // Can write direct to the base store if we're sure this write is "for good".
   LocStore* ret = 0;
-  if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && !localStore->allOthersClobbered) {
+  if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && (!localStore->allOthersClobbered) && !IA->pass->enableSharing) {
     LFV3(errs() << "Use base store for " << IA->F.getName() << " / " << IA->SeqNumber << " / " << invar->BB->getName() << "\n");
     ret = &V.getBaseStore();
   }
@@ -2384,6 +2400,8 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
   if(AllocSize)
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
+  SI->parent->IA->markUnsharable();
+
   executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
   addHeapAlloc(SI);
 
@@ -2398,6 +2416,9 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
     Type* allocType = 0;
     if(AllocSize)
       allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
+
+    SI->parent->IA->markUnsharable();
+
     executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
     addHeapAlloc(SI);
 
@@ -2453,6 +2474,9 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
   if(val_is<ConstantPointerNull>(PtrSet.Values[0].V))
     return;
+
+  // Now dependent on the source location's value.
+  BB->IA->noteDependency(SrcPtrSet.Values[0].V);
 
   SmallVector<IVSRange, 4> copyValues;
   readValRangeMulti(SrcPtrSet.Values[0].V, SrcPtrSet.Values[0].Offset, Size, BB, copyValues);
@@ -3802,7 +3826,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   LFV3(errs() << "Start block store merge\n");
 
-  bool mergeToBase = BB->status == BBSTATUS_CERTAIN && !BB->inAnyLoop;
+  bool mergeToBase = BB->status == BBSTATUS_CERTAIN && (!BB->inAnyLoop) && !BB->IA->pass->enableSharing;
   if(mergeToBase) {
 
     LFV3(errs() << "MERGE to base store for " << BB->IA->F.getName() << " / " << BB->IA->SeqNumber << " / " << BB->invar->BB->getName() << "\n");
@@ -3867,7 +3891,7 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   LFV3(errs() << "Start call-return store merge\n");
 
-  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN && !SI->parent->inAnyLoop;
+  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN && (!SI->parent->inAnyLoop) && !SI->parent->IA->pass->enableSharing;
   if(mergeToBase) {
 
     LFV3(errs() << "MERGE to base store for " << SI->parent->IA->F.getName() << " / " << SI->parent->IA->SeqNumber << " / " << SI->parent->invar->BB->getName() << "\n");

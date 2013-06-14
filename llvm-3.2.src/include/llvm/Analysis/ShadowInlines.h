@@ -836,6 +836,7 @@ LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCou
   std::vector<LocStore>& getWritableFrame(int32_t frameNo);
   void pushStackFrame(InlineAttempt*);
   void popStackFrame();
+  LocStore* getReadableStoreFor(ShadowValue& V);
   
 };
 

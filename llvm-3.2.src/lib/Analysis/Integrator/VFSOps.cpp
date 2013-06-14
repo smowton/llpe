@@ -170,6 +170,9 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	    LPDEBUG("Open of " << Filename << " returning ENOENT\n");
 	  }
 
+	  // Can't share functions that open() or we'll confuse the two open points.
+	  markUnsharable();
+
 	  return true;
       
 	}
@@ -370,6 +373,12 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     deleteIV(SI->i.PB);
   SI->i.PB = newOverdefIVS();
 
+  // markUnsharable() calls are inserted below wherever a resolution depends on
+  // not just the FD being used but its position, as this state is not explicitly
+  // maintained at the moment. Eventually FDs should occupy an FD store rather than
+  // using a backward walk, akin to the evolution of the load resolution code,
+  // and this limitation can go away.
+
   if(F->getName() == "stat") {
 
     // TODO: Add LF resolution code notifying file size. All users so far have just
@@ -447,6 +456,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
     if(!needsWalk) {
 
+      markUnsharable();
+
       // Doesn't matter what came before, resolve this call here.
       setReplacement(SI, ConstantInt::get(FT->getParamType(1), intOffset));
       resolveSeekCall(CI, SeekFile(&OS, intOffset));
@@ -457,6 +468,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   }
   else if(F->getName() == "close") {
+
+    markUnsharable();
 
     resolvedCloseCalls[CI] = CloseFile(&OS, OpenCall);    
     setReplacement(SI, ConstantInt::get(FT->getReturnType(), 0));
@@ -495,6 +508,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
     LPDEBUG("Successfully resolved " << itcache(*CI) << " which reads " << cBytes << " bytes\n");
     
+    markUnsharable();
+
     resolveReadCall(CI, ReadFile(&OS, Walk.uniqueIncomingOffset, cBytes));
     
     // The number of bytes read is also the return value of read.
@@ -509,6 +524,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
     int64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
     intOffset += Walk.uniqueIncomingOffset;
+
+    markUnsharable();
 
     resolveSeekCall(CI, SeekFile(&OS, intOffset));
 

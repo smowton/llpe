@@ -147,6 +147,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    RecyclingAllocator<BumpPtrAllocator, ImprovedValSetSingle> IVSAllocator;
 
    bool verboseOverdef;
+   bool enableSharing;
+   bool verboseSharing;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -645,6 +647,9 @@ inline bool operator!=(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 }
 
 inline bool IVsEqual(ImprovedValSet* IV1, ImprovedValSet* IV2) {
+
+  if(IV1 == IV2)
+    return true;
 
   if(IV1->isMulti != IV2->isMulti)
     return false;
@@ -1145,6 +1150,14 @@ protected:
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 
+  // Function sharing
+
+  void noteDependency(ShadowValue V);
+  void markUnsharable();
+  void mergeChildDependencies(InlineAttempt* ChildIA);
+  virtual void sharingInit();
+  virtual void sharingCleanup();
+
   // Stat collection and printing:
 
   void collectAllBlockStats();
@@ -1351,6 +1364,10 @@ class InlineAttempt : public IntegrationAttempt {
     return localAllocas[i];
   }
 
+  LocalStoreMap* storeAtEntry;
+  DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
+  bool unsharable;
+  
   virtual BasicBlock* getEntryBlock(); 
 
   virtual InlineAttempt* getFunctionRoot(); 
@@ -1417,6 +1434,13 @@ class InlineAttempt : public IntegrationAttempt {
   void resetDeadArgsAndInstructions();
 
   virtual void getInitialStore();
+
+  // Function sharing:
+
+  void clearExternalDependencies();
+  virtual void sharingInit();
+  void dumpSharingState();
+  virtual void sharingCleanup();
   
 };
 

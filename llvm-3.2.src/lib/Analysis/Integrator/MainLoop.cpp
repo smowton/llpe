@@ -42,6 +42,7 @@ bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser, bool inAnyLoop) {
   }
 
   anyChange |= analyse(inLoopAnalyser, inAnyLoop);
+
   return anyChange;
 
 }
@@ -88,12 +89,16 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
 
   getInitialStore();
 
+  sharingInit();
+
   for(uint32_t i = BBsOffset; i < (BBsOffset + nBBs); ++i) {
 
     // analyseBlock can increment i past loops
     anyChange |= analyseBlock(i, inLoopAnalyser, inAnyLoop, i == BBsOffset, L);
 
   }
+
+  sharingCleanup();
 
   return anyChange;
 
@@ -194,12 +199,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   }
 
-  LFV3(errs() << "Block " << F.getName() << "/" << BB->invar->BB->getName() << " stack height " << BB->localStore->frames.size() << "\n");
-
   LFV3(errs() << "  Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
-
-  LFV3(errs() << "Entering block " << BB->invar->BB->getName() << " with store:\n");
-  LFV3(BB->localStore->print(errs()));
 
   // Else we should just analyse this block here.
   anyChange |= analyseBlockInstructions(BB, 
@@ -245,10 +245,8 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 	
 	// Certain intrinsics manifest as calls but fold like ordinary instructions.
 	if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
-	  if(canConstantFoldCallTo(F)) {
-	    errs() << "HERE " << itcache(SI) << "\n";
+	  if(canConstantFoldCallTo(F))
 	    break;
-	  }
 	}
 
 	if(tryPromoteOpenCall(SI))
@@ -258,8 +256,12 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
       
 	bool created;
 	if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, created)) {
+
 	  anyChange |= created;
 	  anyChange |= IA->analyseWithArgs(inLoopAnalyser, inAnyLoop);
+
+	  mergeChildDependencies(IA);
+
 	  doCallStoreMerge(SI);
 	  if(!SI->parent->localStore) {
 
@@ -268,6 +270,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 	    return anyChange;
 
 	  }
+
 	}
 	else {
 	  // For special calls like malloc this might define a return value.

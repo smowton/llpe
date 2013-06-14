@@ -68,6 +68,8 @@ static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
 static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
+static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
+static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -103,6 +105,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
     if(invarInfo->frameSize == -1)
       --stack_depth;
 
+    storeAtEntry = 0;
+    unsharable = false;
 
   }
 
@@ -1801,6 +1805,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   }
 
   this->verboseOverdef = VerboseOverdef;
+  this->enableSharing = EnableFunctionSharing;
+  this->verboseSharing = VerboseFunctionSharing;
 
 }
 
@@ -1888,6 +1894,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   uint32_t argvIdx = 0xffffffff;
   parseArgs(F, argConstants, argvIdx);
 
+  // Reserve space on the heap for root-argv:
+  release_assert((!heap.size()) && "argv must be first on the heap");
+  heap.push_back(ShadowValue());
+
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
   initShadowGlobals(M);
@@ -1911,6 +1921,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     ImprovedValSetSingle* NewIVS = newIVS();
     NewIVS->set(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
     IA->argShadows[argvIdx].i.PB = NewIVS;
+
+    heap[0] = ShadowValue(&IA->argShadows[argvIdx]);
 
   }
 
