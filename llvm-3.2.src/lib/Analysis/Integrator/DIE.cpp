@@ -447,7 +447,7 @@ void InlineAttempt::runDIE() {
     ShadowArg* SA = &(argShadows[i]);
     if(willBeReplacedWithConstantOrDeleted(ShadowValue(SA)))
       continue;
-    if((!Callers.empty()) && SA->invar->A->hasNoAliasAttr())
+    if(Callers.empty() && SA->invar->A->hasNoAliasAttr())
       continue;
     if(valueIsDead(ShadowValue(SA))) {
       SA->i.dieStatus |= INSTSTATUS_DEAD;

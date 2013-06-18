@@ -1138,7 +1138,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
        SI->parent->IA->L == SI->parent->invar->naturalScope && 
        SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
 
-      V1 = SI->parent->IA->parent->getInst(SI->invar);
+      V1 = SI->parent->IA->getUniqueParent()->getInst(SI->invar);
 
     }
   }
@@ -1149,7 +1149,7 @@ BasicAliasAnalysis::aliasPHI(ShadowValue V1, uint64_t PNSize, const MDNode *PNTB
 	 SI->parent->IA->L == SI->parent->invar->naturalScope && 
 	 SI->parent->invar->naturalScope->getHeader() == SI->parent->invar->BB) {
 
-	V2 = SI->parent->IA->parent->getInst(SI->invar);
+	V2 = SI->parent->IA->getUniqueParent()->getInst(SI->invar);
 
       }
     }

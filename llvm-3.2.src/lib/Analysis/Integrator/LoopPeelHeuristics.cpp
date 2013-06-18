@@ -90,17 +90,18 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
       OS << " at " << itcache(_CI, true);
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
-    prepareShadows();
-
-    // If this function can't allocate stack memory don't give it a frame number.
-    if(invarInfo->frameSize == -1)
-      --stack_depth;
 
     storeAtEntry = 0;
     unsharable = false;
     active = false;
     if(_CI)
       Callers.push_back(_CI);
+
+    prepareShadows();
+
+    // If this function can't allocate stack memory don't give it a frame number.
+    if(invarInfo->frameSize == -1)
+      --stack_depth;
 
 }
 
@@ -936,7 +937,7 @@ void InlineAttempt::getVarArg(int64_t idx, ImprovedValSet*& Result) {
   argIdx += F.arg_size();
 
   if(argIdx < argShadows.size())
-     copyImprovedVal(ShadowValue(&argShadows[idx]), Result);
+     copyImprovedVal(ShadowValue(&argShadows[argIdx]), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
@@ -1200,38 +1201,34 @@ std::string PeelAttempt::getShortHeader() {
 
 }
 
-IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, IntegrationAttempt*& startAt) {
+IntegratorTag* llvm::searchFunctions(IntegratorTag* thisTag, std::string& search, IntegratorTag*& startAt) {
 
-  if(startAt == this) {
+  if(startAt == thisTag) {
     
     startAt = 0;
 
   }
   else if(!startAt) {
+    
+    if(thisTag->type == IntegratorTypeIA) {
 
-    if(getShortHeader().find(search) != std::string::npos) {
+      IntegrationAttempt* IA = (IntegrationAttempt*)thisTag->ptr;
+
+      if(IA->getShortHeader().find(search) != std::string::npos) {
       
-      return this;
+	return thisTag;
+
+      }
 
     }
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(std::vector<IntegratorTag*>::iterator it = thisTag->children.begin(), 
+	itend = thisTag->children.end(); it != itend; ++it) {
 
-    if(IntegrationAttempt* SubRes = it->second->searchFunctions(search, startAt))
+    if(IntegratorTag* SubRes = searchFunctions(*it, search, startAt))
       return SubRes;
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
-
-      if(IntegrationAttempt* SubRes = it->second->Iterations[i]->searchFunctions(search, startAt))
-	return SubRes;
-
-    }
 
   }
 

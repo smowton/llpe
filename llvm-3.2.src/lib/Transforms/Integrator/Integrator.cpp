@@ -73,7 +73,7 @@ class IntegratorFrame: public wxFrame
   wxScrolledWindow* imagePanel;
   wxDataViewCtrl* menuPanelData;
 
-  IntegrationAttempt* searchLastIA;
+  IntegratorTag* searchLastIA;
   wxString searchLastString;
 
   std::string dotpath;
@@ -219,16 +219,12 @@ public:
 
   }
 
-  void notifyStatsChanged(IntegrationAttempt* IA) {
+  void notifyStatsChanged(IntegratorTag* Tag) {
     
-    ValueChanged(wxDataViewItem((void*)(&IA->tag)), 2);
+    ValueChanged(wxDataViewItem((void*)Tag), 2);
 
-    for(DenseMap<CallInst*, InlineAttempt*>::iterator it = IA->inlineChildren.begin(), it2 = IA->inlineChildren.end(); it != it2; ++it)
-      notifyStatsChanged(it->second);
-    for(DenseMap<const Loop*, PeelAttempt*>::iterator it = IA->peelChildren.begin(), it2 = IA->peelChildren.end(); it != it2; ++it) {
-      for(std::vector<PeelIteration*>::iterator iter = it->second->Iterations.begin(), iterend = it->second->Iterations.end(); iter != iterend; ++iter)
-	notifyStatsChanged(*iter);
-    }
+    for(std::vector<IntegratorTag*>::iterator it = Tag->children.begin(), itend = Tag->children.end(); it != itend; ++it)
+      notifyStatsChanged(*it);
 
   }
 
@@ -274,7 +270,7 @@ public:
     */
 
     // All other contexts will have recalculated their stats too.
-    notifyStatsChanged(Root);
+    notifyStatsChanged(RootTag);
 
     Parent->redrawImage();
 
@@ -312,12 +308,12 @@ public:
       break;
     case IntegratorTypePA:
       {
-	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
 	return true;
       }
       break;
     default:
       assert(0 && "Invalid node tag");
+      llvm_unreachable();
     }
 
   }
@@ -528,17 +524,14 @@ void IntegratorFrame::OnSearchFunctionsNext(wxCommandEvent& event) {
 
   if(searchLastString == "")
     return;
-  bool skipFirst = true;
-  if(searchLastIA == 0) {
-    searchLastIA = IHP->getRoot();
-    skipFirst = false;
-  }
+  if(searchLastIA == 0)
+    searchLastIA = IHP->getRootTag();
 
   std::string stdSearchString(searchLastString.mb_str());
-  IntegrationAttempt* IA = IHP->getRoot()->searchFunctions(stdSearchString, searchLastIA);
+  IntegratorTag* IA = searchFunctions(IHP->getRootTag(), stdSearchString, searchLastIA);
 
   if(IA) {
-    wxDataViewItem key((void*)&(IA->tag));
+    wxDataViewItem key((void*)IA);
     menuPanelData->Select(key);
   }
   else {

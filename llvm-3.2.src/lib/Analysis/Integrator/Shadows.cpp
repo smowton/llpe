@@ -419,8 +419,14 @@ void InlineAttempt::prepareShadows() {
     BBs[i] = 0;
   BBsOffset = 0;
 
-  ShadowArg* argShadows = new ShadowArg[F.arg_size()];
-  this->argShadows = ImmutableArray<ShadowArg>(argShadows, Callers[0]->getNumArgOperands());
+  uint32_t shadowsSize;
+  if(Callers.size())
+    shadowsSize = Callers[0]->getNumArgOperands();
+  else
+    shadowsSize = F.arg_size();
+
+  ShadowArg* argShadows = new ShadowArg[shadowsSize];
+  this->argShadows = ImmutableArray<ShadowArg>(argShadows, shadowsSize);
   uint32_t i = 0;
   for(; i != F.arg_size(); ++i) {
 
@@ -429,11 +435,11 @@ void InlineAttempt::prepareShadows() {
 
   }
 
-  for(; i != Callers[0]->getNumArgOperands(); ++i) {
+  for(; i != shadowsSize; ++i) {
 
     argShadows[i].invar = 0;
     argShadows[i].IA = this;
-
+    
   }
 
 }

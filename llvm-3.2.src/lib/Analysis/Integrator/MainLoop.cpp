@@ -63,7 +63,7 @@ void InlineAttempt::getInitialStore() {
   // Take our caller's store; they will make a new one
   // upon return.
 
-  if(!Callers.size())
+  if(Callers.size())
     BBs[0]->localStore = activeCaller->parent->localStore;
   else
     BBs[0]->localStore = new LocalStoreMap(0);

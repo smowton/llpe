@@ -283,8 +283,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    IntegratorTag* newTag() {
      
-     tags.push_back(IntegratorTag());
-     return &tags.back();
+     return new IntegratorTag();
 
    }
 
@@ -1133,7 +1132,6 @@ protected:
   unsigned getTotalInstructions();
   unsigned getElimdInstructions();
   int64_t getTotalInstructionsIncludingLoops();
-  IntegrationAttempt* searchFunctions(std::string&, IntegrationAttempt*& startAt);
   IntegratorTag* createTag(IntegratorTag* parent);
 
   // Saving our results as a bitcode file:
@@ -1603,6 +1601,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  ShadowValue& getAllocWithIdx(int32_t);
  void addHeapAlloc(ShadowInstruction*);
 
+ IntegratorTag* searchFunctions(IntegratorTag* thisTag, std::string&, IntegratorTag*& startAt);
+  
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);
