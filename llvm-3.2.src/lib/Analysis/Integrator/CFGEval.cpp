@@ -99,7 +99,8 @@ bool InlineAttempt::entryBlockIsCertain() {
 
   if(!parent)
     return true;
-  return blockCertainlyExecutes(CI->parent);
+  release_assert(!isShared());
+  return blockCertainlyExecutes(Callers[0]->parent);
 
 }
 
@@ -118,7 +119,10 @@ bool InlineAttempt::entryBlockAssumed() {
 
   if(!parent)
     return true;
-  if(blockAssumedToExecute(CI->parent))
+
+  release_assert(!isShared());
+
+  if(blockAssumedToExecute(Callers[0]->parent))
     return true;
   if(pass->shouldAlwaysExplore(&F))
     return true;

@@ -458,9 +458,9 @@ void IntegrationAttempt::tryKillAllMTIs() {
 	tryKillMTI(I);
 
       }
-      else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+      else if(inst_is<CallInst>(I)) {
 
-	if(InlineAttempt* IA = getInlineAttempt(CI))
+	if(InlineAttempt* IA = getInlineAttempt(I))
 	  IA->tryKillAllMTIs();
 
       }
@@ -514,7 +514,7 @@ void IntegrationAttempt::tryKillAllStores() {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->tryKillAllStores();
 
@@ -557,7 +557,7 @@ void IntegrationAttempt::tryKillAllAllocs() {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->tryKillAllAllocs();
 

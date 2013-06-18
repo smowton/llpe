@@ -129,13 +129,20 @@ class IntegrationHeuristicsPass : public ModulePass {
    unsigned mallocAlignment;
 
  public:
+   
+   // Pass identifier
+   static char ID;
 
    ImprovedValSetMulti::MapTy::Allocator IMapAllocator;
 
    SmallPtrSet<Function*, 8> blacklistedFunctions;
    void initBlacklistedFunctions(Module&);
 
-   static char ID;
+   DenseMap<Function*, std::vector<InlineAttempt*> > IAsByFunction;
+
+   void addSharableFunction(InlineAttempt*);
+   void removeSharableFunction(InlineAttempt*);
+   InlineAttempt* findIAMatching(ShadowInstruction*);
 
    uint64_t SeqNumber;
    bool mustRecomputeDIE;
@@ -646,7 +653,7 @@ inline bool operator!=(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
 }
 
-inline bool IVsEqual(ImprovedValSet* IV1, ImprovedValSet* IV2) {
+inline bool IVsEqualShallow(ImprovedValSet* IV1, ImprovedValSet* IV2) {
 
   if(IV1 == IV2)
     return true;
@@ -837,7 +844,7 @@ protected:
 
   IntegrationAttempt* parent;
 
-  DenseMap<CallInst*, InlineAttempt*> inlineChildren;
+  DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
     
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
@@ -946,6 +953,10 @@ protected:
   bool analyseLoop(const Loop*, bool nestedLoop);
   void releaseLatchStores(const Loop*);
   virtual void getInitialStore() = 0;
+  // Toplevel, execute-only version:
+  void execute();
+  void executeBlock(ShadowBB*);
+
 
   // Constant propagation:
 
@@ -984,10 +995,12 @@ protected:
   
   // Child (inlines, peels) management
 
-  InlineAttempt* getInlineAttempt(CallInst* CI);
+  InlineAttempt* getInlineAttempt(ShadowInstruction* CI);
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool& created);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool& created, bool& needsAnalyse);
+  bool callCanExpand(ShadowInstruction* Call, InlineAttempt*& Result);
+  bool analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop);
  
   PeelAttempt* getPeelAttempt(const Loop*);
   PeelAttempt* getOrCreatePeelAttempt(const Loop*);
@@ -1157,7 +1170,7 @@ protected:
   void mergeChildDependencies(InlineAttempt* ChildIA);
   virtual void sharingInit();
   virtual void sharingCleanup();
-
+  
   // Stat collection and printing:
 
   void collectAllBlockStats();
@@ -1347,17 +1360,20 @@ class PeelAttempt {
 
 class InlineAttempt : public IntegrationAttempt { 
 
-  ShadowInstruction* CI;
-
  public:
 
   InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int stack_depth);
+
+  virtual ~InlineAttempt();
+
+  SmallVector<ShadowInstruction*, 1> Callers;
+  ShadowInstruction* activeCaller;
 
   Function* CommitF;
   BasicBlock* returnBlock;
   PHINode* returnPHI;
 
-  ShadowArg* argShadows;
+  ImmutableArray<ShadowArg> argShadows;
 
   std::vector<ShadowInstruction*> localAllocas;
   ShadowInstruction* getAllocaWithIdx(uint32_t i) {
@@ -1367,7 +1383,12 @@ class InlineAttempt : public IntegrationAttempt {
   LocalStoreMap* storeAtEntry;
   DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
   bool unsharable;
-  
+  bool active;
+
+  bool isShared() {
+    return Callers.size() > 1;
+  }
+
   virtual BasicBlock* getEntryBlock(); 
 
   virtual InlineAttempt* getFunctionRoot(); 
@@ -1395,8 +1416,6 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool ctxContains(IntegrationAttempt*); 
 
-  bool getArgBasePointer(Argument*, ImprovedValSet*&); 
-
   int64_t NonFPArgIdxToArgIdx(int64_t idx);
   int64_t FPArgIdxToArgIdx(int64_t idx);
 
@@ -1418,7 +1437,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool entryBlockIsCertain(); 
   virtual bool entryBlockAssumed(); 
 
-  bool analyseWithArgs(bool withinUnboundedLoop, bool inAnyLoop); 
+  bool analyseWithArgs(ShadowInstruction* Caller, bool withinUnboundedLoop, bool inAnyLoop); 
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
@@ -1441,6 +1460,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void sharingInit();
   void dumpSharingState();
   virtual void sharingCleanup();
+  bool matchesCallerEnvironment(ShadowInstruction* SI);
+  InlineAttempt* getWritableCopyFrom(ShadowInstruction* SI);
+  void dropReferenceFrom(ShadowInstruction* SI);
   
 };
 

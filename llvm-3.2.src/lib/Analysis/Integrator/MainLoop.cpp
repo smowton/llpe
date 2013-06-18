@@ -29,15 +29,26 @@
 
 using namespace llvm;
 
-bool InlineAttempt::analyseWithArgs(bool inLoopAnalyser, bool inAnyLoop) {
+bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
 
-  for(unsigned i = 0; i < F.arg_size(); ++i) {
+  for(unsigned i = 0, ilim = SI->getNumArgOperands(); i != ilim; ++i) {
 
     ShadowArg* SArg = &(argShadows[i]);
-    bool ign;
-    anyChange |= tryEvaluate(ShadowValue(SArg), inLoopAnalyser, ign);
+    ShadowValue Op = SI->getCallArgOperand(i);
+    
+    if(SArg->i.PB) {
+
+      if(IVMatchesVal(Op, SArg->i.PB))
+	continue;
+
+      deleteIV(SArg->i.PB);
+
+    }
+
+    anyChange = true;
+    copyImprovedVal(Op, SArg->i.PB);
 
   }
 
@@ -52,8 +63,8 @@ void InlineAttempt::getInitialStore() {
   // Take our caller's store; they will make a new one
   // upon return.
 
-  if(CI)
-    BBs[0]->localStore = CI->parent->localStore;
+  if(!parent)
+    BBs[0]->localStore = activeCaller->parent->localStore;
   else
     BBs[0]->localStore = new LocalStoreMap(0);
 
@@ -254,15 +265,10 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 	if(tryResolveVFSCall(SI))
 	  continue;
       
-	bool created;
-	if(InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, created)) {
-
-	  anyChange |= created;
-	  anyChange |= IA->analyseWithArgs(inLoopAnalyser, inAnyLoop);
-
-	  mergeChildDependencies(IA);
-
-	  doCallStoreMerge(SI);
+	bool changed;
+	if(analyseExpandableCall(SI, changed, inLoopAnalyser, inAnyLoop)) {
+	  
+	  anyChange |= changed;
 	  if(!SI->parent->localStore) {
 
 	    // Call must have ended in unreachable.
@@ -273,9 +279,11 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 
 	}
 	else {
+
 	  // For special calls like malloc this might define a return value.
 	  executeUnexpandedCall(SI);
 	  continue;
+
 	}
 
       }
@@ -336,11 +344,10 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 
 	ShadowInstruction* SI = &(BB->insts[j]);
 	ShadowInstructionInvar* SII = SI->invar;
-	Instruction* I = SII->I;
 
-	if(CallInst* CI = dyn_cast<CallInst>(I)) {
+	if(inst_is<CallInst>(SI)) {
 
-	  if(InlineAttempt* IA = getInlineAttempt(CI))
+	  if(InlineAttempt* IA = getInlineAttempt(SI))
 	    IA->releaseLatchStores(0);
 
 	}
@@ -474,3 +481,93 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
 }
 
+// Like analyse(), but used from sharing pathways when we're sure none of the functions need re-evaluating.
+// We really only want to recreate its effects on the store.
+void IntegrationAttempt::execute() {
+
+  getInitialStore();
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    if(!BBs[i])
+      continue;
+
+    ShadowBB* BB = BBs[i];
+    ShadowBBInvar* BBI = BB->invar;
+    
+    if(BBI->naturalScope != L) {
+
+      PeelAttempt* LPA = getPeelAttempt(BBI->naturalScope);
+      if(LPA && LPA->isTerminated()) {
+
+	// Run each individual iteration
+
+	for(std::vector<PeelIteration*>::iterator it = LPA->Iterations.begin(), 
+	      itend = LPA->Iterations.end(); it != itend; ++it) {
+
+	  (*it)->execute();
+
+	}
+
+	// Skip blocks in this scope
+
+	while((i + BBsOffset) < invarInfo->BBs.size() && BBI->naturalScope->contains(getBBInvar(i + BBsOffset)->naturalScope))
+	  ++i;
+	--i;
+
+      }
+
+      // If the loop isn't terminated just fall through to execute block here.
+
+    }
+
+    if(i != 0)
+      doBlockStoreMerge(BB);
+
+    executeBlock(BB);
+
+  }
+
+}
+
+// Part of executing known-not-changed contexts.
+// Just execute potentially side-effecting instructions.
+void IntegrationAttempt::executeBlock(ShadowBB* BB) {
+
+  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
+
+    ShadowInstruction* SI = &BB->insts[i];
+    Instruction* I = SI->invar->I;
+    switch(I->getOpcode()) {
+
+    case Instruction::Alloca:
+      executeAllocaInst(SI);
+      break;
+
+    case Instruction::Store:
+      executeStoreInst(SI);
+      break;
+
+    case Instruction::Call:
+      {
+
+	if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
+	  if(canConstantFoldCallTo(F))
+	    break;
+	}
+
+	if(InlineAttempt* IA = getInlineAttempt(SI))
+	  IA->execute();
+	else
+	  executeUnexpandedCall(SI);
+
+      }
+      break;
+
+    default:
+      break;
+
+    }
+
+  }
+
+}

@@ -163,7 +163,7 @@ bool* PartialVal::getValidArray(uint64_t nbytes) {
 }
 
 static uint64_t markPaddingBytes(bool* pvb, Type* Ty, DataLayout* TD) {
-
+  
   uint64_t marked = 0;
 
   if(StructType* STy = dyn_cast<StructType>(Ty)) {
@@ -3898,7 +3898,7 @@ void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
   }
 
-  InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(cast_inst<CallInst>(SI));
+  InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(SI);
 
   MergeBlockVisitor V(mergeToBase);
   CallIA->visitLiveReturnBlocks(V);

@@ -101,9 +101,10 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 
 int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 
-  for(unsigned i = F.getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
+  // All callers must have the same operand count, so Callers[0] is ok.
+  for(unsigned i = F.getFunctionType()->getNumParams(); i < Callers[0]->getNumArgOperands(); ++i) {
 
-    Type* T = cast_inst<CallInst>(CI)->getArgOperand(i)->getType();
+    Type* T = cast_inst<CallInst>(Callers[0])->getArgOperand(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       if(idx == 0)
@@ -130,10 +131,10 @@ int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 }
 
 int64_t InlineAttempt::FPArgIdxToArgIdx(int64_t idx) {
+  
+  for(unsigned i = F.getFunctionType()->getNumParams(); i < Callers[0]->getNumArgOperands(); ++i) {
 
-  for(unsigned i = F.getFunctionType()->getNumParams(); i < CI->getNumArgOperands(); ++i) {
-
-    Type* T = cast_inst<CallInst>(CI)->getArgOperand(i)->getType();
+    Type* T = cast_inst<CallInst>(Callers[0])->getArgOperand(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       continue;

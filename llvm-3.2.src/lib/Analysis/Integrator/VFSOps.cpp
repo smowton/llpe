@@ -962,8 +962,8 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-    if(ignoreIAs.count(it->first))
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+    if(ignoreIAs.count(cast_inst<CallInst>(it->first)))
       continue;
     it->second->tryKillAllVFSOps();
   }

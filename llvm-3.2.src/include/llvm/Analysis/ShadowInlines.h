@@ -1170,6 +1170,57 @@ inline ShadowValue tryGetConstReplacement(ShadowValue SV) {
 
 std::pair<ValSetType, ImprovedVal> getValPB(Value* V);
 
+inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValSetType, ImprovedVal>& Single) {
+
+  IVS = 0;
+
+  switch(V.t) {
+
+  case SHADOWVAL_INST:
+  case SHADOWVAL_ARG:
+    IVS = getIVSRef(V);
+    break;
+  case SHADOWVAL_GV:
+    Single = std::make_pair(ValSetTypePB, ImprovedVal(V, 0));
+    break;
+  case SHADOWVAL_OTHER:
+    Single = getValPB(V.u.V);
+    break;
+  default:
+    release_assert(0 && "Uninit V in getIVOrSingleVal");
+    llvm_unreachable();
+  }
+
+}
+
+inline bool IVsEqualShallow(ImprovedValSet*, ImprovedValSet*);
+
+inline bool IVMatchesVal(ShadowValue V, ImprovedValSet* IV) {
+
+  ImprovedValSet* OtherIV = 0;
+  std::pair<ValSetType, ImprovedVal> OtherSingle;
+  getIVOrSingleVal(V, OtherIV, OtherSingle);
+
+  if(OtherIV)
+    return IVsEqualShallow(IV, OtherIV);
+
+  ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV);
+  if(!IVS)
+    return false;
+  
+  if(OtherSingle.first == ValSetTypeOverdef)
+    return IVS->Overdef;
+
+  if(OtherSingle.first != IVS->SetType)
+    return false;
+
+  if(IVS->Values.size() != 1)
+    return false;
+
+  return IVS->Values[0] == OtherSingle.second;
+
+}
+
 inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) {
 
   switch(V.t) {

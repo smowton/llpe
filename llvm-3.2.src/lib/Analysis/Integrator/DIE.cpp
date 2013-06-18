@@ -34,7 +34,7 @@ static void DIEProgress() {
 bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
   if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
-    if(getInlineAttempt(CI))
+    if(getInlineAttempt(I))
       return true;
     if(forwardableOpenCalls.count(CI))
       return true;
@@ -309,7 +309,7 @@ public:
 
       }
 
-      InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(CI);
+      InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(UserI);
       if((!IA) || (!IA->isEnabled()) || IA->isVararg()) {
 	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(*CI) << "\n");
 	maybeLive = true;
@@ -385,8 +385,19 @@ bool InlineAttempt::isOwnCallUnused() {
 
   if(!parent)
     return false;
-  else
-    return CI->i.dieStatus != INSTSTATUS_ALIVE;
+  else {
+
+    for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
+	  itend = Callers.end(); it != itend; ++it) {
+
+      if((*it)->i.dieStatus == INSTSTATUS_ALIVE)
+	return false;
+
+    }
+
+    return true;
+
+  }
 
 }
 
@@ -486,12 +497,12 @@ void IntegrationAttempt::runDIE() {
 
       bool delOrConst = willBeReplacedWithConstantOrDeleted(ShadowValue(SI));
 
-      if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
+      if(inst_is<CallInst>(SI)) {
 
 	if((!delOrConst) && valueIsDead(ShadowValue(SI)))
 	  SI->i.dieStatus |= INSTSTATUS_DEAD; 
 
-	if(InlineAttempt* IA = getInlineAttempt(CI)) {
+	if(InlineAttempt* IA = getInlineAttempt(SI)) {
 
 	  IA->runDIE();
 

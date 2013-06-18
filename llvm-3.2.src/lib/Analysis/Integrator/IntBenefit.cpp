@@ -83,7 +83,7 @@ static void findResidualFunctionsInConst(DenseSet<Function*>& ElimFunctions, Con
     for(ConstantExpr::op_iterator it = CE->op_begin(), it2 = CE->op_end(); it != it2; ++it) {
 
       findResidualFunctionsInConst(ElimFunctions, cast<Constant>(*it));
-
+      
     }
 
   }
@@ -113,12 +113,12 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
       ShadowInstruction* I = &(BB->insts[j]);
 
-      if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+      if(inst_is<CallInst>(I)) {
 
 	Function* F = getCalledFunction(I);
 	if(F) {
 
-	  if(!inlineChildren.count(CI))
+	  if(!inlineChildren.count(I))
 	    ElimFunctions.erase(F);
 
 	}
@@ -144,7 +144,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->findResidualFunctions(ElimFunctions, TotalResidualInsts);
 
@@ -238,7 +238,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
   totalIntegrationGoodness = 0;
   int64_t childIntegrationGoodness = 0;
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -358,7 +358,12 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   if(parent && (totalIntegrationGoodness < 0)) {
 
-    parent->disableInline(cast<CallInst>(CI->invar->I));
+    if(isShared()) {
+      errs() << "Didn't disable a context because it's shared\n";
+      return;
+    }
+
+    parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
     parent->reduceDependentLoads(nDependentLoads);
 
   }
@@ -406,7 +411,7 @@ void IntegrationAttempt::countDependentLoads() {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->countDependentLoads();
 
@@ -433,7 +438,7 @@ void PeelAttempt::propagateDependentLoads() {
 
 void IntegrationAttempt::propagateDependentLoads() {
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->propagateDependentLoads();
     nDependentLoads += it->second->nDependentLoads;
@@ -544,6 +549,7 @@ void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
 void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
   uint32_t i = 0;
+  
   for(BasicBlock::iterator BI = BBI->BB->begin(), BE = BBI->BB->end(); BI != BE; ++BI, ++i) {
       
     const Loop* BBL = BBI->naturalScope;
@@ -581,9 +587,11 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
       }
 
       if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
-	if(it == inlineChildren.end())
-	  unexploredCalls.push_back(CI);
+	if(BB) {
+	  DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.find(&(BB->insts[i]));
+	  if(it == inlineChildren.end())
+	    unexploredCalls.push_back(CI);
+	}
       }
 
     }
@@ -671,7 +679,7 @@ void IntegrationAttempt::collectStats() {
   collectAllBlockStats();
   collectAllLoopStats();
 
-  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
     it->second->collectStats();
 
   for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)

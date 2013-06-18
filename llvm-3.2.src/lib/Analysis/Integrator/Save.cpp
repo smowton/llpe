@@ -40,9 +40,9 @@ void IntegrationAttempt::prepareCommit() {
   
   localPrepareCommit();
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
-    if(ignoreIAs.count(it->first))
+    if(ignoreIAs.count(cast_inst<CallInst>(it->first)))
       continue;
 
     it->second->prepareCommit();
@@ -206,9 +206,10 @@ void IntegrationAttempt::commitCFG() {
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
-      if(CallInst* CI = dyn_cast_inst<CallInst>(&(BB->insts[j]))) {
-
-	if(InlineAttempt* IA = getInlineAttempt(CI)) {
+      ShadowInstruction* SI = &(BB->insts[j]);
+      if(inst_is<CallInst>(SI)) {
+	
+	if(InlineAttempt* IA = getInlineAttempt(SI)) {
 
 	  if(IA->isEnabled()) {
 
@@ -292,7 +293,8 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
   else {
 
     // Inlined in place -- use the corresponding value of our call instruction.
-    return getCommittedValue(CI->getCallArgOperand(n));
+    // For sharing to work all arg values must match, so just use caller #0.
+    return getCommittedValue(Callers[0]->getCallArgOperand(n));
 
   }
 
@@ -811,9 +813,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
 void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB) {
 
-  CallInst* CI = cast_inst<CallInst>(I);
-  
-  if(InlineAttempt* IA = getInlineAttempt(CI)) {
+  if(InlineAttempt* IA = getInlineAttempt(I)) {
 
     if(IA->isEnabled()) {
 

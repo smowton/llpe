@@ -154,3 +154,112 @@ void IntegrationAttempt::mergeChildDependencies(InlineAttempt* ChildIA) {
   }
 
 }
+
+
+// Check incoming arguments and memory locations last seen for this IA match those at callsite SI.
+bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
+
+  if(!pass->enableSharing)
+    return false;
+
+  // Differing vararg counts?
+  if(SI->getNumArgOperands() != argShadows.size())
+    return false;
+
+  // Check all arguments match.
+  for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {
+
+    // Can use shallow equality for arguments
+
+    ShadowValue Operand = SI->getCallArgOperand(i);
+    if(!IVMatchesVal(Operand, argShadows[i].i.PB))
+      return false;
+    
+  }
+
+  // Check all memory locations upon which we depend match the values at the proposed callsite.
+  // TODO: consider using deep equality test here if we find too many false negatives due to 
+  // e.g. identical structures being produced by different means leading to different representations.
+
+  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = externalDependencies.begin(),
+	itend = externalDependencies.end(); it != itend; ++it) {
+
+    LocStore* callsiteStore = SI->parent->getReadableStoreFor(it->first);
+    if(!IVsEqualShallow(callsiteStore->store, it->second))
+      return false;
+
+  }
+
+  return true;
+
+}
+
+
+void IntegrationHeuristicsPass::addSharableFunction(InlineAttempt* IA) {
+  
+  if(!enableSharing)
+    return;
+
+  IAsByFunction[&IA->F].push_back(IA);
+
+}
+
+void IntegrationHeuristicsPass::removeSharableFunction(InlineAttempt* IA) {
+
+  if(!enableSharing)
+    return;
+
+  std::vector<InlineAttempt*>& IAs = IAsByFunction[&IA->F];
+  std::vector<InlineAttempt*>::iterator findit = std::find(IAs.begin(), IAs.end(), IA);
+  release_assert(findit != IAs.end() && "Function unshared twice?");
+  IAs.erase(findit);
+
+}
+
+InlineAttempt* IntegrationHeuristicsPass::findIAMatching(ShadowInstruction* SI) {
+
+  if(!enableSharing)
+    return 0;
+  
+  Function* FCalled = getCalledFunction(SI);
+
+  DenseMap<Function*, std::vector<InlineAttempt*> >::iterator findit = IAsByFunction.find(FCalled);
+  if(findit == IAsByFunction.end())
+    return 0;
+
+  std::vector<InlineAttempt*>& candidates = findit->second;
+  for(std::vector<InlineAttempt*>::iterator it = candidates.begin(), 
+	itend = candidates.end(); it != itend; ++it) {
+
+    // Skip functions that are currently on the stack, as their dependency information is incomplete.
+    if((*it)->active)
+      continue;
+
+    if((*it)->matchesCallerEnvironment(SI)) {
+      (*it)->Callers.push_back(SI);
+      return *it;
+    }
+
+  }
+
+  return 0;
+
+}
+
+// CoW break this IA, but with the proviso that we're about to run analyseWithArgs() against it,
+// so we can leave work undone if that will reconstruct it anyway.
+
+// This is currently maximally lazy: it makes a blank IA.
+InlineAttempt* InlineAttempt::getWritableCopyFrom(ShadowInstruction* SI) {
+
+  release_assert(pass->enableSharing && "getWritableCopyFrom without sharing enabled?");
+
+  InlineAttempt* Copy = new InlineAttempt(pass, SI->parent->IA, F, LI, SI, nesting_depth, stack_depth);
+
+  SmallVector<ShadowInstruction*, 1>:: iterator findit = std::find(Callers.begin(), Callers.end(), SI);
+  release_assert(findit != Callers.end() && "CoW break IA with bad caller?");
+  Callers.erase(findit);
+  
+  return Copy;
+
+}

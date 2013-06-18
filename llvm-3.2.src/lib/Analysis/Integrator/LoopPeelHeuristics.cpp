@@ -79,24 +79,15 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 						 false /* Only looks at CFG */,
 						 true /* Analysis Pass */);
 
-IntegrationAttempt::~IntegrationAttempt() {
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
-    delete (II->second);
-  } 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
-    delete (PI->second);
-  }
-}
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
 			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int sdepth) : 
-  IntegrationAttempt(Pass, P, F, 0, LI, depth, sdepth),
-  CI(_CI)
-  { 
+  IntegrationAttempt(Pass, P, F, 0, LI, depth, sdepth)
+{ 
     raw_string_ostream OS(HeaderStr);
-    OS << (!CI ? "Root " : "") << "Function " << F.getName();
-    if(CI && !CI->getType()->isVoidTy())
-      OS << " at " << itcache(CI, true);
+    OS << (!_CI ? "Root " : "") << "Function " << F.getName();
+    if(_CI && !_CI->getType()->isVoidTy())
+      OS << " at " << itcache(_CI, true);
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
     prepareShadows();
@@ -107,8 +98,10 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 
     storeAtEntry = 0;
     unsharable = false;
+    active = false;
+    Callers.push_back(_CI);
 
-  }
+}
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
 			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth) :
@@ -141,6 +134,74 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   invarInfo = parent->invarInfo->LInfo[L];
 
   getOrCreateIteration(0);
+
+}
+
+IntegrationAttempt::~IntegrationAttempt() {
+
+  for(uint32_t i = 0; i < nBBs; ++i) {
+
+    if(BBs[i]) {
+
+      ShadowBB* BB = BBs[i];
+
+      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+	if(BB->insts[j].i.PB)
+	  delete BB->insts[j].i.PB;
+
+      }
+
+      // Delete ShadowInstruction array.
+      delete[] &(BB->insts[0]);
+      // Delete block itself.
+      delete BB;
+
+    }
+
+  }
+
+  delete[] BBs;
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
+    II->second->dropReferenceFrom(II->first);
+  } 
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+    delete (PI->second);
+  }
+
+}
+
+InlineAttempt::~InlineAttempt() {
+
+  if(!unsharable)
+    pass->removeSharableFunction(this);
+
+  for(uint32_t i = 0; i < argShadows.size(); ++i) {
+
+    if(argShadows[i].i.PB)
+      delete argShadows[i].i.PB;
+
+  }
+
+  delete[] &(argShadows[0]);
+
+}
+
+void InlineAttempt::dropReferenceFrom(ShadowInstruction* SI) {
+
+  if(Callers.size() == 1) {
+
+    delete this;
+
+  }
+  else {
+
+    SmallVector<ShadowInstruction*, 1>::iterator findit = std::find(Callers.begin(), Callers.end(), SI);
+    release_assert(findit != Callers.end() && "Caller not in callers list?");
+    Callers.erase(findit);
+
+  }
 
 }
 
@@ -293,9 +354,9 @@ bool IntegrationAttempt::blockIsDeadRising(ShadowBBInvar& BBI) {
 
 }
 
-InlineAttempt* IntegrationAttempt::getInlineAttempt(CallInst* CI) {
+InlineAttempt* IntegrationAttempt::getInlineAttempt(ShadowInstruction* CI) {
 
-  DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.find(const_cast<CallInst*>(CI));
+  DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
   if(it != inlineChildren.end())
     return it->second;
 
@@ -401,7 +462,44 @@ bool IntegrationAttempt::shouldInlineFunction(ShadowInstruction* SI, Function* F
 
 }
 
-InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool& created) {
+bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Result) {
+
+  if(InlineAttempt* IA = getInlineAttempt(SI)) {
+    Result = IA;
+    return true;
+  }
+
+  Result = 0;
+  
+  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+    return false;
+
+  Function* FCalled = getCalledFunction(SI);
+  if(!FCalled) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
+    return false;
+  }
+
+  if(FCalled->isDeclaration()) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body\n");
+    return false;
+  }
+
+  if(!shouldInlineFunction(SI, FCalled)) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
+    return false;
+  }
+
+  if(functionIsBlacklisted(FCalled)) {
+    LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
+    return false;
+  }
+
+  return true;
+
+}
+
+InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool& created, bool& needsAnalyse) {
 
   created = false;
   CallInst* CI = cast_inst<CallInst>(SI);
@@ -409,49 +507,97 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   if(ignoreIAs.count(CI))
     return 0;
 
-  if(InlineAttempt* IA = getInlineAttempt(CI))
-    return IA;
-
-  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+  InlineAttempt* Result;
+  if(!callCanExpand(SI, Result))
     return 0;
 
-  Function* FCalled = getCalledFunction(SI);
-  if(!FCalled) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
-    return 0;
+  needsAnalyse = false;
+  
+  // Found existing call. Already completely up to date?
+  if(Result && Result->matchesCallerEnvironment(SI))
+    return Result;
+  
+  // Result needs to be re-analysed or doesn't exist at all.
+  // Try to find an existing IA we can simply use as-is.
+  if(InlineAttempt* Share = pass->findIAMatching(SI)) {
+    if(Result)
+      Result->dropReferenceFrom(SI);
+    inlineChildren[SI] = Share;
+    return Share;
   }
 
-  if(FCalled->isDeclaration()) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body\n");
-    return 0;
+  needsAnalyse = true;
+
+  // CoW break existing IA if necessary and analyse it.
+  if(Result) {
+    if(!Result->isShared())
+      return Result;
+    else {
+      InlineAttempt* Unshared = Result->getWritableCopyFrom(SI);
+      inlineChildren[SI] = Unshared;
+      created = true;
+      return Unshared;
+    }
   }
 
-  if(!shouldInlineFunction(SI, FCalled)) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
-    return 0;
-  }
+  // Finally create a brand new IA if we must.
 
-  //if(L != SI->invar->scope && !ignoreScope) {
-    // This can happen with always-inline functions. Should really fix whoever tries to make the inappropriate call.
-  //return 0;
-  //}
-
-  if(functionIsBlacklisted(FCalled)) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
-    return 0;
-  }
-
-  //errs() << "Inline new fn " << FCalled->getName() << "\n";
   mainPhaseProgress();
 
   created = true;
 
+  Function* FCalled = getCalledFunction(SI);
+
   InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1, this->stack_depth + 1);
-  inlineChildren[CI] = IA;
+  inlineChildren[SI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
 
   return IA;
+
+}
+
+// Return true if we ended up with an InlineAttempt available for this call.
+bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop) {
+
+  changed = false;
+
+  bool created, needsAnalyse;
+  InlineAttempt* IA = getOrCreateInlineAttempt(SI, false, created, needsAnalyse);
+
+  if(IA) {
+
+    IA->activeCaller = SI;
+
+    if(needsAnalyse) {
+
+      changed |= created;
+      
+      // Setting active = true prevents incomplete dependency information from being used
+      // to justify sharing the function node.
+      IA->active = true;
+
+      changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop);
+      
+      mergeChildDependencies(IA);
+
+      if(!IA->unsharable)
+	pass->addSharableFunction(IA);
+
+      IA->active = false;
+      
+    }
+    else {
+
+      IA->execute();
+
+    }
+
+    doCallStoreMerge(SI);
+
+  }
+
+  return !!IA;
 
 }
 
@@ -786,13 +932,11 @@ void InlineAttempt::getVarArg(int64_t idx, ImprovedValSet*& Result) {
   release_assert(idx >= ImprovedVal::first_any_arg && idx < ImprovedVal::max_arg);
   uint32_t argIdx = idx - ImprovedVal::first_any_arg;
 
-  CallInst* RawCI = cast_inst<CallInst>(CI);
-
   // Skip past the normal args:
   argIdx += F.arg_size();
 
-  if(argIdx < RawCI->getNumArgOperands())
-    copyImprovedVal(CI->getCallArgOperand(argIdx), Result);
+  if(argIdx < argShadows.size())
+     copyImprovedVal(ShadowValue(&argShadows[idx]), Result);
   else {
     
     LPDEBUG("Vararg index " << idx << ": out of bounds\n");
@@ -888,7 +1032,7 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
     }
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
     it->second->print(OS);
   }
 
@@ -969,7 +1113,7 @@ unsigned PeelAttempt::getNumChildren() {
 IntegratorTag* IntegrationAttempt::getChildTag(unsigned idx) {
 
   if(idx < inlineChildren.size()) {
-    DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin();
+    DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin();
     for(unsigned i = 0; i < idx; ++i, ++it) {}
     return &(it->second->tag);
   }
@@ -991,7 +1135,7 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
 	 << " rrc " << resolvedReadCalls.size() << " rsc " << resolvedSeekCalls.size()
 	 << " rcc " << resolvedCloseCalls.size() << "\n";
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
     II->second->dumpMemoryUsage(indent+2);
   } 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
@@ -1083,7 +1227,7 @@ IntegrationAttempt* IntegrationAttempt::searchFunctions(std::string& search, Int
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(IntegrationAttempt* SubRes = it->second->searchFunctions(search, startAt))
       return SubRes;

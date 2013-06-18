@@ -109,9 +109,9 @@ void IntegrationAttempt::markContextDead() {
 
   contextIsDead = true;
 
-   for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
-     it->second->markContextDead();
+    it->second->markContextDead();
 
   }
 
@@ -143,7 +143,7 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
     if(CI->getType()->isVoidTy())
       return false;
 
-    if(InlineAttempt* IA = getInlineAttempt(CI)) {
+    if(InlineAttempt* IA = getInlineAttempt(I)) {
 
       IA->getLiveReturnVals(Vals);
 
@@ -1628,8 +1628,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
     break;
   case Instruction::Call: 
     {
-      CallInst* CI = cast_inst<CallInst>(SI);
-      if(inlineChildren.count(CI))
+      if(inlineChildren.count(SI))
 	tryMerge = true;
       break;
     }
@@ -1666,15 +1665,6 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
 }
 
-bool InlineAttempt::getArgBasePointer(Argument* A, ImprovedValSet*& OutPB) {
-
-  if(!parent)
-    return false;
-  ShadowValue Arg = CI->getCallArgOperand(A->getArgNo());
-  return copyImprovedVal(Arg, OutPB);
-
-}
-
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
   ImprovedValSet* OldPB = getIVSRef(V);
@@ -1691,18 +1681,8 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   ImprovedValSet* NewPB = 0;
   bool NewPBValid;
 
-  if(ShadowArg* SA = V.getArg()) {
-
-    InlineAttempt* IA = getFunctionRoot();
-    NewPBValid = IA->getArgBasePointer(SA->invar->A, NewPB);
-
-  }
-  else {
-
-    ShadowInstruction* SI = V.getInst();
-    NewPBValid = getNewPB(SI, NewPB, loadedVararg);
-
-  }
+  ShadowInstruction* SI = V.getInst();
+  NewPBValid = getNewPB(SI, NewPB, loadedVararg);
 
   // AFAIK only void calls can be rejected this way.
   if(!NewPB)
@@ -1710,7 +1690,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
   release_assert(NewPBValid);
 
-  if((!OldPBValid) || !IVsEqual(OldPB, NewPB)) {
+  if((!OldPBValid) || !IVsEqualShallow(OldPB, NewPB)) {
 
     if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
 

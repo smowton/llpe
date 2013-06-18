@@ -419,12 +419,19 @@ void InlineAttempt::prepareShadows() {
     BBs[i] = 0;
   BBsOffset = 0;
 
-  argShadows = new ShadowArg[F.arg_size()];
+  ShadowArg* argShadows = new ShadowArg[F.arg_size()];
+  this->argShadows = ImmutableArray<ShadowArg>(argShadows, Callers[0]->getNumArgOperands());
   uint32_t i = 0;
-  Function::arg_iterator it = F.arg_begin();
-  for(; i != F.arg_size(); ++i, ++it) {
+  for(; i != F.arg_size(); ++i) {
 
     argShadows[i].invar = &(invarInfo->Args[i]);
+    argShadows[i].IA = this;
+
+  }
+
+  for(; i != Callers[0]->getNumArgOperands(); ++i) {
+
+    argShadows[i].invar = 0;
     argShadows[i].IA = this;
 
   }

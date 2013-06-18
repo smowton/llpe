@@ -28,8 +28,6 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
   // Dark green: Pointer base known
   // Grey: part of a dead block.
 
-  Value* V = SV.getBareVal();
-  Instruction* I = dyn_cast<Instruction>(V);
   InstArgImprovement* IAI = SV.getIAI();
 
   if(!IAI)
@@ -38,8 +36,8 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
   if(IAI->dieStatus != INSTSTATUS_ALIVE)
     return "red";
 
-  if(CallInst* CI = dyn_cast_or_null<CallInst>(I)) {
-    if(inlineChildren.find(CI) != inlineChildren.end())
+  if(val_is<CallInst>(SV)) {
+    if(inlineChildren.find(SV.getInst()) != inlineChildren.end())
       return "yellow";
     else
       return "pink";
@@ -597,7 +595,7 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     std::string newPath;
     raw_string_ostream RSO(newPath);
@@ -605,16 +603,17 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
     if(it->first->getType()->isVoidTy()) {
       // Name the call after a BB plus offset
-      BasicBlock::iterator BI(it->first);
+      Instruction* I = it->first->invar->I;
+      BasicBlock::iterator BI(I);
       int j;
-      for(j = 0; BI != it->first->getParent()->begin(); --BI, ++j) { }
-      RSO << it->first->getParent()->getName() << "+" << j;
+      for(j = 0; BI != I->getParent()->begin(); --BI, ++j) { }
+      RSO << I->getParent()->getName() << "+" << j;
     }
     else {
       // Use the call's given name (pull it out of the full call printout)
       std::string callDesc;
       raw_string_ostream callRSO(callDesc);
-      callRSO << *(it->first);
+      callRSO << it->first;
       callRSO.flush();
       RSO << callDesc.substr(2, callDesc.find_first_of('=') - 3);
     }

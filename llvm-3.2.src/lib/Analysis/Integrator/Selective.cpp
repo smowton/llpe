@@ -35,7 +35,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
   }
 
-  for(DenseMap<CallInst*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     it->second->resetDeadArgsAndInstructions();
 
@@ -108,7 +108,7 @@ bool InlineAttempt::isEnabled() {
   if(!parent)
     return true;
   else
-    return parent->inlineIsEnabled(cast<CallInst>(CI->invar->I));
+    return isShared() || parent->inlineIsEnabled(cast<CallInst>(Callers[0]->invar->I));
 
 }
 
@@ -129,10 +129,13 @@ void InlineAttempt::setEnabled(bool en) {
   if(!parent)
     return;
 
+  if(isShared())
+    return;
+
   if(en)
-    parent->enableInline(cast<CallInst>(CI->invar->I));
+    parent->enableInline(cast<CallInst>(Callers[0]->invar->I));
   else
-    parent->disableInline(cast<CallInst>(CI->invar->I));
+    parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
 
   pass->getRoot()->collectStats();
 

@@ -86,7 +86,15 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
     if(WIR != WIRContinue)
       return WIR;
 
-    Walker->queueWalkFrom(CI->invar->idx, CI->parent, Ctx, false);
+    bool firstQueue = true;
+    
+    for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(), 
+	  itend = Callers.end(); it != itend; ++it) {
+ 
+      Walker->queueWalkFrom((*it)->invar->idx, (*it)->parent, Ctx, !firstQueue);
+      firstQueue = false;
+
+    }
 
   }
   else {
@@ -249,7 +257,7 @@ void BackwardIAWalker::walkInternal() {
       if(StoppedCI) {
 
 	// Enter this call instruction from its return blocks:
-	InlineAttempt* IA = BB->IA->getInlineAttempt(cast_inst<CallInst>(StoppedCI));
+	InlineAttempt* IA = BB->IA->getInlineAttempt(StoppedCI);
 	IA->queueReturnBlocks(this, Ctx);
 
       }
@@ -298,12 +306,12 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB
       return WIR;
     }
 
-    if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
+    if(inst_is<CallInst>(SI)) {
 
       if(!shouldEnterCall(SI, Ctx))
 	continue;
 
-      if(!BB->IA->getInlineAttempt(CI)) {
+      if(!BB->IA->getInlineAttempt(SI)) {
 
 	// Return value = should we abort?
 	if(blockedByUnexpandedCall(SI, Ctx)) {
@@ -369,7 +377,7 @@ void ForwardIAWalker::walkInternal() {
       if(StoppedCI) {
 
 	// Enter this call instruction from its entry block:
-	if(InlineAttempt* IA = BB->IA->getInlineAttempt(cast_inst<CallInst>(StoppedCI))) {
+	if(InlineAttempt* IA = BB->IA->getInlineAttempt(StoppedCI)) {
 
 	  // Get entry block:
 	  ShadowBB* BB = IA->getBB(0);
@@ -449,7 +457,15 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
     if(parent) {
 
       // CallInst isn't a terminatorinst so can't be end of block.
-      Walker->queueWalkFrom(CI->invar->idx + 1, CI->parent, Ctx, false);
+      
+      bool firstQueue = true;
+      for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
+	    itend = Callers.end(); it != itend; ++it) {
+
+	Walker->queueWalkFrom((*it)->invar->idx + 1, (*it)->parent, Ctx, !firstQueue);
+	firstQueue = false;
+
+      }
 
     }
 
