@@ -717,7 +717,7 @@ struct ShadowGV {
 struct ShadowArg {
 
   ShadowArgInvar* invar;
-  IntegrationAttempt* IA;
+  InlineAttempt* IA;
   InstArgImprovement i;  
   Value* committedVal;
 
@@ -945,19 +945,6 @@ inline const MDNode* ShadowValue::getTBAATag() {
   switch(t) {
   case SHADOWVAL_INST:
     return u.I->invar->I->getMetadata(LLVMContext::MD_tbaa);
-  default:
-    return 0;
-  }
-
-}
-
-inline IntegrationAttempt* ShadowValue::getCtx() {
-
-  switch(t) {
-  case SHADOWVAL_ARG:
-    return u.A->IA;
-  case SHADOWVAL_INST:
-    return u.I->parent->IA;
   default:
     return 0;
   }

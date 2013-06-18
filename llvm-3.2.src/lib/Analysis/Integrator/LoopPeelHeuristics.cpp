@@ -80,9 +80,9 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 						 true /* Analysis Pass */);
 
 
-InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, 
+InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
 			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int sdepth) : 
-  IntegrationAttempt(Pass, P, F, 0, LI, depth, sdepth)
+  IntegrationAttempt(Pass, F, 0, LI, depth, sdepth)
 { 
     raw_string_ostream OS(HeaderStr);
     OS << (!_CI ? "Root " : "") << "Function " << F.getName();
@@ -99,15 +99,17 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt
     storeAtEntry = 0;
     unsharable = false;
     active = false;
-    Callers.push_back(_CI);
+    if(_CI)
+      Callers.push_back(_CI);
 
 }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
 			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth) :
-  IntegrationAttempt(Pass, P, F, PP->L, _LI, depth, sdepth),
+  IntegrationAttempt(Pass, F, PP->L, _LI, depth, sdepth),
   iterationCount(iter),
   parentPA(PP),
+  parent(P),
   iterStatus(IterationStatusUnknown)
 { 
   raw_string_ostream OS(HeaderStr);
@@ -122,9 +124,6 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
   : pass(Pass), parent(P), F(_F), LI(_LI), 
     residualInstructions(-1), nesting_depth(depth), stack_depth(sdepth), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
 {
-
-  this->tag.ptr = (void*)this;
-  this->tag.type = IntegratorTypePA;
 
   raw_string_ostream OS(HeaderStr);
   OS << "Loop " << L->getHeader()->getName();
@@ -213,6 +212,20 @@ PeelAttempt::~PeelAttempt() {
 static uint32_t mainPhaseProgressN = 0;
 const uint32_t mainPhaseProgressLimit = 1000;
 
+IntegrationAttempt* InlineAttempt::getUniqueParent() {
+
+  if(Callers.size() != 1)
+    return 0;
+  return Callers[0]->parent->IA;
+
+}
+
+IntegrationAttempt* PeelIteration::getUniqueParent() {
+
+  return parent;
+
+}
+
 static void mainPhaseProgress() {
 
   mainPhaseProgressN++;
@@ -240,16 +253,6 @@ bool llvm::instructionCounts(Instruction* I) {
 Module& IntegrationAttempt::getModule() {
 
   return *(F.getParent());
-
-}
-
-// Calls a given callback at the *parent* scope associated with loop LScope
-void IntegrationAttempt::callWithScope(Callable& C, const Loop* LScope) {
-
-  if(LScope == L)
-    C.callback(this);
-  else
-    parent->callWithScope(C, LScope);
 
 }
 
@@ -439,10 +442,13 @@ bool InlineAttempt::stackIncludesCallTo(Function* FCalled) {
 
   if((&F) == FCalled)
     return true;
-  else if(!parent)
+  else if(Callers.empty())
     return false;
   
-  return parent->stackIncludesCallTo(FCalled);
+  IntegrationAttempt* Parent = getUniqueParent();
+  release_assert(Parent && "Call to stackIncludesCallTo whilst shared?");
+  
+  return Parent->stackIncludesCallTo(FCalled);
 
 }
 
@@ -548,7 +554,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   Function* FCalled = getCalledFunction(SI);
 
-  InlineAttempt* IA = new InlineAttempt(pass, this, *FCalled, this->LI, SI, this->nesting_depth + 1, this->stack_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1, this->stack_depth + 1);
   inlineChildren[SI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -897,15 +903,9 @@ BasicBlock* PeelIteration::getEntryBlock() {
 
 }
 
-bool IntegrationAttempt::hasParent() {
+bool InlineAttempt::isRootMainCall() {
 
-  return (parent != 0);
-
-}
-
-bool IntegrationAttempt::isRootMainCall() {
-
-  return (!this->parent) && F.getName() == RootFunctionName;
+  return (!Callers.size()) && F.getName() == RootFunctionName;
 
 }
 
@@ -1062,7 +1062,7 @@ int64_t IntegrationAttempt::getTotalInstructionsIncludingLoops() {
 
 bool InlineAttempt::canDisable() {
 
-  return parent != 0;
+  return Callers.size() == 1;
 
 }
 
@@ -1098,31 +1098,49 @@ bool PeelAttempt::hasChildren() {
 
 }
 
-unsigned IntegrationAttempt::getNumChildren() {
+IntegratorTag* IntegrationAttempt::createTag(IntegratorTag* parent) {
 
-  return inlineChildren.size() + peelChildren.size();
+  IntegratorTag* myTag = pass->newTag();
+  myTag->ptr = (void*)this;
+  myTag->type = IntegratorTypeIA;
+  myTag->parent = parent;
+  
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	it2 = inlineChildren.end(); it != it2; ++it) {
+    
+    IntegratorTag* inlineTag = it->second->createTag(myTag);
+    myTag->children.push_back(inlineTag);
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	it2 = peelChildren.end(); it != it2; ++it) {
+
+    IntegratorTag* peelTag = it->second->createTag(myTag);
+    myTag->children.push_back(peelTag);
+
+  }
+
+  return myTag;
 
 }
 
-unsigned PeelAttempt::getNumChildren() {
+IntegratorTag* PeelAttempt::createTag(IntegratorTag* parent) {
 
-  return Iterations.size();
+  IntegratorTag* myTag = pass->newTag();
+  myTag->ptr = (void*)this;
+  myTag->type = IntegratorTypePA;
+  myTag->parent = parent;
+  
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), 
+	it2 = Iterations.end(); it != it2; ++it) {
 
-}
+    IntegratorTag* iterTag = (*it)->createTag(myTag);
+    myTag->children.push_back(iterTag);
 
-IntegratorTag* IntegrationAttempt::getChildTag(unsigned idx) {
-
-  if(idx < inlineChildren.size()) {
-    DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin();
-    for(unsigned i = 0; i < idx; ++i, ++it) {}
-    return &(it->second->tag);
   }
-  else {
-    assert(idx < (inlineChildren.size() + peelChildren.size()) && "Child tag index out of range");
-    DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin();
-    for(unsigned i = 0; i < (idx - inlineChildren.size()); ++i, ++it) {}
-    return &(it->second->tag);    
-  }
+
+  return myTag;
 
 }
 
@@ -1149,13 +1167,6 @@ void PeelAttempt::dumpMemoryUsage(int indent) {
   errs() << ind(indent) << "Loop " << L->getHeader()->getName() << " (" << Iterations.size() << " iterations)\n";
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
     (*it)->dumpMemoryUsage(indent+1);
-
-}
-
-IntegratorTag* PeelAttempt::getChildTag(unsigned idx) {
-
-  assert(idx < Iterations.size() && "getChildTag index out of range");
-  return &(Iterations[idx]->tag);
 
 }
 
@@ -1186,27 +1197,6 @@ std::string PeelAttempt::getShortHeader() {
   printHeader(ROS);
   ROS.flush();
   return ret;
-
-}
-
-IntegratorTag* InlineAttempt::getParentTag() {
-
-  if(!parent)
-    return 0;
-  else
-    return &(parent->tag);
-
-}
-
-IntegratorTag* PeelIteration::getParentTag() {
-
-  return &(parentPA->tag);
-
-}
-
-IntegratorTag* PeelAttempt::getParentTag() {
-
-  return &(parent->tag);
 
 }
 
@@ -2049,7 +2039,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
-  InlineAttempt* IA = new InlineAttempt(this, 0, F, LIs, 0, 0, 0);
+  InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0, 0);
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
@@ -2075,6 +2065,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   errs() << "Interpreting";
   IA->analyse();
   errs() << "\n";
+
+  // Function sharing is now decided, and hence the graph structure, so create
+  // graph tags for the GUI.
+  rootTag = RootIA->createTag(0);
 
   if(!SkipDIE) {
 

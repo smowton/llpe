@@ -97,7 +97,7 @@ DomTreeNodeBase<BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const 
 
 bool InlineAttempt::entryBlockIsCertain() {
 
-  if(!parent)
+  if(Callers.empty())
     return true;
   release_assert(!isShared());
   return blockCertainlyExecutes(Callers[0]->parent);
@@ -117,7 +117,7 @@ bool PeelIteration::entryBlockIsCertain() {
 
 bool InlineAttempt::entryBlockAssumed() {
 
-  if(!parent)
+  if(Callers.empty())
     return true;
 
   release_assert(!isShared());
@@ -252,12 +252,18 @@ IntegrationAttempt* IntegrationAttempt::getIAForScope(const Loop* Scope) {
 
 }
 
-IntegrationAttempt* IntegrationAttempt::getIAForScopeFalling(const Loop* Scope) {
+IntegrationAttempt* PeelIteration::getIAForScopeFalling(const Loop* Scope) {
 
   if(L == Scope)
     return this;
-  release_assert(parent && "Out of scope getIAForScopeFalling");
   return parent->getIAForScopeFalling(Scope);
+
+}
+
+IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const Loop* Scope) {
+
+  release_assert((!Scope) && "Scope not found (getIAForScopeFalling)");
+  return this;
 
 }
 

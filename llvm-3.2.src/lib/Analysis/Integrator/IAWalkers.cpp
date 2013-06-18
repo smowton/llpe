@@ -80,7 +80,7 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
   if(FromBB->invar->BB == &(F.getEntryBlock())) {
 
-    if(!parent)
+    if(Callers.empty())
       return Walker->reachedTop();
     WalkInstructionResult WIR = Walker->mayAscendFromContext(this, Ctx);
     if(WIR != WIRContinue)
@@ -434,8 +434,16 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB*
 
 }
 
-void IntegrationAttempt::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
+void InlineAttempt::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
+  release_assert((!BB->outerScope) && "Dropped out of scope in queueSuccessorsFWFalling");
+  Walker->queueWalkFrom(0, getBB(*BB), Ctx, !firstSucc);
+  firstSucc = false;
+
+}
+
+void PeelIteration::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
+  
   if(BB->outerScope == L) {
 
     Walker->queueWalkFrom(0, getBB(*BB), Ctx, !firstSucc);
@@ -454,7 +462,7 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
 
   if(isa<ReturnInst>(BB->invar->BB->getTerminator())) {
 
-    if(parent) {
+    if(!Callers.empty()) {
 
       // CallInst isn't a terminatorinst so can't be end of block.
       

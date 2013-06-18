@@ -131,10 +131,11 @@ bool IntegratorApp::OnInit() {
 class IntHeuristicsModel: public wxDataViewModel {
 
   IntegrationAttempt* Root;
+  IntegratorTag* RootTag;
   IntegratorFrame* Parent;
 
 public:
-  IntHeuristicsModel(IntegrationAttempt* _Root, IntegratorFrame* _Parent): wxDataViewModel(), Root(_Root), Parent(_Parent) { }
+  IntHeuristicsModel(IntegrationAttempt* _Root, IntegratorTag* _RootTag, IntegratorFrame* _Parent): wxDataViewModel(), Root(_Root), RootTag(_RootTag), Parent(_Parent) { }
   ~IntHeuristicsModel() {}
   unsigned int GetColumnCount() const {
     return 4;
@@ -284,29 +285,14 @@ public:
   wxDataViewItem GetParent(const wxDataViewItem& item) const {
 
     struct IntegratorTag* tag = (struct IntegratorTag*)item.GetID();
+
     if(!tag)
       return wxDataViewItem(0);
 
-    switch(tag->type) {
-    case IntegratorTypeIA:
-      {
-	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	IntegratorTag* parentTag = IA->getParentTag();
-	if(!parentTag)
-	  return wxDataViewItem(0);
-	else
-	  return wxDataViewItem((void*)parentTag);
-      }
-      break;
-    case IntegratorTypePA:
-      {
-	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
-	return wxDataViewItem((void*)PA->getParentTag());
-      }
-      break;
-    default:
-      assert(0 && "Invalid node tag");
-    }
+    if(!tag->parent)
+      return wxDataViewItem(0);
+    
+    return wxDataViewItem(tag->parent);
 
   }
 
@@ -348,32 +334,21 @@ public:
     if(!tag) {
 
       // Root node:
-      children.Add(wxDataViewItem((void*)&(Root->tag)));
+      children.Add(wxDataViewItem((void*)RootTag));
       return 1;
 
     }
+    else {
+    
+      for(std::vector<IntegratorTag*>::iterator it = tag->children.begin(),
+	    itend = tag->children.end(); it != itend; ++it) {
 
-    switch(tag->type) {
-    case IntegratorTypeIA:
-      {
-	IntegrationAttempt* IA = (IntegrationAttempt*)tag->ptr;
-	for(unsigned i = 0; i < IA->getNumChildren(); ++i) {
-	  children.Add(wxDataViewItem((void*)IA->getChildTag(i)));
-	}
-	return IA->getNumChildren();
+	children.Add(wxDataViewItem((void*)*it));
+
       }
-      break;
-    case IntegratorTypePA:
-      {
-	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
-	for(unsigned i = 0; i < PA->getNumChildren(); ++i) {
-	  children.Add(wxDataViewItem((void*)PA->getChildTag(i)));
-	}
-	return PA->getNumChildren();
-      }
-      break;
-    default:
-      assert(0 && "Invalid node tag");
+
+      return tag->children.size();
+
     }
 
   }
@@ -444,7 +419,7 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   wxDataViewColumn* col3 = new wxDataViewColumn("Use?", toggleRend, 3, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
   menuPanelData->AppendColumn(col3);
 
-  IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot(), this);
+  IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot(), IHP->getRootTag(), this);
   menuPanelData->AssociateModel(model);
 
   menuPanelSizer->Add(menuPanelData, 1, wxEXPAND, 0);

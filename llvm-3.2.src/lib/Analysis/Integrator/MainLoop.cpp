@@ -63,7 +63,7 @@ void InlineAttempt::getInitialStore() {
   // Take our caller's store; they will make a new one
   // upon return.
 
-  if(!parent)
+  if(!Callers.size())
     BBs[0]->localStore = activeCaller->parent->localStore;
   else
     BBs[0]->localStore = new LocalStoreMap(0);
@@ -343,7 +343,6 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
       for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
 	ShadowInstruction* SI = &(BB->insts[j]);
-	ShadowInstructionInvar* SII = SI->invar;
 
 	if(inst_is<CallInst>(SI)) {
 

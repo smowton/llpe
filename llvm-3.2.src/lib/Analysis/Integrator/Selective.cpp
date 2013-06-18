@@ -105,10 +105,10 @@ bool IntegrationAttempt::inlineIsEnabled(CallInst* CI) {
 
 bool InlineAttempt::isEnabled() {
 
-  if(!parent)
+  if(!Callers.size())
     return true;
   else
-    return isShared() || parent->inlineIsEnabled(cast<CallInst>(Callers[0]->invar->I));
+    return isShared() || getUniqueParent()->inlineIsEnabled(cast<CallInst>(Callers[0]->invar->I));
 
 }
 
@@ -126,16 +126,18 @@ bool PeelAttempt::isEnabled() {
 
 void InlineAttempt::setEnabled(bool en) {
 
-  if(!parent)
+  if(!Callers.size())
     return;
 
   if(isShared())
     return;
 
+  IntegrationAttempt* Parent = Callers[0]->parent->IA;
+
   if(en)
-    parent->enableInline(cast<CallInst>(Callers[0]->invar->I));
+    Parent->enableInline(cast<CallInst>(Callers[0]->invar->I));
   else
-    parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
+    Parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
 
   pass->getRoot()->collectStats();
 
@@ -167,8 +169,10 @@ bool IntegrationAttempt::isAvailable() {
   // Not enabled?
   if(!isEnabled())
     return false;
-
+  
   // Not getting inlined/unrolled at all?
+  IntegrationAttempt* parent = getUniqueParent();
+  // TODO: check whether getting an isAvailable query implies unsharable and so getUniqueParent works.
   if(parent && !parent->isAvailable())
     return false;
 
@@ -183,13 +187,16 @@ bool IntegrationAttempt::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
 
   // Values not directly available due to intervening varargs?
   // Walk ourselves and the other down til we hit a varargs barrier.
+  // As above I *think* asking this query implies an escaping malloc
+  // which in turn implies unsharable (for this and all parents).
+
   IntegrationAttempt* AvailCtx1 = this;
   while(AvailCtx1 && !AvailCtx1->isVararg())
-    AvailCtx1 = AvailCtx1->parent;
+    AvailCtx1 = AvailCtx1->getUniqueParent();
 
   IntegrationAttempt* AvailCtx2 = OtherIA;
   while(AvailCtx2 && !AvailCtx2->isVararg())
-    AvailCtx2 = AvailCtx2->parent;
+    AvailCtx2 = AvailCtx2->getUniqueParent();
 
   // If we hit different barriers we'll end up integrated into different functions.
   if(AvailCtx1 != AvailCtx2)

@@ -172,19 +172,6 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
 
   bool anyInfo = false;
 
-  if(verbose) {
-
-    errs() << "=== START MERGE for " << itcache(I) << "\n";
-
-    IntegrationAttempt* PrintCtx = this;
-    while(PrintCtx) {
-      errs() << PrintCtx->getShortHeader() << ", ";
-      PrintCtx = PrintCtx->parent;
-    }
-    errs() << "\n";
-
-  }
-
   // For now, only support straight copying of multis; otherwise just return overdef.
 
   bool anyMultis = false;

@@ -383,7 +383,7 @@ public:
 
 bool InlineAttempt::isOwnCallUnused() {
 
-  if(!parent)
+  if(Callers.empty())
     return false;
   else {
 
@@ -439,7 +439,7 @@ void InlineAttempt::runDIE() {
   IntegrationAttempt::runDIE();
 
   // Don't eliminate 
-  if(!parent)
+  if(Callers.empty())
     return;
   
   // And then our formal arguments:
@@ -447,7 +447,7 @@ void InlineAttempt::runDIE() {
     ShadowArg* SA = &(argShadows[i]);
     if(willBeReplacedWithConstantOrDeleted(ShadowValue(SA)))
       continue;
-    if((!parent) && SA->invar->A->hasNoAliasAttr())
+    if((!Callers.empty()) && SA->invar->A->hasNoAliasAttr())
       continue;
     if(valueIsDead(ShadowValue(SA))) {
       SA->i.dieStatus |= INSTSTATUS_DEAD;

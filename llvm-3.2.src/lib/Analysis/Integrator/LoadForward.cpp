@@ -777,7 +777,7 @@ int32_t ShadowValue::getHeapKey() {
   case SHADOWVAL_GV:
     return u.GV->allocIdx;
   case SHADOWVAL_ARG:
-    release_assert((!u.A->IA->parent) && "getHeapKey on arg other than root argv?");
+    release_assert((u.A->IA->Callers.empty()) && "getHeapKey on arg other than root argv?");
     return 0;
   default:
     return -1;

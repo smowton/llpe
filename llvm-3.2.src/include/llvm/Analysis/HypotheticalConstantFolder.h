@@ -93,6 +93,22 @@ extern IntegrationHeuristicsPass* GlobalIHP;
 
 class VFSCallModRef;
 
+enum IntegratorType {
+
+  IntegratorTypeIA,
+  IntegratorTypePA
+
+};
+
+struct IntegratorTag {
+
+  IntegratorType type;
+  void* ptr;
+  IntegratorTag* parent;
+  std::vector<IntegratorTag*> children;
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -127,6 +143,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool cacheDisabled;
 
    unsigned mallocAlignment;
+
+   std::vector<IntegratorTag> tags;
+   IntegratorTag* rootTag;
 
  public:
    
@@ -259,7 +278,15 @@ class IntegrationHeuristicsPass : public ModulePass {
    }
 
    InlineAttempt* getRoot() { return RootIA; }
+   IntegratorTag* getRootTag() { return rootTag; }
    void commit();
+
+   IntegratorTag* newTag() {
+     
+     tags.push_back(IntegratorTag());
+     return &tags.back();
+
+   }
 
 };
 
@@ -592,13 +619,6 @@ CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
 
 };
 
-class Callable {
- public:
-
-  virtual void callback(IntegrationAttempt*) = 0;
-
-};
-
 class UnaryPred {
  public:
   virtual bool operator()(Value*) = 0;
@@ -673,20 +693,6 @@ enum IterationStatus {
   IterationStatusUnknown,
   IterationStatusFinal,
   IterationStatusNonFinal
-
-};
-
-enum IntegratorType {
-
-  IntegratorTypeIA,
-  IntegratorTypePA
-
-};
-
-struct IntegratorTag {
-
-  IntegratorType type;
-  void* ptr;
 
 };
 
@@ -837,17 +843,13 @@ protected:
 
   bool contextIsDead;
 
-  struct IntegratorTag tag;
-
   int64_t totalIntegrationGoodness;
   int64_t nDependentLoads;
-
-  IntegrationAttempt* parent;
 
   DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
     
- IntegrationAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
+ IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
     LI(_LI),
     improvableInstructions(0),
@@ -869,12 +871,9 @@ protected:
     contextIsDead(false),
     totalIntegrationGoodness(0),
     nDependentLoads(0),
-    parent(P),
     inlineChildren(1),
     peelChildren(1)
       { 
-	this->tag.ptr = (void*)this;
-	this->tag.type = IntegratorTypeIA;
       }
 
   virtual ~IntegrationAttempt();
@@ -885,8 +884,6 @@ protected:
 
   Function& getFunction() { return F; }
   
-  void callWithScope(Callable& C, const Loop* LScope);
-
   // virtual for external access:
   virtual bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
   bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope = false);
@@ -898,8 +895,6 @@ protected:
   virtual bool entryBlockAssumed() = 0;
 
   virtual BasicBlock* getEntryBlock() = 0;
-  virtual bool hasParent();
-  bool isRootMainCall();
   
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
@@ -940,7 +935,7 @@ protected:
   ShadowBB* createBB(uint32_t blockIdx);
   ShadowBB* createBB(ShadowBBInvar*);
   ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
-  ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
+  virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) = 0;
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
   virtual ShadowInstruction* getInst(ShadowInstructionInvar* SII);
   ShadowInstruction* getMostLocalInst(uint32_t blockIdx, uint32_t instIdx);
@@ -986,12 +981,13 @@ protected:
   bool tryEvaluateTerminator(ShadowInstruction* SI, bool tagSuccVararg);
   bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
-  IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope) = 0;
   void setBlockStatus(ShadowBBInvar* BB, ShadowBBStatus);
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }
   void copyLoopExitingDeadEdges(PeelAttempt* LPA);
+  virtual IntegrationAttempt* getUniqueParent() = 0;
   
   // Child (inlines, peels) management
 
@@ -1016,7 +1012,7 @@ protected:
   virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
   void visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVisitor*, void* Ctx);
   void queueReturnBlocks(BackwardIAWalker* Walker, void*);
-  void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+  virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
 
@@ -1132,15 +1128,13 @@ protected:
   // Data export for the Integrator pass:
 
   virtual std::string getShortHeader() = 0;
-  virtual IntegratorTag* getParentTag() = 0;
   bool hasChildren();
-  unsigned getNumChildren();
-  IntegratorTag* getChildTag(unsigned);
   virtual bool canDisable() = 0;
   unsigned getTotalInstructions();
   unsigned getElimdInstructions();
   int64_t getTotalInstructionsIncludingLoops();
   IntegrationAttempt* searchFunctions(std::string&, IntegrationAttempt*& startAt);
+  IntegratorTag* createTag(IntegratorTag* parent);
 
   // Saving our results as a bitcode file:
 
@@ -1150,7 +1144,7 @@ protected:
   void commitCFG();
   virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
-  ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
+  virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI) = 0;
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void fixupHeaderPHIs(ShadowBB* BB);
@@ -1206,6 +1200,8 @@ public:
 
   PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth);
 
+  IntegrationAttempt* parent;
+
   IterationStatus iterStatus;
 
   PeelIteration* getNextIteration();
@@ -1232,7 +1228,6 @@ public:
   virtual void collectAllLoopStats(); 
 
   virtual std::string getShortHeader(); 
-  virtual IntegratorTag* getParentTag(); 
 
   virtual bool canDisable(); 
   virtual bool isEnabled(); 
@@ -1271,6 +1266,13 @@ public:
 
   virtual void getInitialStore();
 
+  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+
+  virtual IntegrationAttempt* getUniqueParent();
+  virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
+  virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
+
 };
 
 class ProcessExternalCallback;
@@ -1297,8 +1299,6 @@ class PeelAttempt {
  public:
 
    const Loop* L;
-
-   struct IntegratorTag tag;
 
    int64_t totalIntegrationGoodness;
    int64_t nDependentLoads;
@@ -1331,10 +1331,7 @@ class PeelAttempt {
    std::string nestingIndent() const; 
 
    std::string getShortHeader(); 
-   IntegratorTag* getParentTag(); 
    bool hasChildren(); 
-   unsigned getNumChildren(); 
-   IntegratorTag* getChildTag(unsigned); 
    bool isEnabled(); 
    void setEnabled(bool); 
    
@@ -1356,13 +1353,15 @@ class PeelAttempt {
    void dropExitingStoreRefs();
    void dropNonterminatedStoreRefs();
 
+  IntegratorTag* createTag(IntegratorTag* parent);
+
  };
 
 class InlineAttempt : public IntegrationAttempt { 
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int stack_depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int stack_depth);
 
   virtual ~InlineAttempt();
 
@@ -1403,12 +1402,10 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void collectAllLoopStats(); 
 
   virtual std::string getShortHeader(); 
-  virtual IntegratorTag* getParentTag(); 
 
   virtual bool canDisable(); 
   virtual bool isEnabled(); 
   virtual void setEnabled(bool); 
-
 
   virtual bool isOptimisticPeel(); 
 
@@ -1463,8 +1460,29 @@ class InlineAttempt : public IntegrationAttempt {
   bool matchesCallerEnvironment(ShadowInstruction* SI);
   InlineAttempt* getWritableCopyFrom(ShadowInstruction* SI);
   void dropReferenceFrom(ShadowInstruction* SI);
+
+  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
+
+  virtual IntegrationAttempt* getUniqueParent();
+  bool isRootMainCall();
+  virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
+  virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   
 };
+
+inline IntegrationAttempt* ShadowValue::getCtx() {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return u.A->IA;
+  case SHADOWVAL_INST:
+    return u.I->parent->IA;
+  default:
+    return 0;
+  }
+
+}
 
  Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout*);
  Constant* constFromBytes(unsigned char*, Type*, DataLayout*);

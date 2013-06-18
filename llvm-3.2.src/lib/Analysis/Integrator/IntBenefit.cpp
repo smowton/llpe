@@ -221,8 +221,10 @@ void PeelAttempt::reduceDependentLoads(int64_t nLoads) {
 void InlineAttempt::reduceDependentLoads(int64_t nLoads) {
 
   nDependentLoads -= nLoads;
-  if(parent)
-    parent->reduceDependentLoads(nLoads);
+  if(!Callers.empty()) {
+    release_assert(Callers.size() == 1 && "reduceDependentLoads in shared function?");
+    Callers[0]->parent->IA->reduceDependentLoads(nLoads);
+  }
 
 }
 
@@ -319,7 +321,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   // Add goodness due to instructions that can be eliminated if we're inlined:
   int64_t daeBonus = 0;
-  if(parent) {
+  if(!Callers.empty()) {
     daeBonus = (extraInstructionPoints * nDependentLoads);
   //daeBonus += (extraInstructionPoints * parent->disableInline(CI, true));
   }
@@ -356,15 +358,22 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   //errs() << getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n";
 
-  if(parent && (totalIntegrationGoodness < 0)) {
+  IntegrationAttempt* Parent = getUniqueParent();
 
-    if(isShared()) {
+  if(totalIntegrationGoodness < 0) {
+
+    if(Parent) {
+
+      Parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
+      Parent->reduceDependentLoads(nDependentLoads);
+
+    }
+    else if(isShared()) {
+
       errs() << "Didn't disable a context because it's shared\n";
       return;
-    }
 
-    parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
-    parent->reduceDependentLoads(nDependentLoads);
+    }
 
   }
 

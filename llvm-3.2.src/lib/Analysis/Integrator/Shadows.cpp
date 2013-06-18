@@ -536,7 +536,17 @@ ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint
 
 }
 
-ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
+ShadowInstruction* InlineAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
+
+  release_assert((!BB->outerScope) && "Out of scope in getInstFalling");
+  ShadowBB* LocalBB = getBB(*BB);
+  if(!LocalBB)
+    return 0;
+  return &(LocalBB->insts[instIdx]);
+
+}
+
+ShadowInstruction* PeelIteration::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
 
   if(BB->outerScope == L) {
 
@@ -544,7 +554,7 @@ ShadowInstruction* IntegrationAttempt::getInstFalling(ShadowBBInvar* BB, uint32_
     if(!LocalBB)
       return 0;
     return &(LocalBB->insts[instIdx]);
-
+    
   }
   else {
     

@@ -280,7 +280,7 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
   unsigned n = SA->invar->A->getArgNo();
 
-  if(isVararg() || (!parent) || !isEnabled()) {
+  if(isVararg() || (!Callers.size()) || !isEnabled()) {
 
     // Use corresponding argument:
     Function::arg_iterator it = CommitF->arg_begin();
@@ -368,14 +368,19 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, boo
 
 }
 
-ShadowBB* IntegrationAttempt::getBBFalling2(ShadowBBInvar* BBI) {
+ShadowBB* InlineAttempt::getBBFalling2(ShadowBBInvar* BBI) {
+
+  release_assert((!BBI->naturalScope) && "Out of scope in getBBFalling");
+  return getBB(*BBI);
+
+}
+
+ShadowBB* PeelIteration::getBBFalling2(ShadowBBInvar* BBI) {
 
   if(BBI->naturalScope == L)
     return getBB(*BBI);
-  else {
-    release_assert(parent && L && "Out of scope in getBBFalling");
+  else
     return parent->getBBFalling2(BBI);
-  }
 
 }
 
@@ -383,7 +388,7 @@ ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
 
   if((!L) || L->contains(BBI->naturalScope))
     return getBB(*BBI);
-  return parent->getBBFalling2(BBI);
+  return getBBFalling2(BBI);
   
 }
 
