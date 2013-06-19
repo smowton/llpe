@@ -95,7 +95,7 @@ public:
 struct WriterUsedWalkerCtx {
 
   WriterUsedWalkerCtx(uint64_t Size) {
-    if(Size == AliasAnalysis::UnknownSize)
+    if(Size != AliasAnalysis::UnknownSize)
       bytesWritten = new std::vector<bool>(Size, false);
     else
       bytesWritten = 0;

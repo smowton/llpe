@@ -569,4 +569,8 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
 
   }
 
+  // Frame push happens in getInitialStore; pop would usually happen in terminator evaluation.
+  if(inst_is<ReturnInst>(&BB->insts[BB->insts.size() - 1]))
+    BB->popStackFrame();
+
 }
