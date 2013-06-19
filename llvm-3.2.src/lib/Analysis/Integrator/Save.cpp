@@ -213,7 +213,7 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(IA->isEnabled()) {
 
-	    if(!IA->isVararg()) {
+	    if(!IA->commitsOutOfLine()) {
 
 	      std::string Name;
 	      {
@@ -226,12 +226,17 @@ void IntegrationAttempt::commitCFG() {
 	    }
 	    else {
 
-	      // Vararg function: commit as a seperate function.
+	      // Out-of-line function (vararg, or shared).
 	      std::string Name;
 	      {
 		raw_string_ostream RSO(Name);
 		RSO << IA->getCommittedBlockPrefix() << "clone";
 	      }
+
+	      // Only create each shared function once.
+	      if(IA->CommitF)
+		continue;
+
 	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name);
 	      IA->returnBlock = 0;
 
@@ -280,7 +285,7 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
   unsigned n = SA->invar->A->getArgNo();
 
-  if(isVararg() || (!Callers.size()) || !isEnabled()) {
+  if(commitsOutOfLine() || (!Callers.size()) || !isEnabled()) {
 
     // Use corresponding argument:
     Function::arg_iterator it = CommitF->arg_begin();
@@ -824,7 +829,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
       CallInst* SavedPtr = 0;
 
-      if(!IA->isVararg()) {
+      if(!IA->commitsOutOfLine()) {
 
 	// Save the current stack pointer (for scoped allocas)
 	Module *M = emitBB->getParent()->getParent();
@@ -858,10 +863,13 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	CI->setCalledFunction(IA->CommitF);
 
       }
-      
-      IA->commitArgsAndInstructions();
+
+      if(!IA->instructionsCommitted) {
+	IA->commitArgsAndInstructions();
+	IA->instructionsCommitted = true;
+      }
     
-      if(!IA->isVararg()) {
+      if(!IA->commitsOutOfLine()) {
 
 	Module *M = emitBB->getParent()->getParent();
 	Function *StackRestore=Intrinsic::getDeclaration(M,Intrinsic::stackrestore);
@@ -948,7 +956,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   if(Base == I)
     return false;
 
-  if(!Base.isAvailableFromCtx(this))
+  if(!Base.objectAvailableFrom(this))
     return false;
 
   Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
@@ -1017,7 +1025,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
      IVS->SetType == ValSetTypeFD && 
      IVS->Values.size() == 1 && 
      I != IVS->Values[0].V.getInst() && 
-     IVS->Values[0].V.isAvailableFromCtx(this)) {
+     IVS->Values[0].V.objectAvailableFrom(this)) {
 
     I->committedVal = IVS->Values[0].V.getInst()->committedVal;
     return;

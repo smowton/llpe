@@ -85,6 +85,41 @@ public:
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
   virtual void freeContext(void*);
   virtual void* copyContext(void*);
+  virtual void enterCall(InlineAttempt*, void*);
+  virtual void leaveCall(InlineAttempt*, void*);
+  virtual void enterLoop(PeelAttempt*, void*);
+  virtual void leaveLoop(PeelAttempt*, void*);
+
+};
+
+struct WriterUsedWalkerCtx {
+
+  WriterUsedWalkerCtx(uint64_t Size) {
+    if(Size == AliasAnalysis::UnknownSize)
+      bytesWritten = new std::vector<bool>(Size, false);
+    else
+      bytesWritten = 0;
+    commitDisabledDuring.IA = 0;
+  }
+
+  WriterUsedWalkerCtx(const WriterUsedWalkerCtx& other) {
+    commitDisabledDuring.IA = other.commitDisabledDuring.IA;
+    if(other.bytesWritten)
+      bytesWritten = new std::vector<bool>(*(other.bytesWritten));
+    else
+      bytesWritten = 0;
+  }
+
+  ~WriterUsedWalkerCtx() {
+    if(bytesWritten)
+      delete bytesWritten;
+  }
+
+  std::vector<bool>* bytesWritten;
+  union {
+    InlineAttempt* IA;
+    PeelAttempt* LPA;
+  } commitDisabledDuring;
 
 };
 
@@ -94,7 +129,7 @@ public:
 void WriterUsedWalker::freeContext(void* V) {
 
   if(V) {
-    std::vector<bool>* Ctx = (std::vector<bool>*)V;
+    WriterUsedWalkerCtx* Ctx = (WriterUsedWalkerCtx*)V;
     delete Ctx;
   }
 
@@ -103,8 +138,8 @@ void WriterUsedWalker::freeContext(void* V) {
 void* WriterUsedWalker::copyContext(void* V) {
 
   if(V) {
-    std::vector<bool>* Ctx = (std::vector<bool>*)V;
-    std::vector<bool>* NewCtx = new std::vector<bool>(*Ctx);
+    WriterUsedWalkerCtx* Ctx = (WriterUsedWalkerCtx*)V;
+    WriterUsedWalkerCtx* NewCtx = new WriterUsedWalkerCtx(*Ctx);
     return NewCtx;
   }
   else {
@@ -113,7 +148,7 @@ void* WriterUsedWalker::copyContext(void* V) {
 
 }
 
-WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes) {
+WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes, bool commitDisabledHere) {
 
   if(isLifetimeEnd(StoreBase, I)) {
 
@@ -177,14 +212,14 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());
 
-    if(mayBeReplaced(I) && isAvailable()) {
+    if(mayBeReplaced(I) && !commitDisabledHere) {
 
       // mayBeReplaced implies a single value.
       ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(I->i.PB);
       if(IVS->SetType == ValSetTypePB || IVS->SetType == ValSetTypeFD) {
 
 	ShadowValue Base = IVS->Values[0].V;
-	if((!Base.getCtx()) || Base.getCtx()->isAvailableFromCtx(StorePtr.getCtx()))
+	if((!Base.getCtx()) || Base.objectAvailableFrom(I->parent->IA))
 	  return WIRContinue;
 
       }
@@ -223,10 +258,12 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
 }
 
-WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, void* Ctx) {
+WalkInstructionResult WriterUsedWalker::walkInstruction(ShadowInstruction* I, void* Vctx) {
 
-  std::vector<bool>* writtenBytes = (std::vector<bool>*)Ctx;
-  WalkInstructionResult Res = I->parent->IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, writtenBytes);
+  WriterUsedWalkerCtx* Ctx = (WriterUsedWalkerCtx*)Vctx;
+  // Ctx->commitDisabledDuring.LPA aliases Ctx->commitDisabledDuring.IA so this really means
+  // is commit disabled here.
+  WalkInstructionResult Res = I->parent->IA->noteBytesWrittenBy(I, StorePtr, StoreBase, StoreOffset, StoreSize, Ctx->bytesWritten, !!Ctx->commitDisabledDuring.LPA);
 
   if(Res == WIRStopWholeWalk)
     writeUsed = true;
@@ -270,20 +307,46 @@ static void DSEProgress() {
 
 }
 
+// Note here commitDisabledDuring.LPA and IA are unioned,
+// so test for zero against one tests both.
+void WriterUsedWalker::enterLoop(PeelAttempt* L, void* Vctx) {
+
+  WriterUsedWalkerCtx* ctx = (WriterUsedWalkerCtx*)Vctx;
+  if((!ctx->commitDisabledDuring.LPA) && !L->isEnabled())
+    ctx->commitDisabledDuring.LPA = L;
+
+}
+
+void WriterUsedWalker::leaveLoop(PeelAttempt* L, void* Vctx) {
+
+  WriterUsedWalkerCtx* ctx = (WriterUsedWalkerCtx*)Vctx;
+  if(ctx->commitDisabledDuring.LPA == L)
+    ctx->commitDisabledDuring.LPA = 0;
+
+}
+
+void WriterUsedWalker::enterCall(InlineAttempt* Call, void* Vctx) {
+
+  WriterUsedWalkerCtx* ctx = (WriterUsedWalkerCtx*)Vctx;
+  if((!ctx->commitDisabledDuring.IA) && !Call->isEnabled())
+    ctx->commitDisabledDuring.IA = Call;
+
+}
+
+void WriterUsedWalker::leaveCall(InlineAttempt* Call, void* Vctx) {
+
+  WriterUsedWalkerCtx* ctx = (WriterUsedWalkerCtx*)Vctx;
+  if(ctx->commitDisabledDuring.IA == Call)
+    ctx->commitDisabledDuring.IA = 0;
+
+}
+
 bool IntegrationAttempt::tryKillWriterTo(ShadowInstruction* Writer, ShadowValue StorePtr, uint64_t Size) {
 
   DSEProgress();
 
-  void* initialCtx = 0;
-
-  if(Size != AliasAnalysis::UnknownSize) {
-    std::vector<bool>* Ctx = new std::vector<bool>();
-    Ctx->reserve(Size);
-    Ctx->insert(Ctx->begin(), Size, false);
-    initialCtx = Ctx;
-  }
-
-  // Otherwise we pass a null pointer to indicate that the store size is unknown.
+  WriterUsedWalkerCtx* Ctx = new WriterUsedWalkerCtx(Size);
+  void* initialCtx = Ctx;
 
   int64_t StoreOffset = 0;
   ShadowValue StoreBase;

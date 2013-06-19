@@ -94,6 +94,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     storeAtEntry = 0;
     unsharable = false;
     active = false;
+    instructionsCommitted = false;
+    CommitF = 0;
     if(_CI)
       Callers.push_back(_CI);
 
@@ -148,7 +150,7 @@ IntegrationAttempt::~IntegrationAttempt() {
       for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
 	if(BB->insts[j].i.PB)
-	  delete BB->insts[j].i.PB;
+	  deleteIV(BB->insts[j].i.PB);
 
       }
 
@@ -173,14 +175,14 @@ IntegrationAttempt::~IntegrationAttempt() {
 }
 
 InlineAttempt::~InlineAttempt() {
-
+  
   if(!unsharable)
     pass->removeSharableFunction(this);
 
   for(uint32_t i = 0; i < argShadows.size(); ++i) {
 
     if(argShadows[i].i.PB)
-      delete argShadows[i].i.PB;
+      deleteIV(argShadows[i].i.PB);
 
   }
 
@@ -521,14 +523,22 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   needsAnalyse = false;
   
   // Found existing call. Already completely up to date?
-  if(Result && Result->matchesCallerEnvironment(SI))
+  if(Result && Result->matchesCallerEnvironment(SI)) {
+    if(pass->verboseSharing)
+      errs() << "KEEP: " << itcache(SI) << " #" << Result->SeqNumber << "\n";
     return Result;
+  }
   
   // Result needs to be re-analysed or doesn't exist at all.
   // Try to find an existing IA we can simply use as-is.
   if(InlineAttempt* Share = pass->findIAMatching(SI)) {
-    if(Result)
+    if(Result) {
+      if(pass->verboseSharing)
+	errs() << "DROP: " << itcache(SI) << " #" << Result->SeqNumber << "\n";
       Result->dropReferenceFrom(SI);
+    }
+    if(pass->verboseSharing)
+      errs() << "SHARE: " << itcache(SI) << " #" << Share->SeqNumber << " (refs: " << Share->Callers.size() << ")\n";
     inlineChildren[SI] = Share;
     return Share;
   }
@@ -541,6 +551,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
       return Result;
     else {
       InlineAttempt* Unshared = Result->getWritableCopyFrom(SI);
+      errs() << "BREAK: " << itcache(SI) << " #" << Result->SeqNumber << " -> #" << Unshared->SeqNumber << "\n";
       inlineChildren[SI] = Unshared;
       created = true;
       return Unshared;
@@ -2037,6 +2048,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0, 0);
+  IA->unsharable = true;
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 

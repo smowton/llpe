@@ -689,11 +689,20 @@ bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
 
 }
 
-bool ShadowValue::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
+bool ShadowValue::objectAvailableFrom(IntegrationAttempt* OtherIA) {
 
-  if(IntegrationAttempt* IA = getCtx())
-    return IA->isAvailableFromCtx(OtherIA);
-  else
+  switch(t) {
+  case SHADOWVAL_GV:
     return true;
-
+  case SHADOWVAL_ARG:
+    return u.A->IA->allocasAvailableFrom(OtherIA);
+  case SHADOWVAL_INST:
+    if(inst_is<AllocaInst>(u.I))
+      return u.I->parent->IA->allocasAvailableFrom(OtherIA);
+    return u.I->parent->IA->heapObjectsAvailableFrom(OtherIA);
+  default:
+    release_assert(0 && "Bad SV type in objectAvailableFrom");
+    llvm_unreachable();
+  }
+  
 }

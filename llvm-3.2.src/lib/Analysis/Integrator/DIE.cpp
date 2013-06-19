@@ -247,7 +247,7 @@ bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
     ShadowValue Base;
     if(getBaseObject(V, Base)) {
 
-      if(Base.getCtx() && !Base.getCtx()->isAvailableFromCtx(V.getCtx()))
+      if(Base.getCtx() && !Base.objectAvailableFrom(V.getCtx()))
 	return false;
       if(Base.getInst() && Base.getInst() == V.getInst())
 	return false;
@@ -310,7 +310,7 @@ public:
       }
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(UserI);
-      if((!IA) || (!IA->isEnabled()) || IA->isVararg()) {
+      if((!IA) || (!IA->isEnabled()) || IA->commitsOutOfLine()) {
 	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(*CI) << "\n");
 	maybeLive = true;
 	return;

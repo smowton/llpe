@@ -381,6 +381,7 @@ void ForwardIAWalker::walkInternal() {
 
 	  // Get entry block:
 	  ShadowBB* BB = IA->getBB(0);
+	  enterCall(IA, Ctx);
 	  queueWalkFrom(0, BB, Ctx, false);
 
 	}
@@ -452,6 +453,7 @@ void PeelIteration::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker*
   }
   else {
 
+    Walker->leaveLoop(parentPA, Ctx);
     parent->queueSuccessorsFWFalling(BB, Walker, Ctx, firstSucc);
 
   }
@@ -470,6 +472,7 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
       for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
 	    itend = Callers.end(); it != itend; ++it) {
 
+	Walker->leaveCall(this, Ctx);
 	Walker->queueWalkFrom((*it)->invar->idx + 1, (*it)->parent, Ctx, !firstQueue);
 	firstQueue = false;
 
@@ -556,6 +559,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 	else if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
 	  
 	  assert(SuccLoop->getHeader() == SB->BB);
+	  Walker->enterLoop(LPA, Ctx);
 	  Walker->queueWalkFrom(0, LPA->Iterations[0]->getBB(*SB), Ctx, !firstSucc);
 	  firstSucc = false;
 	  

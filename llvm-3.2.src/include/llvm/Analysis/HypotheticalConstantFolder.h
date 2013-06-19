@@ -770,6 +770,10 @@ class ForwardIAWalker : public IAWalker {
   
  public:
 
+  virtual void enterCall(InlineAttempt* IA, void* Ctx) {}
+  virtual void leaveCall(InlineAttempt* IA, void* Ctx) {}
+  virtual void enterLoop(PeelAttempt*, void* Ctx) {}
+  virtual void leaveLoop(PeelAttempt*, void* Ctx) {}
   ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0);
   
 };
@@ -1050,7 +1054,7 @@ protected:
   bool tryKillWriterTo(ShadowInstruction* Writer, ShadowValue WritePtr, uint64_t Size);
   bool DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, ShadowValue StorePtr, uint64_t Size, ShadowValue StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes);
   bool isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I);
-  WalkInstructionResult noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes);
+  WalkInstructionResult noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes, bool commitDisabledHere);
   bool callUsesPtr(ShadowInstruction*, ShadowValue, uint64_t Size);
   void tryKillAllMTIs();
   void tryKillAllStores();
@@ -1089,9 +1093,10 @@ protected:
   bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool) = 0;
-  bool isAvailable();
-  bool isAvailableFromCtx(IntegrationAttempt*);
-  bool isVararg();
+  bool unsharedContextAvailable();
+  bool allocasAvailableFrom(IntegrationAttempt*);
+  bool heapObjectsAvailableFrom(IntegrationAttempt*);
+  virtual bool commitsOutOfLine() = 0;
 
   // Estimating inlining / unrolling benefit:
 
@@ -1270,6 +1275,7 @@ public:
   virtual IntegrationAttempt* getUniqueParent();
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
+  virtual bool commitsOutOfLine();
 
 };
 
@@ -1381,6 +1387,7 @@ class InlineAttempt : public IntegrationAttempt {
   DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
   bool unsharable;
   bool active;
+  bool instructionsCommitted;
 
   bool isShared() {
     return Callers.size() > 1;
@@ -1466,6 +1473,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool isRootMainCall();
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
+  virtual bool commitsOutOfLine();
   
 };
 

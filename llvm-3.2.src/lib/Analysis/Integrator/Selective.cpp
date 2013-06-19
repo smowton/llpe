@@ -158,44 +158,77 @@ void PeelAttempt::setEnabled(bool en) {
 
 }
 
-bool IntegrationAttempt::isVararg() {
+// Return true if this function will be committed as a residual function
+// rather than being inlined everywhere as usual.
+bool InlineAttempt::commitsOutOfLine() {
 
-  return (!L) && F.isVarArg();
+  return F.isVarArg() || isShared();
 
 }
 
-bool IntegrationAttempt::isAvailable() {
+bool PeelIteration::commitsOutOfLine() {
+
+  return false;
+
+}
+
+bool IntegrationAttempt::unsharedContextAvailable() {
+
+  release_assert(getFunctionRoot()->unsharable && "unsharedContextAvailable against shared context?");
 
   // Not enabled?
   if(!isEnabled())
     return false;
   
   // Not getting inlined/unrolled at all?
+  // getUniqueParent is fine because we're unsharable.
+  // NOTE: if unsharable stops implying unsharability down to the root this must be re-examined.
   IntegrationAttempt* parent = getUniqueParent();
-  // TODO: check whether getting an isAvailable query implies unsharable and so getUniqueParent works.
-  if(parent && !parent->isAvailable())
+
+  if(parent && !parent->unsharedContextAvailable())
     return false;
 
   return true;
 
 }
 
-bool IntegrationAttempt::isAvailableFromCtx(IntegrationAttempt* OtherIA) {
+// OtherIA must be a child without an intervening out-of-line commit point
+bool IntegrationAttempt::allocasAvailableFrom(IntegrationAttempt* OtherIA) {
 
-  if(!isAvailable())
+  while(OtherIA && OtherIA != this) {
+
+    if(!OtherIA->isEnabled())
+      return false;
+    if(OtherIA->commitsOutOfLine())
+      return false;
+    OtherIA = OtherIA->getUniqueParent();
+
+  }
+
+  return !!OtherIA;
+
+}
+
+// Return true if an object allocated here will be accessible from OtherIA.
+// This means we must be unsharable and we can use an easy availability test.
+// OtherIA might or might not be shared.
+bool IntegrationAttempt::heapObjectsAvailableFrom(IntegrationAttempt* OtherIA) {
+
+  release_assert(getFunctionRoot()->unsharable && "allocatedObjectsAvailableFrom against shared context?");
+
+  if(!unsharedContextAvailable())
     return false;
 
-  // Values not directly available due to intervening varargs?
-  // Walk ourselves and the other down til we hit a varargs barrier.
-  // As above I *think* asking this query implies an escaping malloc
-  // which in turn implies unsharable (for this and all parents).
+  // Walk down to the nearest function boundary. Note that if OtherIA is shared, directly or otherwise,
+  // we don't care which version we're talking about because allocations cannot cross shared
+  // function boundaries. If they become able to do so then we need a context-sensitive test here.
 
   IntegrationAttempt* AvailCtx1 = this;
-  while(AvailCtx1 && !AvailCtx1->isVararg())
+  while(AvailCtx1 && !AvailCtx1->commitsOutOfLine())
     AvailCtx1 = AvailCtx1->getUniqueParent();
 
   IntegrationAttempt* AvailCtx2 = OtherIA;
-  while(AvailCtx2 && !AvailCtx2->isVararg())
+  while(AvailCtx2 && !AvailCtx2->commitsOutOfLine())
     AvailCtx2 = AvailCtx2->getUniqueParent();
 
   // If we hit different barriers we'll end up integrated into different functions.
