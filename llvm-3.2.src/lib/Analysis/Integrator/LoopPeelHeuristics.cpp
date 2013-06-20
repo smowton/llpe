@@ -81,8 +81,8 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int sdepth) : 
-  IntegrationAttempt(Pass, F, 0, LI, depth, sdepth)
+			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth) : 
+  IntegrationAttempt(Pass, F, 0, LI, depth, 0)
 { 
     raw_string_ostream OS(HeaderStr);
     OS << (!_CI ? "Root " : "") << "Function " << F.getName();
@@ -95,21 +95,18 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     unsharable = false;
     active = false;
     instructionsCommitted = false;
+    latchStoresRetained = false;
     CommitF = 0;
     if(_CI)
       Callers.push_back(_CI);
 
     prepareShadows();
 
-    // If this function can't allocate stack memory don't give it a frame number.
-    if(invarInfo->frameSize == -1)
-      --stack_depth;
-
 }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
-			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth) :
-  IntegrationAttempt(Pass, F, PP->L, _LI, depth, sdepth),
+			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth) :
+  IntegrationAttempt(Pass, F, PP->L, _LI, depth, 0),
   iterationCount(iter),
   parentPA(PP),
   parent(P),
@@ -123,9 +120,9 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 }
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth, int sdepth) 
+			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth) 
   : pass(Pass), parent(P), F(_F), LI(_LI), 
-    residualInstructions(-1), nesting_depth(depth), stack_depth(sdepth), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
+    residualInstructions(-1), nesting_depth(depth), stack_depth(0), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
   raw_string_ostream OS(HeaderStr);
@@ -566,7 +563,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   Function* FCalled = getCalledFunction(SI);
 
-  InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1, this->stack_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1);
   inlineChildren[SI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -595,7 +592,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       // to justify sharing the function node.
       IA->active = true;
 
-      changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop);
+      changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop, stack_depth);
       
       mergeChildDependencies(IA);
 
@@ -607,7 +604,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
     }
     else {
 
-      IA->execute();
+      IA->executeCall(stack_depth);
 
     }
 
@@ -734,7 +731,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   assert(iter == Iterations.size());
 
-  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth, stack_depth);
+  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth);
   Iterations.push_back(NewIter);
     
   return NewIter;
@@ -854,7 +851,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
     LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
-    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1, stack_depth);
+    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1);
     peelChildren[NewL] = LPA;
 
     return LPA;
@@ -2047,7 +2044,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
-  InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0, 0);
+  InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
   IA->unsharable = true;
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {

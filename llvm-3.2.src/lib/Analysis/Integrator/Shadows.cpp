@@ -693,6 +693,7 @@ bool ShadowValue::objectAvailableFrom(IntegrationAttempt* OtherIA) {
 
   switch(t) {
   case SHADOWVAL_GV:
+  case SHADOWVAL_OTHER:
     return true;
   case SHADOWVAL_ARG:
     return u.A->IA->allocasAvailableFrom(OtherIA);

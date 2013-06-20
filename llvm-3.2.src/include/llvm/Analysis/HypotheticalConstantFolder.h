@@ -945,15 +945,16 @@ protected:
 
   // The toplevel loop:
   void analyse();
-  bool analyse(bool inLoopAnalyser, bool inAnyLoop);
+  bool analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t new_stack_depth);
   bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL);
   bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser, bool inAnyLoop);
   bool analyseLoop(const Loop*, bool nestedLoop);
   void releaseLatchStores(const Loop*);
   virtual void getInitialStore() = 0;
   // Toplevel, execute-only version:
-  void execute();
+  void execute(uint32_t new_stack_depth);
   void executeBlock(ShadowBB*);
+  void executeLoop(const Loop*);
 
 
   // Constant propagation:
@@ -1201,7 +1202,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth, int sdepth);
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth);
 
   IntegrationAttempt* parent;
 
@@ -1311,10 +1312,10 @@ class PeelAttempt {
 
    std::vector<PeelIteration*> Iterations;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth, int sdepth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
    ~PeelAttempt();
 
-   bool analyse();
+   bool analyse(uint32_t parent_stack_depth);
 
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 
@@ -1365,7 +1366,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, int stack_depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth);
 
   virtual ~InlineAttempt();
 
@@ -1388,6 +1389,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool unsharable;
   bool active;
   bool instructionsCommitted;
+  bool latchStoresRetained;
 
   bool isShared() {
     return Callers.size() > 1;
@@ -1439,7 +1441,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool entryBlockIsCertain(); 
   virtual bool entryBlockAssumed(); 
 
-  bool analyseWithArgs(ShadowInstruction* Caller, bool withinUnboundedLoop, bool inAnyLoop); 
+  bool analyseWithArgs(ShadowInstruction* Caller, bool withinUnboundedLoop, bool inAnyLoop, uint32_t parent_stack_depth); 
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
@@ -1474,6 +1476,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   virtual bool commitsOutOfLine();
+  void executeCall(uint32_t new_stack_depth);
+  void releaseCallLatchStores();
   
 };
 

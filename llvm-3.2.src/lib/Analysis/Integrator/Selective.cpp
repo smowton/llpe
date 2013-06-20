@@ -174,7 +174,7 @@ bool PeelIteration::commitsOutOfLine() {
 
 bool IntegrationAttempt::unsharedContextAvailable() {
 
-  release_assert(getFunctionRoot()->unsharable && "unsharedContextAvailable against shared context?");
+  release_assert(((!pass->enableSharing) || getFunctionRoot()->unsharable) && "unsharedContextAvailable against shared context?");
 
   // Not enabled?
   if(!isEnabled())
@@ -214,7 +214,7 @@ bool IntegrationAttempt::allocasAvailableFrom(IntegrationAttempt* OtherIA) {
 // OtherIA might or might not be shared.
 bool IntegrationAttempt::heapObjectsAvailableFrom(IntegrationAttempt* OtherIA) {
 
-  release_assert(getFunctionRoot()->unsharable && "allocatedObjectsAvailableFrom against shared context?");
+  release_assert(((!pass->enableSharing) || getFunctionRoot()->unsharable) && "allocatedObjectsAvailableFrom against shared context?");
 
   if(!unsharedContextAvailable())
     return false;

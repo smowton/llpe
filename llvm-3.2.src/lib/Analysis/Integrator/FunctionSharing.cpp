@@ -184,7 +184,12 @@ bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
   for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = externalDependencies.begin(),
 	itend = externalDependencies.end(); it != itend; ++it) {
 
+    // Note that if function sharing is enabled the base store is only used to represent initialisers
+    // in order to facilitate creating a copy of the store at function entry.
     LocStore* callsiteStore = SI->parent->getReadableStoreFor(it->first);
+    if(!callsiteStore)
+      callsiteStore = &(it->first.getBaseStore());
+
     if(!IVsEqualShallow(callsiteStore->store, it->second))
       return false;
 
@@ -254,7 +259,7 @@ InlineAttempt* InlineAttempt::getWritableCopyFrom(ShadowInstruction* SI) {
 
   release_assert(pass->enableSharing && "getWritableCopyFrom without sharing enabled?");
 
-  InlineAttempt* Copy = new InlineAttempt(pass, F, LI, SI, nesting_depth, stack_depth);
+  InlineAttempt* Copy = new InlineAttempt(pass, F, LI, SI, nesting_depth);
 
   SmallVector<ShadowInstruction*, 1>:: iterator findit = std::find(Callers.begin(), Callers.end(), SI);
   release_assert(findit != Callers.end() && "CoW break IA with bad caller?");

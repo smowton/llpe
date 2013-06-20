@@ -29,9 +29,12 @@
 
 using namespace llvm;
 
-bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop) {
+bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
   bool anyChange = false;
+
+  uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
+  latchStoresRetained = true;
 
   for(unsigned i = 0, ilim = SI->getNumArgOperands(); i != ilim; ++i) {
 
@@ -52,7 +55,7 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
 
   }
 
-  anyChange |= analyse(inLoopAnalyser, inAnyLoop);
+  anyChange |= analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
 
   return anyChange;
 
@@ -77,10 +80,7 @@ void PeelIteration::getInitialStore() {
   
   if(iterationCount == 0) {
 
-    // Borrow the preheader's store read-only (in case we fail to terminate
-    // then the preheader store will be needed again)
     BBs[0]->localStore = parent->getBB(parentPA->invarInfo->preheaderIdx)->localStore;
-    BBs[0]->localStore->refCount++;
 
   }
   else {
@@ -92,7 +92,9 @@ void PeelIteration::getInitialStore() {
 
 }
 
-bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
+bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t new_stack_depth) {
+
+  stack_depth = new_stack_depth;
 
   bool anyChange = false;
 
@@ -117,17 +119,18 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop) {
 
 void IntegrationAttempt::analyse() {
 
-  analyse(false, false);
+  analyse(false, false, 0);
 
 }
 
-bool PeelAttempt::analyse() {
+bool PeelAttempt::analyse(uint32_t parent_stack_depth) {
   
   bool anyChange = false;
+  stack_depth = parent_stack_depth;
 
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
-    anyChange |= PI->analyse(false, true);
+    anyChange |= PI->analyse(false, true, parent_stack_depth);
 
   }
 
@@ -166,8 +169,14 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     // At the moment can't ever happen inside the loop analyser.
     PeelAttempt* LPA = 0;
     if(!inLoopAnalyser) {
-      if((LPA = getOrCreatePeelAttempt(BBL)))
-	LPA->analyse();
+      if((LPA = getOrCreatePeelAttempt(BBL))) {
+
+	// Give the preheader an extra reference in case we need that store
+	// to calculate a general version of the loop body if it doesn't terminate.
+	getBB(LPA->invarInfo->preheaderIdx)->localStore->refCount++;
+	LPA->analyse(stack_depth);
+
+      }
     }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
@@ -300,6 +309,20 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 
 }
 
+void InlineAttempt::releaseCallLatchStores() {
+
+  // !latchStoresRetained indicates the last time we entered this call we used execute()
+  // instead of analyse and so didn't hang onto latch stores.
+  // TODO: store references will leak when a call stabilises during loop analysis
+  // and latch stores should be released at that time.
+
+  if(!latchStoresRetained)
+    return;
+
+  releaseLatchStores(0);
+
+}
+
 void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 
   // Release loops belonging to sub-calls and loops:
@@ -347,7 +370,7 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 	if(inst_is<CallInst>(SI)) {
 
 	  if(InlineAttempt* IA = getInlineAttempt(SI))
-	    IA->releaseLatchStores(0);
+	    IA->releaseCallLatchStores();
 
 	}
 
@@ -480,9 +503,70 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
 }
 
+void InlineAttempt::executeCall(uint32_t parent_stack_depth) {
+
+  latchStoresRetained = false;
+
+  uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
+  execute(new_stack_depth);
+
+}
+
+void IntegrationAttempt::executeLoop(const Loop* ThisL) {
+
+  ShadowLoopInvar* LInfo = invarInfo->LInfo[ThisL];
+
+  ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
+  ShadowBB* HBB = getBB(LInfo->headerIdx); 
+
+  // No need for extra references: we simply execute the residual loop once
+  // as fixpoints have already been established about what is stored.
+  // We only need special treatment to prevent header blocks from trying to
+  // consume a store from their latch blocks.
+  HBB->localStore = PHBB->localStore;
+
+  for(uint32_t i = LInfo->headerIdx; i < (BBsOffset + nBBs); ++i) {
+
+    ShadowBB* BB = getBB(i);
+    if(!BB)
+      continue;
+
+    ShadowBBInvar* BBI = BB->invar;
+
+    if(!ThisL->contains(BBI->naturalScope))
+      break;
+    else if(BBI->naturalScope != ThisL) {
+
+      // Subloop requires the same special store treatment as this loop.
+      executeLoop(BBI->naturalScope);
+      while(i < (BBsOffset + nBBs) && BBI->naturalScope->contains(getBBInvar(i)->naturalScope))
+	++i;
+      --i;
+      
+    }
+    else {
+
+      if(i != LInfo->headerIdx)
+	doBlockStoreMerge(BB);
+      
+      executeBlock(BB);
+
+    }
+
+  }
+
+  // Drop extra ref given to the header block if one was granted.
+  ShadowBB* LBB = getBB(LInfo->latchIdx);
+  if(LBB && !edgeIsDead(LBB->invar, HBB->invar))
+    LBB->localStore->dropReference();
+
+}
+
 // Like analyse(), but used from sharing pathways when we're sure none of the functions need re-evaluating.
 // We really only want to recreate its effects on the store.
-void IntegrationAttempt::execute() {
+void IntegrationAttempt::execute(uint32_t new_stack_depth) {
+
+  stack_depth = new_stack_depth;
 
   getInitialStore();
   for(uint32_t i = 0; i < nBBs; ++i) {
@@ -503,26 +587,32 @@ void IntegrationAttempt::execute() {
 	for(std::vector<PeelIteration*>::iterator it = LPA->Iterations.begin(), 
 	      itend = LPA->Iterations.end(); it != itend; ++it) {
 
-	  (*it)->execute();
+	  (*it)->execute(stack_depth);
 
 	}
 
-	// Skip blocks in this scope
+      }
+      else {
 
-	while((i + BBsOffset) < invarInfo->BBs.size() && BBI->naturalScope->contains(getBBInvar(i + BBsOffset)->naturalScope))
-	  ++i;
-	--i;
+	executeLoop(BBI->naturalScope);
 
       }
 
-      // If the loop isn't terminated just fall through to execute block here.
+      // Skip blocks in this scope
+
+      while(i < nBBs && BBI->naturalScope->contains(getBBInvar(i + BBsOffset)->naturalScope))
+	++i;
+      --i;
 
     }
+    else {
 
-    if(i != 0)
-      doBlockStoreMerge(BB);
+      if(i != 0)
+	doBlockStoreMerge(BB);
 
-    executeBlock(BB);
+      executeBlock(BB);
+
+    }
 
   }
 
@@ -554,10 +644,18 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
 	    break;
 	}
 
-	if(InlineAttempt* IA = getInlineAttempt(SI))
-	  IA->execute();
-	else
+	if(InlineAttempt* IA = getInlineAttempt(SI)) {
+
+	  IA->activeCaller = SI;
+	  IA->executeCall(stack_depth);
+	  doCallStoreMerge(SI);
+
+	}
+	else {
+	  
 	  executeUnexpandedCall(SI);
+
+	}
 
       }
       break;
@@ -570,7 +668,23 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
   }
 
   // Frame push happens in getInitialStore; pop would usually happen in terminator evaluation.
-  if(inst_is<ReturnInst>(&BB->insts[BB->insts.size() - 1]))
-    BB->popStackFrame();
+  if(inst_is<ReturnInst>(&BB->insts[BB->insts.size() - 1])) {
+    if(invarInfo->frameSize != -1)
+      BB->popStackFrame();
+    return;
+  }
+
+  for(uint32_t i = 0; i < BB->invar->succIdxs.size(); ++i) {
+	
+    if(!BB->succsAlive[i])
+      continue;
+
+    // Create a store reference for each live successor
+    ++BB->localStore->refCount;
+	
+  }
+
+  // Drop ref belonging to this block.
+  BB->localStore->dropReference();
 
 }
