@@ -851,6 +851,8 @@ protected:
 
   DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
+
+  SmallPtrSet<const Loop*, 8> latchStoresRetained;
     
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
@@ -1389,8 +1391,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool unsharable;
   bool active;
   bool instructionsCommitted;
-  bool latchStoresRetained;
-
+  
   bool isShared() {
     return Callers.size() > 1;
   }

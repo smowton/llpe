@@ -34,7 +34,6 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
   bool anyChange = false;
 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
-  latchStoresRetained = true;
 
   for(unsigned i = 0, ilim = SI->getNumArgOperands(); i != ilim; ++i) {
 
@@ -311,14 +310,6 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
 
 void InlineAttempt::releaseCallLatchStores() {
 
-  // !latchStoresRetained indicates the last time we entered this call we used execute()
-  // instead of analyse and so didn't hang onto latch stores.
-  // TODO: store references will leak when a call stabilises during loop analysis
-  // and latch stores should be released at that time.
-
-  if(!latchStoresRetained)
-    return;
-
   releaseLatchStores(0);
 
 }
@@ -383,10 +374,10 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
   // Release here:
 
   if(LInfo) {
-    ShadowBBInvar* HBBI = getBBInvar(LInfo->headerIdx);
-    if(!edgeIsDead(getBBInvar(LInfo->latchIdx), HBBI)) {
-      // Release the latch store that the header will not use again:
+    // Release the latch store that the header will not use again:
+    if(latchStoresRetained.erase(L)) {
       ShadowBB* LBB = getBB(LInfo->latchIdx);
+      release_assert("Releasing store from dead latch?");
       LBB->localStore->dropReference();
     }
   }
@@ -405,6 +396,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
   ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
   ShadowBB* HBB = getBB(LInfo->headerIdx);
+  ShadowBB* LBB = getBB(LInfo->latchIdx);
 
   LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at entry: " << PHBB->localStore->refCount << "\n");
 
@@ -435,12 +427,11 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
       }
 
-      ShadowBB* LBB = getBB(LInfo->latchIdx);
-      if(LBB && LBB->localStore) {
+      if(latchStoresRetained.count(L)) {
+	release_assert(LBB && "Latch store retained but latch block dead?");
 	// We've analysed this loop before -- we must be under analysis as a nested loop.
 	// If our latch edge lives we should use its store ref, which was saved last time around.
-	if(!edgeIsDead(LBB->invar, HBB->invar))
-	  firstIter = false;
+	firstIter = false;
       }
 
       MergeBlockVisitor V(false);
@@ -478,6 +469,9 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
     }
 
+    if(!LBB)
+      LBB = getBB(LInfo->latchIdx);
+
     everChanged |= anyChange;
 
     firstIter = false;
@@ -494,8 +488,20 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
   // If this is a nested loop, hang onto the reference given from latch to header
   // for use in the next iteration of analysing this loop.
-  if(!nestedLoop)
+  bool thisLatchAlive = LBB && !edgeIsDead(LBB->invar, HBB->invar);
+  if(!nestedLoop) {
+    
     releaseLatchStores(L);
+    if(thisLatchAlive)
+      LBB->localStore->dropReference();
+
+  }
+  else {
+
+    if(thisLatchAlive)
+      latchStoresRetained.insert(L);
+
+  }
 
   LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at exit: " << PHBB->localStore->refCount << "\n");
   
@@ -504,8 +510,6 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 }
 
 void InlineAttempt::executeCall(uint32_t parent_stack_depth) {
-
-  latchStoresRetained = false;
 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
   execute(new_stack_depth);
@@ -518,6 +522,16 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
 
   ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
   ShadowBB* HBB = getBB(LInfo->headerIdx); 
+
+  // If this context had a retained latch store from previous instances
+  // we don't need it anymore, drop now.
+  if(latchStoresRetained.erase(ThisL)) {
+
+    ShadowBB* LBB = getBB(LInfo->latchIdx);
+    release_assert(LBB && "Executed loop with retained latch, but not available?");
+    LBB->localStore->dropReference();
+
+  }
 
   // No need for extra references: we simply execute the residual loop once
   // as fixpoints have already been established about what is stored.

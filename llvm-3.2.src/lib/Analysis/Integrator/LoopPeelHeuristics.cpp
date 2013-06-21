@@ -95,7 +95,6 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     unsharable = false;
     active = false;
     instructionsCommitted = false;
-    latchStoresRetained = false;
     CommitF = 0;
     if(_CI)
       Callers.push_back(_CI);
@@ -596,7 +595,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       
       mergeChildDependencies(IA);
 
-      if(!IA->unsharable)
+      if(created && !IA->unsharable)
 	pass->addSharableFunction(IA);
 
       IA->active = false;
