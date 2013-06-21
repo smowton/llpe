@@ -408,6 +408,17 @@ static Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
 }
 
+static Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
+
+  if(Ty == V->getType())
+    return V;
+
+  release_assert(CastInst::isCastable(V->getType(), Ty) && "Bad cast in commit stage");
+  Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
+  return CastInst::Create(Op, V, Ty, "speccast", insertAtEnd);
+
+}
+
 static PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
   // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
@@ -859,8 +870,77 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
       }
       else {
 
-	CallInst* CI = cast<CallInst>(emitInst(BB, I, emitBB));
-	CI->setCalledFunction(IA->CommitF);
+	FunctionType* FType = IA->CommitF->getFunctionType();
+	bool mustReconstruct = false;
+
+	// Resolved calls through a function pointer might produce a type mismatch.
+	// Only allow shortening the argument list at the moment.
+	  
+	if(!FType->isVarArg()) {
+	  
+	  unsigned FParams = FType->getNumParams();
+	  unsigned CIParams = cast_inst<CallInst>(I)->getNumArgOperands();
+
+	  if(FParams < CIParams) {
+	    mustReconstruct = true;
+	  }
+	  else if(FParams > CIParams) {
+	    release_assert(0 && "Function has higher arity than call");
+	  }
+
+	}
+
+	if(!mustReconstruct) {
+
+	  CallInst* CI = cast<CallInst>(emitInst(BB, I, emitBB));
+	  CI->setCalledFunction(IA->CommitF);
+
+	}
+	else {
+
+	  // Build a call to IA->CommitF with same attributes but less arguments.
+	  // Most of this code borrowed from Transforms/IPO/DeadArgumentElimination.cpp
+
+	  errs() << "Rebuilt call\n";
+
+	  CallInst* OldCI = cast_inst<CallInst>(I);
+
+	  SmallVector<AttributeWithIndex, 8> AttributesVec;
+	  const AttrListPtr &CallPAL = OldCI->getAttributes();
+
+	  Attributes FnAttrs = CallPAL.getFnAttributes();
+	  
+	  std::vector<Value*> Args;
+	  for(uint32_t i = 0, ilim = FType->getNumParams(); i != ilim; ++i) {
+	    
+	    Attributes Attrs = CallPAL.getParamAttributes(i + 1);
+	    if(Attrs.hasAttributes())
+	      AttributesVec.push_back(AttributeWithIndex::get(Args.size(), Attrs));
+
+	    // (Except this bit, a clone of emitInst)
+	    ShadowValue op = I->getCallArgOperand(i);
+	    Value* opV = getCommittedValue(op);
+	    Type* needTy = OldCI->getArgOperand(i)->getType();
+	    Args.push_back(getValAsType(opV, needTy, emitBB));
+
+	  }
+
+	  if (FnAttrs.hasAttributes())
+	    AttributesVec.push_back(AttributeWithIndex::get(AttrListPtr::FunctionIndex,
+							    FnAttrs));
+	  
+	  AttrListPtr NewCallPAL = AttrListPtr::get(IA->CommitF->getContext(), AttributesVec);
+
+	  CallInst* newI = cast<CallInst>(CallInst::Create(IA->CommitF, Args, "", emitBB));
+	  newI->setCallingConv(OldCI->getCallingConv());
+	  newI->setAttributes(NewCallPAL);
+	  if(OldCI->isTailCall())
+	    newI->setTailCall();
+	  newI->setDebugLoc(OldCI->getDebugLoc());
+	  
+	  I->committedVal = newI;
+
+	}
 
       }
 
