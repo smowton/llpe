@@ -221,8 +221,7 @@ void PeelAttempt::reduceDependentLoads(int64_t nLoads) {
 void InlineAttempt::reduceDependentLoads(int64_t nLoads) {
 
   nDependentLoads -= nLoads;
-  if(!Callers.empty()) {
-    release_assert(Callers.size() == 1 && "reduceDependentLoads in shared function?");
+  if(Callers.size() == 1) {
     Callers[0]->parent->IA->reduceDependentLoads(nLoads);
   }
 

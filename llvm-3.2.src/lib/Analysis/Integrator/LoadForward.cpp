@@ -640,8 +640,16 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
 
     ret = tryMultiload(LI, NewPB, error.get());
     if(ImprovedValSetSingle* NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
+
       if(NewIVS->SetType == ValSetTypeVarArg)
 	loadedVararg = true;
+
+      if(NewIVS->SetType == ValSetTypeScalar) {
+
+	release_assert(!val_is<ConstantPointerNull>(NewIVS->Values[0].V));
+
+      }
+
     }
 
   }
@@ -1513,6 +1521,8 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 	}
 	
       }
+
+      SetType = ValSetTypePB;
 
     }
 

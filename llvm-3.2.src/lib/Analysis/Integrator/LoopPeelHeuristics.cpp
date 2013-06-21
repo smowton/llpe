@@ -547,7 +547,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
       return Result;
     else {
       InlineAttempt* Unshared = Result->getWritableCopyFrom(SI);
-      errs() << "BREAK: " << itcache(SI) << " #" << Result->SeqNumber << " -> #" << Unshared->SeqNumber << "\n";
+      if(pass->verboseSharing)
+	errs() << "BREAK: " << itcache(SI) << " #" << Result->SeqNumber << " -> #" << Unshared->SeqNumber << "\n";
       inlineChildren[SI] = Unshared;
       created = true;
       return Unshared;

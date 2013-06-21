@@ -560,8 +560,10 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
     }
     else {
 
-      if(i != LInfo->headerIdx)
-	doBlockStoreMerge(BB);
+      if(i != LInfo->headerIdx) {
+	if(!doBlockStoreMerge(BB))
+	  return;
+      }
       
       executeBlock(BB);
 
@@ -621,8 +623,10 @@ void IntegrationAttempt::execute(uint32_t new_stack_depth) {
     }
     else {
 
-      if(i != 0)
-	doBlockStoreMerge(BB);
+      if(i != 0) {
+	if(!doBlockStoreMerge(BB))
+	  return;
+      }
 
       executeBlock(BB);
 
@@ -663,6 +667,8 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
 	  IA->activeCaller = SI;
 	  IA->executeCall(stack_depth);
 	  doCallStoreMerge(SI);
+	  if(!SI->parent->localStore)
+	    return;
 
 	}
 	else {
