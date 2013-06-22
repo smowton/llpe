@@ -888,11 +888,35 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	    release_assert(0 && "Function has higher arity than call");
 	  }
 
+	  FunctionType* CIFType = cast<FunctionType>(cast<PointerType>(cast_inst<CallInst>(I)->getCalledValue()->getType())->getElementType());
+	  if(CIFType->getReturnType()->isVoidTy() && !FType->getReturnType()->isVoidTy())
+	    mustReconstruct = true;
+
 	}
 
 	if(!mustReconstruct) {
 
-	  CallInst* CI = cast<CallInst>(emitInst(BB, I, emitBB));
+	  CallInst* CI = cast<CallInst>(I->invar->I->clone());
+	  I->committedVal = CI;
+	  emitBB->getInstList().push_back(CI);
+
+	  for(uint32_t i = 0, ilim = CI->getNumArgOperands(); i != ilim; ++i) {
+
+	    ShadowValue op = I->getCallArgOperand(i);
+	    Value* opV = getCommittedValue(op);
+	    Type* needTy;
+	    if(i < FType->getNumParams()) {
+	      // Normal argument: cast to target function type.
+	      needTy = FType->getParamType(i);
+	    }
+	    else {
+	      // Vararg: cast to old callinst arg type.
+	      needTy = CI->getArgOperand(i)->getType();
+	    }
+	    CI->setArgOperand(i, getValAsType(opV, needTy, CI));
+
+	  }
+
 	  CI->setCalledFunction(IA->CommitF);
 
 	}
@@ -920,7 +944,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	    // (Except this bit, a clone of emitInst)
 	    ShadowValue op = I->getCallArgOperand(i);
 	    Value* opV = getCommittedValue(op);
-	    Type* needTy = OldCI->getArgOperand(i)->getType();
+	    Type* needTy = FType->getParamType(i);
 	    Args.push_back(getValAsType(opV, needTy, emitBB));
 
 	  }
