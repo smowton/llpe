@@ -23,7 +23,7 @@ void IntegrationAttempt::sharingInit() { }
 
 void InlineAttempt::sharingInit() {
 
-  if(pass->enableSharing && !unsharable) {
+  if(pass->enableSharing) {
 
     storeAtEntry = BBs[0]->localStore;
     storeAtEntry->refCount++;
@@ -41,7 +41,7 @@ void InlineAttempt::dumpSharingState() {
 
   errs() << F.getName() << " / " << SeqNumber << ":";
 
-  if(unsharable) {
+  if(isUnsharable()) {
     errs() << " UNSHARABLE\n";
   }
   else {
@@ -67,27 +67,85 @@ void IntegrationAttempt::sharingCleanup() { }
 
 void InlineAttempt::sharingCleanup() {
 
+  if(!pass->enableSharing)
+    return;
+
   if(storeAtEntry)
     storeAtEntry->dropReference();
+
+  SmallVector<ShadowInstruction*, 4> toRemove;
+
+  // Eliminate escaping mallocs that are known to be freed, both as dependencies and escapes.
+  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = escapingMallocs.begin(),
+	itend = escapingMallocs.end(); it != itend; ++it) {
+
+    ShadowInstruction* Alloc = *it;
+    bool mayEscape = false;
+
+    for(uint32_t i = 0; i < nBBs && !mayEscape; ++i) {
+
+      if(!BBs[i])
+	continue;
+
+      ShadowBB* BB = BBs[i];
+
+      if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
+	continue;
+
+      ShadowValue AllocSV(Alloc);
+      LocStore* thisStore = BB->getReadableStoreFor(AllocSV);
+      
+      // Not allocated on this path?
+      if(!thisStore)
+	continue;
+
+      // Freed on this path?
+      if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(thisStore->store)) {
+
+	if(IVS->SetType == ValSetTypeDeallocated)
+	  continue;
+
+      }
+
+      mayEscape = true;
+
+    }
+
+    if(!mayEscape)
+      toRemove.push_back(Alloc);
+
+  }
+
+  for(SmallVector<ShadowInstruction*, 4>::iterator it = toRemove.begin(),
+	itend = toRemove.end(); it != itend; ++it) {
+
+    if(pass->verboseSharing) {
+      
+      errs() << "Eliminate dependency on freed heap location " << itcache(*it) << "\n";
+
+    }
+
+    escapingMallocs.erase(*it);
+    DenseMap<ShadowValue, ImprovedValSet*>::iterator findit = externalDependencies.find(ShadowValue(*it));
+    if(findit != externalDependencies.end()) {
+      findit->second->dropReference();
+      externalDependencies.erase(findit);
+    }
+
+  }
 
   if(pass->verboseSharing)
     dumpSharingState();
 
 }
 
-void IntegrationAttempt::markUnsharable() {
+void IntegrationAttempt::noteVFSOp() {
 
   if(!pass->enableSharing)
     return;
 
   InlineAttempt* Root = getFunctionRoot();
-  if(!Root->storeAtEntry)
-    return;
-
-  Root->unsharable = true;
-  Root->clearExternalDependencies();
-  Root->storeAtEntry->dropReference();
-  Root->storeAtEntry = 0;
+  Root->hasVFSOps = true;
 
 }
 
@@ -100,9 +158,6 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
   
   InlineAttempt* Root = getFunctionRoot();
 
-  if(Root->unsharable)
-    return;
- 
   // Don't register dependency on local stack objects.
   int32_t frameNo = V.getFrameNo();
   if(Root->invarInfo->frameSize != -1 && frameNo == Root->stack_depth)
@@ -133,23 +188,38 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
 
 }
 
+void IntegrationAttempt::noteMalloc(ShadowInstruction* SI) {
+
+  if(!pass->enableSharing)
+    return;
+
+  InlineAttempt* Root = getFunctionRoot();
+  
+  Root->escapingMallocs.insert(SI);
+
+}
+
 void IntegrationAttempt::mergeChildDependencies(InlineAttempt* ChildIA) {
 
   if(!pass->enableSharing)
     return;
 
-  if(ChildIA->unsharable)
-    markUnsharable();
-  else {
+  if(ChildIA->hasVFSOps)
+    noteVFSOp();
 
-    for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = ChildIA->externalDependencies.begin(),
-	  it2 = ChildIA->externalDependencies.end(); it != it2; ++it) {
+  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = ChildIA->externalDependencies.begin(),
+	it2 = ChildIA->externalDependencies.end(); it != it2; ++it) {
 
-      // Note this might record a different dependency to our child if this function or a sibling
-      // has altered a relevant location since we entered this function.
-      noteDependency(it->first);
+    // Note this might record a different dependency to our child if this function or a sibling
+    // has altered a relevant location since we entered this function.
+    noteDependency(it->first);
       
-    }
+  }
+    
+  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = ChildIA->escapingMallocs.begin(),
+	itend = ChildIA->escapingMallocs.end(); it != itend; ++it) {
+    
+    noteMalloc(*it);
 
   }
 
@@ -206,6 +276,7 @@ void IntegrationHeuristicsPass::addSharableFunction(InlineAttempt* IA) {
     return;
 
   IAsByFunction[&IA->F].push_back(IA);
+  IA->registeredSharable = true;
 
 }
 
@@ -218,6 +289,7 @@ void IntegrationHeuristicsPass::removeSharableFunction(InlineAttempt* IA) {
   std::vector<InlineAttempt*>::iterator findit = std::find(IAs.begin(), IAs.end(), IA);
   release_assert(findit != IAs.end() && "Function unshared twice?");
   IAs.erase(findit);
+  IA->registeredSharable = false;
 
 }
 

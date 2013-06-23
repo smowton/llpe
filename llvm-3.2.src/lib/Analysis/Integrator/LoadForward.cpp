@@ -504,7 +504,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
 static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
-  if(PB.Overdef || PB.Values.size() == 0)
+  if(PB.isWhollyUnknown() || PB.Values.size() == 0)
     return false;
 
   if(PB.SetType != ValSetTypePB)
@@ -567,7 +567,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
     readValRange(LIPB.Values[i].V, LIPB.Values[i].Offset, LoadSize, LI->parent, ThisPB, LIPB.Values.size() == 1 ? &ThisMulti : 0, ThisError.get());
 
     // Sharing now contingent on this object!
-    if(ThisMulti || !ThisPB.Overdef) {
+    if(ThisMulti || !ThisPB.isWhollyUnknown()) {
 
       LI->parent->IA->noteDependency(LIPB.Values[i].V);
 
@@ -581,7 +581,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 
     }
 
-    if(!ThisPB.Overdef) {
+    if(!ThisPB.isWhollyUnknown()) {
       if(!ThisPB.coerceToType(LI->getType(), LoadSize, ThisError.get())) {
 	NewPB->setOverdef();
       }
@@ -747,7 +747,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1Base, int64_t V1O
   if(!getImprovedValSetSingle(V2, PB2))
     return SVMayAlias;
       
-  if(PB2.Overdef || PB2.Values.size() == 0)
+  if(PB2.isWhollyUnknown())
     return SVMayAlias;
 
   if(PB2.SetType != ValSetTypePB)
@@ -763,7 +763,7 @@ SVAAResult llvm::tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size
   if((!getImprovedValSetSingle(V1, PB1)) || (!getImprovedValSetSingle(V2, PB2)))
     return SVMayAlias;
       
-  if(PB1.Overdef || PB1.Values.size() == 0 || PB2.Overdef || PB2.Values.size() == 0)
+  if(PB1.isWhollyUnknown() || PB2.isWhollyUnknown())
     return SVMayAlias;
 
   if(PB1.SetType != ValSetTypePB || PB2.SetType != ValSetTypePB)
@@ -1214,7 +1214,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uin
   release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVSToPartialVal");
 
   // For now we forbid building from bytes when an input is set-typed:
-  if(IVS.Overdef || IVS.Values.size() != 1)
+  if(IVS.isWhollyUnknown() || IVS.Values.size() != 1)
     return false;
   // And also if the value that would be merged is not constant-typed:
   if(IVS.SetType != ValSetTypeScalar && IVS.SetType != ValSetTypeScalarSplat)
@@ -1288,7 +1288,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       
       // Otherwise we need to extract a sub-value: only works on constants:
       
-      bool rejectHere = IVS->Overdef || (IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat);
+      bool rejectHere = IVS->isWhollyUnknown() || (IVS->SetType != ValSetTypeScalar && IVS->SetType != ValSetTypeScalarSplat);
       if(rejectHere) {
 	LFV3(errs() << "Reject: non-scalar\n");
 	Result.setOverdef();
@@ -1546,7 +1546,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
   ShadowValue Val = StoreSI->getOperand(0);
   if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(Val))) {
@@ -1588,7 +1588,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
   
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(2)));
   ConstantInt* ValCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(1)));
@@ -1616,7 +1616,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
 
   // Subvals only allowed for scalars:
 
-  if(Src.Overdef || Src.Values.size() == 0) {
+  if(Src.isWhollyUnknown() || Src.Values.size() == 0) {
     Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, Src));
     return;
   }
@@ -1871,7 +1871,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
   for(SmallVector<IVSRange, 4>::iterator it = subVals.begin(), itend = subVals.end();
       it != itend; ++it) {
 
-    if(it->second.Overdef)
+    if(it->second.isWhollyUnknown())
       return 0;
 
   }
@@ -2125,7 +2125,7 @@ void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
 
   ImprovedValSetSingle& S = it.val();
 
-  if(S.Overdef || S.Values.empty())
+  if(S.isWhollyUnknown())
     return;
   if(S.SetType == ValSetTypeScalarSplat) {
     release_assert(S.Values.size() == 1 && "Splat set can't be multivalued");
@@ -2145,7 +2145,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
 
   ImprovedValSetSingle& S = it.val();
 
-  if(S.Overdef || S.Values.empty())
+  if(S.isWhollyUnknown())
     return;
   if(S.SetType == ValSetTypeScalarSplat) {
     release_assert(S.Values.size() == 1 && "Splat value must be single-valued");
@@ -2162,7 +2162,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
 bool llvm::canTruncate(ImprovedValSetSingle& S) {
 
   return 
-    S.Overdef || 
+    S.isWhollyUnknown() || 
     S.SetType == ValSetTypeScalar || 
     S.SetType == ValSetTypeScalarSplat;
   
@@ -2177,7 +2177,13 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
 
   if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store)) {
 
-    if(Offset == 0 && Size == V.getAllocSize()) {
+    if(IVS->SetType == ValSetTypeDeallocated) {
+
+      // Read from a certainly-freed object yields overdef.
+      Results.push_back(IVSR(0, Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
+
+    }
+    else if(Offset == 0 && Size == V.getAllocSize()) {
       
       LFV3(errs() << "Single val satisfies whole read\n");
       Results.push_back(IVSR(0, Size, *IVS));
@@ -2312,14 +2318,14 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   ShadowValue Ptr = MemcpySI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemcpySI->getCallArgOperand(2)));
 
   ShadowValue SrcPtr = MemcpySI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
+  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
 
   executeCopyInst(PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
 
@@ -2331,34 +2337,56 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   ShadowValue Ptr = SI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
   
   ShadowValue SrcPtr = SI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
+  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
   
   executeCopyInst(PtrSet, SrcPtrSet, 24, BB);
 
 }
 
-void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize) {
+void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc) {
 
   // Represent the store by a big undef value at the start, or if !AllocType (implying AllocSize
   // == ULONG_MAX, unknown size), start with a big Overdef.
   release_assert((!SI->store.store) && "Allocation already initialised?");
 
+  ImprovedValSetSingle* initVal;
+
   if(AllocType) {
     Constant* Undef = UndefValue::get(AllocType);
     ImprovedVal IV(ShadowValue(Undef), 0);
-    SI->store.store = new ImprovedValSetSingle(IV, ValSetTypeScalar);
+    initVal = new ImprovedValSetSingle(IV, ValSetTypeScalar);
   }
   else {
-    SI->store.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
+    initVal = new ImprovedValSetSingle(ValSetTypeUnknown, true);
+  }
+
+  if(trackAlloc) {
+
+    // malloc and realloc instructions should also be inserted into the path store,
+    // as a flag that the allocation exists here. Their baseStore should be deallocated,
+    // to indicate that on other paths the object does not exist.
+
+    SI->store.store = new ImprovedValSetSingle(ValSetTypeDeallocated, false);
+   
+    ShadowValue AllocSV(SI);
+    LocStore& localStore = SI->parent->getWritableStoreFor(AllocSV, 0, AllocSize, /* willWriteSingle = */ true);
+    localStore.store->dropReference();
+    localStore.store = initVal;
+
+  }
+  else {
+
+    SI->store.store = initVal;
+
   }
 
   SI->storeSize = AllocSize;
-  
+
   ImprovedValSetSingle* NewIVS = newIVS();
   SI->i.PB = NewIVS;
   NewIVS->set(ImprovedVal(SI, 0), ValSetTypePB);
@@ -2382,14 +2410,14 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   if(AI->isArrayAllocation()) {
 
     ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
-    if(!N)
-      allocType = 0;
+    if(!N) 
+     allocType = 0;
     else
       allocType = ArrayType::get(allocType, N->getLimitedValue());
 
   }
 
-  executeAllocInst(SI, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX);
+  executeAllocInst(SI, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX, false);
 
 }
 
@@ -2410,10 +2438,34 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
   if(AllocSize)
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
-  SI->parent->IA->markUnsharable();
+  if(!SI->store.store)
+    SI->parent->IA->noteMalloc(SI);
 
-  executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
   addHeapAlloc(SI);
+  executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
+
+}
+
+void llvm::executeFreeInst(ShadowInstruction* SI) {
+
+  ShadowInstruction* FreedPtr = SI->getCallArgOperand(0).getInst();
+  if(!FreedPtr)
+    return;
+
+  ImprovedValSetSingle* FreedIVS = dyn_cast_or_null<ImprovedValSetSingle>(FreedPtr->i.PB);
+  if(!FreedIVS)
+    return;
+
+  if(FreedIVS->SetType != ValSetTypePB)
+    return;
+
+  if(FreedIVS->Values.size() != 1)
+    return;
+
+  ImprovedValSetSingle TagIVS;
+  TagIVS.SetType = ValSetTypeDeallocated;
+
+  executeWriteInst(*FreedIVS, TagIVS, FreedIVS->Values[0].V.getAllocSize(), SI->parent);
 
 }
 
@@ -2427,20 +2479,20 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
     if(AllocSize)
       allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
-    SI->parent->IA->markUnsharable();
+    SI->parent->IA->noteMalloc(SI);
 
-    executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX);
     addHeapAlloc(SI);
+    executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
 
   }
 
   ShadowValue SrcPtr = SI->getCallArgOperand(0);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Realloc from uninitialised PB?");
-  release_assert((SrcPtrSet.Overdef || SrcPtrSet.SetType == ValSetTypePB) && "Realloc non-pointer-typed value?");
+  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Realloc non-pointer-typed value?");
   uint64_t CopySize = ULONG_MAX;
 
-  if(SrcPtrSet.Overdef || SrcPtrSet.Values.size() > 1) {
+  if(SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() > 1) {
 
     // Overdef the realloc.
     SrcPtrSet.setOverdef();
@@ -2455,6 +2507,8 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
   ImprovedValSetSingle ThisInst = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
 
   executeCopyInst(ThisInst, SrcPtrSet, CopySize, SI->parent);
+  // Release the realloc'd location.
+  executeFreeInst(SI);
 
 }
 
@@ -2470,7 +2524,7 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
   LFV3(errs() << "Start copy inst\n");
 
-  if(Size == ULONG_MAX || PtrSet.Overdef || PtrSet.Values.size() != 1 || SrcPtrSet.Overdef || SrcPtrSet.Values.size() != 1) {
+  if(Size == ULONG_MAX || PtrSet.isWhollyUnknown() || PtrSet.Values.size() != 1 || SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() != 1) {
 
     // Only support memcpy from single pointer to single pointer for the time being:
     ImprovedValSetSingle OD(ValSetTypeUnknown, true);
@@ -2515,9 +2569,9 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   ImprovedValSetSingle PtrSet;
 
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
 
-  if(PtrSet.Overdef || PtrSet.Values.size() > 1) {
+  if(PtrSet.isWhollyUnknown() || PtrSet.Values.size() > 1) {
 
     ImprovedValSetSingle OD(ValSetTypeUnknown, true);
     executeWriteInst(PtrSet, OD, 24, BB);
@@ -2552,11 +2606,11 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
   ShadowValue Ptr = ReadSI->getCallArgOperand(1);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB (read)?");
-  release_assert((PtrSet.Overdef || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value (read)?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value (read)?");
 
   ImprovedValSetSingle WriteIVS;
   
-  if(PtrSet.Overdef || PtrSet.Values.size() != 1) {
+  if(PtrSet.isWhollyUnknown() || PtrSet.Values.size() != 1) {
 
     WriteIVS.setOverdef();
 
@@ -2582,6 +2636,7 @@ enum specialfunctions {
 
   SF_MALLOC,
   SF_REALLOC,
+  SF_FREE,
   SF_VASTART,
   SF_VACOPY
 
@@ -2595,6 +2650,8 @@ void llvm::initSpecialFunctionsMap(Module& M) {
     SpecialFunctionMap[F1] = SF_MALLOC;  
   if(Function* F2 = M.getFunction("realloc"))
     SpecialFunctionMap[F2] = SF_REALLOC;
+  if(Function* F3 = M.getFunction("free"))
+    SpecialFunctionMap[F3] = SF_FREE;
   if(Function* F4 = M.getFunction("llvm.va_start"))
     SpecialFunctionMap[F4] = SF_VASTART;
   if(Function* F5 = M.getFunction("llvm.va_copy"))
@@ -2630,6 +2687,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	break;
       case SF_REALLOC:
 	executeReallocInst(SI);
+	break;
+      case SF_FREE:
+	executeFreeInst(SI);
 	break;
       case SF_VASTART:
 	executeVaStartInst(SI);
@@ -2732,7 +2792,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
   if(!ValPB.isInitialised())
     ValPB.setOverdef();
 
-  if(PtrSet.Overdef) {
+  if(PtrSet.isWhollyUnknown()) {
 
     // Start with a plain local store map giving no locations.
     // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
@@ -2773,7 +2833,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	ImprovedValSetSingle oldValSet;
 	if(ValPB.Overdef) {
 
-	  // Overdef merges with everything to make overdef, so don't bother with the lookup.
+	  // Overdef merges with any other value to make Overdef, so skip the lookup.
 	  oldValSet = ValPB;
 
 	}
@@ -2782,7 +2842,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	  LFV3(errs() << "Write through maybe pointer; merge\n");
 	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, 0, 0);
 
-	  if((!oldValSet.Overdef) && oldValSet.isInitialised()) {
+	  if((!oldValSet.isWhollyUnknown()) && oldValSet.isInitialised()) {
 
 	    if(!ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0)) {
 	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldValSet.Values[0].V.getType()) << "\n");
@@ -3073,11 +3133,26 @@ void MergeBlockVisitor::mergeStores(LocStore* mergeFromStore, LocStore* mergeToS
       return;
     }
 
+    // Deallocated is always overridden by a definition from the other side.
+    if(IVS->SetType == ValSetTypeDeallocated) {
+      mergeToStore->store->dropReference();
+      mergeToStore->store = mergeFromStore->store->getReadableCopy();
+      return;
+    }
+
     if(ImprovedValSetSingle* IVS2 = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
       LFV3(errs() << "Merge in another single\n");
       IVS->merge(*IVS2);
       return;
     }
+
+  }
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(mergeFromStore->store)) {
+
+    // Deallocated yields to existing definition.
+    if(IVS->SetType == ValSetTypeDeallocated)
+      return;
 
   }
 

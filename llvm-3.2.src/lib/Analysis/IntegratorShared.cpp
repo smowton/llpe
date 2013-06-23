@@ -327,6 +327,8 @@ void llvm::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
     out << "VA "; break;
   case ValSetTypeUnknown:
     out << "U "; break;
+  case ValSetTypeDeallocated:
+    out << "Deallocated"; return;
   }
 
   if(PB.Overdef)

@@ -1166,7 +1166,8 @@ protected:
   // Function sharing
 
   void noteDependency(ShadowValue V);
-  void markUnsharable();
+  void noteMalloc(ShadowInstruction* SI);
+  void noteVFSOp();
   void mergeChildDependencies(InlineAttempt* ChildIA);
   virtual void sharingInit();
   virtual void sharingCleanup();
@@ -1388,9 +1389,15 @@ class InlineAttempt : public IntegrationAttempt {
 
   LocalStoreMap* storeAtEntry;
   DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
-  bool unsharable;
+  SmallPtrSet<ShadowInstruction*, 4> escapingMallocs;
+  bool hasVFSOps;
+  bool registeredSharable;
   bool active;
   bool instructionsCommitted;
+  
+  bool isUnsharable() {
+    return hasVFSOps || (!escapingMallocs.empty()) || Callers.empty();
+  }
   
   bool isShared() {
     return Callers.size() > 1;
@@ -1589,10 +1596,11 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);
  void executeMemcpyInst(ShadowInstruction* MemcpySI);
  void executeVaCopyInst(ShadowInstruction* SI);
- void executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize);
+ void executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc);
  void executeAllocaInst(ShadowInstruction* SI);
  void executeMallocInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI);
+ void executeFreeInst(ShadowInstruction* SI);
  void executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB);
  void executeVaStartInst(ShadowInstruction* SI);
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);

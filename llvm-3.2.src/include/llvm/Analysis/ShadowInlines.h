@@ -196,7 +196,8 @@ enum ValSetType {
   ValSetTypeScalarSplat, // Constant splat, used to cheaply express memset(block, size), Offset == size
   ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
   ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie
-  ValSetTypeOverdef // Useful for disambiguating empty PB from Overdef; never actually used in PB.
+  ValSetTypeOverdef, // Useful for disambiguating empty PB from Overdef; never actually used in PB.
+  ValSetTypeDeallocated
 
 };
 
@@ -331,7 +332,11 @@ struct ImprovedValSetSingle : public ImprovedValSet {
   virtual void dropReference();
 
   bool isInitialised() {
-    return Overdef || Values.size() > 0;
+    return Overdef || SetType == ValSetTypeDeallocated || Values.size() > 0;
+  }
+
+  bool isWhollyUnknown() {
+    return Overdef || SetType == ValSetTypeDeallocated || Values.size() == 0;
   }
   
   void removeValsWithBase(ShadowValue Base) {
@@ -459,6 +464,18 @@ struct ImprovedValSetSingle : public ImprovedValSet {
       setOverdef();
     }
     else if(isInitialised() && OtherPB.SetType != SetType) {
+
+      // Deallocated tags are weak, and are overridden by the other value.
+      if(SetType == ValSetTypeDeallocated) {
+	*this = OtherPB;
+	return *this;
+      }
+      
+      if(OtherPB.SetType == ValSetTypeDeallocated) {
+
+	return *this;
+
+      }
 
       // Special case: functions may permissibly merge with null pointers. In this case
       // reclassify the null as a scalar.

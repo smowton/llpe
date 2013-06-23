@@ -174,15 +174,18 @@ bool PeelIteration::commitsOutOfLine() {
 
 bool IntegrationAttempt::unsharedContextAvailable() {
 
-  release_assert(((!pass->enableSharing) || getFunctionRoot()->unsharable) && "unsharedContextAvailable against shared context?");
-
   // Not enabled?
   if(!isEnabled())
     return false;
   
   // Not getting inlined/unrolled at all?
-  // getUniqueParent is fine because we're unsharable.
-  // NOTE: if unsharable stops implying unsharability down to the root this must be re-examined.
+  // Note on use of getUniqueParent: this function is only used to determine whether a user can refer
+  // to a heap object allocated in a given context. Contexts from which allocations may escape are
+  // unsharable, so if getUniqueParent fails that means we're a shared function, the allocation does
+  // not escape from this context, and therefore the user context is equal to or a child of this one.
+  // Thus it's safe to return true in this case: either we're both committed and the use is ok,
+  // or we're both not committed and it doesn't make any difference.
+
   IntegrationAttempt* parent = getUniqueParent();
 
   if(parent && !parent->unsharedContextAvailable())
@@ -210,11 +213,10 @@ bool IntegrationAttempt::allocasAvailableFrom(IntegrationAttempt* OtherIA) {
 }
 
 // Return true if an object allocated here will be accessible from OtherIA.
-// This means we must be unsharable and we can use an easy availability test.
-// OtherIA might or might not be shared.
+// This context may or may not be shared, but due to the definition of isUnsharable,
+// if it is then the allocation does not escape this context and we must be equal to
+// or a parent of OtherIA.
 bool IntegrationAttempt::heapObjectsAvailableFrom(IntegrationAttempt* OtherIA) {
-
-  release_assert(((!pass->enableSharing) || getFunctionRoot()->unsharable) && "allocatedObjectsAvailableFrom against shared context?");
 
   if(!unsharedContextAvailable())
     return false;

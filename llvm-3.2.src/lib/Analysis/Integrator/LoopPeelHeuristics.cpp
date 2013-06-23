@@ -92,7 +92,8 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     OS << " / " << SeqNumber;
 
     storeAtEntry = 0;
-    unsharable = false;
+    hasVFSOps = false;
+    registeredSharable = false;
     active = false;
     instructionsCommitted = false;
     CommitF = 0;
@@ -172,7 +173,7 @@ IntegrationAttempt::~IntegrationAttempt() {
 
 InlineAttempt::~InlineAttempt() {
   
-  if(!unsharable)
+  if(!isUnsharable())
     pass->removeSharableFunction(this);
 
   for(uint32_t i = 0; i < argShadows.size(); ++i) {
@@ -596,9 +597,11 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       
       mergeChildDependencies(IA);
 
-      if(created && !IA->unsharable)
+      if(created && !IA->isUnsharable())
 	pass->addSharableFunction(IA);
-
+      else if(IA->registeredSharable && IA->isUnsharable())
+	pass->removeSharableFunction(IA);
+      
       IA->active = false;
       
     }
@@ -2045,7 +2048,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
-  IA->unsharable = true;
 
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
