@@ -32,12 +32,12 @@
 using namespace llvm;
 
 bool llvm::InlineFunction(CallInst *CI, InlineFunctionInfo &IFI,
-                          bool InsertLifetime) {
-  return InlineFunction(CallSite(CI), IFI, InsertLifetime);
+                          bool InsertLifetime, ValueToValueMapTy* CloneMap) {
+  return InlineFunction(CallSite(CI), IFI, InsertLifetime, CloneMap);
 }
 bool llvm::InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI,
-                          bool InsertLifetime) {
-  return InlineFunction(CallSite(II), IFI, InsertLifetime);
+                          bool InsertLifetime, ValueToValueMapTy* CloneMap) {
+  return InlineFunction(CallSite(II), IFI, InsertLifetime, CloneMap);
 }
 
 namespace {
@@ -487,7 +487,7 @@ static void fixupLineNumbers(Function *Fn, Function::iterator FI,
 /// exists in the instruction stream.  Similarly this will inline a recursive
 /// function by one level.
 bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
-                          bool InsertLifetime) {
+                          bool InsertLifetime, ValueToValueMapTy* CloneMap) {
   Instruction *TheCall = CS.getInstruction();
   assert(TheCall->getParent() && TheCall->getParent()->getParent() &&
          "Instruction not in function!");
@@ -596,13 +596,20 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
       VMap[I] = ActualArg;
     }
 
-    // We want the inliner to prune the code as it copies.  We would LOVE to
-    // have no dead or constant instructions leftover after inlining occurs
-    // (which can happen, e.g., because an argument was constant), but we'll be
-    // happy with whatever the cloner can do.
-    CloneAndPruneFunctionInto(Caller, CalledFunc, VMap, 
-                              /*ModuleLevelChanges=*/false, Returns, ".i",
-                              &InlinedFunctionInfo, IFI.TD, TheCall);
+    if(CloneMap) {
+      // Avoid doing anything clever to preserve a simple mapping from original
+      // to cloned instructions.
+      CloneFunctionInto(Caller, CalledFunc, VMap, false, Returns, ".i", &InlinedFunctionInfo, /* TypeRemapper = */ 0, /*cloneAttributes=*/false);
+    }
+    else {
+      // We want the inliner to prune the code as it copies.  We would LOVE to
+      // have no dead or constant instructions leftover after inlining occurs
+      // (which can happen, e.g., because an argument was constant), but we'll be
+      // happy with whatever the cloner can do.
+      CloneAndPruneFunctionInto(Caller, CalledFunc, VMap, 
+				/*ModuleLevelChanges=*/false, Returns, ".i",
+				&InlinedFunctionInfo, IFI.TD, TheCall);
+    }
 
     // Remember the first block that is newly cloned over.
     FirstNewBlock = LastBlock; ++FirstNewBlock;
@@ -610,6 +617,9 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
     // Update the callgraph if requested.
     if (IFI.CG)
       UpdateCallGraphAfterInlining(CS, FirstNewBlock, VMap, IFI);
+
+    if(CloneMap)
+      CloneMap->insert(VMap.begin(), VMap.end());
 
     // Update inlined instructions' line number information.
     fixupLineNumbers(Caller, FirstNewBlock, TheCall);
@@ -720,7 +730,7 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
   // If we cloned in _exactly one_ basic block, and if that block ends in a
   // return instruction, we splice the body of the inlined callee directly into
   // the calling basic block.
-  if (Returns.size() == 1 && std::distance(FirstNewBlock, Caller->end()) == 1) {
+  if (Returns.size() == 1 && std::distance(FirstNewBlock, Caller->end()) == 1 && !CloneMap) {
     // Move all of the instructions right before the call.
     OrigBB->getInstList().splice(TheCall, FirstNewBlock->getInstList(),
                                  FirstNewBlock->begin(), FirstNewBlock->end());
@@ -797,7 +807,9 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
   Type *RTy = CalledFunc->getReturnType();
 
   PHINode *PHI = 0;
-  if (Returns.size() > 1) {
+  // If we're asked to supply a map of old-to-new blocks, keep the return blocks around
+  // even if there's only one of them to provide a simpler mapping.
+  if (Returns.size() > 1 || CloneMap) {
     // The PHI node should go at the front of the new basic block to merge all
     // possible incoming values.
     if (!TheCall->use_empty()) {
@@ -857,21 +869,24 @@ bool llvm::InlineFunction(CallSite CS, InlineFunctionInfo &IFI,
   // Since we are now done with the Call/Invoke, we can delete it.
   TheCall->eraseFromParent();
 
-  // We should always be able to fold the entry block of the function into the
-  // single predecessor of the block...
-  assert(cast<BranchInst>(Br)->isUnconditional() && "splitBasicBlock broken!");
-  BasicBlock *CalleeEntry = cast<BranchInst>(Br)->getSuccessor(0);
+  // Again keep the original blocks if our caller wants to be able to easily refer to them.
+  if(!CloneMap) {
+    // We should always be able to fold the entry block of the function into the
+    // single predecessor of the block...
+    assert(cast<BranchInst>(Br)->isUnconditional() && "splitBasicBlock broken!");
+    BasicBlock *CalleeEntry = cast<BranchInst>(Br)->getSuccessor(0);
 
-  // Splice the code entry block into calling block, right before the
-  // unconditional branch.
-  CalleeEntry->replaceAllUsesWith(OrigBB);  // Update PHI nodes
-  OrigBB->getInstList().splice(Br, CalleeEntry->getInstList());
+    // Splice the code entry block into calling block, right before the
+    // unconditional branch.
+    CalleeEntry->replaceAllUsesWith(OrigBB);  // Update PHI nodes
+    OrigBB->getInstList().splice(Br, CalleeEntry->getInstList());
 
-  // Remove the unconditional branch.
-  OrigBB->getInstList().erase(Br);
+    // Remove the unconditional branch.
+    OrigBB->getInstList().erase(Br);
 
-  // Now we can remove the CalleeEntry block, which is now empty.
-  Caller->getBasicBlockList().erase(CalleeEntry);
+    // Now we can remove the CalleeEntry block, which is now empty.
+    Caller->getBasicBlockList().erase(CalleeEntry);
+  }
 
   // If we inserted a phi node, check to see if it has a single value (e.g. all
   // the entries are the same or undef).  If so, remove the PHI so it doesn't

@@ -78,7 +78,7 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
                              bool ModuleLevelChanges,
                              SmallVectorImpl<ReturnInst*> &Returns,
                              const char *NameSuffix, ClonedCodeInfo *CodeInfo,
-                             ValueMapTypeRemapper *TypeMapper) {
+                             ValueMapTypeRemapper *TypeMapper, bool cloneAttributes) {
   assert(NameSuffix && "NameSuffix cannot be null!");
 
 #ifndef NDEBUG
@@ -87,27 +87,30 @@ void llvm::CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
     assert(VMap.count(I) && "No mapping from source argument specified!");
 #endif
 
-  // Clone any attributes.
-  if (NewFunc->arg_size() == OldFunc->arg_size())
-    NewFunc->copyAttributesFrom(OldFunc);
-  else {
-    //Some arguments were deleted with the VMap. Copy arguments one by one
-    for (Function::const_arg_iterator I = OldFunc->arg_begin(), 
-           E = OldFunc->arg_end(); I != E; ++I)
-      if (Argument* Anew = dyn_cast<Argument>(VMap[I]))
-        Anew->addAttr( OldFunc->getAttributes()
-                       .getParamAttributes(I->getArgNo() + 1));
-    NewFunc->setAttributes(NewFunc->getAttributes()
-                           .addAttr(NewFunc->getContext(),
-                                    AttrListPtr::ReturnIndex,
-                                    OldFunc->getAttributes()
-                                     .getRetAttributes()));
-    NewFunc->setAttributes(NewFunc->getAttributes()
-                           .addAttr(NewFunc->getContext(),
-                                    AttrListPtr::FunctionIndex,
-                                    OldFunc->getAttributes()
-                                     .getFnAttributes()));
+  // Cloning attributes this way only makes sense if we're cloning into an empty function
+  if(cloneAttributes) {
+    // Clone any attributes.
+    if (NewFunc->arg_size() == OldFunc->arg_size())
+      NewFunc->copyAttributesFrom(OldFunc);
+    else {
+      //Some arguments were deleted with the VMap. Copy arguments one by one
+      for (Function::const_arg_iterator I = OldFunc->arg_begin(), 
+	     E = OldFunc->arg_end(); I != E; ++I)
+	if (Argument* Anew = dyn_cast<Argument>(VMap[I]))
+	  Anew->addAttr( OldFunc->getAttributes()
+			 .getParamAttributes(I->getArgNo() + 1));
+      NewFunc->setAttributes(NewFunc->getAttributes()
+			     .addAttr(NewFunc->getContext(),
+				      AttrListPtr::ReturnIndex,
+				      OldFunc->getAttributes()
+				      .getRetAttributes()));
+      NewFunc->setAttributes(NewFunc->getAttributes()
+			     .addAttr(NewFunc->getContext(),
+				      AttrListPtr::FunctionIndex,
+				      OldFunc->getAttributes()
+				      .getFnAttributes()));
 
+    }
   }
 
   // Loop over all of the basic blocks in the function, cloning them as

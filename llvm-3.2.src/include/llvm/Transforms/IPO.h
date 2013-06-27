@@ -201,6 +201,8 @@ Pass *createIntegratorPass();
 
 FunctionPass *createMallocElimPass();
 
+ModulePass* createCloneForSpecPass();
+
 } // End llvm namespace
 
 #endif

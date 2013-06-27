@@ -131,7 +131,8 @@ void CloneFunctionInto(Function *NewFunc, const Function *OldFunc,
                        SmallVectorImpl<ReturnInst*> &Returns,
                        const char *NameSuffix = "", 
                        ClonedCodeInfo *CodeInfo = 0,
-                       ValueMapTypeRemapper *TypeMapper = 0);
+                       ValueMapTypeRemapper *TypeMapper = 0,
+		       bool cloneAttributes = true);
 
 /// CloneAndPruneFunctionInto - This works exactly like CloneFunctionInto,
 /// except that it does some simple constant prop and DCE on the fly.  The
@@ -190,9 +191,9 @@ public:
 /// exists in the instruction stream.  Similarly this will inline a recursive
 /// function by one level.
 ///
-bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, bool InsertLifetime = true);
-bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, bool InsertLifetime = true);
-bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, bool InsertLifetime = true);
+bool InlineFunction(CallInst *C, InlineFunctionInfo &IFI, bool InsertLifetime = true, ValueToValueMapTy* CloneMap = 0);
+bool InlineFunction(InvokeInst *II, InlineFunctionInfo &IFI, bool InsertLifetime = true, ValueToValueMapTy* CloneMap = 0);
+bool InlineFunction(CallSite CS, InlineFunctionInfo &IFI, bool InsertLifetime = true, ValueToValueMapTy* CloneMap = 0);
 
 } // End llvm namespace
 
