@@ -13,6 +13,7 @@
 #include "llvm/DataLayout.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
@@ -42,6 +43,8 @@ namespace {
     SmallPtrSet<BasicBlock*, 8> mayFollowTarget;
     SmallPtrSet<BasicBlock*, 8> willNotReachTarget;
 
+    SmallPtrSet<BasicBlock*, 8> mergeBlocks;
+
     CallInst* TargetCI;
 
     DataLayout* DL;
@@ -50,24 +53,25 @@ namespace {
 
     static char ID; // Pass identification
     CloneForSpecPass() : ModulePass(ID) {
-      DL = &getAnalysis<DataLayout>();      
     }
 
     bool runOnModule(Module&);
 
     virtual void getAnalysisUsage(AnalysisUsage& AU) const {
       AU.addRequired<DataLayout>();
+      AU.addRequired<DominatorTree>();
     }
 
     bool blockHasAssumptions(BasicBlock*);
     Function* inlineStack(CallInst*&);
-    void splitBlockForAssumptions(BasicBlock*, std::vector<BasicBlock*>);
+    void splitBlockForAssumptions(BasicBlock*);
     void splitBlocksForAssumptions(Function*);
     void insertMergePHIs(BasicBlock*, DominatorTree&);
     void insertMergePHIs(Function*);
     void insertAssumptionTests(Function* NewF, ValueToValueMapTy& cloneMap);
     void redirectBranchesToMayFollow(Function* F, ValueToValueMapTy& cloneMap);
     void rewriteAssumptions(uint32_t stackIdx, ValueToValueMapTy& Map);
+    void writeArgs(std::string& Name);
 
   };
 
@@ -75,9 +79,10 @@ namespace {
 
 } // end anonymous namespace
 
-static cl::list<std::string> TargetStack("clone-target-stack", cl::OneOrMore);
+static cl::list<std::string> TargetStack("clone-target-stack", cl::ZeroOrMore);
 static cl::list<std::string> IntAssumptions("clone-assume-int", cl::ZeroOrMore);
 static cl::list<std::string> StringAssumptions("clone-assume-string", cl::ZeroOrMore);
+static cl::opt<std::string> SpecArgsFile("write-spec-args", cl::init(""));
 
 static RegisterPass<CloneForSpecPass> X("clone-for-spec", "Directed cloning in preparation for guarded specialisation", false, false);
 
@@ -222,7 +227,7 @@ Function* CloneForSpecPass::inlineStack(CallInst*& TargetCI) {
   OrigRoot->getParent()->getFunctionList().push_back(NewF);
 
   // Rewrite assumptions about values and arguments in that function.
-  rewriteAssumptions(1, CloneVals);
+  rewriteAssumptions(0, CloneVals);
 
   // For each successive call except the last one, inline and repeat the procedure.
 
@@ -269,7 +274,7 @@ Function* CloneForSpecPass::inlineStack(CallInst*& TargetCI) {
     InlineFunctionInfo IFI(0, DL);
     if(!InlineFunction(inlineCI, IFI, true, &CloneVals))
       dieMessage("Inlining failed");
-    rewriteAssumptions(i + 1, CloneVals);
+    rewriteAssumptions(i, CloneVals);
 
   }
 
@@ -278,14 +283,14 @@ Function* CloneForSpecPass::inlineStack(CallInst*& TargetCI) {
 
 }
 
-void CloneForSpecPass::splitBlockForAssumptions(BasicBlock* BB, std::vector<BasicBlock*> newBlocks) { 
+void CloneForSpecPass::splitBlockForAssumptions(BasicBlock* BB) { 
 
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
     
     if(intAssumptionsFlat.count(BI) || stringAssumptionsFlat.count(BI)) {
+      ++BI;
       BasicBlock* newBlock = BB->splitBasicBlock(BI, BB->getName() + ".assumption_split");
-      newBlocks.push_back(newBlock);
-      splitBlockForAssumptions(newBlock, newBlocks);
+      splitBlockForAssumptions(newBlock);
       return;
     }
 
@@ -295,13 +300,13 @@ void CloneForSpecPass::splitBlockForAssumptions(BasicBlock* BB, std::vector<Basi
 
 void CloneForSpecPass::splitBlocksForAssumptions(Function* F) {
 
-  std::vector<BasicBlock*> newBlocks;
-
+  std::vector<BasicBlock*> oldBlocks;
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI)
-    splitBlockForAssumptions(FI, newBlocks);
+    oldBlocks.push_back(FI);
 
-  for(std::vector<BasicBlock*>::iterator it = newBlocks.begin(), itend = newBlocks.end(); it != itend; ++it)
-    F->getBasicBlockList().push_back(*it);
+  for(std::vector<BasicBlock*>::iterator it = oldBlocks.begin(),
+	itend = oldBlocks.end(); it != itend; ++it)
+    splitBlockForAssumptions(*it);
 
 }
 
@@ -310,6 +315,8 @@ void CloneForSpecPass::insertMergePHIs(BasicBlock* BB, DominatorTree& DT) {
   // This block will be a merge point: insert explicit PHI forwarding wherever we or a block we dominate
   // will use a value that we do not contain/dominate.
   // We (and blocks we dominate) can use any value in our dominator blocks.
+
+  mergeBlocks.insert(BB);
 
   DomTreeNode* Node = DT.getNode(BB);
   Node = Node->getIDom();
@@ -324,7 +331,7 @@ void CloneForSpecPass::insertMergePHIs(BasicBlock* BB, DominatorTree& DT) {
     if(!(mayReachTarget.count(ThisBB) && willNotReachTarget.count(ThisBB)))
       break;
 
-    for(BasicBlock::iterator BI = ThisBB->begin(), BE = BB->end(); BI != BE; ++BI) {
+    for(BasicBlock::iterator BI = ThisBB->begin(), BE = ThisBB->end(); BI != BE; ++BI) {
       
       SmallVector<Use*, 8> replaceUses;
 
@@ -404,6 +411,7 @@ struct Cloner {
 
   void cloneBBs(Function*);
   void remapBBs();
+  void remapUnclonedBlockPHIs(Function*);
 
 };
 
@@ -414,7 +422,7 @@ void Cloner::cloneBBs(Function* F) {
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
     
     if((parent->mayReachTarget.count(FI) || parent->mayFollowTarget.count(FI)) 
-       && !parent->willNotReachTarget.count(FI)) {
+       && parent->willNotReachTarget.count(FI)) {
 
       BasicBlock* NewBB = CloneBasicBlock(FI, cloneMap, ".spec_clone");
       newBlocks.push_back(NewBB);
@@ -426,6 +434,49 @@ void Cloner::cloneBBs(Function* F) {
 
   for(std::vector<BasicBlock*>::iterator it = newBlocks.begin(), itend = newBlocks.end(); it != itend; ++it)
     F->getBasicBlockList().push_back(*it);
+
+}
+
+void Cloner::remapUnclonedBlockPHIs(Function* F) {
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    BasicBlock *BB = FI;
+
+    bool isUnclonedMerge = parent->willNotReachTarget.count(BB) && (!parent->mayReachTarget.count(BB)) && (!parent->mayFollowTarget.count(BB));
+    if(!isUnclonedMerge)
+      continue;
+
+    for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE && isa<PHINode>(BI); ++BI) {
+
+      PHINode* PN = cast<PHINode>(BI);
+      SmallVector<std::pair<Value*, BasicBlock*>, 4> newPreds;
+      for(uint32_t i = 0, ilim = PN->getNumIncomingValues(); i != ilim; ++i) {
+
+	BasicBlock* existingPred = PN->getIncomingBlock(i);
+	if(parent->mayReachTarget.count(existingPred) && parent->willNotReachTarget.count(existingPred)) {
+
+	  // Add both possibilities to the PHI. If the value turned out not to need
+	  // cloning then this simply specifies the same value for each branch
+	  // which will be simplified away in due time.
+	  Value* NewV = MapValue(PN->getIncomingValue(i), cloneMap, RF_None, 0);
+	  BasicBlock* NewBB = cast<BasicBlock>(MapValue(existingPred, cloneMap, RF_None, 0));
+	  newPreds.push_back(std::make_pair(NewV, NewBB));
+	  
+	}
+
+      }
+
+      for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator it = newPreds.begin(),
+	    itend = newPreds.end(); it != itend; ++it) {
+	  
+	PN->addIncoming(it->first, it->second);
+	
+      }     
+
+    }
+
+  }
 
 }
 
@@ -442,13 +493,7 @@ void Cloner::remapBBs() {
       continue;
 
     BasicBlock* CloneBB = cast<BasicBlock>(it->second);
-
-    bool isMergeBlock = false;
-    BasicBlock* UniquePred = BB->getUniquePredecessor();
-    if(UniquePred && parent->blockHasAssumptions(UniquePred))
-      isMergeBlock = true;
-    else if(parent->willNotReachTarget.count(BB) && !parent->mayReachTarget.count(BB))
-      isMergeBlock = true;
+    bool isMergeBlock = parent->mergeBlocks.count(BB);
 
     for(BasicBlock::iterator BI = CloneBB->begin(), BE = CloneBB->end(); BI != BE; ++BI) {
 
@@ -457,7 +502,7 @@ void Cloner::remapBBs() {
 
 	// Where there are now two versions of the incoming value use both; where there
 	// aren't use the remapped version (might be a no-op).
-	
+
 	SmallVector<std::pair<Value*, BasicBlock*>, 4> newPreds;
 	for(uint32_t i = 0, ilim = PN->getNumIncomingValues(); i != ilim; ++i) {
 
@@ -605,7 +650,7 @@ void CloneForSpecPass::redirectBranchesToMayFollow(Function* F, ValueToValueMapT
     if(BB == TargetCI->getParent())
       continue;
 
-    if(mayReachTarget.count(BB) || (willNotReachTarget.count(BB) && !mayReachTarget.count(BB))) {
+    if(mayReachTarget.count(BB) || (willNotReachTarget.count(BB) && (!mayReachTarget.count(BB)) && (!mayFollowTarget.count(BB)))) {
 
       TerminatorInst* TI = BB->getTerminator();
       for(uint32_t i = 0, ilim = TI->getNumSuccessors(); i != ilim; ++i) {
@@ -635,7 +680,19 @@ void CloneForSpecPass::redirectBranchesToMayFollow(Function* F, ValueToValueMapT
 
 }
 
+static void dumpSet(SmallPtrSet<BasicBlock*, 8>& Set, raw_ostream& SO) {
+
+  for(SmallPtrSet<BasicBlock*, 8>::iterator it = Set.begin(), itend = Set.end(); it != itend; ++it)
+    SO << (*it)->getName() << "\n";
+
+}
+
+//#define DBP(x) do { x; } while(0);
+#define DBP(x)
+
 bool CloneForSpecPass::runOnModule(Module& M) {
+
+  DL = &getAnalysis<DataLayout>();      
 
   parseArgs(M);
 
@@ -658,9 +715,15 @@ bool CloneForSpecPass::runOnModule(Module& M) {
   Function* NewF = inlineStack(TargetCI);
   BasicBlock* TargetBB = TargetCI->getParent();
 
+  DBP(errs() << "Inlined stack:\n");
+  DBP(errs() << *NewF << "\n");      
+
   // Step 2: split blocks wherever assumption tests, branches and consequent PHIs will be needed.
   splitBlocksForAssumptions(NewF);
   // All points where mayReach and willNotReach paths will converge are now block headers.
+  
+  DBP(errs() << "\n\nAfter splitting:\n");
+  DBP(errs() << *NewF << "\n");
 
   // Step 3: Identify blocks in the new function that /may/ lead to the target call,
   // those which may follow from it, and those which can be reached from the function entry
@@ -674,11 +737,21 @@ bool CloneForSpecPass::runOnModule(Module& M) {
     F.findWillNotReachBlocks(&NewF->getEntryBlock(), true);
   }
 
+  DBP(errs() << "\n\nMay-reach blocks:\n");
+  DBP(dumpSet(mayReachTarget, errs()));
+  DBP(errs() << "\n\nWill-not-reach blocks:\n");
+  DBP(dumpSet(willNotReachTarget, errs()));
+  DBP(errs() << "\n\nMay-follow blocks:\n");
+  DBP(dumpSet(mayFollowTarget, errs()));
+
   // Step 4: insert PHI nodes wherever a def->use link will cross what will become a merge point
   // between the reaching-target and not-reaching-target paths: namely, where assumption tests
   // will merge with a not-reaching block, and where may-reach blocks branch into not-reaching blocks.
 
   insertMergePHIs(NewF);
+
+  DBP(errs() << "\n\nAfter merge-phi insertion:\n");
+  DBP(errs() << *NewF << "\n");
 
   // Step 5: make clones of blocks that are needed in both the reaching-target and not-reaching-target
   // paths. The remap phase special-cases PHI nodes so that mayReach/willNotReach mergepoints
@@ -689,21 +762,100 @@ bool CloneForSpecPass::runOnModule(Module& M) {
     Cloner C(cloneMap, this);
     C.cloneBBs(NewF);
     C.remapBBs();
+    C.remapUnclonedBlockPHIs(NewF);
   }
+
+  DBP(errs() << "\n\nAfter block cloning and remapping:\n");
+  DBP(errs() << *NewF << "\n");
 
   // Step 6: Insert tests and corresponding branches (for which PHIs are now set).
 
   insertAssumptionTests(NewF, cloneMap);
+
+  DBP(errs() << "\n\nAfter test insertion:\n");
+  DBP(errs() << *NewF << "\n");
 
   // Step 7: redirect mayReach and willNotReach branches that lead to mayFollow blocks to the 
   // corresponding clone, including removing PHI nodes regarding the incoming edges.
 
   redirectBranchesToMayFollow(NewF, cloneMap);
 
+  DBP(errs() << "\n\nAfter branch fixups:\n");
+  DBP(errs() << *NewF << "\n");
+
   // And at long last, plumb the new function in at the particular callsite demanded.
   
   targetStack[0]->setCalledFunction(NewF);
+
+  if(!SpecArgsFile.empty())
+    writeArgs(SpecArgsFile);
+
   return true;
+  
+}
+
+void CloneForSpecPass::writeArgs(std::string& Name) {
+
+  std::string openError;
+  raw_fd_ostream Out(Name.c_str(), openError);
+  if(Out.has_error()) {
+
+    errs() << "Open error: " << openError << "\n";
+    dieMessage("Failed to open argument file");
+
+  }
+
+  // Specialiser should use our new function as the root.
+
+  Out << "-intheuristics-root\n" << TargetCI->getParent()->getParent()->getName() << "\n";
+
+  // Specialiser should use the same path conditions as we duplicated for
+
+  for(DenseMap<Value*, Constant*>::iterator it = intAssumptionsFlat.begin(),
+	itend = intAssumptionsFlat.end(); it != itend; ++it) {
+
+    // All keys are Instructions after argument rewriting during inlining.
+    Instruction* I = cast<Instruction>(it->first);
+    BasicBlock* BB = I->getParent();
+    uint32_t instIndex = std::distance(BB->begin(), BasicBlock::iterator(I));
+    
+    // ... and blocks with assumptions always end with a test whose on-true successor leads
+    // to blocks that should be specialised.
+    BasicBlock* BBSucc = BB->getTerminator()->getSuccessor(0);
+    
+    Out << "-int-path-condition-int\n" << BB->getParent()->getName() << "," << BB->getName() << "," << instIndex << "," << cast<ConstantInt>(it->second)->getLimitedValue() << "," << BBSucc->getName() << "\n";
+    
+  }
+
+  for(DenseMap<Value*, Constant*>::iterator it = stringAssumptionsFlat.begin(),
+	itend = stringAssumptionsFlat.end(); it != itend; ++it) {
+
+    Instruction* I = cast<Instruction>(it->first);
+    BasicBlock* BB = I->getParent();
+    uint32_t instIndex = std::distance(BB->begin(), BasicBlock::iterator(I));
+
+    BasicBlock* BBSucc = BB->getTerminator()->getSuccessor(0);
+
+    StringRef defString;
+    getConstantStringInfo(it->second, defString);
+
+    Out << "-int-path-condition-str\n" << BB->getParent()->getName() << "," << BB->getName() << "," << instIndex << "," << defString << "," << BBSucc->getName() << "\n";    
+
+  }
+
+  // Specialiser should not attempt to explore the willNotReach blocks.
+  // This test should catch both blocks that were never cloned and those which are clones
+  // (the clones being invariably on the doesn't-reach-target path).
+  Function* F = TargetCI->getParent()->getParent();
+  
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+
+    if(mayReachTarget.count(FI) || mayFollowTarget.count(FI))
+      continue;
+
+    Out << "-int-ignore-block\n" << ((BasicBlock*)FI)->getName() << "\n";
+
+  }
   
 }
 
@@ -859,13 +1011,18 @@ void CloneForSpecPass::parseArgs(Module& M) {
     if(fIndex >= (long int)targetStack.size())
       dieMessage("clone-assume-string: function index out of range");
 
-    Value* V = getInstOrArg(targetStack[fIndex]->getParent()->getParent(), bbName, instIdx,
+    Value* V = getInstOrArg(targetStack[fIndex]->getCalledFunction(), bbName, instIdx,
 			    "clone-assume-string: bad format");
 
     if(!V)
       dieMessage("clone-assume-string: failed to get inst or arg");
 
-    Constant* val = ConstantDataArray::getString(M.getContext(), valStr);
+    Constant* arr = ConstantDataArray::getString(M.getContext(), valStr);
+    //    Constant* zero = Constant::getNullValue(Type::getInt32Ty(M.getContext()));
+    //    Constant* idxs[1] = { zero };
+    //    Constant* val = ConstantExpr::getGetElementPtr(arr, ArrayRef<Constant*>(idxs, 1));
+    Constant* val = ConstantExpr::getBitCast(arr, Type::getInt8PtrTy(M.getContext()));
+
     stringAssumptions[std::make_pair((uint32_t)fIndex, V)] = val;
 
   }
