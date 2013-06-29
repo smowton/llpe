@@ -149,6 +149,9 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   if(!BB)
     return false;
 
+  if(BB->status == BBSTATUS_IGNORED)
+    return false;
+
   bool anyChange = false;
 
   // Use natural scope rather than scope because even if a loop is
@@ -217,6 +220,8 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       return false;
 
   }
+
+  applyMemoryPathConditions(BB);
 
   LFV3(errs() << "  Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 

@@ -853,7 +853,7 @@ void CloneForSpecPass::writeArgs(std::string& Name) {
     if(mayReachTarget.count(FI) || mayFollowTarget.count(FI))
       continue;
 
-    Out << "-int-ignore-block\n" << ((BasicBlock*)FI)->getName() << "\n";
+    Out << "-int-ignore-block\n" << F->getName() << "," << ((BasicBlock*)FI)->getName() << "\n";
 
   }
   

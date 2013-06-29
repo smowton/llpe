@@ -19,6 +19,7 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/RecyclingAllocator.h"
 
 #include <limits.h>
@@ -58,6 +59,7 @@ class IntegrationAttempt;
 class PtrToIntInst;
 class IntToPtrInst;
 class BinaryOperator;
+class DominatorTree;
 class PostDominatorTree;
 class LoopWrapper;
 template<class> class DominatorTreeBase;
@@ -71,7 +73,7 @@ class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
 class TargetLibraryInfo;
- class VFSCallAliasAnalysis;
+class VFSCallAliasAnalysis;
 
 inline void release_assert_fail(const char* str) {
 
@@ -106,6 +108,25 @@ struct IntegratorTag {
   void* ptr;
   IntegratorTag* parent;
   std::vector<IntegratorTag*> children;
+
+};
+
+enum PathConditionTypes {
+  
+  PathConditionTypeInt,
+  PathConditionTypeString
+
+};
+
+struct PathCondition {
+
+  uint32_t instBlockIdx;
+  uint32_t instIdx;
+  uint32_t fromBlockIdx;
+  Constant* val;
+
+PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v) :
+  instBlockIdx(ibi), instIdx(ii), fromBlockIdx(fbi), val(v) {}
 
 };
 
@@ -159,6 +180,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, std::vector<InlineAttempt*> > IAsByFunction;
 
+   std::vector<PathCondition> rootIntPathConditions;
+   std::vector<PathCondition> rootStringPathConditions;
+   DominatorTree* rootFunctionDT;
+
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
@@ -205,6 +230,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void loadArgv(Function*, std::string&, unsigned argvidx, unsigned& argc);
    void setParam(InlineAttempt* IA, long Idx, Constant* Val);
    void parseArgs(Function& F, std::vector<Constant*>&, uint32_t& argvIdx);
+   void parseArgsPostCreation(InlineAttempt* IA);
+   void parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA);
 
    void estimateIntegrationBenefit();
 
@@ -979,6 +1006,7 @@ protected:
   void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB);
   bool tryEvaluateMultiInst(ShadowInstruction* I, ImprovedValSet*& NewPB);
+  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) = 0;
 
   // CFG analysis:
 
@@ -1012,6 +1040,7 @@ protected:
   bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSet*& Result, std::string* error);
   bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
+  virtual void applyMemoryPathConditions(ShadowBB*) = 0;
 
   // Support functions for the generic IA graph walkers:
   void visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor*, void* Ctx, bool& firstPred);
@@ -1280,6 +1309,8 @@ public:
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   virtual bool commitsOutOfLine();
+  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
+  virtual void applyMemoryPathConditions(ShadowBB*);
 
 };
 
@@ -1486,6 +1517,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool commitsOutOfLine();
   void executeCall(uint32_t new_stack_depth);
   void releaseCallLatchStores();
+  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
+  virtual void applyMemoryPathConditions(ShadowBB*);
+  void addIgnoredBlock(std::string& name);
   
 };
 

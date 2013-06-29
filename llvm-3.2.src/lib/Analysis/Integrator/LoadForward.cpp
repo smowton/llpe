@@ -2560,6 +2560,44 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
 }
 
+void PeelIteration::applyMemoryPathConditions(ShadowBB* BB) {
+  
+  return;
+
+}
+
+void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
+
+  if(!isRootMainCall())
+    return;
+
+  for(std::vector<PathCondition>::iterator it = pass->rootStringPathConditions.begin(),
+	itend = pass->rootStringPathConditions.end(); it != itend; ++it) {
+
+    if(it->fromBlockIdx == BB->invar->idx) {
+
+      ShadowBB* ptrBB = getBB(it->instBlockIdx);
+      if(!ptrBB)
+	continue;
+
+      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
+
+      ConstantDataArray* CDA = cast<ConstantDataArray>(it->val);
+      uint32_t Size = CDA->getNumElements();
+      
+      ImprovedValSetSingle copyFromPointer;
+      Constant* CDAPtr = ConstantExpr::getBitCast(CDA, Type::getInt8PtrTy(BB->invar->BB->getContext()));
+      copyFromPointer.set(ImprovedVal(CDAPtr, 0), ValSetTypePB);
+
+      executeCopyInst(*ptrIVS, copyFromPointer, Size, BB);
+
+    }
+
+  }
+
+}
+
 void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
   LFV3(errs() << "Start va_start inst\n");

@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/Passes.h"
@@ -40,6 +41,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 
+#include <sstream>
 #include <string>
 #include <algorithm>
 
@@ -64,6 +66,9 @@ static cl::list<std::string> ExpandCallsLoops("int-expand-loop-calls", cl::ZeroO
 static cl::list<std::string> IgnoreLoopsWithChildren("int-ignore-loop-children", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
@@ -1958,6 +1963,40 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
 }
 
+void InlineAttempt::addIgnoredBlock(std::string& name) {
+
+  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
+
+    ShadowBBInvar& BBI = *getBBInvar(i);
+    if(BBI.BB->getName() == name) {
+
+      if(getBB(BBI)) {
+	errs() << "Ignored BB " << name << " already created?";
+	exit(1);
+      }
+
+      ShadowBB* BB = createBB(i);
+      BB->status = BBSTATUS_IGNORED;
+
+      // Avoid confusing e.g. the commit phase: define all valued instructions to overdef
+      // to ensure they are committed as-is.
+
+      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+	if(!BB->invar->insts[j].I->getType()->isVoidTy())
+	  BB->insts[i].i.PB = newOverdefIVS();
+
+      }
+
+      for(uint32_t j = 0, jlim = BBI.succIdxs.size(); j != jlim; ++j)
+	BB->succsAlive[j] = true;
+
+    }
+
+  }
+
+}
+
 void IntegrationHeuristicsPass::runDSEAndDIE() {
 
   errs() << "Killing memory instructions";
@@ -1988,6 +2027,120 @@ LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
 
   release_assert(A->IA == RootIA && "ShadowArg used as object but not root IA?");
   return argvStore;
+
+}
+
+static uint32_t findBlock(ShadowFunctionInvar* SFI, std::string& name) {
+
+  for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
+    if(SFI->BBs[i].BB->getName() == name)
+      return i;
+  }  
+
+  errs() << "Block " << name << " not found\n";
+  exit(1);
+
+}
+
+static int64_t getInteger(std::string& s, const char* desc) {
+
+  char* end;
+  int64_t instIndex = strtoll(s.c_str(), &end, 10);
+  if(s.empty() || *end) {
+    errs() << desc << " not an integer\n";
+    exit(1);
+  }
+  return instIndex;
+
+}
+
+void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
+
+  for(cl::list<std::string>::iterator it = PathConditionsInt.begin(),
+	itend = PathConditionsInt.end(); it != itend; ++it) {
+
+    std::string fName;
+    std::string bbName;
+    std::string instIndexStr;
+    std::string assumeStr;
+    std::string assumeBlock;
+
+    {
+      std::istringstream istr(*it);
+      std::getline(istr, fName, ',');
+      std::getline(istr, bbName, ',');
+      std::getline(istr, instIndexStr, ',');
+      std::getline(istr, assumeStr, ',');
+      std::getline(istr, assumeBlock, ',');
+    }
+
+    if(fName.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeBlock.empty()) {
+
+      errs() << "Bad int path condtion\n";
+      exit(1);
+
+    }
+
+    if(fName != IA->F.getName()) {
+      errs() << "Path conditions only supported in the root for now\n";
+      exit(1);
+    }
+    
+    int64_t instIndex = getInteger(instIndexStr, "Instruction index");
+    
+    uint32_t bbIdx = findBlock(IA->invarInfo, bbName);
+    uint32_t assumeBlockIdx = findBlock(IA->invarInfo, assumeBlock);
+
+    Constant* assumeC;
+    switch(Ty) {
+    case PathConditionTypeInt:
+      {
+	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");      
+	assumeC = ConstantInt::get(Type::getInt64Ty(IA->F.getContext()), assumeInt);
+	break;
+      }
+    case PathConditionTypeString:
+      {
+	assumeC = ConstantDataArray::getString(IA->F.getContext(), assumeStr);
+	break;
+      }
+    default:
+      release_assert(0 && "Bad path condition type");
+      llvm_unreachable();
+    }
+
+    Result.push_back(PathCondition(bbIdx, (uint32_t)instIndex, assumeBlockIdx, assumeC));
+
+  }
+
+}
+
+void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
+
+  for(cl::list<std::string>::iterator it = IgnoreBlocks.begin(), itend = IgnoreBlocks.end();
+      it != itend; ++it) {
+
+    std::string fName;
+    std::string bbName;
+    {
+      std::istringstream istr(*it);
+      std::getline(istr, fName, ',');
+      std::getline(istr, bbName, ',');
+    }
+
+    if(fName != IA->F.getName()) {
+
+      errs() << "int-ignore-block currently only supported in the root function\n";
+      exit(1);
+
+    }
+
+    IA->addIgnoredBlock(bbName);
+
+  }
+
+  parsePathConditions(PathConditionsInt, rootIntPathConditions, PathConditionTypeInt, IA);
+  parsePathConditions(PathConditionsString, rootStringPathConditions, PathConditionTypeString, IA);
 
 }
 
@@ -2022,6 +2175,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
 
   Function& F = *FoundF;
+  rootFunctionDT = &getAnalysis<DominatorTree>(F);
 
   // Mark realloc as an identified object if the function is defined:
   if(Function* Realloc = M.getFunction("realloc")) {
@@ -2049,6 +2203,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
 
+  parseArgsPostCreation(IA);
+  
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
     if(argConstants[i])
@@ -2111,6 +2267,7 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();
+  AU.addRequired<DominatorTree>();
   const PassInfo* BAAInfo = lookupPassInfo(StringRef("basicaa"));
   if(!BAAInfo) {
     errs() << "Couldn't load Basic AA!";

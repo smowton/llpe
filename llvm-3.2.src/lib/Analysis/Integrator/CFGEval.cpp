@@ -315,6 +315,11 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
     if(!BB->succsAlive[i])
       continue;
 
+    if(ShadowBB* SuccBB = getBB(BBI->succIdxs[i])) {
+      if(SuccBB->status == BBSTATUS_IGNORED)
+	continue;
+    }
+
     // Create a store reference for each live successor
     ++SI->parent->localStore->refCount;
 
