@@ -1181,7 +1181,7 @@ bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pai
     if(it->instIdx == SI->invar->idx &&
        it->instBlockIdx == SI->parent->invar->idx) {
 
-      if(pass->rootFunctionDT->dominates(SI->parent->invar->BB, UserBlock->invar->BB)) {
+      if(pass->rootFunctionDT->dominates(getBBInvar(it->fromBlockIdx)->BB, UserBlock->invar->BB)) {
 
 	Result.first = ValSetTypeScalar;
 	Result.second.V = it->val;
@@ -1240,7 +1240,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
     {
 
       ImprovedValSetSingle& ArgPB = *(cast<ImprovedValSetSingle>(getIVSRef(OpV)));
-      if((!ArgPB.isInitialised()) || ArgPB.Overdef) {
+      if(ArgPB.isWhollyUnknown()) {
 
 	if(!tryGetPathValue(OpV, SI->parent, Ops[OpIdx])) {
 

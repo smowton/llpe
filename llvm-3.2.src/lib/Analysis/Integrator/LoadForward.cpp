@@ -663,12 +663,14 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
       printPB(RSO, LoadPtrPB, true);
     }
 
-    if(LoadPtrPB.SetType == ValSetTypeOldOverdef) {
+    if(LoadPtrPB.isOldValue()) {
       ImprovedValSetSingle* NewIVS = newIVS();
       NewPB = NewIVS;
       NewIVS->SetType = ValSetTypeOldOverdef;
     }
-    NewPB = newOverdefIVS();
+    else {
+      NewPB = newOverdefIVS();
+    }
 
   }
 
@@ -2580,11 +2582,24 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
       bool foundPointers = false;
       for(uint32_t i = 0; i < SrcPtrSet.Values.size() && !foundPointers; ++i) {
 
-	LocStore* store = BB->getReadableStoreFor(SrcPtrSet.Values[i].V);
-	if(!store)
-	  store = &SrcPtrSet.Values[i].V.getBaseStore();
-	if(mayContainPointers(store->store))
-	  foundPointers = true;
+	ShadowValue Obj = SrcPtrSet.Values[i].V;
+	if(Value* V = Obj.getVal()) {
+
+	  // Pointer to a constant. See if the pointed object itself has pointers:
+	  Value* Underlying = V->stripPointerCasts();
+	  if(containsPointerTypes(Underlying->getType()))
+	    foundPointers = true;
+
+	}
+	else {
+
+	  LocStore* store = BB->getReadableStoreFor(Obj);
+	  if(!store)
+	    store = &Obj.getBaseStore();
+	  if(mayContainPointers(store->store))
+	    foundPointers = true;
+
+	}
 	
       }
 
@@ -2998,7 +3013,7 @@ struct ReachesAllPointersVisitor : public ReachableObjectVisitor {
   virtual void visitPtr(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
     if(Ptr.isWhollyUnknown()) {
-      if((!ignoreOldObjects) || Ptr.SetType != ValSetTypeOldOverdef)
+      if((!ignoreOldObjects) || !Ptr.isOldValue())
 	mayReachAll = true;
     }
 
@@ -3140,7 +3155,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
   if(PtrSet.isWhollyUnknown()) {
 
-    if(PtrSet.SetType == ValSetTypeOldOverdef) {
+    if(PtrSet.isOldValue()) {
 
       StoreBB->clobberMayAliasOldObjects();
 
@@ -3233,7 +3248,7 @@ void llvm::propagateStoreFlags(ImprovedValSetSingle& PtrSet, ImprovedValSetSingl
 
   if(ValPB.isWhollyUnknown()) {
 
-    if(targetMayAliasOld && ValPB.SetType != ValSetTypeOldOverdef)
+    if(targetMayAliasOld && !ValPB.isOldValue())
       StoreBB->setAllObjectsMayAliasOld();
     if(targetIsThreadGlobal)
       StoreBB->setAllObjectsThreadGlobal();
@@ -3281,8 +3296,11 @@ void SharedTreeNode::dropReference(uint32_t height) {
     if(height == 0) {
 
       for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
-	if(children[i])
-	  delete ((LocStore*)children[i]);
+	if(children[i]) {
+	  LocStore* child = ((LocStore*)children[i]);
+	  child->store->dropReference();
+	  delete child;
+	}
       }
 
     }

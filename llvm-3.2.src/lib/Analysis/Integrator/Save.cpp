@@ -461,7 +461,8 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
     }
 
-    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), PN);
+    // Emit any necessary casts into the predecessor block.
+    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), SourceBB->committedTail->getTerminator());
     NewPN->addIncoming(PHIOp, SourceBB->committedTail);
     return;
 
@@ -534,8 +535,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedTail;
 	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedTail;
 
-	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), NewPN);
-	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), NewPN);
+	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
+	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
 
 	NewPN->addIncoming(lastLatchVal, lastLatchBlock);
 	NewPN->addIncoming(generalLatchVal, generalLatchBlock);
@@ -554,7 +555,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
     getCommittedExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
-      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), NewPN);
+      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), predBBs[j]->committedTail->getTerminator());
       NewPN->addIncoming(PHIOp, predBBs[j]->committedTail);
     }
 

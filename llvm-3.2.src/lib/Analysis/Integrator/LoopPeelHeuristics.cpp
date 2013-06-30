@@ -1512,6 +1512,8 @@ void IntegrationHeuristicsPass::commit() {
 
   errs() << "\n";
 
+  RootIA->CommitF->dump();
+
 }
 
 static void dieEnvUsage() {
@@ -2057,8 +2059,7 @@ static int64_t getInteger(std::string& s, const char* desc) {
 
 void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
 
-  for(cl::list<std::string>::iterator it = PathConditionsInt.begin(),
-	itend = PathConditionsInt.end(); it != itend; ++it) {
+  for(cl::list<std::string>::iterator it = L.begin(), itend = L.end(); it != itend; ++it) {
 
     std::string fName;
     std::string bbName;
@@ -2088,7 +2089,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     }
     
     int64_t instIndex = getInteger(instIndexStr, "Instruction index");
-    
+   
     uint32_t bbIdx = findBlock(IA->invarInfo, bbName);
     uint32_t assumeBlockIdx = findBlock(IA->invarInfo, assumeBlock);
 
@@ -2096,8 +2097,14 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     switch(Ty) {
     case PathConditionTypeInt:
       {
-	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");      
-	assumeC = ConstantInt::get(Type::getInt64Ty(IA->F.getContext()), assumeInt);
+	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");
+	BasicBlock* assumeDefBlock = IA->getBBInvar(bbIdx)->BB;
+	BasicBlock::iterator it = assumeDefBlock->begin();
+	for(uint32_t i = 0; i < instIndex; ++i)
+	  it++;
+	Instruction* assumeInst = it;
+	release_assert(assumeInst->getType()->isIntegerTy() && "Instructions with an integer assumption must be integer typed");
+	assumeC = ConstantInt::get(assumeInst->getType(), assumeInt);
 	break;
       }
     case PathConditionTypeString:
@@ -2270,8 +2277,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
   AU.addRequired<AliasAnalysis>();
-  AU.addRequired<LoopInfo>();
   AU.addRequired<DominatorTree>();
+  AU.addRequired<LoopInfo>();
   const PassInfo* BAAInfo = lookupPassInfo(StringRef("basicaa"));
   if(!BAAInfo) {
     errs() << "Couldn't load Basic AA!";
@@ -2280,7 +2287,7 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequiredID(BAAInfo->getTypeInfo());
   }
   AU.addRequired<VFSCallAliasAnalysis>();
-  AU.setPreservesAll();
+  //AU.setPreservesAll();
   
 }
 

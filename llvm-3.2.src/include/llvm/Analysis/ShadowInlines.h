@@ -340,6 +340,10 @@ struct ImprovedValSetSingle : public ImprovedValSet {
   bool isWhollyUnknown() {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() == 0;
   }
+
+  bool isOldValue() {
+    return (!Overdef) && SetType == ValSetTypeOldOverdef;
+  }
   
   void removeValsWithBase(ShadowValue Base) {
 
@@ -671,12 +675,6 @@ LocStore(const LocStore& other) : store(other.store) {}
     LocStore* copy = new LocStore(*this);
     copy->store = copy->store->getReadableCopy();
     return copy;
-
-  }
-
-  ~LocStore() {
-    
-    store->dropReference();
 
   }
 
