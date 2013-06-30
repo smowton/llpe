@@ -99,10 +99,13 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 }
 
-void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialisers) {
+void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialisers, uint32_t extraSlots) {
 
   uint32_t i = 0;
-  shadowGlobals = new ShadowGV[std::distance(M.global_begin(), M.global_end())];
+  uint32_t nGlobals = std::distance(M.global_begin(), M.global_end());
+  // extraSlots are reserved for new globals we know will be introduced between now and specialisation start.
+  nGlobals += extraSlots;
+  shadowGlobals = new ShadowGV[nGlobals];
 
   // Assign them all numbers before computing initialisers, because the initialiser can
   // reference another global, and getValPB will then lookup in shadowGlobalsIdx.

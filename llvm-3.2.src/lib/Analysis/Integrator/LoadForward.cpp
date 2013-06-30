@@ -2583,13 +2583,13 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
       for(uint32_t i = 0; i < SrcPtrSet.Values.size() && !foundPointers; ++i) {
 
 	ShadowValue Obj = SrcPtrSet.Values[i].V;
-	if(Value* V = Obj.getVal()) {
+	ShadowGV* G = Obj.getGV();
+	if(G && G->G->isConstant()) {
 
 	  // Pointer to a constant. See if the pointed object itself has pointers:
-	  Value* Underlying = V->stripPointerCasts();
-	  if(containsPointerTypes(Underlying->getType()))
+	  if(containsPointerTypes(G->G->getInitializer()->getType()))
 	    foundPointers = true;
-
+	  
 	}
 	else {
 
@@ -2670,12 +2670,14 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
       ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
       ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
 
-      ConstantDataArray* CDA = cast<ConstantDataArray>(it->val);
+      GlobalVariable* GV = cast<GlobalVariable>(it->val);
+      ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
       uint32_t Size = CDA->getNumElements();
+
+      ShadowGV* SGV = &(pass->shadowGlobals[pass->getShadowGlobalIndex(GV)]);
       
       ImprovedValSetSingle copyFromPointer;
-      Constant* CDAPtr = ConstantExpr::getBitCast(CDA, Type::getInt8PtrTy(BB->invar->BB->getContext()));
-      copyFromPointer.set(ImprovedVal(CDAPtr, 0), ValSetTypePB);
+      copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
 
       executeCopyInst(*ptrIVS, copyFromPointer, Size, BB);
 

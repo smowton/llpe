@@ -293,7 +293,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 		    const Loop* L);
 
-   void initShadowGlobals(Module&, bool useInitialisers);
+   void initShadowGlobals(Module&, bool useInitialisers, uint32_t extraSlots);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
      return shadowGlobalsIdx[GV];
    }
@@ -1658,6 +1658,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void addHeapAlloc(ShadowInstruction*);
 
  IntegratorTag* searchFunctions(IntegratorTag* thisTag, std::string&, IntegratorTag*& startAt);
+
+ GlobalVariable* getStringArray(std::string& bytes, Module& M);
   
  struct IntAAProxy {
 

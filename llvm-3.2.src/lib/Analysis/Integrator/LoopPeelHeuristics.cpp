@@ -2059,6 +2059,10 @@ static int64_t getInteger(std::string& s, const char* desc) {
 
 void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
 
+  uint32_t newGVIndex = 0;
+  if(Ty == PathConditionTypeString)
+    newGVIndex = std::distance(IA->F.getParent()->global_begin(), IA->F.getParent()->global_end());
+
   for(cl::list<std::string>::iterator it = L.begin(), itend = L.end(); it != itend; ++it) {
 
     std::string fName;
@@ -2109,7 +2113,14 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       }
     case PathConditionTypeString:
       {
-	assumeC = ConstantDataArray::getString(IA->F.getContext(), assumeStr);
+	GlobalVariable* NewGV = getStringArray(assumeStr, *IA->F.getParent());
+	assumeC = NewGV;
+	// Register the new global:
+	shadowGlobals[newGVIndex].G = NewGV;
+	shadowGlobalsIdx[NewGV] = newGVIndex;
+	shadowGlobals[newGVIndex].store.store = 0;
+	shadowGlobals[newGVIndex].storeSize = 0;
+	++newGVIndex;
 	break;
       }
     default:
@@ -2204,7 +2215,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
-  initShadowGlobals(M, UseGlobalInitialisers);
+  // Last parameter: reserve extra GV slots for the constants that PCS will produce.
+  initShadowGlobals(M, UseGlobalInitialisers, PathConditionsString.size());
   initBlacklistedFunctions(M);
 
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);

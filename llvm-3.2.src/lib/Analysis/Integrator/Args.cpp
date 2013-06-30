@@ -37,7 +37,7 @@ static void readWholeFile(std::string& path, std::string& out, bool addnewline) 
 
 }
 
-static GlobalVariable* getStringArray(std::string& bytes, Module& M) {
+GlobalVariable* llvm::getStringArray(std::string& bytes, Module& M) {
 
   Constant* EnvInit = ConstantDataArray::getString(M.getContext(), bytes, false);  
   return new GlobalVariable(M, EnvInit->getType(), true, GlobalValue::PrivateLinkage, EnvInit, "spec_env_str");
