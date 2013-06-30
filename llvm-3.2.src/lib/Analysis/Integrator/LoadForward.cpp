@@ -662,6 +662,12 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
       RSO << "Load vague ";
       printPB(RSO, LoadPtrPB, true);
     }
+
+    if(LoadPtrPB.SetType == ValSetTypeOldOverdef) {
+      ImprovedValSetSingle* NewIVS = newIVS();
+      NewPB = NewIVS;
+      NewIVS->SetType = ValSetTypeOldOverdef;
+    }
     NewPB = newOverdefIVS();
 
   }
@@ -817,25 +823,19 @@ LocStore* SharedTreeNode::getReadableStoreFor(uint32_t idx, uint32_t height) {
 
   uint32_t nextChild = (idx >> (height * HEAPTREEORDERLOG2)) & (HEAPTREEORDER-1);
 
+  if(!children[nextChild])
+    return 0;
+
   if(height == 0) {
 
-    // Our children are leaves. They're actually ImprovedValSet*s,
-    // but ImprovedValSet** aliases with LocStore*.
-
-    if(!children[nextChild])
-      return 0;
-    else
-      return (LocStore*)&(children[nextChild]);
+    // Our children are leaves.
+    return (LocStore*)children[nextChild];
 
   }
   else {
 
-    // Walk further down the tree if possible.
-
-    if(!children[nextChild])
-      return 0;
-    else
-      return ((SharedTreeNode*)children[nextChild])->getReadableStoreFor(idx, height - 1);
+    // Walk further down the tree.
+    return ((SharedTreeNode*)children[nextChild])->getReadableStoreFor(idx, height - 1);
 
   }
 
@@ -893,8 +893,10 @@ LocStore* SharedTreeNode::getOrCreateStoreFor(uint32_t idx, uint32_t height, boo
   
   if(height == 0) {
     
-    *isNewStore = (children[nextChild] == 0);
-    return (LocStore*)(&(children[nextChild]));
+    bool mustCreate = *isNewStore = (children[nextChild] == 0);
+    if(mustCreate)
+      children[nextChild] = new LocStore();
+    return (LocStore*)children[nextChild];
 
   }
   else {
@@ -926,7 +928,7 @@ SharedTreeNode* SharedTreeNode::getWritableNode(uint32_t height) {
     for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 
       if(children[i])
-	newNode->children[i] = ((ImprovedValSet*)children[i])->getReadableCopy();	
+	newNode->children[i] = ((LocStore*)children[i])->getReadableCopy();	
       
     }
 
@@ -1537,6 +1539,37 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 #define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
 #define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
 
+static bool mayContainPointers(ImprovedValSet* IV) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV)) {
+
+    return IVS->SetType == ValSetTypePB || IVS->SetType == ValSetTypeUnknown;
+
+  }
+
+  ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IV);
+
+  for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+
+    ImprovedValSetSingle& IVS = it.val();
+    if(IVS.SetType == ValSetTypePB || IVS.SetType == ValSetTypeUnknown)
+      return true;
+
+  }
+
+  return false;
+
+}
+
+static ImprovedValSetSingle getOverdefFor(ImprovedValSet* IV) {
+
+  if(mayContainPointers(IV))
+    return ImprovedValSetSingle(ValSetTypePB, true);
+  else
+    return ImprovedValSetSingle(ValSetTypeScalar, true);
+
+}
+
 void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   // Get written location:
@@ -1546,14 +1579,15 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
+		 && "Write through non-pointer-typed value?");
 
   ShadowValue Val = StoreSI->getOperand(0);
   if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(Val))) {
 
-    if(PtrSet.Values.size() != 0) {
+    if(PtrSet.Values.size() != 1) {
 
-      ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+      ImprovedValSetSingle OD = getOverdefFor(IVM);
       executeWriteInst(PtrSet, OD, PtrSize, StoreBB);
 
     }
@@ -1567,6 +1601,11 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
       }
 
       writeExtents(Vals, PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, StoreBB);
+      for(SmallVector<IVSRange, 4>::iterator it = Vals.begin(), itend = Vals.end(); it != itend; ++it) {
+
+	propagateStoreFlags(PtrSet, it->second, StoreBB);
+
+      }
 
     }
 
@@ -2387,6 +2426,11 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
   SI->storeSize = AllocSize;
 
+  // Note new object current thread-local and cannot alias old objects.
+  SI->parent->localStore = SI->parent->localStore->getWritableFrameList();
+  SI->parent->localStore->noAliasOldObjects.insert(ShadowValue(SI));
+  SI->parent->localStore->threadLocalObjects.insert(ShadowValue(SI));
+
   ImprovedValSetSingle* NewIVS = newIVS();
   SI->i.PB = NewIVS;
   NewIVS->set(ImprovedVal(SI, 0), ValSetTypePB);
@@ -2527,7 +2571,28 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
   if(Size == ULONG_MAX || PtrSet.isWhollyUnknown() || PtrSet.Values.size() != 1 || SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() != 1) {
 
     // Only support memcpy from single pointer to single pointer for the time being:
-    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+    // If we're known to be copying scalars, note that in our overdef to prevent unnecessary clobbers.
+    
+    ImprovedValSetSingle OD(ValSetTypePB, true);
+
+    if(!SrcPtrSet.isWhollyUnknown()) {
+      
+      bool foundPointers = false;
+      for(uint32_t i = 0; i < SrcPtrSet.Values.size() && !foundPointers; ++i) {
+
+	LocStore* store = BB->getReadableStoreFor(SrcPtrSet.Values[i].V);
+	if(!store)
+	  store = &SrcPtrSet.Values[i].V.getBaseStore();
+	if(mayContainPointers(store->store))
+	  foundPointers = true;
+	
+      }
+
+      if(!foundPointers)
+	OD.SetType = ValSetTypeScalar;
+
+    }
+
     executeWriteInst(PtrSet, OD, Size, BB);
     return;
 
@@ -2557,6 +2622,13 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
   // OK now blow a hole in the local map for that value and write this list of extents into the gap:
   writeExtents(copyValues, PtrSet.Values[0].V, PtrSet.Values[0].Offset, Size, BB);
+
+  for(SmallVector<IVSRange, 4>::iterator it = copyValues.begin(),
+	itend = copyValues.end(); it != itend; ++it) {
+
+    propagateStoreFlags(PtrSet, it->second, BB);
+
+  }
 
 }
 
@@ -2611,7 +2683,8 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
   if(PtrSet.isWhollyUnknown() || PtrSet.Values.size() > 1) {
 
-    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+    // va_start writes pointers.
+    ImprovedValSetSingle OD(ValSetTypePB, true);
     executeWriteInst(PtrSet, OD, 24, BB);
     return;
 
@@ -2787,7 +2860,8 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
 	ImprovedValSetSingle ClobberSet;
 	getImprovedValSetSingle(ClobberV, ClobberSet);
-	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+	// All currently annotated syscalls write scalar values.
+	ImprovedValSetSingle OD(ValSetTypeScalar, true);
 	executeWriteInst(ClobberSet, OD, ClobberSize, SI->parent);
 
       }
@@ -2825,18 +2899,261 @@ static void checkStore(ImprovedValSet* IV) {
 
 }
 
+static bool containsOldObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+  if(Ptr.SetType != ValSetTypePB)
+    return false;
+
+  for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
+
+    if(!BB->localStore->noAliasOldObjects.count(Ptr.Values[i].V))    
+      return true;
+
+  }
+
+  return false;
+
+}
+
+static bool containsGlobalObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+  if(Ptr.SetType != ValSetTypePB)
+    return false;
+
+  for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
+
+    if(!BB->localStore->threadLocalObjects.count(Ptr.Values[i].V))
+      return true;
+    
+  }
+  
+  return false;
+
+}
+
+struct ReachableObjectVisitor {
+
+  SmallSet<ShadowValue, 8> seenObjects;
+
+  virtual void visitPtr(ImprovedValSetSingle& Ptr, ShadowBB* BB) { }
+  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { return true; }
+  virtual bool shouldContinue() { return true; }
+
+};
+
+static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V);
+
+static void visitReachableObjects(ImprovedValSet* Obj, ShadowBB* BB, ReachableObjectVisitor& V) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(Obj)) {
+
+    visitReachableObjects(*IVS, BB, V);
+
+  }
+  else {
+
+    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(Obj);
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+
+      visitReachableObjects(it.val(), BB, V);
+
+    }
+
+  }
+
+}
+
+static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V) {
+
+  V.visitPtr(Ptr, BB);
+  if(!V.shouldContinue())
+    return;
+
+  if(Ptr.isWhollyUnknown() || Ptr.SetType != ValSetTypePB)
+    return;
+
+  for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
+
+    if(!V.seenObjects.insert(Ptr.Values[i].V))
+      continue;
+
+    if(!V.visitObject(Ptr.Values[i].V, BB))
+      continue;
+
+    LocStore* store = BB->getReadableStoreFor(Ptr.Values[i].V);
+    if(!store)
+      store = &Ptr.Values[i].V.getBaseStore();
+    visitReachableObjects(store->store, BB, V);
+
+  }
+
+}
+
+struct ReachesAllPointersVisitor : public ReachableObjectVisitor {
+
+  bool mayReachAll;
+  bool ignoreOldObjects;
+  ReachesAllPointersVisitor(bool ignoreOld) : mayReachAll(false), ignoreOldObjects(ignoreOld) { }
+
+  virtual void visitPtr(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+    if(Ptr.isWhollyUnknown()) {
+      if((!ignoreOldObjects) || Ptr.SetType != ValSetTypeOldOverdef)
+	mayReachAll = true;
+    }
+
+  }
+
+  virtual bool shouldContinue() {   
+    return !mayReachAll;
+  }
+
+};
+
+static bool reachesAllPointers(ImprovedValSetSingle& Ptr, ShadowBB* BB, bool ignoreOldObjects) {
+
+  ReachesAllPointersVisitor V(ignoreOldObjects);
+  visitReachableObjects(Ptr, BB, V);
+  return V.mayReachAll;
+
+}
+
+struct SetMAOVisitor : public ReachableObjectVisitor {
+
+  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
+
+    // Don't explore objects reachable this way, it's already known MAO
+    if(!BB->localStore->noAliasOldObjects.count(Obj))
+      return false;
+
+    BB->localStore = BB->localStore->getWritableFrameList();
+    BB->localStore->noAliasOldObjects.erase(Obj);
+
+    return true;
+
+  }
+
+};
+
+void ShadowBB::setAllObjectsMayAliasOld() {
+
+  localStore = localStore->getWritableFrameList();
+  localStore->noAliasOldObjects.clear();
+
+}
+
+static void setObjectsMayAliasOld(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+  if(reachesAllPointers(Ptr, BB, true)) {
+    BB->setAllObjectsMayAliasOld();
+    return;
+  }
+  
+  SetMAOVisitor V;
+  visitReachableObjects(Ptr, BB, V);
+
+}
+
+struct SetTGVisitor : public ReachableObjectVisitor {
+
+  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
+
+    // Don't explore objects reachable this way
+    if(!BB->localStore->threadLocalObjects.count(Obj))
+      return false;
+    
+    BB->localStore = BB->localStore->getWritableFrameList();
+    BB->localStore->threadLocalObjects.erase(Obj);
+
+    return true;
+
+  }
+
+};
+
+void ShadowBB::setAllObjectsThreadGlobal() {
+
+  localStore = localStore->getWritableFrameList();
+  localStore->threadLocalObjects.clear();
+
+}
+
+static void setObjectsThreadGlobal(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+  if(reachesAllPointers(Ptr, BB, false)) {
+    BB->setAllObjectsThreadGlobal();
+    return;
+  }
+  
+  SetTGVisitor V;
+  visitReachableObjects(Ptr, BB, V);
+
+}
+
+void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save) {
+
+  std::vector<std::pair<ShadowValue, ImprovedValSet*> > SaveVals;
+
+  for(DenseSet<ShadowValue>::iterator it = Save.begin(), itend = Save.end(); it != itend; ++it) {
+
+    LocStore* CurrentVal = getReadableStoreFor(*it);
+    if(!CurrentVal)
+      CurrentVal = &it->getBaseStore();
+    SaveVals.push_back(std::make_pair(*it, CurrentVal->store->getReadableCopy()));
+    
+  }
+
+  localStore = localStore->getEmptyMap();
+  localStore->allOthersClobbered = true;
+
+  for(std::vector<std::pair<ShadowValue, ImprovedValSet*> >::iterator it = SaveVals.begin(),
+	itend = SaveVals.end(); it != itend; ++it) {
+    
+    bool isNew;
+    LocStore* newStore = getOrCreateStoreFor(it->first, &isNew);
+    release_assert(isNew);
+
+    newStore->store = it->second;
+
+  }
+
+}
+
+void ShadowBB::clobberMayAliasOldObjects() {
+
+  clobberAllExcept(localStore->noAliasOldObjects);
+
+}
+
+void ShadowBB::clobberGlobalObjects() {
+
+  clobberAllExcept(localStore->threadLocalObjects);
+  
+}
+
 void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
 
   if(!ValPB.isInitialised())
     ValPB.setOverdef();
 
+  // Perform the store
+
   if(PtrSet.isWhollyUnknown()) {
 
-    // Start with a plain local store map giving no locations.
-    // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
-    StoreBB->localStore = StoreBB->localStore->getEmptyMap();
-    StoreBB->localStore->allOthersClobbered = true;
-    LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
+    if(PtrSet.SetType == ValSetTypeOldOverdef) {
+
+      StoreBB->clobberMayAliasOldObjects();
+
+    }
+    else {
+      
+      // Start with a plain local store map giving no locations.
+      // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
+      StoreBB->localStore = StoreBB->localStore->getEmptyMap();
+      StoreBB->localStore->allOthersClobbered = true;
+      LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
+
+    }
 
   }
   else if(PtrSet.Values.size() == 1 && PtrSet.Values[0].Offset != LLONG_MAX) {
@@ -2903,6 +3220,37 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 
   }
 
+  propagateStoreFlags(PtrSet, ValPB, StoreBB);
+
+}
+
+void llvm::propagateStoreFlags(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, ShadowBB* StoreBB)  {
+
+  // Propagate is-thread-local and may-alias-old-objects information
+
+  bool targetMayAliasOld = PtrSet.isWhollyUnknown() || containsOldObjects(PtrSet, StoreBB);
+  bool targetIsThreadGlobal = PtrSet.isWhollyUnknown() || containsGlobalObjects(PtrSet, StoreBB);
+
+  if(ValPB.isWhollyUnknown()) {
+
+    if(targetMayAliasOld && ValPB.SetType != ValSetTypeOldOverdef)
+      StoreBB->setAllObjectsMayAliasOld();
+    if(targetIsThreadGlobal)
+      StoreBB->setAllObjectsThreadGlobal();
+
+  }
+  else {
+
+    // Apply alias-old or global flags to any objects whose pointers are written in,
+    // and any objects recursively reachable from their (current) values.
+
+    if(targetMayAliasOld)
+      setObjectsMayAliasOld(ValPB, StoreBB);
+    if(targetIsThreadGlobal)
+      setObjectsThreadGlobal(ValPB, StoreBB);
+
+  }
+
 }
 
 void SharedStoreMap::clear() {
@@ -2934,7 +3282,7 @@ void SharedTreeNode::dropReference(uint32_t height) {
 
       for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 	if(children[i])
-	  ((ImprovedValSet*)children[i])->dropReference();
+	  delete ((LocStore*)children[i]);
       }
 
     }
@@ -3047,6 +3395,9 @@ void LocalStoreMap::copyFramesFrom(const LocalStoreMap& other) {
     frames[i]->refCount++;
 
   }
+  
+  threadLocalObjects = other.threadLocalObjects;
+  noAliasOldObjects = other.noAliasOldObjects;
 
 }
 
@@ -3429,7 +3780,7 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	if((!*it) || !((*it)->children[i])) {
 
 	  if(height == 0)
-	    ((ImprovedValSet*)children[i])->dropReference();
+	    delete ((LocStore*)children[i]);
 	  else
 	    ((SharedTreeNode*)children[i])->dropReference(height - 1);
 	  children[i] = 0;
@@ -3453,7 +3804,7 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	if((*it) && (*it)->children[i]) {
 
 	  if(height == 0)
-	    children[i] = getAllocWithIdx(idx + i).getBaseStore().store->getReadableCopy();
+	    children[i] = getAllocWithIdx(idx + i).getBaseStore().getReadableCopy();
 	  else
 	    children[i] = new SharedTreeNode();
 
@@ -3512,10 +3863,10 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	if(!*it)
 	  mergeFromStore = &(MergeV.getBaseStore());
 	else
-	  mergeFromStore = (LocStore*)(*it);
+	  mergeFromStore = (LocStore*)(**it);
 
 	// mergeStores takes care of CoW break if necessary.
-	visitor->mergeStores(mergeFromStore, (LocStore*)&(children[i]), MergeV);
+	visitor->mergeStores(mergeFromStore, (LocStore*)children[i], MergeV);
       
       }
 
@@ -3707,7 +4058,7 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 
 	if(mergeToStore[i].store && (i > mergeFromStore.size() || !mergeFromStore[i].store)) {
 	  mergeToStore[i].store->dropReference();
-	  mergeToStore[i] = LocStore();
+	  mergeToStore[i].store = 0;
 	}
 
       }
@@ -3729,9 +4080,11 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 
       for(uint32_t i = 0, ilim = mergeFromStore.size(); i != ilim; ++i) {
 	  
-	if(mergeFromStore[i].store && !mergeToStore[i].store)
-	  mergeToStore[i] = LocStore(thisFrameIA->getAllocaWithIdx(i)->store.store->getReadableCopy());
-
+	if(mergeFromStore[i].store && !mergeToStore[i].store) {
+	  mergeToStore[i] = LocStore(thisFrameIA->getAllocaWithIdx(i)->store);
+	  mergeToStore[i].store = mergeToStore[i].store->getReadableCopy();
+	}
+	
       }
       
     }
@@ -3788,6 +4141,85 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 
     }
 
+  }
+
+}
+
+// mergeBegin -> mergeEnd are already listed smallest set first.
+static void intersectSets(DenseSet<ShadowValue>* Target, SmallVector<DenseSet<ShadowValue>*, 4>::iterator mergeBegin, SmallVector<DenseSet<ShadowValue>*, 4>::iterator mergeEnd) {
+
+  SmallVector<ShadowValue, 8> toKeep;
+
+  if(Target->size() < (*mergeBegin)->size()) {
+
+    for(DenseSet<ShadowValue>::iterator it = Target->begin(), itend = Target->end(); it != itend; ++it) {
+
+      bool keepThis = true;
+      for(SmallVector<DenseSet<ShadowValue>*, 4>::iterator findit = mergeBegin; findit != mergeEnd && keepThis; ++findit) {
+
+	if(!(*findit)->count(*it))
+	  keepThis = false;
+
+      }
+
+      if(keepThis)
+	toKeep.push_back(*it);
+
+    }
+
+  }
+  else {
+
+    SmallVector<DenseSet<ShadowValue>*, 4>::iterator othersBegin = mergeBegin;
+    ++othersBegin;
+
+    for(DenseSet<ShadowValue>::iterator it = (*mergeBegin)->begin(), 
+	  itend = (*mergeBegin)->end(); it != itend; ++it) {
+
+      bool keepThis = Target->count(*it);
+      for(SmallVector<DenseSet<ShadowValue>*, 4>::iterator findit = othersBegin; findit != mergeEnd && keepThis; ++findit) {
+
+	if(!(*findit)->count(*it))
+	  keepThis = false;
+
+      }
+
+      if(keepThis)
+	toKeep.push_back(*it);
+      
+    }
+    
+  }
+
+  Target->clear();
+  Target->insert(toKeep.begin(), toKeep.end());
+
+}
+
+static bool sizeLT(const DenseSet<ShadowValue>* a, const DenseSet<ShadowValue>* b) {
+
+  return a->size() < b->size();
+
+}
+
+void MergeBlockVisitor::mergeFlags(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd) {
+
+  // Both the threadLocalObjects and noAliasOldObjects sets should be big-intersected.
+  
+  {
+    SmallVector<DenseSet<ShadowValue>*, 4> NAOSets;
+    std::sort(NAOSets.begin(), NAOSets.end(), sizeLT);
+    for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
+      NAOSets.push_back(&(*it)->noAliasOldObjects);
+    intersectSets(&toMap->noAliasOldObjects, NAOSets.begin(), NAOSets.end());
+  }
+
+  {
+    SmallVector<DenseSet<ShadowValue>*, 4> TLSets;
+    std::sort(TLSets.begin(), TLSets.end(), sizeLT);
+    for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
+      TLSets.push_back(&(*it)->threadLocalObjects);
+    intersectSets(&toMap->threadLocalObjects, TLSets.begin(), TLSets.end());
   }
 
 }
@@ -3854,6 +4286,8 @@ void MergeBlockVisitor::doMerge() {
 
     mergeHeaps(mergeMap, firstMergeFrom, uniqend);
 
+    mergeFlags(mergeMap, firstMergeFrom, uniqend);
+
     newMap = mergeMap;
 
   }
@@ -3891,7 +4325,8 @@ void llvm::commitFrameToBase(SharedStoreMap* Map) {
 
     LocStore& baseStore = Map->IA->getAllocaWithIdx(i)->store;
     baseStore.store->dropReference();
-    baseStore.store = it->store->getReadableCopy();
+    baseStore = *it;
+    baseStore.store = baseStore.store->getReadableCopy();
 
   }  
 
@@ -3907,7 +4342,8 @@ void SharedTreeNode::commitToBase(uint32_t height, uint32_t idx) {
 	continue;
       LocStore& baseStore = getAllocWithIdx(idx + i).getBaseStore();
       baseStore.store->dropReference();
-      baseStore.store = ((ImprovedValSet*)children[i])->getReadableCopy();
+      baseStore = *((LocStore*)children[i]);
+      baseStore.store = baseStore.store->getReadableCopy();
 
     }
 

@@ -293,7 +293,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 		    const Loop* L);
 
-   void initShadowGlobals(Module&);
+   void initShadowGlobals(Module&, bool useInitialisers);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
      return shadowGlobalsIdx[GV];
    }
@@ -1611,6 +1611,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
+ void propagateStoreFlags(ImprovedValSetSingle& WrittenPtr, ImprovedValSetSingle& WrittenVal, ShadowBB* StoreBB);
 
  void getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
@@ -1677,6 +1678,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);
    void mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd, uint32_t idx);
    void mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd);
+   void mergeFlags(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd);
    void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
      incomingBlocks.push_back(BB);
    }

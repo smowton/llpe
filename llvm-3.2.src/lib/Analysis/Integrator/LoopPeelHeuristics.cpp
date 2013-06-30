@@ -75,6 +75,7 @@ static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
 static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
 static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
 static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
+static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2196,7 +2197,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
-  initShadowGlobals(M);
+  initShadowGlobals(M, UseGlobalInitialisers);
   initBlacklistedFunctions(M);
 
   argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
@@ -2209,8 +2210,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
     if(argConstants[i])
       setParam(IA, i, argConstants[i]);
-    else 
-      IA->argShadows[i].i.PB = newOverdefIVS();
+    else {
+      ImprovedValSetSingle* IVS = newIVS();
+      IVS->SetType = ValSetTypeOldOverdef;
+      IA->argShadows[i].i.PB = IVS;
+    }
 
   }
 

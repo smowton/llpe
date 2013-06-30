@@ -197,7 +197,9 @@ enum ValSetType {
   ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
   ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie
   ValSetTypeOverdef, // Useful for disambiguating empty PB from Overdef; never actually used in PB.
-  ValSetTypeDeallocated
+  ValSetTypeDeallocated, // Special single value signifying an object that is deallocted on a given path.
+  ValSetTypeOldOverdef // A special case of Overdef where the value is known not to alias objects
+                       // created since specialisation started.
 
 };
 
@@ -332,11 +334,11 @@ struct ImprovedValSetSingle : public ImprovedValSet {
   virtual void dropReference();
 
   bool isInitialised() {
-    return Overdef || SetType == ValSetTypeDeallocated || Values.size() > 0;
+    return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() > 0;
   }
 
   bool isWhollyUnknown() {
-    return Overdef || SetType == ValSetTypeDeallocated || Values.size() == 0;
+    return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() == 0;
   }
   
   void removeValsWithBase(ShadowValue Base) {
@@ -441,8 +443,10 @@ struct ImprovedValSetSingle : public ImprovedValSet {
       }
       else {
 
+	if(OtherType == ValSetTypePB)
+	  SetType = ValSetTypePB;
 	setOverdef();
-
+	
       }
 
     }
@@ -461,6 +465,8 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     if(!OtherPB.isInitialised())
       return *this;
     if(OtherPB.Overdef) {
+      if(OtherPB.SetType == ValSetTypePB)
+	SetType = ValSetTypePB;
       setOverdef();
     }
     else if(isInitialised() && OtherPB.SetType != SetType) {
@@ -493,6 +499,8 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
       }
 
+      if(OtherPB.SetType == ValSetTypePB)
+	SetType = ValSetTypePB;
       setOverdef();
 
     }
@@ -653,8 +661,24 @@ class ShadowBB;
 struct LocStore {
 
   ImprovedValSet* store;
+
 LocStore(ImprovedValSet* s) : store(s) {}
 LocStore() : store(0) {}
+LocStore(const LocStore& other) : store(other.store) {}
+													    
+  LocStore* getReadableCopy() {
+
+    LocStore* copy = new LocStore(*this);
+    copy->store = copy->store->getReadableCopy();
+    return copy;
+
+  }
+
+  ~LocStore() {
+    
+    store->dropReference();
+
+  }
 
 };
 
@@ -838,6 +862,10 @@ struct LocalStoreMap {
 
   SmallVector<SharedStoreMap*, 4> frames;
   SharedTreeRoot heap;
+
+  DenseSet<ShadowValue> threadLocalObjects;
+  DenseSet<ShadowValue> noAliasOldObjects;
+
   bool allOthersClobbered;
   uint32_t refCount;
 
@@ -897,6 +925,11 @@ struct ShadowBB {
   LocStore* getReadableStoreFor(ShadowValue& V);
   void pushStackFrame(InlineAttempt*);
   void popStackFrame();
+  void setAllObjectsMayAliasOld();
+  void setAllObjectsThreadGlobal();
+  void clobberMayAliasOldObjects();
+  void clobberGlobalObjects();
+  void clobberAllExcept(DenseSet<ShadowValue>& Save);
 
 };
 

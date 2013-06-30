@@ -99,7 +99,7 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 }
 
-void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
+void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialisers) {
 
   uint32_t i = 0;
   shadowGlobals = new ShadowGV[std::distance(M.global_begin(), M.global_end())];
@@ -128,7 +128,7 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
 
     ImprovedValSetSingle* Init = new ImprovedValSetSingle();
 
-    if(it->hasDefinitiveInitializer()) {
+    if(useInitialisers && it->hasDefinitiveInitializer()) {
 
       Constant* I = it->getInitializer();
       if(isa<ConstantAggregateZero>(I)) {
@@ -149,8 +149,8 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M) {
     }
     else {
 
-      // Start off overdef.
-      Init->setOverdef();
+      // Start off overdef, and known-older-than-specialisation.
+      Init->SetType = ValSetTypeOldOverdef;
 
     }
 
