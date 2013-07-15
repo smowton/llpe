@@ -20,21 +20,13 @@
 #include "llvm/Constants.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Function.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/Instructions.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Debug.h"
 using namespace llvm;
 
 STATISTIC(NumAliases  , "Number of global aliases removed");
 STATISTIC(NumFunctions, "Number of functions removed");
 STATISTIC(NumVariables, "Number of global variables removed");
-
-static cl::opt<bool> AssumeAsmDoesNotCall("globaldce-assume-asm-does-not-call");
 
 namespace {
   struct GlobalDCE : public ModulePass {
@@ -50,13 +42,11 @@ namespace {
 
   private:
     SmallPtrSet<GlobalValue*, 32> AliveGlobals;
-    SmallPtrSet<Function*, 32> StoredFunctions;
-    bool uncertainCallFound;
 
     /// GlobalIsNeeded - mark the specific global value as needed, and
     /// recursively mark anything that it uses as also needed.
-    bool ScanLiveGlobal(GlobalValue *GV);
-    bool MarkUsedGlobals(Constant *C, bool Needed);
+    void GlobalIsNeeded(GlobalValue *GV);
+    void MarkUsedGlobalsAsNeeded(Constant *C);
 
     bool RemoveUnusedGlobalValue(GlobalValue &GV);
   };
@@ -68,38 +58,7 @@ INITIALIZE_PASS(GlobalDCE, "globaldce",
 
 ModulePass *llvm::createGlobalDCEPass() { return new GlobalDCE(); }
 
-static Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name) {
-
-  Function* NewF = Function::Create(F->getFunctionType(), LT, Name, F->getParent());
-
-  Function::arg_iterator DestI = NewF->arg_begin();
-  for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
-       I != E; ++I, ++DestI)
-    DestI->setName(I->getName());
-  
-  NewF->copyAttributesFrom(F);
-  
-  return NewF;
-
-}
-
-static bool alreadyStub(Function* F) {
-
-  if(F->size() == 1 && F->begin()->size() == 1) {
-    if(ReturnInst* RI = dyn_cast<ReturnInst>(F->begin()->begin())) {
-      Constant* C = dyn_cast<Constant>(RI->getOperand(0));
-      if(C && C->isNullValue())
-       return true;
-    }
-  }
-
-  return false;
-
-}
-
 bool GlobalDCE::runOnModule(Module &M) {
-
-  uncertainCallFound = false;
   bool Changed = false;
   
   // Loop over the module, adding globals which are obviously necessary.
@@ -108,7 +67,7 @@ bool GlobalDCE::runOnModule(Module &M) {
     // Functions with external linkage are needed if they have a body
     if (!I->isDiscardableIfUnused() &&
         !I->isDeclaration() && !I->hasAvailableExternallyLinkage())
-      AliveGlobals.insert(I);
+      GlobalIsNeeded(I);
   }
 
   for (Module::global_iterator I = M.global_begin(), E = M.global_end();
@@ -118,7 +77,7 @@ bool GlobalDCE::runOnModule(Module &M) {
     // initializer.
     if (!I->isDiscardableIfUnused() &&
         !I->isDeclaration() && !I->hasAvailableExternallyLinkage())
-      AliveGlobals.insert(I);
+      GlobalIsNeeded(I);
   }
 
   for (Module::alias_iterator I = M.alias_begin(), E = M.alias_end();
@@ -126,28 +85,9 @@ bool GlobalDCE::runOnModule(Module &M) {
     Changed |= RemoveUnusedGlobalValue(*I);
     // Externally visible aliases are needed.
     if (!I->isDiscardableIfUnused())
-      AliveGlobals.insert(I);
+      GlobalIsNeeded(I);
   }
 
-  bool LoopChanged = true;
-
-  while(LoopChanged) {
-
-    LoopChanged = false;
-    
-    // Not sure if SmallPtrSet iterators are invalidated by insert, so...
-    std::vector<GlobalValue*> ToCheck;
-    ToCheck.reserve(AliveGlobals.size());
-    ToCheck.insert(ToCheck.end(), AliveGlobals.begin(), AliveGlobals.end());
-
-    for(std::vector<GlobalValue*>::iterator it = ToCheck.begin(), itend = ToCheck.end(); it != itend; ++it) {
-
-      LoopChanged |= ScanLiveGlobal(*it);
-
-    }
-
-  }
-  
   // Now that all globals which are needed are in the AliveGlobals set, we loop
   // through the program, deleting those which are not alive.
   //
@@ -163,58 +103,12 @@ bool GlobalDCE::runOnModule(Module &M) {
 
   // The second pass drops the bodies of functions which are dead...
   std::vector<Function*> DeadFunctions;
-  SmallPtrSet<Function*, 32> IgnoreFunctions;
-  for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I) {
-    
-    if(IgnoreFunctions.count(I))
-      continue;
-
+  for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
     if (!AliveGlobals.count(I)) {
-
-      // Externs need to stay around even if we only use them in a non-call context.
-      if(I->isDeclaration() && StoredFunctions.count(cast<Function>(I)))
-       continue;
-
-      if(alreadyStub(I))
-	continue;
-
       DeadFunctions.push_back(I);         // Keep track of dead globals
-
-      if (!I->isDeclaration()) {
-
-	if(StoredFunctions.count(cast<Function>(I))) {
-
-	  DEBUG(dbgs() << "Replace " << I->getName() << " with dummy\n");
-
-	  // The function might be used as a token, but can't be called.
-	  // Replace with a dummy:
-	  Function* DummyF = cloneEmptyFunction(I, I->getLinkage(), I->getName() + ".dummy");
-	  BasicBlock* DummyBB = BasicBlock::Create(I->getContext(), "dummyret", DummyF);
-	  const FunctionType* DummyT = DummyF->getFunctionType();
-	  if(DummyT->getReturnType()->isVoidTy())
-	    ReturnInst::Create(I->getContext(), DummyBB);
-	  else {
-	    Constant* DummyRet = Constant::getNullValue(DummyT->getReturnType());
-	    ReturnInst::Create(I->getContext(), DummyRet, DummyBB);
-	  }
-
-	  I->replaceAllUsesWith(DummyF);
-	  IgnoreFunctions.insert(DummyF);
-
-	}
-	else {
-         
-	  DEBUG(dbgs() << "Delete " << I->getName() << "\n");
-
-	}
-
-	I->deleteBody();
-
-      }
-
+      if (!I->isDeclaration())
+        I->deleteBody();
     }
-
-  }
 
   // The third pass drops targets of aliases which are dead...
   std::vector<GlobalAlias*> DeadAliases;
@@ -261,22 +155,21 @@ bool GlobalDCE::runOnModule(Module &M) {
   return Changed;
 }
 
-// G is needed -- mark any globals it may directly use as alive, and any it stores
-// but does not otherwise use as stored. Return true if anything new enters either set.
-bool GlobalDCE::ScanLiveGlobal(GlobalValue *G) {
-
-  bool Changed = false;
+/// GlobalIsNeeded - the specific global value as needed, and
+/// recursively mark anything that it uses as also needed.
+void GlobalDCE::GlobalIsNeeded(GlobalValue *G) {
+  // If the global is already in the set, no need to reprocess it.
+  if (!AliveGlobals.insert(G))
+    return;
   
   if (GlobalVariable *GV = dyn_cast<GlobalVariable>(G)) {
     // If this is a global variable, we must make sure to add any global values
     // referenced by the initializer to the alive set.
-    // The initialisers can be regarded as stored rather than called -- a callsite
-    // is needed for them ever to be used.
     if (GV->hasInitializer())
-      Changed |= MarkUsedGlobals(GV->getInitializer(), false);
+      MarkUsedGlobalsAsNeeded(GV->getInitializer());
   } else if (GlobalAlias *GA = dyn_cast<GlobalAlias>(G)) {
     // The target of a global alias is needed.
-    Changed |= MarkUsedGlobals(GA->getAliasee(), true);
+    MarkUsedGlobalsAsNeeded(GA->getAliasee());
   } else {
     // Otherwise this must be a function object.  We have to scan the body of
     // the function looking for constants and global values which are used as
@@ -284,76 +177,25 @@ bool GlobalDCE::ScanLiveGlobal(GlobalValue *G) {
     // any globals used will be marked as needed.
     Function *F = cast<Function>(G);
 
-    for (Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB) {
-      for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I) {
-	
-	if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
-
-	  if(Constant* ValueC = dyn_cast<Constant>(SI->getValueOperand()))
-	    Changed |= MarkUsedGlobals(ValueC, false);
-	  if(Constant* PointerC = dyn_cast<Constant>(SI->getPointerOperand()))
-	    Changed |= MarkUsedGlobals(PointerC, true);
-
-	  continue;
-
-	}
-	else if(CallInst* CI = dyn_cast<CallInst>(I)) {
-
-	  if(!CI->getCalledFunction() && !uncertainCallFound) {
-	    if(!AssumeAsmDoesNotCall) {
-	      Changed = true;
-	      DEBUG(dbgs() << "Assuming used -> callable due to " << *CI << "\n");
-	      uncertainCallFound = true;
-	    }
-	  }
-	  // Fall through to address operands conventionally:
-
-	}
-	else if(InvokeInst* II = dyn_cast<InvokeInst>(I)) {
-
-	  if(!II->getCalledFunction() && !uncertainCallFound) {
-	    Changed = true;
-	    DEBUG(dbgs() << "Assuming used -> callable due to " << *II << "\n");
-	    uncertainCallFound = true;
-	  }
-
-	}
-
-        for (User::op_iterator U = I->op_begin(), E = I->op_end(); U != E; ++U) {
-	  	  
-	  if (Constant *C = dyn_cast<Constant>(*U))
-	    Changed |= MarkUsedGlobals(C, true);
-
-	}
-      }
-    }
+    for (Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
+      for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
+        for (User::op_iterator U = I->op_begin(), E = I->op_end(); U != E; ++U)
+          if (GlobalValue *GV = dyn_cast<GlobalValue>(*U))
+            GlobalIsNeeded(GV);
+          else if (Constant *C = dyn_cast<Constant>(*U))
+            MarkUsedGlobalsAsNeeded(C);
   }
-
-  return Changed;
-
 }
 
-// Again return true if anything new is added.
-bool GlobalDCE::MarkUsedGlobals(Constant *C, bool Needed) {
-
-  if (GlobalValue *GV = dyn_cast<GlobalValue>(C)) {
-    if(Function* F = dyn_cast<Function>(GV)) {
-      if(!Needed && !uncertainCallFound)
-	return StoredFunctions.insert(F);
-    }
-    return AliveGlobals.insert(GV);
-  }
+void GlobalDCE::MarkUsedGlobalsAsNeeded(Constant *C) {
+  if (GlobalValue *GV = dyn_cast<GlobalValue>(C))
+    return GlobalIsNeeded(GV);
   
-  bool Changed = false;
- 
   // Loop over all of the operands of the constant, adding any globals they
   // use to the list of needed globals.
   for (User::op_iterator I = C->op_begin(), E = C->op_end(); I != E; ++I)
     if (Constant *OpC = dyn_cast<Constant>(*I))
-      Changed |= MarkUsedGlobals(OpC, Needed);
-
-  return Changed;
-
+      MarkUsedGlobalsAsNeeded(OpC);
 }
 
 // RemoveUnusedGlobalValue - Loop over all of the uses of the specified
