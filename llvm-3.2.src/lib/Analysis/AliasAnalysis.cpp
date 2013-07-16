@@ -183,7 +183,7 @@ AliasAnalysis::getCSModRefInfo(ShadowValue CSV, ShadowValue P, uint64_t Size, co
         const Value *Arg = CS.getArgument(i);
         if (!Arg->getType()->isPointerTy())
           continue;
-	if (!isNoAlias(P, Size, PInfo, getValArgOperand(CSV, i), ~0U, CSTag, usePBKnowledge, POffset, AACB))
+	if (!isNoAlias(P, Size, PInfo, getValArgOperand(CSV, i), UnknownSize, CSTag, usePBKnowledge, POffset, AACB))
 	  doesAlias = true;
       }
     }

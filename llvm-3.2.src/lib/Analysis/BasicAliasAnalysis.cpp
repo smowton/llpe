@@ -1355,24 +1355,15 @@ ShadowValue BasicAliasAnalysis::getUnderlyingObject(ShadowValue VIn, bool& isOff
     else if(Value* V2 = V.getVal()) {
 
       V2 = V2->stripPointerCasts();
-      if(ConstantExpr* CE = dyn_cast<ConstantExpr>(V2)) {
+      if(GEPOperator* GEP = dyn_cast<GEPOperator>(V2)) {
 
-	if(CE->getOpcode() == Instruction::GetElementPtr) {
-
-	  if(!GEPHasAllZeroIndices(ShadowValue(CE))) {
-	    isOffset = true;
-	    if(idOnly)
-	      return V2;
-	  }
-
-	  V = ShadowValue(CE->getOperand(0));
-
+	if(!GEPHasAllZeroIndices(ShadowValue((Value*)GEP))) {
+	  isOffset = true;
+	  if(idOnly)
+	    return V2;
 	}
-	else {
 
-	  return V2;
-
-	}
+	V = ShadowValue(GEP->getOperand(0));
 
       }
       else {
