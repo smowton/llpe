@@ -405,6 +405,7 @@ void CloneForSpecPass::insertMergePHIs(Function* F) {
 struct Cloner {
 
   ValueToValueMapTy& cloneMap;
+  std::vector<BasicBlock*> clonedBlocks;
   CloneForSpecPass* parent;
 
   Cloner(ValueToValueMapTy& cm, CloneForSpecPass* p) : cloneMap(cm), parent(p) {}
@@ -417,23 +418,21 @@ struct Cloner {
 
 void Cloner::cloneBBs(Function* F) {
 
-  std::vector<BasicBlock*> newBlocks;
-
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
     
     if((parent->mayReachTarget.count(FI) || parent->mayFollowTarget.count(FI)) 
        && parent->willNotReachTarget.count(FI)) {
 
       BasicBlock* NewBB = CloneBasicBlock(FI, cloneMap, ".spec_clone");
-      newBlocks.push_back(NewBB);
+      clonedBlocks.push_back(FI);
       cloneMap[FI] = NewBB;
 
     }
 
   }
 
-  for(std::vector<BasicBlock*>::iterator it = newBlocks.begin(), itend = newBlocks.end(); it != itend; ++it)
-    F->getBasicBlockList().push_back(*it);
+  for(std::vector<BasicBlock*>::iterator it = clonedBlocks.begin(), itend = clonedBlocks.end(); it != itend; ++it)
+    F->getBasicBlockList().push_back(cast<BasicBlock>(cloneMap[*it]));
 
 }
 
@@ -486,13 +485,11 @@ void Cloner::remapBBs() {
   // where it doesn't we'll refer to the one and only version which might be in the off-target
   // or on-target paths.
 
-  for(ValueToValueMapTy::iterator it = cloneMap.begin(), itend = cloneMap.end(); it != itend; ++it) {
+  for(std::vector<BasicBlock*>::iterator it = clonedBlocks.begin(), itend = clonedBlocks.end(); it != itend; ++it) {
 
-    BasicBlock* BB = const_cast<BasicBlock*>(dyn_cast<BasicBlock>(it->first));
-    if(!BB)
-      continue;
+    BasicBlock* BB = *it;
+    BasicBlock* CloneBB = cast<BasicBlock>(cloneMap[BB]);
 
-    BasicBlock* CloneBB = cast<BasicBlock>(it->second);
     bool isMergeBlock = parent->mergeBlocks.count(BB);
 
     for(BasicBlock::iterator BI = CloneBB->begin(), BE = CloneBB->end(); BI != BE; ++BI) {
