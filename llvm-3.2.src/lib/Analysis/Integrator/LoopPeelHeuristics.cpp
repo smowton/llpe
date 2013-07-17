@@ -1987,7 +1987,7 @@ void InlineAttempt::addIgnoredBlock(std::string& name) {
       for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
 	if(!BB->invar->insts[j].I->getType()->isVoidTy())
-	  BB->insts[i].i.PB = newOverdefIVS();
+	  BB->insts[j].i.PB = newOverdefIVS();
 
       }
 

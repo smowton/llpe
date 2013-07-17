@@ -652,20 +652,28 @@ void CloneForSpecPass::redirectBranchesToMayFollow(Function* F, ValueToValueMapT
       TerminatorInst* TI = BB->getTerminator();
       for(uint32_t i = 0, ilim = TI->getNumSuccessors(); i != ilim; ++i) {
 
-	SmallPtrSet<BasicBlock*, 4> alreadyRemoved;
-
 	BasicBlock* CurrentSucc = TI->getSuccessor(i);
-	if(mayFollowTarget.count(CurrentSucc)) {
+	// Don't redirect branches to the target block: this only happens due to assumptions which are aleady correct.
+	if(CurrentSucc == TargetCI->getParent())
+	  continue;
+
+	{
+
+	  SmallPtrSet<BasicBlock*, 4> alreadyRemoved;
 	  
-	  ValueToValueMapTy::iterator findit = cloneMap.find(CurrentSucc);
-	  if(findit == cloneMap.end())
-	    dieMessage("Uncloned mayfollow block reachable from mayReach / doesNotReach");
+	  if(mayFollowTarget.count(CurrentSucc)) {
+	  
+	    ValueToValueMapTy::iterator findit = cloneMap.find(CurrentSucc);
+	    if(findit == cloneMap.end())
+	      dieMessage("Uncloned mayfollow block reachable from mayReach / doesNotReach");
 
-	  BasicBlock* SuccClone = cast<BasicBlock>(cloneMap[CurrentSucc]);
+	    BasicBlock* SuccClone = cast<BasicBlock>(cloneMap[CurrentSucc]);
 
-	  if(alreadyRemoved.insert(CurrentSucc))
-	    CurrentSucc->removePredecessor(BB, true);
-	  TI->setSuccessor(i, SuccClone);
+	    if(alreadyRemoved.insert(CurrentSucc))
+	      CurrentSucc->removePredecessor(BB, true);
+	    TI->setSuccessor(i, SuccClone);
+
+	  }
 
 	}
 
@@ -833,9 +841,9 @@ void CloneForSpecPass::writeArgs(std::string& Name) {
 
     BasicBlock* BBSucc = BB->getTerminator()->getSuccessor(0);
 
-    StringRef defString;
-    getConstantStringInfo(it->second, defString);
-
+    StringRef defString = cast<ConstantDataArray>(it->second->stripPointerCasts())->getAsString();
+    defString = defString.substr(0, defString.find('\0'));
+    
     Out << "-int-path-condition-str\n" << BB->getParent()->getName() << "," << BB->getName() << "," << instIndex << "," << defString << "," << BBSucc->getName() << "\n";    
 
   }
