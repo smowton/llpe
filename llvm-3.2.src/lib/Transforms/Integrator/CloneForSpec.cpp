@@ -591,7 +591,9 @@ void CloneForSpecPass::insertAssumptionTests(Function* NewF, ValueToValueMapTy& 
 	  Type* StrcmpArgTys[2] = { CharPtr, CharPtr };
 	  FunctionType* StrcmpType = FunctionType::get(IntTy, ArrayRef<Type*>(StrcmpArgTys, 2), false);
 
-	  Constant* StrcmpFun = NewF->getParent()->getOrInsertFunction("strcmp", StrcmpType);
+	  Constant* StrcmpFun = NewF->getParent()->getFunction("strcmp");
+	  if(!StrcmpFun)
+	    StrcmpFun = NewF->getParent()->getOrInsertFunction("strcmp", StrcmpType);
 	  
 	  Value* TestArg = I;
 	  if(TestArg->getType() != CharPtr) {
