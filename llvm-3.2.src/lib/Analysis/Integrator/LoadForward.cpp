@@ -2991,6 +2991,20 @@ static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, Reach
 
   for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
 
+    ShadowValue& ThisPtr = Ptr.Values[i].V;
+
+    switch(ThisPtr.t) {
+    case SHADOWVAL_GV:
+      if(ThisPtr.u.GV->G->isConstant())
+	continue;
+      break;
+    case SHADOWVAL_OTHER:
+      release_assert(isa<ConstantPointerNull>(ThisPtr.u.V));
+      continue;
+    default:
+      break;
+    }
+
     if(!V.seenObjects.insert(Ptr.Values[i].V))
       continue;
 
