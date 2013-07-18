@@ -49,10 +49,14 @@ static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resu
 
 void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
 					    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-					    const Loop* L) {
+					    const Loop* L,
+					    DominatorTree* DT) {
   
+  release_assert(L->isLoopSimplifyForm() && L->isLCSSAForm(*DT) && "Don't forget to run loopsimplify and lcssa first!");
+
   ShadowLoopInvar* LInfo = new ShadowLoopInvar();
   LoopInfo[L] = LInfo;
+
   LInfo->headerIdx = BBIndices[L->getHeader()];
   LInfo->preheaderIdx = BBIndices[L->getLoopPreheader()];
   LInfo->latchIdx = BBIndices[L->getLoopLatch()];
@@ -93,7 +97,7 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
 
-    getLoopInfo(LoopInfo, BBIndices, *it);
+    getLoopInfo(LoopInfo, BBIndices, *it, DT);
 
   }
 
@@ -381,8 +385,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   // all loops consist of that block + L->getBlocks().size() further, contiguous blocks,
   // making is-in-loop easy to compute.
 
+  DominatorTree* thisDT = &getAnalysis<DominatorTree>(F);
+
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
-    getLoopInfo(RetInfo.LInfo, BBIndices, *it);
+    getLoopInfo(RetInfo.LInfo, BBIndices, *it, thisDT);
 
   // Count alloca instructions at the start of the function; this will control how
   // large the std::vector that represents the frame will be initialised.

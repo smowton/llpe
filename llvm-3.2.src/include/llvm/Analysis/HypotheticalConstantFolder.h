@@ -291,7 +291,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    ShadowFunctionInvar* getFunctionInvarInfo(Function& F);
    void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
 		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-		    const Loop* L);
+		    const Loop* L,
+		    DominatorTree*);
 
    void initShadowGlobals(Module&, bool useInitialisers, uint32_t extraSlots);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {

@@ -223,14 +223,14 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   applyMemoryPathConditions(BB);
 
-  LFV3(errs() << "  Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
+  LFV3(errs() << nestingIndent() << "Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 
   // Else we should just analyse this block here.
   anyChange |= analyseBlockInstructions(BB, 
 					/* skip successor creation = */ false, 
 					inLoopAnalyser, inAnyLoop);
 
-  LFV3(errs() << "  End block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
+  LFV3(errs() << nestingIndent() << "End block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 
   return anyChange;
 
