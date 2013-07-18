@@ -2221,7 +2221,7 @@ void llvm::readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size,
     if(IVS->SetType == ValSetTypeDeallocated) {
 
       // Read from a certainly-freed object yields overdef.
-      Results.push_back(IVSR(0, Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
+      Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
 
     }
     else if(Offset == 0 && Size == V.getAllocSize()) {
@@ -2909,8 +2909,12 @@ static void checkStore(ImprovedValSet* IV) {
   if(IV->isMulti) {
 
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IV);
-    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
+    uint64_t lastOffset = 0;
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+      release_assert(it.start() >= lastOffset);
+      lastOffset = it.stop();
       release_assert(it.start() <= it.stop());
+    }
 
   }
 
@@ -3241,7 +3245,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	}
 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
-	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize); 
+	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize);
 
 	DEBUG(checkStore(Store.store));
 
@@ -3653,7 +3657,7 @@ void MergeBlockVisitor::mergeStores(LocStore* mergeFromStore, LocStore* mergeToS
       // Find next event:
       if(LastOffset < consumeit->first.first) {
 		
-	LFV3(errs() << "Gap " << LastOffset << "-" << LHSit->first.first << "\n");
+	LFV3(errs() << "Gap " << LastOffset << "-" << consumeit->first.first << "\n");
 	// Case (d) Leave a gap
 	anyGaps = true;
 	LastOffset = consumeit->first.first;
@@ -3901,6 +3905,8 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 
 	// mergeStores takes care of CoW break if necessary.
 	visitor->mergeStores(mergeFromStore, (LocStore*)children[i], MergeV);
+
+	//checkStore(((LocStore*)children[i])->store);
       
       }
 
