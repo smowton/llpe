@@ -194,6 +194,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, Function*> modelFunctions;
+   SmallPtrSet<Function*, 4> yieldFunctions;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -1693,8 +1694,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    bool mergeToBase;
    bool useVarargMerge;
    SmallVector<ShadowBB*, 4> incomingBlocks;
+   bool verbose;
    
- MergeBlockVisitor(bool mtb, bool uvm = false) : newMap(0), mergeToBase(mtb), useVarargMerge(uvm) { }
+ MergeBlockVisitor(bool mtb, bool uvm = false, bool v = false) : newMap(0), mergeToBase(mtb), useVarargMerge(uvm), verbose(v) { }
    
    void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
    void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);

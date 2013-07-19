@@ -78,6 +78,7 @@ static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
 static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
 static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
 static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
+static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -423,7 +424,11 @@ static const char* blacklistedFnNames[] = {
    "brk" ,
    "getpid" ,
    "kill" ,
-   "uname"
+   "uname",
+   "__pthread_mutex_init",
+   "__pthread_mutex_lock",
+   "__pthread_mutex_trylock",
+   "__pthread_mutex_unlock"
    
 };
 
@@ -2002,7 +2007,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     int64_t size = getInteger(sizeStr, "-int-special-location size");
     SpecialLocationDescriptor& sd = specialLocations[SpecF];
     sd.storeSize = (uint64_t)size;
-    ImprovedValSetSingle* Init = new ImprovedValSetSingle(ValSetTypeOldOverdef);
+    ImprovedValSetSingle* Init = new ImprovedValSetSingle(ValSetTypeScalar);
+    Init->setOverdef();
     sd.store.store = Init;
    
   }
@@ -2031,6 +2037,19 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     }
 
     modelFunctions[realF] = modelF;
+
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = YieldFunctions.begin(), ArgE = YieldFunctions.end(); ArgI != ArgE; ++ArgI) {
+
+    Function* YieldF = F.getParent()->getFunction(*ArgI);
+    if(!YieldF) {
+
+      errs() << "-int-yield-function: no such function " << *ArgI << "\n";
+      exit(1);
+
+    }
+    yieldFunctions.insert(YieldF);
 
   }
 

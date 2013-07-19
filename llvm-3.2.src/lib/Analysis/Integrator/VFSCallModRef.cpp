@@ -174,7 +174,7 @@ static LibCallFunctionInfo::LocationMRInfo GettimeofdayMR[] = {
   { 0, AliasAnalysis::ModRef }
 };
 
-static LibCallFunctionInfo::LocationMRInfo TimeMR[] = {
+static LibCallFunctionInfo::LocationMRInfo Arg0AndErrnoMR[] = {
   { &locErrno, AliasAnalysis::Mod },
   { &locArg0, AliasAnalysis::Mod },
   { 0, AliasAnalysis::ModRef }
@@ -317,7 +317,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
   { "clock_gettime", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeMR, 0 },
   { "gettimeofday", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeofdayMR, 0 },
-  { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, TimeMR, 0 },
+  { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
   { "llvm.va_start", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, VAStartMR, 0 },
   { "llvm.va_copy", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, VACopyMR, 0 },
   { "llvm.va_end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
@@ -365,6 +365,10 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "getpid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "kill", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   { "uname", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
+  { "__pthread_mutex_init", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
+  { "__pthread_mutex_lock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
+  { "__pthread_mutex_trylock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },  
+  { "__pthread_mutex_unlock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

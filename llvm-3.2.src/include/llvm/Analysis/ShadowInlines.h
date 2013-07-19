@@ -927,7 +927,7 @@ struct ShadowBB {
   void setAllObjectsThreadGlobal();
   void clobberMayAliasOldObjects();
   void clobberGlobalObjects();
-  void clobberAllExcept(DenseSet<ShadowValue>& Save);
+  void clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose);
 
 };
 

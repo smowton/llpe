@@ -2924,6 +2924,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
       }
 
+      if(GlobalIHP->yieldFunctions.count(F))
+	SI->parent->clobberGlobalObjects();
+
       return;
 
     }
@@ -3166,7 +3169,7 @@ static void setObjectsThreadGlobal(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
 }
 
-void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save) {
+void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose) {
 
   std::vector<std::pair<ShadowValue, ImprovedValSet*> > SaveVals;
 
@@ -3176,6 +3179,8 @@ void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save) {
     if(!CurrentVal)
       CurrentVal = &it->getBaseStore();
     SaveVals.push_back(std::make_pair(*it, CurrentVal->store->getReadableCopy()));
+    if(verbose)
+      errs() << "Sparing " << itcache(*it) << "\n";
     
   }
 
@@ -3197,13 +3202,23 @@ void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save) {
 
 void ShadowBB::clobberMayAliasOldObjects() {
 
-  clobberAllExcept(localStore->noAliasOldObjects);
+  bool verbose = invar->BB->getParent()->getName() == "handle_request.spec_clone";
+  if(verbose)
+    errs() << "Clobber old objects " << invar->BB->getName() << ":\n";
+  clobberAllExcept(localStore->noAliasOldObjects, verbose);
+  if(verbose)
+    errs() << "---\n\n";
 
 }
 
 void ShadowBB::clobberGlobalObjects() {
-
-  clobberAllExcept(localStore->threadLocalObjects);
+  
+  bool verbose = invar->BB->getParent()->getName() == "handle_request.spec_clone";
+  if(verbose)
+    errs() << "Clobber global objects at " << invar->BB->getName() << ":\n";
+  clobberAllExcept(localStore->threadLocalObjects, verbose);
+  if(verbose)
+    errs() << "---\n\n";
   
 }
 
@@ -3308,6 +3323,10 @@ void llvm::propagateStoreFlags(ImprovedValSetSingle& PtrSet, ImprovedValSetSingl
   bool targetIsThreadGlobal = PtrSet.isWhollyUnknown() || containsGlobalObjects(PtrSet, StoreBB);
 
   if(ValPB.isWhollyUnknown()) {
+
+    // If we know the value is a non-pointer, this has no effect.
+    if(ValPB.SetType == ValSetTypeScalar)
+      return;
 
     if(targetMayAliasOld && !ValPB.isOldValue())
       StoreBB->setAllObjectsMayAliasOld();
@@ -4293,6 +4312,15 @@ void MergeBlockVisitor::mergeFlags(LocalStoreMap* toMap, SmallVector<LocalStoreM
     for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
       NAOSets.push_back(&(*it)->noAliasOldObjects);
     intersectSets(&toMap->noAliasOldObjects, NAOSets.begin(), NAOSets.end());
+    if(verbose) {
+      errs() << "Not-old:\n";
+      for(DenseSet<ShadowValue>::iterator it = toMap->noAliasOldObjects.begin(), itend = toMap->noAliasOldObjects.end(); it != itend; ++it) {
+
+	errs() << itcache(*it) << "\n";
+
+      }
+      errs() << "\n\n";
+    }
   }
 
   {
@@ -4301,6 +4329,15 @@ void MergeBlockVisitor::mergeFlags(LocalStoreMap* toMap, SmallVector<LocalStoreM
     for(SmallVector<LocalStoreMap*, 4>::iterator it = fromBegin; it != fromEnd; ++it)
       TLSets.push_back(&(*it)->threadLocalObjects);
     intersectSets(&toMap->threadLocalObjects, TLSets.begin(), TLSets.end());
+    if(verbose) {
+      errs() << "Thread-local:\n";
+      for(DenseSet<ShadowValue>::iterator it = toMap->threadLocalObjects.begin(), itend = toMap->threadLocalObjects.end(); it != itend; ++it) {
+
+	errs() << itcache(*it) << "\n";
+
+      }
+      errs() << "\n\n";
+    }
   }
 
 }
@@ -4377,6 +4414,26 @@ void MergeBlockVisitor::doMerge() {
     // No stores differ; just use #0
     newMap = incomingStores[0];
     retainMap = newMap;
+
+    if(verbose) {
+
+      errs() << "Not-old:\n";
+      for(DenseSet<ShadowValue>::iterator it = newMap->noAliasOldObjects.begin(), itend = newMap->noAliasOldObjects.end(); it != itend; ++it) {
+
+	errs() << itcache(*it) << "\n";
+
+      }
+      errs() << "\n\n";
+
+      errs() << "Thread-local:\n";
+      for(DenseSet<ShadowValue>::iterator it = newMap->threadLocalObjects.begin(), itend = newMap->threadLocalObjects.end(); it != itend; ++it) {
+
+	errs() << itcache(*it) << "\n";
+
+      }
+      errs() << "\n\n";
+      
+    }
 
   }
 
@@ -4475,7 +4532,9 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
-  MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge);
+  if(BB->invar->BB->getParent()->getName() == "handle_request.spec_clone")
+    errs() << "State after " << BB->invar->BB->getName() << ":\n";
+  MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge, BB->invar->BB->getParent()->getName() == "handle_request.spec_clone");
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
