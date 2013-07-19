@@ -77,6 +77,7 @@ static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
 static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
 static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
 static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
+static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -98,6 +99,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
 
+    isModel = false;
     storeAtEntry = 0;
     hasVFSOps = false;
     registeredSharable = false;
@@ -573,8 +575,13 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   created = true;
 
   Function* FCalled = getCalledFunction(SI);
+  SmallDenseMap<Function*, Function*>::iterator it = pass->modelFunctions.find(FCalled);
+  bool isModel = it != pass->modelFunctions.end();
+  if(isModel)
+    FCalled = it->second;
 
   InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1);
+  IA->isModel = isModel;
   inlineChildren[SI] = IA;
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
@@ -1998,6 +2005,33 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     ImprovedValSetSingle* Init = new ImprovedValSetSingle(ValSetTypeOldOverdef);
     sd.store.store = Init;
    
+  }
+
+  for(cl::list<std::string>::const_iterator ArgI = ModelFunctions.begin(), ArgE = ModelFunctions.end(); ArgI != ArgE; ++ArgI) {
+
+    std::istringstream istr(*ArgI);
+    std::string realFName, modelFName;
+    std::getline(istr, realFName, ',');
+    std::getline(istr, modelFName, ',');
+
+    if(modelFName.empty() || realFName.empty()) {
+
+      errs() << "-int-model-function must have form original_name,new_name";
+      exit(1);
+
+    }
+
+    Function* realF = F.getParent()->getFunction(realFName);
+    Function* modelF = F.getParent()->getFunction(modelFName);
+    if((!realF) || !modelF) {
+
+      errs() << "-int-model-function: no such function " << realFName << " or " << modelFName << "\n";
+      exit(1);
+
+    }
+
+    modelFunctions[realF] = modelF;
+
   }
 
   this->verboseOverdef = VerboseOverdef;

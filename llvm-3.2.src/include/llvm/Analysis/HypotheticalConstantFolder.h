@@ -193,6 +193,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DominatorTree* rootFunctionDT;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
+   SmallDenseMap<Function*, Function*> modelFunctions;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -1442,9 +1443,11 @@ class InlineAttempt : public IntegrationAttempt {
   bool registeredSharable;
   bool active;
   bool instructionsCommitted;
+
+  bool isModel;
   
   bool isUnsharable() {
-    return hasVFSOps || (!escapingMallocs.empty()) || Callers.empty();
+    return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
   }
   
   bool isShared() {

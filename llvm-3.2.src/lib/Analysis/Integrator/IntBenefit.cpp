@@ -316,6 +316,13 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
 void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty) {
 
+  if(isModel) {
+
+    getUniqueParent()->disableInline(cast<CallInst>(Callers[0]->invar->I));
+    return;
+
+  }
+
   IntegrationAttempt::findProfitableIntegration(nonInliningPenalty);
 
   // Add goodness due to instructions that can be eliminated if we're inlined:
