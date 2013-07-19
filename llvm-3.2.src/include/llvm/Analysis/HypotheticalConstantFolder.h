@@ -130,6 +130,14 @@ PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v) :
 
 };
 
+struct SpecialLocationDescriptor {
+
+  uint64_t storeSize;
+  LocStore store;
+  uint32_t heapIdx;
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -184,6 +192,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<PathCondition> rootStringPathConditions;
    DominatorTree* rootFunctionDT;
 
+   SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
+
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
@@ -232,6 +242,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void parseArgs(Function& F, std::vector<Constant*>&, uint32_t& argvIdx);
    void parseArgsPostCreation(InlineAttempt* IA);
    void parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA);
+   void createSpecialLocations();
 
    void estimateIntegrationBenefit();
 
@@ -425,6 +436,11 @@ inline LocStore& ShadowValue::getBaseStore() {
     return u.I->store;
   case SHADOWVAL_GV:
     return u.GV->store;
+  case SHADOWVAL_OTHER:
+    {
+      Function* KeyF = cast<Function>(u.V);
+      return GlobalIHP->specialLocations[KeyF].store;
+    }
   case SHADOWVAL_ARG:
     return GlobalIHP->getArgStore(u.A);
   default:

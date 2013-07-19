@@ -1086,20 +1086,6 @@ inline void ShadowValue::setCommittedVal(Value* V) {
   }
 }
 
-inline uint64_t ShadowValue::getAllocSize() {
-
-  switch(t) {
-  case SHADOWVAL_INST:
-    release_assert(u.I->store.store && "getAllocSize on instruction without store");
-    return u.I->storeSize;
-  case SHADOWVAL_GV:
-    return u.GV->storeSize;
-  default:
-    llvm_unreachable("getAllocSize on non-inst, non-GV value");
-  }
-
-}
-
 template<class X> inline bool val_is(ShadowValue V) {
   switch(V.t) {
   case SHADOWVAL_OTHER:

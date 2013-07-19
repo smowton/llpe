@@ -172,6 +172,16 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialiser
 
 }
 
+static const GlobalVariable* getGlobalVar(const Value* V) {
+
+  if(const GlobalVariable* GV = dyn_cast<GlobalVariable>(V))
+    return GV;
+  if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V))
+    return getGlobalVar(GA->getAliasedGlobal());
+  return 0;
+
+}
+
 ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
 
   DenseMap<Function*, ShadowFunctionInvar*>::iterator findit = functionInfo.find(&F);
@@ -276,7 +286,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
 	  if(Instruction* OpI = dyn_cast<Instruction>(PN->getIncomingValue(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
-	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(PN->getIncomingValue(k)))
+	  else if(GlobalVariable* OpGV = const_cast<GlobalVariable*>(getGlobalVar(PN->getIncomingValue(k))))
 	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, getShadowGlobalIndex(OpGV));
 	  else
 	    operandIdxs[k] = ShadowInstIdx();
@@ -296,7 +306,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 	  
 	  if(Instruction* OpI = dyn_cast<Instruction>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpI->getParent()], IIndices[OpI]);
-	  else if(GlobalVariable* OpGV = dyn_cast<GlobalVariable>(I->getOperand(k)))
+	  else if(GlobalVariable* OpGV = const_cast<GlobalVariable*>(getGlobalVar(I->getOperand(k))))
 	    operandIdxs[k] = ShadowInstIdx(INVALID_BLOCK_IDX, getShadowGlobalIndex(OpGV));
 	  else if(BasicBlock* OpBB = dyn_cast<BasicBlock>(I->getOperand(k)))
 	    operandIdxs[k] = ShadowInstIdx(BBIndices[OpBB], INVALID_INSTRUCTION_IDX);
@@ -636,11 +646,11 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
   uint32_t blockOpIdx = SII.blockIdx;
   if(blockOpIdx == INVALID_BLOCK_IDX) {
     Value* ArgV = invar->I->getOperand(i);
-    if(Argument* A = dyn_cast<Argument>(ArgV)) {
-      return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
-    }
-    else if(isa<GlobalVariable>(ArgV)) {
+    if(SII.instIdx != INVALID_INSTRUCTION_IDX) {
       return ShadowValue(&(parent->IA->pass->shadowGlobals[SII.instIdx]));
+    }
+    else if(Argument* A = dyn_cast<Argument>(ArgV)) {
+      return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
     }
     else {
       return ShadowValue(ArgV);

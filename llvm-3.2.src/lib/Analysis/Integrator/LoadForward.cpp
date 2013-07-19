@@ -792,12 +792,34 @@ int32_t ShadowValue::getHeapKey() {
     return u.I->allocIdx;
   case SHADOWVAL_GV:
     return u.GV->allocIdx;
+  case SHADOWVAL_OTHER:
+    {
+      Function* KeyF = cast<Function>(u.V);
+      SpecialLocationDescriptor& sd = GlobalIHP->specialLocations[KeyF];
+      return sd.heapIdx;
+    }
   case SHADOWVAL_ARG:
     release_assert((u.A->IA->Callers.empty()) && "getHeapKey on arg other than root argv?");
     return 0;
   default:
     return -1;
 
+  }
+
+}
+
+uint64_t ShadowValue::getAllocSize() {
+
+  switch(t) {
+  case SHADOWVAL_INST:
+    release_assert(u.I->store.store && "getAllocSize on instruction without store");
+    return u.I->storeSize;
+  case SHADOWVAL_GV:
+    return u.GV->storeSize;
+  case SHADOWVAL_OTHER:
+    return GlobalIHP->specialLocations[cast<Function>(u.V)].storeSize;
+  default:
+    llvm_unreachable("getAllocSize on non-inst, non-GV value");
   }
 
 }
@@ -2805,31 +2827,50 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
     // Try to execute a special instruction:
 
-    DenseMap<Function*, specialfunctions>::iterator it = SpecialFunctionMap.find(F);
-    if(it != SpecialFunctionMap.end()) {
+    {
+      DenseMap<Function*, specialfunctions>::iterator it = SpecialFunctionMap.find(F);
+      if(it != SpecialFunctionMap.end()) {
       
-      switch(it->second) {
+	switch(it->second) {
 	
-      case SF_MALLOC:
-	executeMallocInst(SI);
-	break;
-      case SF_REALLOC:
-	executeReallocInst(SI);
-	break;
-      case SF_FREE:
-	executeFreeInst(SI);
-	break;
-      case SF_VASTART:
-	executeVaStartInst(SI);
-	break;
-      case SF_VACOPY:
-	executeVaCopyInst(SI);
-	break;
+	case SF_MALLOC:
+	  executeMallocInst(SI);
+	  break;
+	case SF_REALLOC:
+	  executeReallocInst(SI);
+	  break;
+	case SF_FREE:
+	  executeFreeInst(SI);
+	  break;
+	case SF_VASTART:
+	  executeVaStartInst(SI);
+	  break;
+	case SF_VACOPY:
+	  executeVaCopyInst(SI);
+	  break;
+
+	}
+
+	return;
 
       }
+    }
 
-      return;
+    // Try to spot a special location:
+    {
+      SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = GlobalIHP->specialLocations.find(F);
+      if(it != GlobalIHP->specialLocations.end()) {
 
+	if(!SI->i.PB) {
+	  ImprovedValSetSingle* init = newIVS();
+	  init->SetType = ValSetTypePB;
+	  init->Values.push_back(ImprovedVal(ShadowValue(F), 0));
+	  SI->i.PB = init;
+	}
+
+	return;
+
+      }
     }
 
     // All unannotated calls return an unknown value:

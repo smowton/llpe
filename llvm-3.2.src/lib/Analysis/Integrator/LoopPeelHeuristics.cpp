@@ -76,6 +76,7 @@ static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
 static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
 static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
 static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
+static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -501,6 +502,9 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return false;
   }
+
+  if(pass->specialLocations.count(FCalled))
+    return false;
 
   if(functionIsBlacklisted(FCalled)) {
     LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
@@ -1718,6 +1722,18 @@ static void ignoreAllLoops(SmallSet<BasicBlock*, 1>& IgnHeaders, const Loop* L) 
 
 #define CHECK_ARG(i, c) if(((uint32_t)i) >= c.size()) { errs() << "Function " << F.getName() << " has does not have a (zero-based) argument #" << i << "\n"; exit(1); }
 
+static int64_t getInteger(std::string& s, const char* desc) {
+
+  char* end;
+  int64_t instIndex = strtoll(s.c_str(), &end, 10);
+  if(s.empty() || *end) {
+    errs() << desc << " not an integer\n";
+    exit(1);
+  }
+  return instIndex;
+
+}
+
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
@@ -1954,6 +1970,36 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
   }
 
+  for(cl::list<std::string>::const_iterator ArgI = SpecialLocations.begin(), ArgE = SpecialLocations.end(); ArgI != ArgE; ++ArgI) {
+
+    std::istringstream istr(*ArgI);
+    std::string fName, sizeStr;
+    std::getline(istr, fName, ',');
+    std::getline(istr, sizeStr, ',');
+
+    if(fName.empty() || sizeStr.empty()) {
+
+      errs() << "-int-special-location must have form function_name,size\n";
+      exit(1);
+
+    }
+
+    Function* SpecF = F.getParent()->getFunction(fName);
+    if(!SpecF) {
+
+      errs() << "-int-special-location: no such function " << fName << "\n";
+      exit(1);
+
+    }
+
+    int64_t size = getInteger(sizeStr, "-int-special-location size");
+    SpecialLocationDescriptor& sd = specialLocations[SpecF];
+    sd.storeSize = (uint64_t)size;
+    ImprovedValSetSingle* Init = new ImprovedValSetSingle(ValSetTypeOldOverdef);
+    sd.store.store = Init;
+   
+  }
+
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
   this->verboseSharing = VerboseFunctionSharing;
@@ -2042,18 +2088,6 @@ static uint32_t findBlock(ShadowFunctionInvar* SFI, std::string& name) {
 
   errs() << "Block " << name << " not found\n";
   exit(1);
-
-}
-
-static int64_t getInteger(std::string& s, const char* desc) {
-
-  char* end;
-  int64_t instIndex = strtoll(s.c_str(), &end, 10);
-  if(s.empty() || *end) {
-    errs() << desc << " not an integer\n";
-    exit(1);
-  }
-  return instIndex;
 
 }
 
@@ -2163,6 +2197,18 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
 }
 
+void IntegrationHeuristicsPass::createSpecialLocations() {
+
+  for(SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = specialLocations.begin(),
+	itend = specialLocations.end(); it != itend; ++it) {
+
+    it->second.heapIdx = (int32_t)heap.size();
+    heap.push_back(ShadowValue(it->first));
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<DataLayout>();
@@ -2215,7 +2261,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
-  // Last parameter: reserve extra GV slots for the constants that PCS will produce.
+  // Last parameter: reserve extra GV slots for the constants that path condition parsing will produce.
   initShadowGlobals(M, UseGlobalInitialisers, PathConditionsString.size());
   initBlacklistedFunctions(M);
 
@@ -2223,7 +2269,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
 
+  // Note ignored blocks and path conditions:
   parseArgsPostCreation(IA);
+
+  // Now that all globals have grabbed heap slots, insert extra locations per special function.
+  createSpecialLocations();
   
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
