@@ -2581,7 +2581,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 }
 
 /*
-static void checkStore(ImprovedValSet* IV) {
+static void checkStore(ImprovedValSet* IV, ShadowValue& V) {
 
   if(IV->isMulti) {
 
@@ -2589,25 +2589,30 @@ static void checkStore(ImprovedValSet* IV) {
 
     release_assert(!IVM->Map.empty());
 
+    uint64_t size = V.getAllocSize();
+    uint64_t covered = 0;
     uint64_t lastOffset = 0;
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
       release_assert(it.start() >= lastOffset);
       lastOffset = it.stop();
       release_assert(it.start() <= it.stop());
+      covered += (it.stop() - it.start());
     }
+
+    release_assert(covered == size || IVM->Underlying);
 
   }
 
 }
 */
 
-static void checkStore(ImprovedValSet* IV) { }
+static void checkStore(ImprovedValSet* IV, ShadowValue&) { }
 
 void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB) {
 
   LocStore& Store = BB->getWritableStoreFor(Ptr, Offset, Size, copyValues.size() == 1);
   replaceRangeWithPBs(Store.store, copyValues, (uint64_t)Offset, Size);
-  checkStore(Store.store);
+  checkStore(Store.store, Ptr);
 
 
 }
@@ -2768,7 +2773,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
   replaceRangeWithPBs(Store.store, vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
-  checkStore(Store.store);
+  checkStore(Store.store, PtrSet.Values[0].V);
 
 }
 
@@ -3211,7 +3216,7 @@ void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose) {
 
 void ShadowBB::clobberMayAliasOldObjects() {
 
-  bool verbose = invar->BB->getParent()->getName() == "handle_request.spec_clone";
+  bool verbose = false;
   if(verbose)
     errs() << "Clobber old objects " << invar->BB->getName() << ":\n";
   clobberAllExcept(localStore->noAliasOldObjects, verbose);
@@ -3222,7 +3227,7 @@ void ShadowBB::clobberMayAliasOldObjects() {
 
 void ShadowBB::clobberGlobalObjects() {
   
-  bool verbose = invar->BB->getParent()->getName() == "handle_request.spec_clone";
+  bool verbose = false;
   if(verbose)
     errs() << "Clobber global objects at " << invar->BB->getName() << ":\n";
   clobberAllExcept(localStore->threadLocalObjects, verbose);
@@ -3267,7 +3272,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
     replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
 
-    checkStore(Store.store);
+    checkStore(Store.store, PtrSet.Values[0].V);
 
   }
   else {
@@ -3283,7 +3288,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
 
-	checkStore(Store.store);
+	checkStore(Store.store, it->V);
 
       }
       else {
@@ -3315,7 +3320,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
 	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize);
 
-	checkStore(Store.store);
+	checkStore(Store.store, it->V);
 
       }
 
@@ -3806,7 +3811,12 @@ void MergeBlockVisitor::mergeStores(LocStore* mergeFromStore, LocStore* mergeToS
 
     ImprovedValSet* newUnderlying;
 
-    if(anyGaps || (LHSVals.back().first.second != TotalBytes && RHSVals.back().first.second != TotalBytes)) {
+    // Gap at the RHS?
+    if((LHSVals.empty() || LHSVals.back().first.second != TotalBytes) &&
+       (RHSVals.empty() || RHSVals.back().first.second != TotalBytes))
+      anyGaps = true;
+
+    if(anyGaps) {
       LFV3(errs() << "Using ancestor " << LHSAncestor << "\n");
       newUnderlying = LHSAncestor->getReadableCopy();
     }
@@ -3997,8 +4007,7 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 
 	// mergeStores takes care of CoW break if necessary.
 	visitor->mergeStores(mergeFromStore, (LocStore*)children[i], MergeV);
-
-	checkStore(((LocStore*)children[i])->store);
+	checkStore(((LocStore*)children[i])->store, MergeV);
       
       }
 
@@ -4275,6 +4284,7 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
       if(mergeFromLoc->store != mergeToLoc->store) {
       
 	mergeStores(mergeFromLoc, mergeToLoc, mergeSV);
+	checkStore(mergeToLoc->store, mergeSV);
 
       }
 
@@ -4571,9 +4581,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
-  if(BB->invar->BB->getParent()->getName() == "handle_request.spec_clone")
-    errs() << "State after " << BB->invar->BB->getName() << ":\n";
-  MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge, BB->invar->BB->getParent()->getName() == "handle_request.spec_clone");
+  MergeBlockVisitor V(mergeToBase, BB->useSpecialVarargMerge, /* verbose = */ false);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
