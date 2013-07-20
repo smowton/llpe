@@ -2580,10 +2580,34 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
 }
 
+/*
+static void checkStore(ImprovedValSet* IV) {
+
+  if(IV->isMulti) {
+
+    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IV);
+
+    release_assert(!IVM->Map.empty());
+
+    uint64_t lastOffset = 0;
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+      release_assert(it.start() >= lastOffset);
+      lastOffset = it.stop();
+      release_assert(it.start() <= it.stop());
+    }
+
+  }
+
+}
+*/
+
+static void checkStore(ImprovedValSet* IV) { }
+
 void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB) {
 
   LocStore& Store = BB->getWritableStoreFor(Ptr, Offset, Size, copyValues.size() == 1);
   replaceRangeWithPBs(Store.store, copyValues, (uint64_t)Offset, Size);
+  checkStore(Store.store);
 
 
 }
@@ -2744,6 +2768,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
   LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
   replaceRangeWithPBs(Store.store, vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
+  checkStore(Store.store);
 
 }
 
@@ -2945,22 +2970,6 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
   ImprovedValSetSingle OD(ValSetTypeUnknown, true);
   executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
-
-}
-
-static void checkStore(ImprovedValSet* IV) {
-
-  if(IV->isMulti) {
-
-    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IV);
-    uint64_t lastOffset = 0;
-    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
-      release_assert(it.start() >= lastOffset);
-      lastOffset = it.stop();
-      release_assert(it.start() <= it.stop());
-    }
-
-  }
 
 }
 
@@ -3258,7 +3267,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
     LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
     replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
 
-    DEBUG(checkStore(Store.store));
+    checkStore(Store.store);
 
   }
   else {
@@ -3273,6 +3282,9 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
 	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
+
+	checkStore(Store.store);
+
       }
       else {
 
@@ -3303,7 +3315,7 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
 	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize);
 
-	DEBUG(checkStore(Store.store));
+	checkStore(Store.store);
 
       }
 
@@ -3861,6 +3873,26 @@ static bool derefEQ(void** a, void** b) {
 
 }
 
+static bool storeVLT(void** a, void** b) {
+  if(!a)
+    return !!b;
+  else if(!b)
+    return false;
+  else
+    return ((LocStore*)*a)->store < ((LocStore*)*b)->store;
+}
+
+static bool storeVEQ(void** a, void** b) {
+
+  if(!a)
+    return !b;
+  else if(!b)
+    return false;
+  else
+    return (((LocStore*)*a)->store == ((LocStore*)*b)->store);
+
+}
+
 void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor) {
 
   // All members of others are known to differ from this node. This node is writable already.
@@ -3940,14 +3972,14 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 
     }
 
-    std::sort(incomingPtrs.begin(), incomingPtrs.end(), derefLT);
-    SmallVector<void**, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end(), derefEQ);
-
-    // This subtree never differs?
-    if(std::distance(incomingPtrs.begin(), incomingPtrs.end()) == 1)
-      continue;
-
     if(height == 0) {
+
+      std::sort(incomingPtrs.begin(), incomingPtrs.end(), storeVLT);
+      SmallVector<void**, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end(), storeVEQ);
+      
+      // This subtree never differs?
+      if(std::distance(incomingPtrs.begin(), uniqend) == 1)
+	continue;
 
       // Merge each child value.
       for(SmallVector<void**, 4>::iterator it = incomingPtrs.begin(); it != uniqend; ++it) {
@@ -3966,12 +3998,19 @@ void SharedTreeNode::mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool al
 	// mergeStores takes care of CoW break if necessary.
 	visitor->mergeStores(mergeFromStore, (LocStore*)children[i], MergeV);
 
-	//checkStore(((LocStore*)children[i])->store);
+	checkStore(((LocStore*)children[i])->store);
       
       }
 
     }
     else {
+
+      std::sort(incomingPtrs.begin(), incomingPtrs.end(), derefLT);
+      SmallVector<void**, 4>::iterator uniqend = std::unique(incomingPtrs.begin(), incomingPtrs.end(), derefEQ);
+      
+      // This subtree never differs?
+      if(std::distance(incomingPtrs.begin(), uniqend) == 1)
+	continue;
 
       // Recursively merge this child.
       // CoW break this subtree if necessary.
