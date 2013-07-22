@@ -21,8 +21,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Assembly/Writer.h"
 
-#include "PostDoms.h"
-
 using namespace llvm;
 
 // Implement instruction/block analysis concerning control flow, i.e. determining a block's
@@ -33,66 +31,6 @@ void IntegrationAttempt::setBlockStatus(ShadowBBInvar* BBI, ShadowBBStatus s) {
   ShadowBB* BB = getOrCreateBB(BBI);
   BB->status = s;
     
-}
-
-// specialise WriteAsOperand to allow printing of our special DomTree's BBWrapper nodes:
-namespace llvm {
-
-  void WriteAsOperand(raw_ostream& os, const BBWrapper* BBW, bool ign) {
-
-    if(BBW->BB) {
-      WriteAsOperand(os, BBW->BB->BB, ign);
-    }
-    else {
-      os << "<<next iteration>>";
-    }
-
-  }
-
-}
-
-DomTreeNodeBase<BBWrapper>* IntegrationHeuristicsPass::getPostDomTreeNode(const Loop* L, ShadowBBInvar* BB, ShadowFunctionInvar& invarInfo) {
-
-  std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> P;
-
-  const Loop* Key = L;
-  if(!Key) {
-
-    // Hack: for root contexts use the ShadowFI pointer as a key. This should be fine as those
-    // are never deallocated and so can never clash with loop pointers.
-    Key = (const Loop*)(&invarInfo);
-
-  }
-
-  DenseMap<const Loop*, std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> >::iterator it = 
-    LoopPDTs.find(Key);
-
-  if(it != LoopPDTs.end()) {
-
-    P = it->second;
-
-  }
-  else {
-    
-    LoopWrapper* LW = new LoopWrapper(L, invarInfo);
-    DominatorTreeBase <BBWrapper>* LPDT = new DominatorTreeBase<BBWrapper>(true);
-    LPDT->recalculate(*LW);
-
-    /*
-    DEBUG(dbgs() << "Calculated postdom tree for loop " << (L->getHeader()->getName()) << ":\n");
-    DEBUG(LPDT->print(dbgs()));
-    */
-
-    LoopPDTs[Key] = P = std::make_pair(LW, LPDT);
-
-  }
-
-  BBWrapper* BBW = P.first->get(BB);
-  if(!BBW)
-    return 0;
-  else
-    return P.second->getNode(BBW);
-
 }
 
 bool InlineAttempt::entryBlockIsCertain() {
@@ -150,7 +88,7 @@ bool IntegrationAttempt::createEntryBlock() {
   else if(entryBlockAssumed())
     newStatus = BBSTATUS_ASSUMED;
 
-  createBBAndPostDoms(BBsOffset, newStatus);
+  setBlockStatus(getBBInvar(BBsOffset), newStatus);
 
   return true;
 
@@ -267,31 +205,6 @@ IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const Loop* Scope) {
 
 }
 
-void IntegrationAttempt::createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus) {
-
-  ShadowBBInvar* SBB = getBBInvar(idx);
-  setBlockStatus(SBB, newStatus);
-  
-  if(newStatus != BBSTATUS_UNKNOWN) {
-
-    for(DomTreeNodeBase<BBWrapper>* DTN = pass->getPostDomTreeNode(L, SBB, *invarInfo); DTN && DTN->getBlock(); DTN = DTN->getIDom()) {
-	
-      const BBWrapper* BW = DTN->getBlock();
-      if(BW->BB) {
-	  
-	if((!BW->BB->naturalScope) || BW->BB->naturalScope->contains(L)) {
-	  IntegrationAttempt* BlockIA = getIAForScope(BW->BB->naturalScope);
-	  BlockIA->setBlockStatus(const_cast<ShadowBBInvar*>(BW->BB), newStatus);
-	}
-
-      }
-
-    }
-
-  }
-
-}
-
 // Return true if the result changes:
 bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisBlockLoadedVararg) {
 
@@ -322,6 +235,9 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
     // Create a store reference for each live successor
     ++SI->parent->localStore->refCount;
+
+    // And similarly count the edge towards determining block certainty:
+    ++pendingEdges;
 
   }
 
@@ -362,6 +278,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
       // Can grant the new block some status if either (a) I have status and this is my only live successor,
       // or (b) this edge should be assumed.
+      // In practice this is mainly useful conferring ASSUMED status; certainty is detected mainly
+      // using checkBlockStatus, below.
 
       ShadowBBStatus newStatus = BBSTATUS_UNKNOWN;
       
@@ -370,7 +288,8 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
       else if(shouldAssumeEdge(BBI->BB, SBBI->BB))
 	newStatus = BBSTATUS_ASSUMED;
 
-      IA->createBBAndPostDoms(BB->invar->succIdxs[i], newStatus);
+      ShadowBBInvar* SBB = getBBInvar(BB->invar->succIdxs[i]);
+      IA->setBlockStatus(SBB, newStatus);
 
     }
     
@@ -379,5 +298,28 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   }
 
   return true;
+
+}
+
+void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
+
+  for(uint32_t i = 0, ilim = BB->invar->predIdxs.size(); i != ilim; ++i) {
+
+    ShadowBBInvar* predBBI = getBBInvar(BB->invar->predIdxs[i]);
+    if(!edgeIsDead(predBBI, BB->invar)) {
+      
+      release_assert(pendingEdges != 0 && "pendingEdges falling below zero");
+      --pendingEdges;
+      
+    }
+
+  }
+
+  if(pendingEdges == 0) {
+
+    if(!inLoopAnalyser)
+      BB->status = BBSTATUS_CERTAIN;
+
+  }
 
 }

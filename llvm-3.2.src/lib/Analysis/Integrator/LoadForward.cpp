@@ -822,6 +822,10 @@ uint64_t ShadowValue::getAllocSize() {
     return u.GV->storeSize;
   case SHADOWVAL_OTHER:
     return GlobalIHP->specialLocations[cast<Function>(u.V)].storeSize;
+  case SHADOWVAL_ARG:
+    // Arg objects currently of unknown size
+    return ULONG_MAX;
+   
   default:
     llvm_unreachable("getAllocSize on non-inst, non-GV value");
   }

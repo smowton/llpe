@@ -60,10 +60,7 @@ class PtrToIntInst;
 class IntToPtrInst;
 class BinaryOperator;
 class DominatorTree;
-class PostDominatorTree;
-class LoopWrapper;
 template<class> class DominatorTreeBase;
-class BBWrapper;
 template<class> class DomTreeNodeBase;
 class IAWalker;
 class BackwardIAWalker;
@@ -144,8 +141,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
    DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
-
-   DenseMap<const Loop*, std::pair<LoopWrapper*, DominatorTreeBase<BBWrapper>*> > LoopPDTs;
 
    SmallSet<Function*, 4> alwaysInline;
    SmallSet<Function*, 4> alwaysExplore;
@@ -229,8 +224,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void print(raw_ostream &OS, const Module* M) const;
 
    void releaseMemory(void);
-
-   DomTreeNodeBase<BBWrapper>* getPostDomTreeNode(const Loop*, ShadowBBInvar*, ShadowFunctionInvar&);
 
    // Caching text representations of instructions:
 
@@ -903,7 +896,9 @@ protected:
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
 
   SmallPtrSet<const Loop*, 8> latchStoresRetained;
-    
+
+  uint32_t pendingEdges;
+   
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
     LI(_LI),
@@ -927,7 +922,8 @@ protected:
     totalIntegrationGoodness(0),
     nDependentLoads(0),
     inlineChildren(1),
-    peelChildren(1)
+    peelChildren(1),
+    pendingEdges(0)
       { 
       }
 
@@ -1034,7 +1030,6 @@ protected:
   // CFG analysis:
 
   bool createEntryBlock();
-  void createBBAndPostDoms(uint32_t idx, ShadowBBStatus newStatus);
   bool tryEvaluateTerminator(ShadowInstruction* SI, bool tagSuccVararg);
   bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
   IntegrationAttempt* getIAForScope(const Loop* Scope);
@@ -1045,6 +1040,7 @@ protected:
   }
   void copyLoopExitingDeadEdges(PeelAttempt* LPA);
   virtual IntegrationAttempt* getUniqueParent() = 0;
+  void checkBlockStatus(ShadowBB*, bool inLoopAnalyser);
   
   // Child (inlines, peels) management
 

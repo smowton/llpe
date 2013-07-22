@@ -198,6 +198,11 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       // checking every iteration every time.
       copyLoopExitingDeadEdges(LPA);
 
+      // Take account of the number of live edges leaving the last iteration
+      // when deciding which blocks are certain:
+      pendingEdges += LPA->Iterations.back()->pendingEdges;
+      LPA->Iterations.back()->pendingEdges = 0;
+
     }
 
     // Advance the main loop past this loop. Loop blocks are always contiguous in the topo ordering.
@@ -218,6 +223,9 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     // See comments in that function for reasons why that can happen.
     if(!doBlockStoreMerge(BB))
       return false;
+
+    // Check if the block becomes a certainty (only applicable when not in a loop!)
+    checkBlockStatus(BB, inLoopAnalyser);
 
   }
 
@@ -507,6 +515,10 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
       latchStoresRetained.insert(L);
 
   }
+
+  // Similarly the latch block will have given the header a reference towards determining successor block certainty. Drop it.
+  if(thisLatchAlive)
+    --pendingEdges;
 
   LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at exit: " << PHBB->localStore->refCount << "\n");
   
