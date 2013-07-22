@@ -2132,7 +2132,7 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
 
   release_assert(A->IA == RootIA && "ShadowArg used as object but not root IA?");
-  return argvStore;
+  return argStores[A->invar->A->getArgNo()].first;
 
 }
 
@@ -2220,6 +2220,191 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     }
 
     Result.push_back(PathCondition(bbIdx, (uint32_t)instIndex, assumeBlockIdx, assumeC));
+
+  }
+
+}
+
+static bool getAllocSitesFrom(Value* V, std::vector<Value*>& sites, DenseSet<Value*>& seenValues) {
+
+  if(!seenValues.insert(V).second)
+    return true;
+
+  if(isa<GlobalVariable>(V)) {
+    
+    sites.push_back(V);
+    return true;
+
+  }
+  else if(Argument* A = dyn_cast<Argument>(V)) {
+
+    Function* F = A->getParent();
+    if(F->hasAddressTaken(0)) {
+
+      sites.clear();
+      return false;
+
+    }
+
+    for(Value::use_iterator it = F->use_begin(), itend = F->use_end(); it != itend; ++it) {
+
+      if(Instruction* I = dyn_cast<Instruction>(*it)) {
+
+	CallSite CS(I);
+	if(!getAllocSitesFrom(CS.getArgument(A->getArgNo()), sites, seenValues))
+	  return false;
+	
+      }
+
+    }
+
+    return true;
+
+  }
+  else if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+    switch(I->getOpcode()) {
+
+    case Instruction::Alloca:
+      sites.push_back(V);
+      return true;
+    case Instruction::Call:
+    case Instruction::Invoke:
+      {
+	ImmutableCallSite CS(I);
+	if(CS.paramHasAttr(0, Attributes::NoAlias)) {
+	  sites.push_back(V);
+	  return true;
+	}
+	break;
+      }
+    case Instruction::GetElementPtr:
+    case Instruction::BitCast:
+      return getAllocSitesFrom(I->getOperand(0), sites, seenValues);
+    case Instruction::PHI:
+      {
+	PHINode* PN = cast<PHINode>(I);
+	for(uint32_t i = 0, ilim = PN->getNumIncomingValues(); i != ilim; ++i)
+	  if(!getAllocSitesFrom(PN->getIncomingValue(i), sites, seenValues))
+	    return false;
+	return true;
+      }
+    default:
+      break;
+    }
+
+    sites.clear();
+    return false;
+
+  }
+  else {
+
+    sites.clear();
+    return false;
+
+  }
+
+}
+
+static void getAllocSites(Argument* A, std::vector<Value*>& sites) {
+
+  DenseSet<Value*> seenValues;
+  getAllocSitesFrom(A, sites, seenValues);
+
+}
+
+void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
+
+  // Try to establish if any incoming pointer arguments are known not to alias
+  // the globals, or each other. If so, allocate each a heap slot.
+
+  std::vector<std::vector<Value*> > argAllocSites;
+  
+  Function::arg_iterator AI = IA->F.arg_begin(), AE = IA->F.arg_end();
+  for(uint32_t i = 0; AI != AE; ++i, ++AI) {
+
+    argAllocSites.push_back(std::vector<Value*>());
+
+    Argument* A = AI;
+    if(A->getType()->isPointerTy()) {
+
+      ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(IA->argShadows[i].i.PB);
+      if(IVS->SetType == ValSetTypeOldOverdef) {
+
+	std::vector<Value*>& allocs = argAllocSites.back();
+	// This will leave argAllocSites empty on failure:
+	getAllocSites(A, allocs);
+	if(!allocs.empty()) {
+
+	  IVS->SetType = ValSetTypePB;
+
+	  // Create a new heap location for this argument if it has any non-global constituents.
+	  // Just note any globals in the alias list.
+	  bool anyNonGlobals = false;
+	  for(std::vector<Value*>::iterator it = allocs.begin(), itend = allocs.end(); it != itend; ++it) {
+	    
+	    if(GlobalVariable* GV = dyn_cast<GlobalVariable>(*it)) {
+	      
+	      ShadowGV* SGV = &shadowGlobals[getShadowGlobalIndex(GV)];
+	      IVS->Values.push_back(ImprovedVal(ShadowValue(SGV), 0));
+
+	    }
+	    else if(!anyNonGlobals) {
+
+	      // Create location:
+	      ImprovedValSetSingle* initialVal = new ImprovedValSetSingle(ValSetTypeOldOverdef, false);
+	      argStores[i] = std::make_pair(LocStore(initialVal), heap.size());
+	      heap.push_back(ShadowValue(&IA->argShadows[i]));
+	      anyNonGlobals = true;
+
+	    }
+
+	  }
+
+	}
+
+      }
+
+    }
+    
+  }
+
+  // Now for each argument for which we found a bounded set of alloc sites,
+  // give it an initial pointer set corresponding to each other arg it may alias.
+
+  for(uint32_t i = 0, ilim = IA->F.arg_size(); i != ilim; ++i) {
+
+    ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(IA->argShadows[i].i.PB);
+    std::vector<Value*>& allocs = argAllocSites[i];
+    if(!allocs.empty()) {
+
+      // Add each pointer argument location this /may/ alias:
+      for(uint32_t j = 0, jlim = IA->F.arg_size(); j != jlim; ++j) {
+	
+	if(!argAllocSites[j].empty()) {
+	  
+	  std::vector<Value*>& otherallocs = argAllocSites[j];
+	  for(std::vector<Value*>::iterator it = otherallocs.begin(), itend = otherallocs.end(); it != itend; ++it) {
+	    
+	    if(isa<GlobalVariable>(*it))
+	      continue;
+
+	    if(std::find(allocs.begin(), allocs.end(), *it) != allocs.end()) {
+
+	      // i and j share a non-global allocation site, so arg i may alias arg j.
+	      
+	      IVS->Values.push_back(ImprovedVal(ShadowValue(&IA->argShadows[j]), 0));
+	      break;
+
+	    }
+    
+	  }
+
+	}
+
+      }
+
+    }
 
   }
 
@@ -2317,17 +2502,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   uint32_t argvIdx = 0xffffffff;
   parseArgs(F, argConstants, argvIdx);
 
-  // Reserve space on the heap for root-argv:
-  release_assert((!heap.size()) && "argv must be first on the heap");
-  heap.push_back(ShadowValue());
-
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
   // Last parameter: reserve extra GV slots for the constants that path condition parsing will produce.
   initShadowGlobals(M, UseGlobalInitialisers, PathConditionsString.size());
   initBlacklistedFunctions(M);
-
-  argvStore.store = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
 
@@ -2336,6 +2515,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   // Now that all globals have grabbed heap slots, insert extra locations per special function.
   createSpecialLocations();
+
+  argStores = new std::pair<LocStore, uint32_t>[F.arg_size()];
   
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
@@ -2354,10 +2535,12 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     ImprovedValSetSingle* NewIVS = newIVS();
     NewIVS->set(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
     IA->argShadows[argvIdx].i.PB = NewIVS;
-
-    heap[0] = ShadowValue(&IA->argShadows[argvIdx]);
+    argStores[argvIdx] = std::make_pair(LocStore(new ImprovedValSetSingle(ValSetTypeUnknown, true)), heap.size());
+    heap.push_back(ShadowValue(&IA->argShadows[argvIdx]));
 
   }
+
+  createPointerArguments(IA);
 
   RootIA = IA;
 

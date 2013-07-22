@@ -169,8 +169,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<GlobalVariable*, uint64_t> shadowGlobalsIdx;
 
-   LocStore argvStore;
-
    bool cacheDisabled;
 
    unsigned mallocAlignment;
@@ -198,6 +196,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
+
+   std::pair<LocStore, uint32_t>* argStores;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -248,6 +248,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void parseArgsPostCreation(InlineAttempt* IA);
    void parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA);
    void createSpecialLocations();
+   void createPointerArguments(InlineAttempt*);
 
    void estimateIntegrationBenefit();
 

@@ -804,7 +804,7 @@ int32_t ShadowValue::getHeapKey() {
     }
   case SHADOWVAL_ARG:
     release_assert((u.A->IA->Callers.empty()) && "getHeapKey on arg other than root argv?");
-    return 0;
+    return GlobalIHP->argStores[u.A->invar->A->getArgNo()].second;
   default:
     return -1;
 
@@ -1137,7 +1137,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   // Can write direct to the base store if we're sure this write is "for good".
   LocStore* ret = 0;
   if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && (!localStore->allOthersClobbered) && !IA->pass->enableSharing) {
-    LFV3(errs() << "Use base store for " << IA->F.getName() << " / " << IA->SeqNumber << " / " << invar->BB->getName() << "\n");
+    LFV3(errs() << "Use bsase store for " << IA->F.getName() << " / " << IA->SeqNumber << " / " << invar->BB->getName() << "\n");
     ret = &V.getBaseStore();
   }
 
