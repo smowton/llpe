@@ -11,3 +11,4 @@ LOADABLE_MODULE = 1
 # Include the makefile implementation stuff
 include $(LEVEL)/Makefile.common
 
+CFLAGS = $(CFLAGS) -I $(LEVEL)/../release_32/include

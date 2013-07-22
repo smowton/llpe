@@ -12,6 +12,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 
+#include "dsa/DataStructure.h"
+#include "dsa/DSGraph.h"
+#include "dsa/DSNode.h"
+
 #include <memory>
 
 using namespace llvm;
@@ -1612,7 +1616,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
     if(PtrSet.Values.size() != 1) {
 
       ImprovedValSetSingle OD = getOverdefFor(IVM);
-      executeWriteInst(PtrSet, OD, PtrSize, StoreBB);
+      executeWriteInst(&Ptr, PtrSet, OD, PtrSize, StoreBB);
 
     }
     else {
@@ -1639,7 +1643,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
     ImprovedValSetSingle ValPB;
     getImprovedValSetSingle(Val, ValPB);
 
-    executeWriteInst(PtrSet, ValPB, PtrSize, StoreBB);
+    executeWriteInst(&Ptr, PtrSet, ValPB, PtrSize, StoreBB);
 
   }
 
@@ -1671,7 +1675,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 
   }
 
-  executeWriteInst(PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetBB);
+  executeWriteInst(&Ptr, PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetBB);
   
 }
 
@@ -2390,7 +2394,7 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
   release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
 
-  executeCopyInst(PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
+  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
 
 }
 
@@ -2407,7 +2411,7 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
   release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
   
-  executeCopyInst(PtrSet, SrcPtrSet, 24, BB);
+  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, 24, BB);
 
 }
 
@@ -2533,7 +2537,7 @@ void llvm::executeFreeInst(ShadowInstruction* SI) {
   ImprovedValSetSingle TagIVS;
   TagIVS.SetType = ValSetTypeDeallocated;
 
-  executeWriteInst(*FreedIVS, TagIVS, FreedIVS->Values[0].V.getAllocSize(), SI->parent);
+  executeWriteInst(0, *FreedIVS, TagIVS, FreedIVS->Values[0].V.getAllocSize(), SI->parent);
 
 }
 
@@ -2574,7 +2578,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
   ImprovedValSetSingle ThisInst = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
 
-  executeCopyInst(ThisInst, SrcPtrSet, CopySize, SI->parent);
+  executeCopyInst(0, ThisInst, SrcPtrSet, CopySize, SI->parent);
   // Release the realloc'd location.
   executeFreeInst(SI);
 
@@ -2617,7 +2621,7 @@ void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, 
 
 }
 
-void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
+void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
 
   LFV3(errs() << "Start copy inst\n");
 
@@ -2659,7 +2663,7 @@ void llvm::executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& S
 
     }
 
-    executeWriteInst(PtrSet, OD, Size, BB);
+    executeWriteInst(Ptr, PtrSet, OD, Size, BB);
     return;
 
   }
@@ -2719,6 +2723,7 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 	continue;
 
       ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      ShadowValue ptrSV(ptr);
       ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
 
       GlobalVariable* GV = cast<GlobalVariable>(it->val);
@@ -2730,7 +2735,8 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
       ImprovedValSetSingle copyFromPointer;
       copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
 
-      executeCopyInst(*ptrIVS, copyFromPointer, Size, BB);
+
+      executeCopyInst(&ptrSV, *ptrIVS, copyFromPointer, Size, BB);
 
     }
 
@@ -2753,7 +2759,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
     // va_start writes pointers.
     ImprovedValSetSingle OD(ValSetTypePB, true);
-    executeWriteInst(PtrSet, OD, 24, BB);
+    executeWriteInst(&Ptr, PtrSet, OD, 24, BB);
     return;
 
   }
@@ -2808,7 +2814,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
 
   }
 
-  executeWriteInst(PtrSet, WriteIVS, Size, ReadBB);
+  executeWriteInst(&Ptr, PtrSet, WriteIVS, Size, ReadBB);
 
 }
 
@@ -2950,7 +2956,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	getImprovedValSetSingle(ClobberV, ClobberSet);
 	// All currently annotated syscalls write scalar values.
 	ImprovedValSetSingle OD(ValSetTypeScalar, true);
-	executeWriteInst(ClobberSet, OD, ClobberSize, SI->parent);
+	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI->parent);
 
       }
 
@@ -2974,7 +2980,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   // Finally clobber all locations; this call is entirely unhandled
   //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
   ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-  executeWriteInst(OD, OD, AliasAnalysis::UnknownSize, SI->parent);
+  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI->parent);
 
 }
 
@@ -3236,7 +3242,7 @@ void ShadowBB::clobberGlobalObjects() {
   
 }
 
-void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
+void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
 
   if(!ValPB.isInitialised())
     ValPB.setOverdef();
@@ -3244,6 +3250,44 @@ void llvm::executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& 
   // Perform the store
 
   if(PtrSet.isWhollyUnknown()) {
+    
+    if(Ptr && GlobalIHP->useDSA) {
+
+      DSGraph* DSG = 0;
+
+      switch(Ptr->t) {
+      case SHADOWVAL_ARG:
+      case SHADOWVAL_INST:
+	{
+	  const Function& PtrF = Ptr->getCtx()->F;
+	  if(GlobalDSA->hasDSGraph(PtrF))
+	    DSG = GlobalDSA->getDSGraph(PtrF);
+	  break;
+	}
+      case SHADOWVAL_GV:
+	DSG = GlobalDSA->getGlobalsGraph();
+	break;
+      default:
+	break;
+      }
+
+      if(DSG) {
+
+	Value* PtrV = Ptr->getBareVal();
+	if(DSG->hasNodeForValue(PtrV)) {
+
+	  DSNode* Node = DSG->getNodeForValue(PtrV).getNode();
+	  if(Node) {
+
+	    errs() << "Found node for " << itcache(PtrV) << " (" << Node->isCompleteNode() << ")\n";
+
+	  }
+
+	}
+
+      }
+
+    }
 
     if(PtrSet.isOldValue()) {
 

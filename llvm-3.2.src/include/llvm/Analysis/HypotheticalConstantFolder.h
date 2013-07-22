@@ -74,6 +74,7 @@ class MemTransferInst;
 class ShadowLoopInvar;
 class TargetLibraryInfo;
 class VFSCallAliasAnalysis;
+class EQTDDataStructures;
 
 inline void release_assert_fail(const char* str) {
 
@@ -88,6 +89,7 @@ extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
 extern VFSCallAliasAnalysis* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
+extern EQTDDataStructures* GlobalDSA;
 extern IntegrationHeuristicsPass* GlobalIHP;
 
 // Include structures and functions for working with instruction and argument shadows.
@@ -195,6 +197,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
+   bool useDSA;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -1657,11 +1660,11 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeMallocInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI);
  void executeFreeInst(ShadowInstruction* SI);
- void executeCopyInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB);
+ void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB);
  void executeVaStartInst(ShadowInstruction* SI);
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
- void executeWriteInst(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
+ void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
  void writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB);
 
  Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);

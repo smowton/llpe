@@ -357,8 +357,13 @@ void llvm::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
 
 }
 
+namespace llvm {
+  class EQTDDataStructures;
+}
+
 DataLayout* llvm::GlobalTD;
 AliasAnalysis* llvm::GlobalAA;
 TargetLibraryInfo* llvm::GlobalTLI;
 VFSCallAliasAnalysis* llvm::GlobalVFSAA;
+EQTDDataStructures* llvm::GlobalDSA;
 IntegrationHeuristicsPass* llvm::GlobalIHP;

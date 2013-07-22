@@ -41,6 +41,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 
+#include "dsa/DataStructure.h"
+
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -79,6 +81,7 @@ static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
 static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
 static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
 static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
+static cl::opt<bool> UseDSA("int-use-dsa");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2056,6 +2059,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
   this->verboseSharing = VerboseFunctionSharing;
+  this->useDSA = UseDSA;
 
 }
 
@@ -2270,6 +2274,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   GlobalAA = AA;
   GlobalVFSAA = &getAnalysis<VFSCallAliasAnalysis>();
   GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
+  if(UseDSA) {
+    errs() << "Loading DSA...";
+    GlobalDSA = &getAnalysis<EQTDDataStructures>();
+    errs() << "done\n";
+  }
   GlobalIHP = this;
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
@@ -2402,6 +2411,8 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequiredID(BAAInfo->getTypeInfo());
   }
   AU.addRequired<VFSCallAliasAnalysis>();
+  if(UseDSA)
+    AU.addRequired<EQTDDataStructures>();
   //AU.setPreservesAll();
   
 }
