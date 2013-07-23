@@ -2568,6 +2568,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "\n";
   }
 
+  IA->noteChildBarriers();
   IA->prepareCommit();
 
   if(!SkipDIE)

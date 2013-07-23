@@ -138,7 +138,7 @@ public:
   IntHeuristicsModel(IntegrationAttempt* _Root, IntegratorTag* _RootTag, IntegratorFrame* _Parent): wxDataViewModel(), Root(_Root), RootTag(_RootTag), Parent(_Parent) { }
   ~IntHeuristicsModel() {}
   unsigned int GetColumnCount() const {
-    return 4;
+    return 5;
   }
   wxString GetColumnType(unsigned int column) const {
     if(column == 3)
@@ -160,6 +160,9 @@ public:
 	break;
       case 3:
 	val = false;
+	break;
+      case 4:
+	val = wxEmptyString;
 	break;
       }
       return;
@@ -193,6 +196,19 @@ public:
 	    val = false;
 	  }
 	  break;
+	case 4:
+	  switch(IA->barrierState) {
+	  case BARRIER_HERE:
+	    val = wxString("BARRIER");
+	    break;
+	  case BARRIER_CHILD:
+	    val = wxString("CHILD");
+	    break;
+	  case BARRIER_NONE:
+	    val = wxEmptyString;
+	    break;
+	  }
+	  break;
 	}
       }
       break;
@@ -209,6 +225,9 @@ public:
 	  break;
 	case 3:
 	  val = PA->isEnabled();
+	  break;
+	case 4:
+	  val = wxEmptyString;
 	  break;
 	}
       }
@@ -414,7 +433,10 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   wxDataViewToggleRenderer* toggleRend = new wxDataViewToggleRenderer("bool", wxDATAVIEW_CELL_ACTIVATABLE);
   wxDataViewColumn* col3 = new wxDataViewColumn("Use?", toggleRend, 3, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
   menuPanelData->AppendColumn(col3);
-
+  textColRend = new wxDataViewTextRenderer("string", wxDATAVIEW_CELL_INERT);
+  wxDataViewColumn* col4 = new wxDataViewColumn("Barrier", textColRend, 4, 50, wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE);
+  menuPanelData->AppendColumn(col4);
+  
   IntHeuristicsModel* model = new IntHeuristicsModel(IHP->getRoot(), IHP->getRootTag(), this);
   menuPanelData->AssociateModel(model);
 

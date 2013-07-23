@@ -1529,6 +1529,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	// Create a new multi, with each individual part masked appropriately.
 
 	ImprovedValSetMulti* NewIVM = new ImprovedValSetMulti(IVM->AllocSize);
+	NewIV = NewIVM;
 	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
 
 	  if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {

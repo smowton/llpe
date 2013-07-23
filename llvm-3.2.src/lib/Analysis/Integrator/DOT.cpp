@@ -17,7 +17,7 @@
 
 using namespace llvm;
 
-std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
+std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& textColour) {
 
   // How should the instruction be coloured:
   // Bright green: defined here, i.e. it's a loop invariant.
@@ -50,6 +50,15 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV) {
     ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IAI->PB);
     if((!IVS) || (IVS->Values.size() != 0 && !IVS->Overdef))
       return "darkgreen";
+  }
+
+  if(ShadowInstruction* SI = SV.getInst()) {
+
+    if(GlobalIHP->barrierInstructions.count(SI)) {
+      textColour = "white";
+      return "black";
+    }
+
   }
   
   return "white";
@@ -305,8 +314,14 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   for(std::vector<ShadowValue>::iterator VI = Vals.begin(), VE = Vals.end(); VI != VE; ++VI) {
 
-    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(*VI) << "\">";
-    Out << escapeHTMLValue(VI->getBareVal(), this) << "</td><td>";
+    std::string textColour;
+    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(*VI, textColour) << "\">";
+    if(!textColour.empty())
+      Out << "<font color=\"" << textColour << "\">";
+    Out << escapeHTMLValue(VI->getBareVal(), this);
+    if(!textColour.empty())
+      Out << "</font>";
+    Out << "</td><td>";
     std::string RHSStr;
     raw_string_ostream RSO(RHSStr);
     printRHS(*VI, RSO);

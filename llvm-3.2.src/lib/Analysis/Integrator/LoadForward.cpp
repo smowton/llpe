@@ -1620,7 +1620,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
     if(PtrSet.Values.size() != 1) {
 
       ImprovedValSetSingle OD = getOverdefFor(IVM);
-      executeWriteInst(&Ptr, PtrSet, OD, PtrSize, StoreBB);
+      executeWriteInst(&Ptr, PtrSet, OD, PtrSize, StoreSI);
 
     }
     else {
@@ -1647,7 +1647,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
     ImprovedValSetSingle ValPB;
     getImprovedValSetSingle(Val, ValPB);
 
-    executeWriteInst(&Ptr, PtrSet, ValPB, PtrSize, StoreBB);
+    executeWriteInst(&Ptr, PtrSet, ValPB, PtrSize, StoreSI);
 
   }
 
@@ -1655,7 +1655,6 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
 void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 
-  ShadowBB* MemsetBB = MemsetSI->parent;
   ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
@@ -1679,7 +1678,7 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 
   }
 
-  executeWriteInst(&Ptr, PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetBB);
+  executeWriteInst(&Ptr, PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetSI);
   
 }
 
@@ -2385,7 +2384,6 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
 
 void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
 
-  ShadowBB* MemcpyBB = MemcpySI->parent;
   ShadowValue Ptr = MemcpySI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
@@ -2398,13 +2396,12 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
   release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
 
-  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpyBB);
+  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpySI);
 
 }
 
 void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   
-  ShadowBB* BB = SI->parent;
   ShadowValue Ptr = SI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
@@ -2415,7 +2412,7 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
   release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
   
-  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, 24, BB);
+  executeCopyInst(&Ptr, PtrSet, SrcPtrSet, 24, SI);
 
 }
 
@@ -2541,7 +2538,7 @@ void llvm::executeFreeInst(ShadowInstruction* SI) {
   ImprovedValSetSingle TagIVS;
   TagIVS.SetType = ValSetTypeDeallocated;
 
-  executeWriteInst(0, *FreedIVS, TagIVS, FreedIVS->Values[0].V.getAllocSize(), SI->parent);
+  executeWriteInst(0, *FreedIVS, TagIVS, FreedIVS->Values[0].V.getAllocSize(), SI);
 
 }
 
@@ -2582,7 +2579,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
   ImprovedValSetSingle ThisInst = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
 
-  executeCopyInst(0, ThisInst, SrcPtrSet, CopySize, SI->parent);
+  executeCopyInst(0, ThisInst, SrcPtrSet, CopySize, SI);
   // Release the realloc'd location.
   executeFreeInst(SI);
 
@@ -2625,7 +2622,9 @@ void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, 
 
 }
 
-void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB) {
+void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction* CopySI) {
+
+  ShadowBB* BB = CopySI->parent;
 
   LFV3(errs() << "Start copy inst\n");
 
@@ -2667,7 +2666,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
 
     }
 
-    executeWriteInst(Ptr, PtrSet, OD, Size, BB);
+    executeWriteInst(Ptr, PtrSet, OD, Size, CopySI);
     return;
 
   }
@@ -2739,8 +2738,8 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
       ImprovedValSetSingle copyFromPointer;
       copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
 
-
-      executeCopyInst(&ptrSV, *ptrIVS, copyFromPointer, Size, BB);
+      // Attribute the effect of the write to first instruction in block:
+      executeCopyInst(&ptrSV, *ptrIVS, copyFromPointer, Size, &(BB->insts[0]));
 
     }
 
@@ -2763,7 +2762,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
     // va_start writes pointers.
     ImprovedValSetSingle OD(ValSetTypePB, true);
-    executeWriteInst(&Ptr, PtrSet, OD, 24, BB);
+    executeWriteInst(&Ptr, PtrSet, OD, 24, SI);
     return;
 
   }
@@ -2791,8 +2790,6 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
 
   LFV3(errs() << "Start read inst\n");
 
-  ShadowBB* ReadBB = ReadSI->parent;
-
   ShadowValue Ptr = ReadSI->getCallArgOperand(1);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB (read)?");
@@ -2818,7 +2815,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
 
   }
 
-  executeWriteInst(&Ptr, PtrSet, WriteIVS, Size, ReadBB);
+  executeWriteInst(&Ptr, PtrSet, WriteIVS, Size, ReadSI);
 
 }
 
@@ -2960,7 +2957,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	getImprovedValSetSingle(ClobberV, ClobberSet);
 	// All currently annotated syscalls write scalar values.
 	ImprovedValSetSingle OD(ValSetTypeScalar, true);
-	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI->parent);
+	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI);
 
       }
 
@@ -2984,7 +2981,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   // Finally clobber all locations; this call is entirely unhandled
   //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
   ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI->parent);
+  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
 
 }
 
@@ -3246,7 +3243,46 @@ void ShadowBB::clobberGlobalObjects() {
   
 }
 
-void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB) {
+void llvm::noteBarrierInst(ShadowInstruction* SI) {
+
+  GlobalIHP->barrierInstructions.insert(SI);
+  SI->parent->IA->barrierState = BARRIER_HERE;
+
+}
+
+bool IntegrationAttempt::noteChildBarriers() {
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    if(it->second->noteChildBarriers() && barrierState == BARRIER_NONE)
+      barrierState = BARRIER_CHILD;
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isTerminated())
+      continue;
+
+    for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
+	  iterend = it->second->Iterations.end(); iterit != iterend; ++iterit) {
+
+      if((*iterit)->noteChildBarriers() && barrierState == BARRIER_NONE)
+	barrierState = BARRIER_CHILD;
+
+    }
+
+  }
+
+  return barrierState != BARRIER_NONE;
+
+}
+
+void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction* WriteSI) {
+
+  ShadowBB* StoreBB = WriteSI->parent;
 
   if(!ValPB.isInitialised())
     ValPB.setOverdef();
@@ -3302,6 +3338,7 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
       
       // Start with a plain local store map giving no locations.
       // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
+      noteBarrierInst(WriteSI);
       StoreBB->localStore = StoreBB->localStore->getEmptyMap();
       StoreBB->localStore->allOthersClobbered = true;
       LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");

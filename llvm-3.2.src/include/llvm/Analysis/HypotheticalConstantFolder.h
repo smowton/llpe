@@ -211,6 +211,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool enableSharing;
    bool verboseSharing;
 
+   DenseSet<ShadowInstruction*> barrierInstructions;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -827,6 +829,14 @@ struct ShadowBBVisitor {
 
 };
 
+enum BarrierState {
+
+  BARRIER_NONE,
+  BARRIER_HERE,
+  BARRIER_CHILD
+
+};
+
 class IntegrationAttempt {
 
 protected:
@@ -898,6 +908,8 @@ protected:
   SmallPtrSet<const Loop*, 8> latchStoresRetained;
 
   uint32_t pendingEdges;
+
+  BarrierState barrierState;
    
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
@@ -923,7 +935,8 @@ protected:
     nDependentLoads(0),
     inlineChildren(1),
     peelChildren(1),
-    pendingEdges(0)
+    pendingEdges(0),
+    barrierState(BARRIER_NONE) 
       { 
       }
 
@@ -1160,13 +1173,14 @@ protected:
 
   // DOT export:
 
+  bool noteChildBarriers();
   void printRHS(ShadowValue, raw_ostream& Out);
   void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief);
   void describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges);
   void describeLoopAsDOT(const Loop* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
   void describeAsDOT(raw_ostream& Out, bool brief);
-  std::string getValueColour(ShadowValue);
+  std::string getValueColour(ShadowValue, std::string& textColour);
   std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
@@ -1657,11 +1671,11 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeMallocInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI);
  void executeFreeInst(ShadowInstruction* SI);
- void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowBB* BB);
+ void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction*);
  void executeVaStartInst(ShadowInstruction* SI);
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
- void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowBB* StoreBB);
+ void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction*);
  void writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB);
 
  Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
@@ -1715,6 +1729,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    return GlobalIHP->blacklistedFunctions.count(F);
    
  }
+
+ void noteBarrierInst(ShadowInstruction*);
 
 } // Namespace LLVM
 
