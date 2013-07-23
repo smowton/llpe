@@ -318,7 +318,7 @@ void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
   if(pendingEdges == 0) {
 
     if(!inLoopAnalyser)
-      BB->status = BBSTATUS_CERTAIN;
+      BB->status = BBs[0]->status;
 
   }
 
