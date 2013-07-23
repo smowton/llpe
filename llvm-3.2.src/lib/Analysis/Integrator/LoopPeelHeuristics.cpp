@@ -71,6 +71,7 @@ static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
@@ -2150,6 +2151,30 @@ static uint32_t findBlock(ShadowFunctionInvar* SFI, std::string& name) {
 
 }
 
+static Type* getTypeAtOffset(Type* Ty, uint64_t Offset) {
+
+  PointerType* Ptr = dyn_cast<PointerType>(Ty);
+  if(!Ptr)
+    return 0;
+
+  Type* ElTy = Ptr->getElementType();
+
+  if(StructType* ST = dyn_cast<StructType>(ElTy)) {
+
+    const StructLayout* SL = GlobalTD->getStructLayout(ST);
+    unsigned FieldNo = SL->getElementContainingOffset(Offset);
+    release_assert(SL->getElementOffset(FieldNo) == Offset && "Bad path condition alignment");
+    return ST->getElementType(FieldNo);
+    
+  }
+  else {
+
+    return ElTy;
+
+  }
+
+}
+
 void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
 
   uint32_t newGVIndex = 0;
@@ -2163,6 +2188,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     std::string instIndexStr;
     std::string assumeStr;
     std::string assumeBlock;
+    std::string offsetStr;
 
     {
       std::istringstream istr(*it);
@@ -2171,6 +2197,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       std::getline(istr, instIndexStr, ',');
       std::getline(istr, assumeStr, ',');
       std::getline(istr, assumeBlock, ',');
+      std::getline(istr, offsetStr, ',');
     }
 
     if(fName.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeBlock.empty()) {
@@ -2190,9 +2217,14 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     uint32_t bbIdx = findBlock(IA->invarInfo, bbName);
     uint32_t assumeBlockIdx = findBlock(IA->invarInfo, assumeBlock);
 
+    uint64_t offset = 0;
+    if(!offsetStr.empty())
+      offset = getInteger(offsetStr, "Path condition offset");
+
     Constant* assumeC;
     switch(Ty) {
     case PathConditionTypeInt:
+    case PathConditionTypeIntmem:
       {
 	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");
 	BasicBlock* assumeDefBlock = IA->getBBInvar(bbIdx)->BB;
@@ -2200,8 +2232,18 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 	for(uint32_t i = 0; i < instIndex; ++i)
 	  it++;
 	Instruction* assumeInst = it;
-	release_assert(assumeInst->getType()->isIntegerTy() && "Instructions with an integer assumption must be integer typed");
-	assumeC = ConstantInt::get(assumeInst->getType(), assumeInt);
+	Type* ConstType;
+	if(Ty == PathConditionTypeInt)
+	  ConstType = assumeInst->getType();
+	else {
+	  ConstType = getTypeAtOffset(assumeInst->getType(), offset);
+	  release_assert(ConstType && "Failed to find assigned type for path condition");
+	}
+	release_assert((ConstType->isIntegerTy() || (ConstType->isPointerTy() && !assumeInt)) && "Instructions with an integer assumption must be integer typed");
+	if(ConstType->isIntegerTy())
+	  assumeC = ConstantInt::get(ConstType, assumeInt);
+	else
+	  assumeC = Constant::getNullValue(ConstType);
 	break;
       }
     case PathConditionTypeString:
@@ -2221,7 +2263,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       llvm_unreachable();
     }
 
-    Result.push_back(PathCondition(bbIdx, (uint32_t)instIndex, assumeBlockIdx, assumeC));
+    Result.push_back(PathCondition(bbIdx, (uint32_t)instIndex, assumeBlockIdx, assumeC, offset));
 
   }
 
@@ -2438,6 +2480,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
   parsePathConditions(PathConditionsInt, rootIntPathConditions, PathConditionTypeInt, IA);
   parsePathConditions(PathConditionsString, rootStringPathConditions, PathConditionTypeString, IA);
+  parsePathConditions(PathConditionsIntmem, rootIntmemPathConditions, PathConditionTypeIntmem, IA);
 
 }
 

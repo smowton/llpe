@@ -113,7 +113,8 @@ struct IntegratorTag {
 enum PathConditionTypes {
   
   PathConditionTypeInt,
-  PathConditionTypeString
+  PathConditionTypeString,
+  PathConditionTypeIntmem
 
 };
 
@@ -123,9 +124,10 @@ struct PathCondition {
   uint32_t instIdx;
   uint32_t fromBlockIdx;
   Constant* val;
+  uint64_t offset;
 
-PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v) :
-  instBlockIdx(ibi), instIdx(ii), fromBlockIdx(fbi), val(v) {}
+PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v, uint64_t off) :
+  instBlockIdx(ibi), instIdx(ii), fromBlockIdx(fbi), val(v), offset(off) {}
 
 };
 
@@ -185,6 +187,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    std::vector<PathCondition> rootIntPathConditions;
    std::vector<PathCondition> rootStringPathConditions;
+   std::vector<PathCondition> rootIntmemPathConditions;
    DominatorTree* rootFunctionDT;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;

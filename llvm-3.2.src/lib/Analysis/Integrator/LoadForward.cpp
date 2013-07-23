@@ -2204,7 +2204,7 @@ void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
   }
 
   truncateConstVal(it, 0, n);
-
+  
 }
 
 
@@ -2728,6 +2728,17 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
       ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
       ShadowValue ptrSV(ptr);
       ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
+      if(!ptrIVS)
+	continue;
+
+      ImprovedValSetSingle ptrCopy = *ptrIVS;
+
+      for(uint32_t i = 0; i < ptrCopy.Values.size(); ++i) {
+
+	if(ptrCopy.Values[i].Offset != LLONG_MAX)
+	  ptrCopy.Values[i].Offset += it->offset;
+
+      }
 
       GlobalVariable* GV = cast<GlobalVariable>(it->val);
       ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
@@ -2739,8 +2750,41 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
       copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
 
       // Attribute the effect of the write to first instruction in block:
-      executeCopyInst(&ptrSV, *ptrIVS, copyFromPointer, Size, &(BB->insts[0]));
+      executeCopyInst(&ptrSV, ptrCopy, copyFromPointer, Size, &(BB->insts[0]));
 
+    }
+
+  }
+
+  for(std::vector<PathCondition>::iterator it = pass->rootIntmemPathConditions.begin(),
+	itend = pass->rootIntmemPathConditions.end(); it != itend; ++it) {  
+
+    if(it->fromBlockIdx == BB->invar->idx) {
+
+      ShadowBB* ptrBB = getBB(it->instBlockIdx);
+      if(!ptrBB)
+	continue;
+
+      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      ShadowValue ptrSV(ptr);
+      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
+      if(!ptrIVS)
+	continue;
+
+      ImprovedValSetSingle ptrCopy = *ptrIVS;
+
+      for(uint32_t i = 0; i < ptrCopy.Values.size(); ++i) {
+
+	if(ptrCopy.Values[i].Offset != LLONG_MAX)
+	  ptrCopy.Values[i].Offset += it->offset;
+
+      }
+
+      ImprovedValSetSingle writeVal;
+      getImprovedValSetSingle(ShadowValue(it->val), writeVal);
+
+      // Attribute the effect of the write to first instruction in block:
+      executeWriteInst(0, ptrCopy, writeVal, GlobalAA->getTypeStoreSize(it->val->getType()), &(BB->insts[0]));
     }
 
   }
