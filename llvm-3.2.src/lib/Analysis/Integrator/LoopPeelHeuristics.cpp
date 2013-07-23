@@ -431,7 +431,9 @@ static const char* blacklistedFnNames[] = {
    "__pthread_mutex_init",
    "__pthread_mutex_lock",
    "__pthread_mutex_trylock",
-   "__pthread_mutex_unlock"
+   "__pthread_mutex_unlock",
+   "pthread_setcanceltype",
+   "pthread_setcancelstate"
    
 };
 
