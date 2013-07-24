@@ -246,6 +246,64 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 	
 }
 
+static void printPathConditions(std::vector<PathCondition>& conds, PathConditionTypes t, raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+
+  for(std::vector<PathCondition>::iterator it = conds.begin(), itend = conds.end(); it != itend; ++it) {
+
+    if(it->fromBlockIdx == BBI->idx) {
+
+      Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  ";
+      switch(t) {
+      case PathConditionTypeInt:
+	Out << "Int";
+	break;
+      case PathConditionTypeString:
+	Out << "String";
+	break;
+      case PathConditionTypeIntmem:
+	Out << "Intmem";
+	break;
+      }
+
+      Out << " PC: ";
+
+      if(t == PathConditionTypeString) {
+
+	GlobalVariable* GV = cast<GlobalVariable>(it->val);
+	ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
+	Out << "\"" << CDA->getAsString() << "\"";
+
+      }
+      else {
+
+	Out << *it->val;
+	
+      }
+
+      if(it->instBlockIdx == (uint32_t)-1) {
+
+	ShadowGV* GV = &GlobalIHP->shadowGlobals[it->instIdx];
+	Out << " -&gt; " << itcache(GV);
+
+      }
+      else {
+	ShadowBBInvar* targetBB = BB->IA->getBBInvar(it->instBlockIdx);
+	ShadowInstructionInvar* targetSI = &targetBB->insts[it->instIdx];
+
+	Out << " -&gt; " << targetBB->BB->getName() << " / " << itcache(targetSI->I, true);
+      }
+
+      if(it->offset != 0)
+	Out << " + " << it->offset;
+
+      Out << "</td></tr>\n";
+
+    }
+
+  }
+
+}
+
 void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief) {
 
   if(brief && ((!BB) || BB->status == BBSTATUS_IGNORED))
@@ -289,6 +347,28 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   Out << escapeHTML(BBI->BB->getName()) << "</font></td></tr>\n";
 
   bool isFunctionHeader = (!L) && (BBI->BB == &(F.getEntryBlock()));
+
+  if(BB && (!L) && BB->IA->getFunctionRoot()->isRootMainCall()) {
+
+    // Mention if there are symbolic path conditions or functions here:
+    printPathConditions(pass->rootIntPathConditions, PathConditionTypeInt, Out, BBI, BB);
+    printPathConditions(pass->rootIntmemPathConditions, PathConditionTypeIntmem, Out, BBI, BB);
+    printPathConditions(pass->rootStringPathConditions, PathConditionTypeString, Out, BBI, BB);
+
+    for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
+	  itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
+
+      if(it->bbIdx == BBI->idx) {
+
+	Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  Call PC: ";
+	Out << it->F->getName();
+	Out << "</td></tr>\n";
+
+      }
+
+    }
+
+  }
 
   size_t ValSize = BBI->BB->size();
   if(isFunctionHeader)

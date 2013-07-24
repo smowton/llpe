@@ -385,6 +385,8 @@ bool InlineAttempt::isOwnCallUnused() {
 
   if(Callers.empty())
     return false;
+  else if(isPathCondition)
+    return false;
   else {
 
     for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),

@@ -439,7 +439,9 @@ void InlineAttempt::prepareShadows() {
   BBsOffset = 0;
 
   uint32_t shadowsSize;
-  if(Callers.size())
+  if(isPathCondition)
+    shadowsSize = 0;
+  else if(Callers.size())
     shadowsSize = Callers[0]->getNumArgOperands();
   else
     shadowsSize = F.arg_size();

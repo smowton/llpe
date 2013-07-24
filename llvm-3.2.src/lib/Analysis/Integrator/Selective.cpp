@@ -107,6 +107,8 @@ bool InlineAttempt::isEnabled() {
 
   if(!Callers.size())
     return true;
+  else if(isPathCondition)
+    return false;
   else
     return isShared() || getUniqueParent()->inlineIsEnabled(cast<CallInst>(Callers[0]->invar->I));
 
@@ -130,6 +132,9 @@ void InlineAttempt::setEnabled(bool en) {
     return;
 
   if(isShared())
+    return;
+
+  if(isPathCondition)
     return;
 
   IntegrationAttempt* Parent = Callers[0]->parent->IA;

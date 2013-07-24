@@ -33,8 +33,6 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
 
   bool anyChange = false;
 
-  uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
-
   for(unsigned i = 0, ilim = SI->getNumArgOperands(); i != ilim; ++i) {
 
     ShadowArg* SArg = &(argShadows[i]);
@@ -54,9 +52,16 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
 
   }
 
-  anyChange |= analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
+  anyChange |= analyseNoArgs(inLoopAnalyser, inAnyLoop, parent_stack_depth);
 
   return anyChange;
+
+}
+
+bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
+
+  uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
+  return analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
 
 }
 

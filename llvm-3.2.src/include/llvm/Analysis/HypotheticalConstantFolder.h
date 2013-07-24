@@ -131,6 +131,16 @@ PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v, uint64_t off
 
 };
 
+struct PathFunc {
+
+  uint32_t bbIdx;
+  Function* F;
+  InlineAttempt* IA;
+
+PathFunc(uint32_t _b, Function* _F) : bbIdx(_b), F(_F), IA(0) {}
+
+};
+
 struct SpecialLocationDescriptor {
 
   uint64_t storeSize;
@@ -188,6 +198,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<PathCondition> rootIntPathConditions;
    std::vector<PathCondition> rootStringPathConditions;
    std::vector<PathCondition> rootIntmemPathConditions;
+   std::vector<PathFunc> rootFuncPathConditions;
    DominatorTree* rootFunctionDT;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
@@ -1216,6 +1227,7 @@ protected:
   unsigned getElimdInstructions();
   int64_t getTotalInstructionsIncludingLoops();
   IntegratorTag* createTag(IntegratorTag* parent);
+  virtual void addExtraTags(IntegratorTag* myTag);
 
   // Saving our results as a bitcode file:
 
@@ -1446,7 +1458,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, bool isPathCond = false);
 
   virtual ~InlineAttempt();
 
@@ -1473,6 +1485,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool instructionsCommitted;
 
   bool isModel;
+  bool isPathCondition;
   
   bool isUnsharable() {
     return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
@@ -1529,6 +1542,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool entryBlockAssumed(); 
 
   bool analyseWithArgs(ShadowInstruction* Caller, bool withinUnboundedLoop, bool inAnyLoop, uint32_t parent_stack_depth); 
+  bool analyseNoArgs(bool withinUnboundedLoop, bool inAnyLoop, uint32_t parent_stack_depth); 
 
   void prepareShadows();
   void getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals);
@@ -1569,6 +1583,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void applyMemoryPathConditions(ShadowBB*);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);
   void addIgnoredBlock(std::string& name);
+  virtual void addExtraTags(IntegratorTag* myTag);
   
 };
 
@@ -1698,6 +1713,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void commitFrameToBase(SharedStoreMap* Map);
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
+ void doCallStoreMerge(ShadowBB* BB, InlineAttempt* IA);
  
  void initSpecialFunctionsMap(Module& M);
  

@@ -72,6 +72,7 @@ static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
@@ -94,17 +95,21 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth) : 
+			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth,
+			     bool pathCond) : 
   IntegrationAttempt(Pass, F, 0, LI, depth, 0)
 { 
     raw_string_ostream OS(HeaderStr);
     OS << (!_CI ? "Root " : "") << "Function " << F.getName();
-    if(_CI && !_CI->getType()->isVoidTy())
+    if(pathCond)
+      OS << " pathcond at " << _CI->parent->invar->BB->getName();
+    else if(_CI && !_CI->getType()->isVoidTy())
       OS << " at " << itcache(_CI, true);
     SeqNumber = Pass->getSeq();
     OS << " / " << SeqNumber;
 
     isModel = false;
+    isPathCondition = pathCond;
     storeAtEntry = 0;
     hasVFSOps = false;
     registeredSharable = false;
@@ -1138,6 +1143,60 @@ bool PeelAttempt::hasChildren() {
 
 }
 
+void IntegrationAttempt::addExtraTags(IntegratorTag* myTag) { }
+void InlineAttempt::addExtraTags(IntegratorTag* myTag) {
+
+  if(!Callers.empty())
+    return;
+
+  for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
+	itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
+
+    IntegratorTag* newTag = it->IA->createTag(myTag);
+    myTag->children.push_back(newTag);
+
+  }
+  
+}
+
+static uint32_t getTagBlockIdx(const IntegratorTag* t, IntegrationAttempt* Ctx) {
+
+  if(t->type == IntegratorTypeIA) {
+    
+    uint32_t blockIdx = UINT_MAX;
+    InlineAttempt* IA = (InlineAttempt*)t->ptr;
+    for(uint32_t i = 0, ilim = IA->Callers.size(); i != ilim; ++i) {
+
+      blockIdx = std::min(blockIdx, IA->Callers[i]->parent->invar->idx);
+
+    }
+
+    return blockIdx;
+
+  }
+  else {
+
+    PeelAttempt* PA = (PeelAttempt*)t->ptr;
+    return PA->invarInfo->headerIdx;
+
+  }
+
+}
+
+struct tagComp {
+
+  IntegrationAttempt* FromCtx;
+
+  bool operator()(const IntegratorTag* t1, const IntegratorTag* t2) {
+    
+    return getTagBlockIdx(t1, FromCtx) < getTagBlockIdx(t2, FromCtx);
+    
+  }
+
+  tagComp(IntegrationAttempt* C) : FromCtx(C) {}
+
+};
+
 IntegratorTag* IntegrationAttempt::createTag(IntegratorTag* parent) {
 
   IntegratorTag* myTag = pass->newTag();
@@ -1160,6 +1219,11 @@ IntegratorTag* IntegrationAttempt::createTag(IntegratorTag* parent) {
     myTag->children.push_back(peelTag);
 
   }
+
+  addExtraTags(myTag);
+
+  tagComp C(this);
+  std::sort(myTag->children.begin(), myTag->children.end(), C);
 
   return myTag;
 
@@ -1533,8 +1597,6 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->F.setName(oldFName);
 
   errs() << "\n";
-
-  RootIA->CommitF->dump();
 
 }
 
@@ -2502,6 +2564,32 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
   parsePathConditions(PathConditionsInt, rootIntPathConditions, PathConditionTypeInt, IA);
   parsePathConditions(PathConditionsString, rootStringPathConditions, PathConditionTypeString, IA);
   parsePathConditions(PathConditionsIntmem, rootIntmemPathConditions, PathConditionTypeIntmem, IA);
+
+  for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
+	itend = PathConditionsFunc.end(); it != itend; ++it) {
+
+    std::string fName;
+    std::string bbName;
+    std::string calledName;
+
+    {
+      std::istringstream istr(*it);
+      std::getline(istr, fName, ',');
+      std::getline(istr, bbName, ',');
+      std::getline(istr, calledName, ',');
+    }
+
+    Function* CondF = IA->F.getParent()->getFunction(fName);
+    release_assert(CondF == &IA->F && "Path conditions only in root function for now");
+    uint32_t assumeBlockIdx = findBlock(IA->invarInfo, bbName);
+    Function* CallF = IA->F.getParent()->getFunction(calledName);
+
+    FunctionType* FType = CallF->getFunctionType();
+    release_assert(FType->getNumParams() == 0 && "Only no-arg path functions supported at the moment");
+
+    rootFuncPathConditions.push_back(PathFunc(assumeBlockIdx, CallF));
+    
+  }
 
 }
 

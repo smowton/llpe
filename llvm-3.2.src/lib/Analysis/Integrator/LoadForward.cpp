@@ -2797,6 +2797,29 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 
   }
 
+  for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
+	itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
+
+    if(it->bbIdx == BB->invar->idx) {
+
+      // Insert a model call that notionally occurs before the block begins.
+      // Notionally its callsite is the first instruction in BB; this is probably not a call
+      // instruction, but since only no-arg functions are allowed it doesn't matter.
+
+      if(!it->IA) {
+	InlineAttempt* SymIA = new InlineAttempt(pass, *it->F, this->LI, &BB->insts[0], this->nesting_depth + 1, true);
+	it->IA = SymIA;
+      }
+
+      it->IA->activeCaller = &BB->insts[0];
+      it->IA->analyseNoArgs(false, false, stack_depth);
+
+      doCallStoreMerge(BB, it->IA);
+
+    }
+
+  }
+
 }
 
 void llvm::executeVaStartInst(ShadowInstruction* SI) {
@@ -4772,30 +4795,34 @@ void ShadowBB::pushStackFrame(InlineAttempt* IA) {
 // Note that the callee has already popped the top stack frame from each one.
 void llvm::doCallStoreMerge(ShadowInstruction* SI) {
 
+  doCallStoreMerge(SI->parent, SI->parent->IA->getInlineAttempt(SI));
+  
+}
+
+void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
+
   LFV3(errs() << "Start call-return store merge\n");
 
-  bool mergeToBase = SI->parent->status == BBSTATUS_CERTAIN && (!SI->parent->inAnyLoop) && !SI->parent->IA->pass->enableSharing;
+  bool mergeToBase = CallerBB->status == BBSTATUS_CERTAIN && (!CallerBB->inAnyLoop) && !CallerBB->IA->pass->enableSharing;
   if(mergeToBase) {
 
-    LFV3(errs() << "MERGE to base store for " << SI->parent->IA->F.getName() << " / " << SI->parent->IA->SeqNumber << " / " << SI->parent->invar->BB->getName() << "\n");
+    LFV3(errs() << "MERGE to base store for " << CallerBB->IA->F.getName() << " / " << CallerBB->IA->SeqNumber << " / " << CallerBB->invar->BB->getName() << "\n");
 
   }
-
-  InlineAttempt* CallIA = SI->parent->IA->getInlineAttempt(SI);
 
   MergeBlockVisitor V(mergeToBase);
   CallIA->visitLiveReturnBlocks(V);
   V.doMerge();
   
   // If V.newMap is not set this must be an unreachable block
-  // and our caller will bail out rather than use SI->parent->localStore.
+  // and our caller will bail out rather than use CallerBB->localStore.
   if(mergeToBase && V.newMap && !V.newMap->allOthersClobbered) {
     commitStoreToBase(V.newMap);
     V.newMap = V.newMap->getEmptyMap();
   }
 
-  SI->parent->localStore = V.newMap;
-  
+  CallerBB->localStore = V.newMap;
+
 }
 
 SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
