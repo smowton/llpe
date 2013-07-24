@@ -323,9 +323,34 @@ static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
   Function* calledF = getCalledFunction(SI);
 
   // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
-  if(isa<MemIntrinsic>(CI) || isa<DbgInfoIntrinsic>(CI) || (calledF && functionIsBlacklisted(calledF)))
-    return false;
-  else if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
+  if(IntrinsicInst* II = dyn_cast<IntrinsicInst>(CI)) {
+
+    switch(II->getIntrinsicID()) {
+
+    case Intrinsic::vastart:
+    case Intrinsic::vacopy:
+    case Intrinsic::vaend:
+    case Intrinsic::memcpy:
+    case Intrinsic::memmove:
+    case Intrinsic::memset:
+    case Intrinsic::dbg_declare:
+    case Intrinsic::dbg_value:
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+    case Intrinsic::invariant_start:
+    case Intrinsic::invariant_end:
+      return false;
+
+    default:
+      break;
+
+    }
+
+  }
+  else if(calledF && functionIsBlacklisted(calledF))
+   return false;
+  
+  if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
     return true;
 
   for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
