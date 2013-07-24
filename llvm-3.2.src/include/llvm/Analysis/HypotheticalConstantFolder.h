@@ -751,6 +751,14 @@ enum WalkInstructionResult {
 
 };
 
+enum MultiCmpResult {
+
+  MCRTRUE,
+  MCRFALSE,
+  MCRMAYBE
+
+};
+
 class IAWalker {
 
  public:
@@ -1041,6 +1049,8 @@ protected:
   void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB);
   bool tryEvaluateMultiInst(ShadowInstruction* I, ImprovedValSet*& NewPB);
+  bool tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValSet*& NewIV);
+  MultiCmpResult tryEvaluateMultiEq(ShadowInstruction* SI);
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) = 0;
 
   // CFG analysis:
@@ -1557,6 +1567,7 @@ class InlineAttempt : public IntegrationAttempt {
   void releaseCallLatchStores();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
+  void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);
   void addIgnoredBlock(std::string& name);
   
 };

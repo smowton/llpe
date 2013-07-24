@@ -1274,13 +1274,137 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
 }
 
+bool IntegrationAttempt::tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValSet*& NewIV) {
+
+  CmpInst* CI = cast_inst<CmpInst>(SI);
+  CmpInst::Predicate Pred = CI->getPredicate();
+  switch(Pred) {
+
+  case CmpInst::ICMP_EQ:
+  case CmpInst::ICMP_NE:
+    break;
+  default:
+    NewIV = newOverdefIVS();
+    return true;
+
+  }
+
+  CI->setPredicate(CmpInst::ICMP_EQ);
+  MultiCmpResult MCR = tryEvaluateMultiEq(SI);
+  CI->setPredicate(Pred);
+
+  if(Pred == CmpInst::ICMP_NE) {
+    switch(MCR) {
+    case MCRTRUE:
+      MCR = MCRFALSE; break;
+    case MCRFALSE:
+      MCR = MCRTRUE; break;
+    default:
+      break;
+    }
+  }
+
+  switch(MCR) {
+
+  case MCRTRUE: 
+  case MCRFALSE:
+    {
+      ImprovedValSetSingle* NewIVS = newIVS();
+      NewIV = NewIVS;
+      LLVMContext& LLC = SI->invar->I->getContext();
+      ShadowValue Result = ShadowValue(MCR == MCRTRUE ? ConstantInt::getTrue(LLC) : ConstantInt::getFalse(LLC));
+      NewIVS->set(ImprovedVal(Result), ValSetTypeScalar);
+      break;
+    }
+  case MCRMAYBE:
+    NewIV = newOverdefIVS();
+    break;
+  }
+
+  return true;
+
+}
+
+MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
+
+  // EQ is true if true of all fields, false if false anywhere, or unknown otherwise.
+
+  ImprovedValSetMulti* IVM;
+  Constant* CmpC;
+  if(!(IVM = dyn_cast<ImprovedValSetMulti>(getIVSRef(SI->getOperand(0))))) {
+    IVM = cast<ImprovedValSetMulti>(getIVSRef(SI->getOperand(1)));
+    CmpC = getConstReplacement(SI->getOperand(0));
+  }
+  else {
+    CmpC = getConstReplacement(SI->getOperand(1));
+  }
+
+  if(!CmpC)
+    return MCRMAYBE;
+
+  uint64_t CmpInt = cast<ConstantInt>(CmpC)->getLimitedValue();
+  uint8_t* CmpBytes = (uint8_t*)&CmpInt;
+  bool allEqual = true;
+
+  for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
+
+    std::pair<ValSetType, ImprovedVal> Ops[2];
+    Type* SubValType = Type::getIntNTy(SI->invar->I->getContext(), it.stop() - it.start());
+    Constant* SubVal = constFromBytes(&(CmpBytes[it.start()]), SubValType, GlobalTD);
+    Ops[0] = std::make_pair(ValSetTypeScalar, ImprovedVal(SubVal));
+    MultiCmpResult MCRHere = MCRMAYBE;
+
+    for(uint32_t i = 0; i < it.val().Values.size(); ++i) {
+      
+      ValSetType ThisVST;
+      ImprovedVal ThisV;
+      Ops[1] = std::make_pair(it.val().SetType, it.val().Values[i]);
+      tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+      if(ThisVST != ValSetTypeScalar) {
+	MCRHere = MCRMAYBE;
+	break;
+      }
+      Constant* ThisC = cast_val<Constant>(ThisV.V);
+      MultiCmpResult thisResult = ThisC->isNullValue() ? MCRFALSE : MCRTRUE;
+
+      if(i == 0)
+	MCRHere = thisResult;
+      else if(MCRHere != thisResult) {
+	MCRHere = MCRMAYBE;
+	break;
+      }
+
+    }
+    
+    switch(MCRHere) {
+    case MCRFALSE:
+      return MCRFALSE;
+    case MCRTRUE:
+      continue;
+    case MCRMAYBE:
+      allEqual = false;
+    }
+      
+  }
+
+  if(allEqual)
+    return MCRTRUE;
+  else
+    return MCRMAYBE;
+
+}
+
 bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedValSet*& NewIV) {
 
   // Currently supported operations on multis:
+  // * Equality, inequality
   // * Shift right and left by constant amount
   // * Truncate
   // * PHI, select, and other copies (but these are implemented in the merge-instruction path)
   
+  if(inst_is<CmpInst>(SI))
+    return tryEvaluateMultiCmp(SI, NewIV);
+
   unsigned opcode = SI->invar->I->getOpcode();
   int64_t resSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getType());
 

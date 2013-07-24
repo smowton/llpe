@@ -2212,9 +2212,21 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       exit(1);
     }
     
-    int64_t instIndex = getInteger(instIndexStr, "Instruction index");
+    uint32_t bbIdx;
+    if(bbName == "__globals__")
+      bbIdx = (uint32_t)-1;
+    else
+      bbIdx = findBlock(IA->invarInfo, bbName);
+
+    int64_t instIndex;
+    if(bbIdx == (uint32_t)-1) {
+      GlobalVariable* GV = IA->F.getParent()->getGlobalVariable(instIndexStr, true);
+      release_assert(GV && "Bad global variable in path condition");
+      instIndex = (int64_t)GlobalIHP->getShadowGlobalIndex(GV);
+    }
+    else
+      instIndex = getInteger(instIndexStr, "Instruction index");
    
-    uint32_t bbIdx = findBlock(IA->invarInfo, bbName);
     uint32_t assumeBlockIdx = findBlock(IA->invarInfo, assumeBlock);
 
     uint64_t offset = 0;
@@ -2227,16 +2239,25 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     case PathConditionTypeIntmem:
       {
 	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");
-	BasicBlock* assumeDefBlock = IA->getBBInvar(bbIdx)->BB;
-	BasicBlock::iterator it = assumeDefBlock->begin();
-	for(uint32_t i = 0; i < instIndex; ++i)
-	  it++;
-	Instruction* assumeInst = it;
+
+	Type* targetType;
+	if(bbIdx != (uint32_t)-1) {
+	  BasicBlock* assumeDefBlock = IA->getBBInvar(bbIdx)->BB;
+	  BasicBlock::iterator it = assumeDefBlock->begin();
+	  for(uint32_t i = 0; i < instIndex; ++i)
+	    it++;
+	  Instruction* assumeInst = it;
+	  targetType = assumeInst->getType();
+	}
+	else {
+	  GlobalVariable* GV = IA->F.getParent()->getGlobalVariable(instIndexStr, true);
+	  targetType = GV->getType();
+	}
 	Type* ConstType;
 	if(Ty == PathConditionTypeInt)
-	  ConstType = assumeInst->getType();
+	  ConstType = targetType;
 	else {
-	  ConstType = getTypeAtOffset(assumeInst->getType(), offset);
+	  ConstType = getTypeAtOffset(targetType, offset);
 	  release_assert(ConstType && "Failed to find assigned type for path condition");
 	}
 	release_assert((ConstType->isIntegerTy() || (ConstType->isPointerTy() && !assumeInt)) && "Instructions with an integer assumption must be integer typed");

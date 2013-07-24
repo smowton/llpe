@@ -2711,6 +2711,73 @@ void PeelIteration::applyMemoryPathConditions(ShadowBB* BB) {
 
 }
 
+void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB) {
+
+  if(it->fromBlockIdx == BB->invar->idx) {
+
+    ImprovedValSetSingle writePtr;
+    ShadowValue ptrSV;
+
+    if(it->instBlockIdx != (uint32_t)-1) {
+
+      ShadowBB* ptrBB = getBB(it->instBlockIdx);
+      if(!ptrBB)
+	return;
+
+      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      ptrSV = ShadowValue(ptr);
+      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
+      if(!ptrIVS)
+	return;
+
+      writePtr = *ptrIVS;
+
+    }
+    else {
+
+      ShadowGV* GV = &(GlobalIHP->shadowGlobals[it->instIdx]);
+      writePtr.set(ImprovedVal(ShadowValue(GV), 0), ValSetTypePB);
+
+    }
+
+    for(uint32_t i = 0; i < writePtr.Values.size(); ++i) {
+
+      if(writePtr.Values[i].Offset != LLONG_MAX)
+	writePtr.Values[i].Offset += it->offset;
+
+    }
+
+    if(condty == PathConditionTypeString) {
+      
+      GlobalVariable* GV = cast<GlobalVariable>(it->val);
+      ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
+      uint32_t Size = CDA->getNumElements();
+      
+      ShadowGV* SGV = &(pass->shadowGlobals[pass->getShadowGlobalIndex(GV)]);
+      
+      ImprovedValSetSingle copyFromPointer;
+      copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
+      
+      // Attribute the effect of the write to first instruction in block:
+      executeCopyInst(ptrSV.isInval() ? 0 : &ptrSV, writePtr, copyFromPointer, Size, &(BB->insts[0]));
+
+    }
+    else {
+      
+      // IntMem condition
+      
+      ImprovedValSetSingle writeVal;
+      getImprovedValSetSingle(ShadowValue(it->val), writeVal);
+
+      // Attribute the effect of the write to first instruction in block:
+      executeWriteInst(0, writePtr, writeVal, GlobalAA->getTypeStoreSize(it->val->getType()), &(BB->insts[0]));
+
+    }
+
+  }
+
+}
+
 void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 
   if(!isRootMainCall())
@@ -2719,73 +2786,14 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
   for(std::vector<PathCondition>::iterator it = pass->rootStringPathConditions.begin(),
 	itend = pass->rootStringPathConditions.end(); it != itend; ++it) {
 
-    if(it->fromBlockIdx == BB->invar->idx) {
-
-      ShadowBB* ptrBB = getBB(it->instBlockIdx);
-      if(!ptrBB)
-	continue;
-
-      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
-      ShadowValue ptrSV(ptr);
-      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
-      if(!ptrIVS)
-	continue;
-
-      ImprovedValSetSingle ptrCopy = *ptrIVS;
-
-      for(uint32_t i = 0; i < ptrCopy.Values.size(); ++i) {
-
-	if(ptrCopy.Values[i].Offset != LLONG_MAX)
-	  ptrCopy.Values[i].Offset += it->offset;
-
-      }
-
-      GlobalVariable* GV = cast<GlobalVariable>(it->val);
-      ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
-      uint32_t Size = CDA->getNumElements();
-
-      ShadowGV* SGV = &(pass->shadowGlobals[pass->getShadowGlobalIndex(GV)]);
-      
-      ImprovedValSetSingle copyFromPointer;
-      copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
-
-      // Attribute the effect of the write to first instruction in block:
-      executeCopyInst(&ptrSV, ptrCopy, copyFromPointer, Size, &(BB->insts[0]));
-
-    }
+    applyPathCondition(&*it, PathConditionTypeString, BB);
 
   }
 
   for(std::vector<PathCondition>::iterator it = pass->rootIntmemPathConditions.begin(),
 	itend = pass->rootIntmemPathConditions.end(); it != itend; ++it) {  
 
-    if(it->fromBlockIdx == BB->invar->idx) {
-
-      ShadowBB* ptrBB = getBB(it->instBlockIdx);
-      if(!ptrBB)
-	continue;
-
-      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
-      ShadowValue ptrSV(ptr);
-      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
-      if(!ptrIVS)
-	continue;
-
-      ImprovedValSetSingle ptrCopy = *ptrIVS;
-
-      for(uint32_t i = 0; i < ptrCopy.Values.size(); ++i) {
-
-	if(ptrCopy.Values[i].Offset != LLONG_MAX)
-	  ptrCopy.Values[i].Offset += it->offset;
-
-      }
-
-      ImprovedValSetSingle writeVal;
-      getImprovedValSetSingle(ShadowValue(it->val), writeVal);
-
-      // Attribute the effect of the write to first instruction in block:
-      executeWriteInst(0, ptrCopy, writeVal, GlobalAA->getTypeStoreSize(it->val->getType()), &(BB->insts[0]));
-    }
+    applyPathCondition(&*it, PathConditionTypeIntmem, BB);
 
   }
 
