@@ -129,20 +129,19 @@ struct PathCondition {
   uint64_t offset;
 
 PathCondition(uint32_t isi, BasicBlock* ibi, uint32_t ii, uint32_t fsi, BasicBlock* fbi, Constant* v, uint64_t off) :
-    instStackIdx(isi), instBlockIdx(ibi), instIdx(ii), 
-    fromStackIdx(fsi), fromBlockIdx(fbi), val(v), offset(off) {}
+    instStackIdx(isi), instBB(ibi), instIdx(ii), 
+    fromStackIdx(fsi), fromBB(fbi), val(v), offset(off) {}
 
 };
 
 struct PathFunc {
 
   uint32_t stackIdx;
-  uint32_t bbIdx;
+  BasicBlock* BB;
   Function* F;
   InlineAttempt* IA;
-  Dom
 
-PathFunc(uint32_t f, uint32_t _b, Function* _F) : stackIdx(f), bbIdx(_b), F(_F), IA(0) {}
+PathFunc(uint32_t f, BasicBlock* _BB, Function* _F) : stackIdx(f), BB(_BB), F(_F), IA(0) {}
 
 };
 
@@ -794,8 +793,6 @@ class IAWalker {
 
   SmallVector<void*, 4> Contexts;
   
-  bool doIgnoreEdges;
-  
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context) = 0;
   virtual bool shouldEnterCall(ShadowInstruction*, void*) = 0;
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*) = 0;
@@ -812,6 +809,8 @@ class IAWalker {
   void* initialContext;
 
  public:
+
+  bool doIgnoreEdges;
 
  IAWalker(void* IC = 0, bool ign = false) : PList(&Worklist1), CList(&Worklist2), initialContext(IC), doIgnoreEdges(ign) {
     
@@ -849,7 +848,9 @@ class ForwardIAWalker : public IAWalker {
   virtual void leaveCall(InlineAttempt* IA, void* Ctx) {}
   virtual void enterLoop(PeelAttempt*, void* Ctx) {}
   virtual void leaveLoop(PeelAttempt*, void* Ctx) {}
-  ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0);
+  virtual void hitIgnoredEdge() {}
+  virtual bool shouldContinue() { return true; }
+  ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0, bool ign = false);
   
 };
 
@@ -859,6 +860,7 @@ struct ShadowBBVisitor {
 ShadowBBVisitor(bool ign = false) : doIgnoreEdges(ign) { }
 
   virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) = 0;
+  virtual void hitIgnoredEdge() { }
 
 };
 
@@ -1269,6 +1271,11 @@ protected:
   void mergeChildDependencies(InlineAttempt* ChildIA);
   virtual void sharingInit();
   virtual void sharingCleanup();
+
+  // Conditional specialisation
+
+  void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
+  bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
   
   // Stat collection and printing:
 
@@ -1517,6 +1524,8 @@ class InlineAttempt : public IntegrationAttempt {
   bool isPathCondition;
 
   IATargetInfo* targetCallInfo;
+
+  SmallDenseMap<uint32_t, uint32_t, 8> blocksReachableOnFailure;
   
   bool isUnsharable() {
     return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
@@ -1615,6 +1624,12 @@ class InlineAttempt : public IntegrationAttempt {
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);
   void addIgnoredBlock(std::string& name);
   virtual void addExtraTags(IntegratorTag* myTag);
+
+  // Conditional specialisation:
+  void addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool skipFirst);
+  void addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set);
+  void markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx);
+  void setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_t stackIdx);
   
 };
 
@@ -1757,7 +1772,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  GlobalVariable* getStringArray(std::string& bytes, Module& M);
 
- void findBlock(ShadowFunctionInvar* SFI, std::string& name);
+ uint32_t findBlock(ShadowFunctionInvar* SFI, StringRef name);
+ InlineAttempt* getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth);
   
  struct IntAAProxy {
 

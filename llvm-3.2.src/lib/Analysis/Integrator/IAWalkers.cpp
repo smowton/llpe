@@ -99,7 +99,7 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
   }
   else {
     
-    QueueWalkVisitor V(Walker);
+    QueueWalkVisitor V(Walker, Walker->doIgnoreEdges);
     visitNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
@@ -132,7 +132,7 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
   }
   else {
 
-    QueueWalkVisitor V(Walker, doIgnoreEdges);    
+    QueueWalkVisitor V(Walker, Walker->doIgnoreEdges);    
     visitNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
@@ -161,9 +161,12 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
     if(edgeIsDead(BBI, FromBBI))
       continue;
 
-    if(Visitor->doIgnoreEdges && shouldIgnoreEdge(BBI, FromBB->invar))
+    if(shouldIgnoreEdge(BBI, FromBB->invar)) {
+      if(!Visitor->doIgnoreEdges)
+	Visitor->hitIgnoredEdge();
       continue;
-
+    }
+      
     // CtxLoop != FromBBLoop indicates we're looking at loop blocks in an invariant context,
     // which in turn implies there's no point trying to climb into FromBBLoop or any of its
     // children.
@@ -344,7 +347,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB
 
 //// Implement the forward walker:
 
-ForwardIAWalker::ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* initialCtx) : IAWalker(initialCtx) {
+ForwardIAWalker::ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* initialCtx, bool doIgnoreEdges) : IAWalker(initialCtx, doIgnoreEdges) {
 
   if(skipFirst)
     ++idx;
@@ -401,6 +404,8 @@ void ForwardIAWalker::walkInternal() {
 
 	// Else we've hit the bottom of a block. Figure out what to do with each successor:
 	BB->IA->queueSuccessorsFW(BB, this, Ctx);
+	if(!shouldContinue())
+	  return;
 
       }
 
@@ -542,6 +547,12 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 
     if(edgeIsDead(BB->invar, SB))
       continue;
+
+    if(shouldIgnoreEdge(BB->invar, SB)) {
+      if(!Walker->doIgnoreEdges)
+	Walker->hitIgnoredEdge();
+      continue;
+    }
 
     if(queueNextLoopIterationFW(BB, SB, Walker, Ctx, firstSucc))
       continue;

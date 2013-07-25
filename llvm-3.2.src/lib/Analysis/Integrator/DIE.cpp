@@ -161,6 +161,11 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
   if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INSTRUCTION_IDX)
     return;
 
+  if(getFunctionRoot()->blocksReachableOnFailure.count(User.blockIdx)) {
+    Visitor.notifyUsersMissed();
+    return;
+  }
+
   ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
   const Loop* UserL = SII->parent->outerScope;
 

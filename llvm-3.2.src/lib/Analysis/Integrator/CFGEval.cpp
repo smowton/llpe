@@ -228,8 +228,11 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
     if(!BB->succsAlive[i])
       continue;
 
-    if(shouldIgnoreEdge(BB->invar, SBBI))
+    if(shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i]))) {
+      if(anyChange)
+	getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[i], 0);
       continue;
+    }
 
     // Create a store reference for each live successor
     ++SI->parent->localStore->refCount;
@@ -307,13 +310,16 @@ void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
   for(uint32_t i = 0, ilim = BB->invar->predIdxs.size(); i != ilim; ++i) {
 
     ShadowBBInvar* predBBI = getBBInvar(BB->invar->predIdxs[i]);
-    if(!edgeIsDead(predBBI, BB->invar)) {
-      
-      release_assert(pendingEdges != 0 && "pendingEdges falling below zero");
-      --pendingEdges;
-      
-    }
 
+    if(edgeIsDead(predBBI, BB->invar))
+      continue;
+
+    if(shouldIgnoreEdge(predBBI, BB->invar))
+      continue;
+      
+    release_assert(pendingEdges != 0 && "pendingEdges falling below zero");
+    --pendingEdges;
+      
   }
 
   if(pendingEdges == 0) {

@@ -253,7 +253,7 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
 
   for(std::vector<PathCondition>::iterator it = conds.begin(), itend = conds.end(); it != itend; ++it) {
 
-    if(it->fromBlockIdx == BBI->idx) {
+    if(it->fromBB == BBI->BB) {
 
       Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  ";
       switch(t) {
@@ -283,17 +283,28 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
 	
       }
 
-      if(it->instBlockIdx == (uint32_t)-1) {
+      if(!it->instBB) {
 
 	ShadowGV* GV = &GlobalIHP->shadowGlobals[it->instIdx];
 	Out << " -&gt; " << itcache(GV);
 
       }
-      else {
-	ShadowBBInvar* targetBB = BB->IA->getBBInvar(it->instBlockIdx);
-	ShadowInstructionInvar* targetSI = &targetBB->insts[it->instIdx];
+      else if(it->instBB == (BasicBlock*)ULONG_MAX) {
 
-	Out << " -&gt; " << targetBB->BB->getName() << " / " << itcache(targetSI->I, true);
+	IntegrationAttempt* ArgIA = getIAWithTargetStackDepth(BB->IA->getFunctionRoot(), it->instStackIdx);
+
+	Function::arg_iterator AI = ArgIA->F.arg_begin();
+	std::advance(AI, it->instIdx);
+	Out << " -&gt; " << itcache((Argument*)AI, true);
+
+      }
+      else {
+	
+	BasicBlock::iterator BI = it->instBB->begin();
+	std::advance(BI, it->instIdx);
+
+	Out << " -&gt; " << it->instBB->getName() << " / " << itcache((Instruction*)BI, true);
+
       }
 
       if(it->offset != 0)
@@ -348,7 +359,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   bool isFunctionHeader = (!L) && (BBI->BB == &(F.getEntryBlock()));
 
-  if(BB && (!L) && BB->IA->getFunctionRoot()->isRootMainCall()) {
+  if(BB && (!L) && BB->IA->getFunctionRoot()->targetCallInfo) {
 
     // Mention if there are symbolic path conditions or functions here:
     printPathConditions(pass->rootIntPathConditions, PathConditionTypeInt, Out, BBI, BB);
@@ -358,7 +369,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
 	  itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
 
-      if(it->bbIdx == BBI->idx) {
+      if(it->BB == BBI->BB) {
 
 	Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  Call PC: ";
 	Out << it->F->getName();

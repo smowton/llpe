@@ -1,6 +1,10 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
+#include "llvm/BasicBlock.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/Dominators.h"
+
 using namespace llvm;
 
 // Functions relating to conditional specialisation
@@ -13,10 +17,10 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
   if(MyRoot->targetCallInfo && 
      SI->parent->invar->idx == MyRoot->targetCallInfo->targetCallBlock &&
      SI->invar->idx == MyRoot->targetCallInfo->targetCallInst &&
-     MyRoot->targetCallInfo->targetStackDepth < pass->targetStack.size()) {
+     MyRoot->targetCallInfo->targetStackDepth < pass->targetCallStack.size()) {
 
     uint32_t newDepth = MyRoot->targetCallInfo->targetStackDepth + 1;
-    IA->setTargetCall(pass->targetStack[newDepth], newDepth);
+    IA->setTargetCall(pass->targetCallStack[newDepth], newDepth);
 
   }
 
@@ -25,7 +29,7 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
 void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool skipFirst) {
 
   if(!skipFirst) {
-    if(!Set.insert(idx))
+    if(!Set.insert(idx).second)
       return;
   }
 
@@ -35,9 +39,23 @@ void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool
 
 }
 
+void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
+
+  SmallDenseMap<uint32_t, uint32_t>::iterator it = blocksReachableOnFailure.find(idx);
+  if(it != blocksReachableOnFailure.end() && it->second <= instIdx)
+    return;
+
+  blocksReachableOnFailure[idx] = instIdx;
+
+  ShadowBBInvar* BBI = getBBInvar(idx);
+  for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim; ++i)
+    markBlockAndSuccsFailed(BBI->succIdxs[i], 0);  
+
+}
+
 void InlineAttempt::addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set) {
 
-  if(!Set.insert(idx))
+  if(!Set.insert(idx).second)
     return;
 
   ShadowBBInvar* BBI = getBBInvar(idx);
@@ -49,7 +67,7 @@ void InlineAttempt::addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set) {
 void InlineAttempt::setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_t stackIdx) {
 
   uint32_t blockIdx = findBlock(invarInfo, arg.first->getName());
-  DominatorTree* DT = &getAnalysis<DominatorTree>(F);
+  DominatorTree* DT = &pass->getAnalysis<DominatorTree>(F);
   targetCallInfo = new IATargetInfo(blockIdx, arg.second, stackIdx, DT);
 
   addBlockAndPreds(blockIdx, targetCallInfo->mayReachTarget);
@@ -94,7 +112,8 @@ bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pai
     return false;
 
   ShadowInstruction* SI = V.getInst();
-  if(!SI)
+  ShadowArg* SA = V.getArg();
+  if((!SI) && (!SA))
     return false;
 
   for(std::vector<PathCondition>::iterator it = pass->rootIntPathConditions.begin(),
@@ -102,11 +121,27 @@ bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pai
 
     /* fromStackIdx must equal instStackIdx for this kind of condition */
 
-    if(it->instStackIdx == targetCallStack->targetStackDepth && 
-       it->instBB == SI->parent->invar->BB &&
-       it->instIdx == SI->invar->idx) {
+    if(it->instStackIdx == targetCallInfo->targetStackDepth) {
+      
+      bool match = false;
 
-      if(targetCallInfo->DT->dominates(it->fromBB, UserBlock->invar->BB)) {
+      if(SI && 
+	 it->instBB == SI->parent->invar->BB &&
+	 it->instIdx == SI->invar->idx) {
+
+	if(targetCallInfo->DT->dominates(it->fromBB, UserBlock->invar->BB))
+	  match = true;
+
+      }
+      else if(SA &&
+	      it->instBB == (BasicBlock*)ULONG_MAX &&
+	      it->instIdx == SA->invar->A->getArgNo()) {
+
+	match = true;
+
+      }
+
+      if(match) {
 
 	Result.first = ValSetTypeScalar;
 	Result.second.V = it->val;
@@ -128,16 +163,16 @@ void PeelIteration::applyMemoryPathConditions(ShadowBB* BB) {
 
 }
 
-static InlineAttempt* getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth) {
+InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth) {
 
   release_assert(IA->targetCallInfo);
   if(IA->targetCallInfo->targetStackDepth == depth)
-    return this;
+    return IA;
 
   release_assert(depth < IA->targetCallInfo->targetStackDepth);
-  IntegrationAttempt* par = getUniqueParent();
+  IntegrationAttempt* par = IA->getUniqueParent();
   release_assert(par && "Can't share functions in the target stack!");
-  return getIAWithTargetStackDepth(par->getFunctionRoot(), depth - 1);
+  return getIAWithTargetStackDepth(par->getFunctionRoot(), depth);
 
 }
 
@@ -148,15 +183,16 @@ void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes con
     ImprovedValSetSingle writePtr;
     ShadowValue ptrSV;
 
-    if(it->instBlockIdx != (uint32_t)-1) {
+    if(!it->instBB) {
 
-      InlineAttempt* ptrIA = getIAWithTargetStackDepth(it->instStackIdx);
+      ShadowGV* GV = &(GlobalIHP->shadowGlobals[it->instIdx]);
+      writePtr.set(ImprovedVal(ShadowValue(GV), 0), ValSetTypePB);
 
-      ShadowBB* ptrBB = ptrIA->getBB(it->instBlockIdx);
-      if(!ptrBB)
-	return;
+    }
+    else if(it->instBB == (BasicBlock*)ULONG_MAX) {
 
-      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, it->instStackIdx);
+      ShadowArg* ptr = &ptrIA->argShadows[it->instIdx];
       ptrSV = ShadowValue(ptr);
       ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
       if(!ptrIVS)
@@ -167,8 +203,20 @@ void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes con
     }
     else {
 
-      ShadowGV* GV = &(GlobalIHP->shadowGlobals[it->instIdx]);
-      writePtr.set(ImprovedVal(ShadowValue(GV), 0), ValSetTypePB);
+      InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, it->instStackIdx);
+
+      uint32_t ptrBBIdx = findBlock(ptrIA->invarInfo, it->instBB->getName());
+      ShadowBB* ptrBB = ptrIA->getBB(ptrBBIdx);
+      if(!ptrBB)
+	return;
+
+      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
+      ptrSV = ShadowValue(ptr);
+      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
+      if(!ptrIVS)
+	return;
+
+      writePtr = *ptrIVS;
 
     }
 
@@ -232,7 +280,7 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
   for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
 	itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
 
-    if(it->stackIdx == targetCallInfo->targetStackDepth && it->bbIdx == BB->invar->idx) {
+    if(it->stackIdx == targetCallInfo->targetStackDepth && it->BB == BB->invar->BB) {
 
       // Insert a model call that notionally occurs before the block begins.
       // Notionally its callsite is the first instruction in BB; this is probably not a call

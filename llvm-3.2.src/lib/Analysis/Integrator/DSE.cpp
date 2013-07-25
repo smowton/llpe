@@ -78,7 +78,7 @@ public:
 
   bool writeUsed;
 
-  WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, int64_t SO, uint64_t SS) : ForwardIAWalker(StartInst->invar->idx, StartInst->parent, true, StartCtx), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
+  WriterUsedWalker(ShadowInstruction* StartInst, void* StartCtx, ShadowValue SP, ShadowValue SB, int64_t SO, uint64_t SS) : ForwardIAWalker(StartInst->invar->idx, StartInst->parent, true, StartCtx, false), StorePtr(SP), StoreBase(SB), StoreOffset(SO), StoreSize(SS), writeUsed(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context);
   virtual bool shouldEnterCall(ShadowInstruction*, void*);
@@ -89,6 +89,8 @@ public:
   virtual void leaveCall(InlineAttempt*, void*);
   virtual void enterLoop(PeelAttempt*, void*);
   virtual void leaveLoop(PeelAttempt*, void*);
+  virtual void hitIgnoredEdge() { writeUsed = true; }
+  virtual bool shouldContinue() { return !writeUsed; }
 
 };
 

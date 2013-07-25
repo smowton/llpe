@@ -84,6 +84,7 @@ static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOr
 static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
 static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
 static cl::opt<bool> UseDSA("int-use-dsa");
+static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1817,7 +1818,7 @@ static int64_t getInteger(std::string& s, const char* desc) {
 
 }
 
-uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, std::string& name) {
+uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, StringRef name) {
 
   for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
     if(SFI->BBs[i].BB->getName() == name)
@@ -1829,7 +1830,7 @@ uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, std::string& name) {
 
 }
 
-static BasicBlock* findBlock(Function* F, std::string& name) {
+static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
     if(((BasicBlock*)FI)->getName() == name)
@@ -2165,13 +2166,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       exit(1);
     }
 
-    Function* F = M.getFunction(fName);
-    if(!F) {
+    Function* StackF = F.getParent()->getFunction(fName);
+    if(!StackF) {
       errs() << "Bad function in int-target-stack\n";
       exit(1);
     }
 
-    BasicBlock* BB = findBlock(F, bbName);
+    BasicBlock* BB = findBlockRaw(StackF, bbName);
     uint32_t instIdx = (uint32_t)getInteger(instIdxStr, "int-target-stack instruction index");
 
     if(instIdx >= BB->size()) {
@@ -2278,7 +2279,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
     {
       std::istringstream istr(*it);
-      std::getline(istr, fStackIdx, ',');
+      std::getline(istr, fStackIdxStr, ',');
       std::getline(istr, bbName, ',');
       std::getline(istr, instIndexStr, ',');
       std::getline(istr, assumeStr, ',');
@@ -2287,7 +2288,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       std::getline(istr, offsetStr, ',');
     }
 
-    if(fStackIdx.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeStackIdx.empty() || assumeBlock.empty()) {
+    if(fStackIdxStr.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeStackIdxStr.empty() || assumeBlock.empty()) {
 
       errs() << "Bad int path condtion\n";
       exit(1);
@@ -2295,23 +2296,26 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     }
 
     uint32_t fStackIdx = getInteger(fStackIdxStr, "Stack index");
-    if(fStackIdx >= targetStack.size()) {
+    if(fStackIdx >= targetCallStack.size()) {
       
       errs() << "Bad stack index\n";
       exit(1);
 
     }
 
+    Function* fStack = targetCallStack[fStackIdx].first->getParent();
+
     BasicBlock* bb;
     if(bbName == "__globals__")
       bb = 0;
+    else if(bbName == "__args__")
+      bb = (BasicBlock*)ULONG_MAX;
     else {
-      Function* fStack = targetCallStack[fStackIdx].first->getParent();
-      bb = findBlock(fStack, bbName);
+      bb = findBlockRaw(fStack, bbName);
     }
 
     int64_t instIndex;
-    if(bbIdx == (uint32_t)-1) {
+    if(!bb) {
       GlobalVariable* GV = IA->F.getParent()->getGlobalVariable(instIndexStr, true);
       release_assert(GV && "Bad global variable in path condition");
       instIndex = (int64_t)GlobalIHP->getShadowGlobalIndex(GV);
@@ -2320,7 +2324,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       instIndex = getInteger(instIndexStr, "Instruction index");
    
     uint32_t assumeStackIdx = getInteger(assumeStackIdxStr, "Assume stack index");
-    if(assumeStackIdx >= targetStack.size()) {
+    if(assumeStackIdx >= targetCallStack.size()) {
 
       errs() << "Bad stack index\n";
       exit(1);
@@ -2334,7 +2338,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
     }
 
-    BasicBlock* assumeBB = findBlock(targetCallStack[assumeStackIdx].first->getParent(), assumeBlock);
+    BasicBlock* assumeBB = findBlockRaw(targetCallStack[assumeStackIdx].first->getParent(), assumeBlock);
 
     uint64_t offset = 0;
     if(!offsetStr.empty())
@@ -2348,12 +2352,17 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 	int64_t assumeInt = getInteger(assumeStr, "Integer path condition");
 
 	Type* targetType;
-	if(bbIdx != (uint32_t)-1) {
-	  BasicBlock::iterator it = assumeBB->begin();
-	  for(uint32_t i = 0; i < instIndex; ++i)
-	    it++;
+	if(bb) {
+	  BasicBlock::iterator it = bb->begin();
+	  std::advance(it, instIndex);
 	  Instruction* assumeInst = it;
 	  targetType = assumeInst->getType();
+	}
+	else if(bb == (BasicBlock*)ULONG_MAX) {
+	  Function::arg_iterator it = fStack->arg_begin();
+	  std::advance(it, instIndex);
+	  Argument* A = it;
+	  targetType = A->getType();
 	}
 	else {
 	  GlobalVariable* GV = IA->F.getParent()->getGlobalVariable(instIndexStr, true);
@@ -2629,13 +2638,13 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
       exit(1);
     }
     
-    BasicBlock* assumeBlock = findBlock(targetCallStack[fStackIdx].first, bbName);
+    BasicBlock* assumeBlock = findBlockRaw(targetCallStack[fStackIdx].first->getParent(), bbName);
     Function* CallF = IA->F.getParent()->getFunction(calledName);
 
     FunctionType* FType = CallF->getFunctionType();
     release_assert(FType->getNumParams() == 0 && "Only no-arg path functions supported at the moment");
 
-    rootFuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlockIdx, CallF));
+    rootFuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF));
     
   }
 
@@ -2710,9 +2719,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   initBlacklistedFunctions(M);
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
-  if(pass->targetStack.size()) {
+  if(targetCallStack.size()) {
 
-    IA->setTargetCall(pass->targetStack[0]);
+    IA->setTargetCall(targetCallStack[0], 0);
 
   }
 

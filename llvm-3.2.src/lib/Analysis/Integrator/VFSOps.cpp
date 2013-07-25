@@ -218,7 +218,7 @@ public:
   int64_t uniqueIncomingOffset;
 
   FindVFSPredecessorWalker(ShadowInstruction* CI, ShadowInstruction* _FD) 
-    : BackwardIAWalker(CI->invar->idx, CI->parent, true), SourceOp(CI), FD(_FD),
+    : BackwardIAWalker(CI->invar->idx, CI->parent, /*skipFirst=*/true, 0, 0, /*doIgnoreEdges=*/true), SourceOp(CI), FD(_FD),
       uniqueIncomingOffset(-1) { 
     IA = SourceOp->parent->IA;
   }
@@ -761,11 +761,13 @@ public:
   SmallVector<ShadowInstruction*, 4> UserInstructions;
   bool residualUserFound;
 
-  OpenInstructionUnusedWalker(ShadowInstruction* I) : ForwardIAWalker(I->invar->idx, I->parent, true), OpenInst(I), residualUserFound(false) { }
+  OpenInstructionUnusedWalker(ShadowInstruction* I) : ForwardIAWalker(I->invar->idx, I->parent, true, 0, false), OpenInst(I), residualUserFound(false) { }
 
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
   virtual bool shouldEnterCall(ShadowInstruction*, void*);
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
+  virtual void hitIgnoredEdge() { residualUserFound = true; }
+  virtual bool shouldContinue() { return !residualUserFound; }
 
 };
 
