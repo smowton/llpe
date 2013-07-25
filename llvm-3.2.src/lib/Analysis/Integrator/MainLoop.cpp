@@ -154,9 +154,6 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   if(!BB)
     return false;
 
-  if(BB->status == BBSTATUS_IGNORED)
-    return false;
-
   bool anyChange = false;
 
   // Use natural scope rather than scope because even if a loop is

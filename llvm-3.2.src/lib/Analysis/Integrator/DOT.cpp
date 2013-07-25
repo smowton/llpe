@@ -214,7 +214,7 @@ bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInv
 
 void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
 
-  if(brief && ((!SB) || SB->status == BBSTATUS_IGNORED))
+  if(brief && ((!SB) || shouldIgnoreEdge(BBI, SBI)))
     return;
 
   std::string edgeString;
@@ -233,6 +233,9 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 
   if(edgeIsDead(BBI, SBI)) {
     rso << "[color=gray]";
+  }
+  else if(shouldIgnoreEdge(BBI, SBI)) {
+    rso << "[color=red]";
   }
 
   rso << ";\n";
@@ -306,7 +309,7 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
 
 void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief) {
 
-  if(brief && ((!BB) || BB->status == BBSTATUS_IGNORED))
+  if(brief && !BB)
     return;
 
   TerminatorInst* TI = BBI->BB->getTerminator();
@@ -336,9 +339,6 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   }
   else if(BB && BB->status == BBSTATUS_ASSUMED) {
     Out << " bgcolor=\"orange\"";
-  }
-  else if(BB && BB->status == BBSTATUS_IGNORED) {
-    Out << " bgcolor=\"pink\"";
   }
 
   Out << "><font point-size=\"14\">";

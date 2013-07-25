@@ -1160,43 +1160,6 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
-bool PeelIteration::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
-
-  return false;
-
-}
-
-bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
-
-  if(!isRootMainCall())
-    return false;
-
-  ShadowInstruction* SI = V.getInst();
-  if(!SI)
-    return false;
-
-  for(std::vector<PathCondition>::iterator it = pass->rootIntPathConditions.begin(),
-	itend = pass->rootIntPathConditions.end(); it != itend; ++it) {
-
-    if(it->instIdx == SI->invar->idx &&
-       it->instBlockIdx == SI->parent->invar->idx) {
-
-      if(pass->rootFunctionDT->dominates(getBBInvar(it->fromBlockIdx)->BB, UserBlock->invar->BB)) {
-
-	Result.first = ValSetTypeScalar;
-	Result.second.V = it->val;
-	return true;
-	
-      }
-
-    }
-
-  }
-
-  return false;
-
-}
-
 // All Ops are known not to have multi values.
 bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
 

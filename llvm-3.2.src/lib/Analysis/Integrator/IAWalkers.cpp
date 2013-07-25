@@ -12,7 +12,7 @@ using namespace llvm;
 
 //// Implement the backward walker:
 
-BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirst, void* initialCtx, DenseSet<WLItem>* AlreadyVisited) : IAWalker(initialCtx) {
+BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirst, void* initialCtx, DenseSet<WLItem>* AlreadyVisited, bool doIgnoreEdges) : IAWalker(initialCtx, doIgnoreEdges) {
 
   PList = &Worklist1;
   CList = &Worklist2;
@@ -32,7 +32,7 @@ BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirs
 struct QueueWalkVisitor : public ShadowBBVisitor {
 
   BackwardIAWalker* W;
-  QueueWalkVisitor(BackwardIAWalker* _W) : W(_W) { }
+  QueueWalkVisitor(BackwardIAWalker* _W, bool ign) : ShadowBBVisitor(ign), W(_W) { }
 
   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
 
@@ -132,7 +132,7 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
   }
   else {
 
-    QueueWalkVisitor V(Walker);    
+    QueueWalkVisitor V(Walker, doIgnoreEdges);    
     visitNormalPredecessorsBW(FromBB, &V, Ctx);
 
   }
@@ -159,6 +159,9 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
     ShadowBBInvar* BBI = getBBInvar(FromBBI->predIdxs[i]);
 
     if(edgeIsDead(BBI, FromBBI))
+      continue;
+
+    if(Visitor->doIgnoreEdges && shouldIgnoreEdge(BBI, FromBB->invar))
       continue;
 
     // CtxLoop != FromBBLoop indicates we're looking at loop blocks in an invariant context,

@@ -116,6 +116,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     active = false;
     instructionsCommitted = false;
     CommitF = 0;
+    targetCallInfo = 0;
     if(_CI)
       Callers.push_back(_CI);
 
@@ -599,6 +600,8 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1);
   IA->isModel = isModel;
   inlineChildren[SI] = IA;
+
+  checkTargetStack(SI, IA);
 
   LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
 
@@ -1814,6 +1817,30 @@ static int64_t getInteger(std::string& s, const char* desc) {
 
 }
 
+uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, std::string& name) {
+
+  for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
+    if(SFI->BBs[i].BB->getName() == name)
+      return i;
+  }  
+
+  errs() << "Block " << name << " not found\n";
+  exit(1);
+
+}
+
+static BasicBlock* findBlock(Function* F, std::string& name) {
+
+  for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
+    if(((BasicBlock*)FI)->getName() == name)
+      return FI;
+  }
+
+  errs() << "Block " << name << " not found\n";
+  exit(1);
+
+}
+
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
@@ -2121,6 +2148,48 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
   }
 
+  for(cl::list<std::string>::iterator it = TargetStack.begin(), 
+	itend = TargetStack.end(); it != itend; ++it) {
+    
+    std::string& thisCall = *it;
+    
+    std::string fName, bbName, instIdxStr;
+
+    std::istringstream istr(thisCall);
+    std::getline(istr, fName, ',');
+    std::getline(istr, bbName, ',');
+    std::getline(istr, instIdxStr, ',');
+
+    if(fName.empty() || bbName.empty() || instIdxStr.empty()) {
+      errs() << "int-target-stack must have form functionName,blockName,index\n";
+      exit(1);
+    }
+
+    Function* F = M.getFunction(fName);
+    if(!F) {
+      errs() << "Bad function in int-target-stack\n";
+      exit(1);
+    }
+
+    BasicBlock* BB = findBlock(F, bbName);
+    uint32_t instIdx = (uint32_t)getInteger(instIdxStr, "int-target-stack instruction index");
+
+    if(instIdx >= BB->size()) {
+      errs() << "int-target-stack: call instruction index out of range\n";
+      exit(1);
+    }
+
+    BasicBlock::iterator TestBI = BB->begin();
+    std::advance(TestBI, instIdx);
+    if(!isa<CallInst>(TestBI)) {
+      errs() << "int-target-stack: index does not refer to a CallInst\n";
+      exit(1);
+    }
+    
+    targetCallStack.push_back(std::make_pair(BB, instIdx));
+    
+  }
+
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
   this->verboseSharing = VerboseFunctionSharing;
@@ -2131,40 +2200,6 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 
   return mallocAlignment;
-
-}
-
-void InlineAttempt::addIgnoredBlock(std::string& name) {
-
-  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
-
-    ShadowBBInvar& BBI = *getBBInvar(i);
-    if(BBI.BB->getName() == name) {
-
-      if(getBB(BBI)) {
-	errs() << "Ignored BB " << name << " already created?";
-	exit(1);
-      }
-
-      ShadowBB* BB = createBB(i);
-      BB->status = BBSTATUS_IGNORED;
-
-      // Avoid confusing e.g. the commit phase: define all valued instructions to overdef
-      // to ensure they are committed as-is.
-
-      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
-
-	if(!BB->invar->insts[j].I->getType()->isVoidTy())
-	  BB->insts[j].i.PB = newOverdefIVS();
-
-      }
-
-      for(uint32_t j = 0, jlim = BBI.succIdxs.size(); j != jlim; ++j)
-	BB->succsAlive[j] = true;
-
-    }
-
-  }
 
 }
 
@@ -2201,18 +2236,6 @@ LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
 
 }
 
-static uint32_t findBlock(ShadowFunctionInvar* SFI, std::string& name) {
-
-  for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
-    if(SFI->BBs[i].BB->getName() == name)
-      return i;
-  }  
-
-  errs() << "Block " << name << " not found\n";
-  exit(1);
-
-}
-
 static Type* getTypeAtOffset(Type* Ty, uint64_t Offset) {
 
   PointerType* Ptr = dyn_cast<PointerType>(Ty);
@@ -2245,40 +2268,47 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
   for(cl::list<std::string>::iterator it = L.begin(), itend = L.end(); it != itend; ++it) {
 
-    std::string fName;
+    std::string fStackIdxStr;
     std::string bbName;
     std::string instIndexStr;
     std::string assumeStr;
+    std::string assumeStackIdxStr;
     std::string assumeBlock;
     std::string offsetStr;
 
     {
       std::istringstream istr(*it);
-      std::getline(istr, fName, ',');
+      std::getline(istr, fStackIdx, ',');
       std::getline(istr, bbName, ',');
       std::getline(istr, instIndexStr, ',');
       std::getline(istr, assumeStr, ',');
+      std::getline(istr, assumeStackIdxStr, ',');
       std::getline(istr, assumeBlock, ',');
       std::getline(istr, offsetStr, ',');
     }
 
-    if(fName.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeBlock.empty()) {
+    if(fStackIdx.empty() || bbName.empty() || instIndexStr.empty() || assumeStr.empty() || assumeStackIdx.empty() || assumeBlock.empty()) {
 
       errs() << "Bad int path condtion\n";
       exit(1);
 
     }
 
-    if(fName != IA->F.getName()) {
-      errs() << "Path conditions only supported in the root for now\n";
+    uint32_t fStackIdx = getInteger(fStackIdxStr, "Stack index");
+    if(fStackIdx >= targetStack.size()) {
+      
+      errs() << "Bad stack index\n";
       exit(1);
+
     }
-    
-    uint32_t bbIdx;
+
+    BasicBlock* bb;
     if(bbName == "__globals__")
-      bbIdx = (uint32_t)-1;
-    else
-      bbIdx = findBlock(IA->invarInfo, bbName);
+      bb = 0;
+    else {
+      Function* fStack = targetCallStack[fStackIdx].first->getParent();
+      bb = findBlock(fStack, bbName);
+    }
 
     int64_t instIndex;
     if(bbIdx == (uint32_t)-1) {
@@ -2289,7 +2319,22 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     else
       instIndex = getInteger(instIndexStr, "Instruction index");
    
-    uint32_t assumeBlockIdx = findBlock(IA->invarInfo, assumeBlock);
+    uint32_t assumeStackIdx = getInteger(assumeStackIdxStr, "Assume stack index");
+    if(assumeStackIdx >= targetStack.size()) {
+
+      errs() << "Bad stack index\n";
+      exit(1);
+
+    }
+
+    if(Ty == PathConditionTypeInt && assumeStackIdx != fStackIdx) {
+
+      errs() << "SSA assumptions cannot cross function boundaries (assume about an argument instead)\n";
+      exit(1);
+
+    }
+
+    BasicBlock* assumeBB = findBlock(targetCallStack[assumeStackIdx].first->getParent(), assumeBlock);
 
     uint64_t offset = 0;
     if(!offsetStr.empty())
@@ -2304,8 +2349,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
 	Type* targetType;
 	if(bbIdx != (uint32_t)-1) {
-	  BasicBlock* assumeDefBlock = IA->getBBInvar(bbIdx)->BB;
-	  BasicBlock::iterator it = assumeDefBlock->begin();
+	  BasicBlock::iterator it = assumeBB->begin();
 	  for(uint32_t i = 0; i < instIndex; ++i)
 	    it++;
 	  Instruction* assumeInst = it;
@@ -2346,7 +2390,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       llvm_unreachable();
     }
 
-    Result.push_back(PathCondition(bbIdx, (uint32_t)instIndex, assumeBlockIdx, assumeC, offset));
+    Result.push_back(PathCondition(fStackIdx, bb, (uint32_t)instIndex, assumeStackIdx, assumeBB, assumeC, offset));
 
   }
 
@@ -2568,26 +2612,30 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
   for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
 	itend = PathConditionsFunc.end(); it != itend; ++it) {
 
-    std::string fName;
+    std::string fStackIdxStr;
     std::string bbName;
     std::string calledName;
 
     {
       std::istringstream istr(*it);
-      std::getline(istr, fName, ',');
+      std::getline(istr, fStackIdxStr, ',');
       std::getline(istr, bbName, ',');
       std::getline(istr, calledName, ',');
     }
 
-    Function* CondF = IA->F.getParent()->getFunction(fName);
-    release_assert(CondF == &IA->F && "Path conditions only in root function for now");
-    uint32_t assumeBlockIdx = findBlock(IA->invarInfo, bbName);
+    uint32_t fStackIdx = getInteger(fStackIdxStr, "Path function stack index");
+    if(fStackIdx >= targetCallStack.size()) {
+      errs() << "Bad stack index for path function\n";
+      exit(1);
+    }
+    
+    BasicBlock* assumeBlock = findBlock(targetCallStack[fStackIdx].first, bbName);
     Function* CallF = IA->F.getParent()->getFunction(calledName);
 
     FunctionType* FType = CallF->getFunctionType();
     release_assert(FType->getNumParams() == 0 && "Only no-arg path functions supported at the moment");
 
-    rootFuncPathConditions.push_back(PathFunc(assumeBlockIdx, CallF));
+    rootFuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlockIdx, CallF));
     
   }
 
@@ -2641,7 +2689,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
 
   Function& F = *FoundF;
-  rootFunctionDT = &getAnalysis<DominatorTree>(F);
 
   // Mark realloc as an identified object if the function is defined:
   if(Function* Realloc = M.getFunction("realloc")) {
@@ -2663,6 +2710,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   initBlacklistedFunctions(M);
 
   InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
+  if(pass->targetStack.size()) {
+
+    IA->setTargetCall(pass->targetStack[0]);
+
+  }
 
   // Note ignored blocks and path conditions:
   parseArgsPostCreation(IA);

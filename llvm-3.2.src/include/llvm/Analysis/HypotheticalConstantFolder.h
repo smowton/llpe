@@ -120,24 +120,29 @@ enum PathConditionTypes {
 
 struct PathCondition {
 
-  uint32_t instBlockIdx;
+  uint32_t instStackIdx;
+  BasicBlock* instBB;
   uint32_t instIdx;
-  uint32_t fromBlockIdx;
+  uint32_t fromStackIdx;
+  BasicBlock* fromBB;
   Constant* val;
   uint64_t offset;
 
-PathCondition(uint32_t ibi, uint32_t ii, uint32_t fbi, Constant* v, uint64_t off) :
-  instBlockIdx(ibi), instIdx(ii), fromBlockIdx(fbi), val(v), offset(off) {}
+PathCondition(uint32_t isi, BasicBlock* ibi, uint32_t ii, uint32_t fsi, BasicBlock* fbi, Constant* v, uint64_t off) :
+    instStackIdx(isi), instBlockIdx(ibi), instIdx(ii), 
+    fromStackIdx(fsi), fromBlockIdx(fbi), val(v), offset(off) {}
 
 };
 
 struct PathFunc {
 
+  uint32_t stackIdx;
   uint32_t bbIdx;
   Function* F;
   InlineAttempt* IA;
+  Dom
 
-PathFunc(uint32_t _b, Function* _F) : bbIdx(_b), F(_F), IA(0) {}
+PathFunc(uint32_t f, uint32_t _b, Function* _F) : stackIdx(f), bbIdx(_b), F(_F), IA(0) {}
 
 };
 
@@ -199,7 +204,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<PathCondition> rootStringPathConditions;
    std::vector<PathCondition> rootIntmemPathConditions;
    std::vector<PathFunc> rootFuncPathConditions;
-   DominatorTree* rootFunctionDT;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, Function*> modelFunctions;
@@ -207,6 +211,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool useDSA;
 
    std::pair<LocStore, uint32_t>* argStores;
+
+   std::vector<std::pair<BasicBlock*, uint32_t> > targetCallStack;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -788,6 +794,8 @@ class IAWalker {
 
   SmallVector<void*, 4> Contexts;
   
+  bool doIgnoreEdges;
+  
   virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context) = 0;
   virtual bool shouldEnterCall(ShadowInstruction*, void*) = 0;
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*) = 0;
@@ -805,7 +813,7 @@ class IAWalker {
 
  public:
 
- IAWalker(void* IC = 0) : PList(&Worklist1), CList(&Worklist2), initialContext(IC) {
+ IAWalker(void* IC = 0, bool ign = false) : PList(&Worklist1), CList(&Worklist2), initialContext(IC), doIgnoreEdges(ign) {
     
     Contexts.push_back(initialContext);
 
@@ -826,7 +834,7 @@ class BackwardIAWalker : public IAWalker {
   virtual WalkInstructionResult reachedTop() { return WIRStopThisPath; }
   virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt*, void* Ctx) { return WIRContinue; }
 
-  BackwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0, DenseSet<WLItem>* AlreadyVisited = 0);
+  BackwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0, DenseSet<WLItem>* AlreadyVisited = 0, bool ign = false);
   
 };
 
@@ -846,6 +854,9 @@ class ForwardIAWalker : public IAWalker {
 };
 
 struct ShadowBBVisitor {
+
+  bool doIgnoreEdges;
+ShadowBBVisitor(bool ign = false) : doIgnoreEdges(ign) { }
 
   virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) = 0;
 
@@ -1454,6 +1465,24 @@ class PeelAttempt {
 
  };
 
+// Members only needed for an IA with a target call
+struct IATargetInfo {
+
+  uint32_t targetCallBlock;
+  uint32_t targetCallInst;
+  uint32_t targetStackDepth;
+  DenseSet<uint32_t> mayReachTarget;
+  DenseSet<uint32_t> mayFollowTarget;
+  DominatorTree* DT;
+
+IATargetInfo(uint32_t tCB, uint32_t tCI, uint32_t tSD, DominatorTree* _DT) : 
+    targetCallBlock(tCB), 
+    targetCallInst(tCI),
+    targetStackDepth(tSD),
+    DT(_DT) {}
+
+};
+
 class InlineAttempt : public IntegrationAttempt { 
 
  public:
@@ -1486,6 +1515,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   bool isModel;
   bool isPathCondition;
+
+  IATargetInfo* targetCallInfo;
   
   bool isUnsharable() {
     return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
@@ -1725,6 +1756,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  IntegratorTag* searchFunctions(IntegratorTag* thisTag, std::string&, IntegratorTag*& startAt);
 
  GlobalVariable* getStringArray(std::string& bytes, Module& M);
+
+ void findBlock(ShadowFunctionInvar* SFI, std::string& name);
   
  struct IntAAProxy {
 
@@ -1740,7 +1773,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    SmallVector<ShadowBB*, 4> incomingBlocks;
    bool verbose;
    
- MergeBlockVisitor(bool mtb, bool uvm = false, bool v = false) : newMap(0), mergeToBase(mtb), useVarargMerge(uvm), verbose(v) { }
+ MergeBlockVisitor(bool mtb, bool uvm = false, bool v = false) : ShadowBBVisitor(true), newMap(0), mergeToBase(mtb), useVarargMerge(uvm), verbose(v) { }
    
    void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
    void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);
