@@ -892,8 +892,8 @@ struct ShadowBB {
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
   LocalStoreMap* localStore;
-  BasicBlock* committedHead;
-  BasicBlock* committedTail;
+  SmallVector<BasicBlock*, 1> committedBlocks;
+  
   bool useSpecialVarargMerge;
   bool inAnyLoop;
 

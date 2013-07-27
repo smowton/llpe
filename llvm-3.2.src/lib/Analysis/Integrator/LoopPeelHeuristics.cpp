@@ -640,6 +640,13 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 	pass->removeSharableFunction(IA);
       
       IA->active = false;
+
+      if(changed && IA->hasFailedReturnPath()) {
+
+	// Must create a copy of this block for failure paths, starting at the call successor.
+	getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->idx, SI->invar->idx + 1);
+
+      }
       
     }
     else {
@@ -1827,6 +1834,18 @@ uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, StringRef name) {
 
   errs() << "Block " << name << " not found\n";
   exit(1);
+
+}
+
+uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, BasicBlock* BB) {
+
+  for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
+    if(SFI->BBs[i].BB == BB)
+      return i;
+  }  
+
+  errs() << "Block " << BB->getName() << " not found\n";
+  exit(1);  
 
 }
 

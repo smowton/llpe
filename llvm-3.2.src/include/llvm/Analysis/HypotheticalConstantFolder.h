@@ -11,6 +11,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
+#include "llvm/BasicBlock.h"
 #include "llvm/Constant.h"
 #include "llvm/Argument.h"
 #include "llvm/Instruction.h"
@@ -21,6 +22,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/RecyclingAllocator.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 
 #include <limits.h>
 #include <string>
@@ -345,6 +347,8 @@ class IntegrationHeuristicsPass : public ModulePass {
      return new IntegratorTag();
 
    }
+
+   uint32_t countPathConditionsForBlock(ShadowBB* BB);
 
 };
 
@@ -1248,7 +1252,7 @@ protected:
   void localPrepareCommit();
   virtual std::string getCommittedBlockPrefix() = 0;
   void commitCFG();
-  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
+  virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI) = 0;
   void populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPB);
@@ -1371,7 +1375,7 @@ public:
 
   void prepareShadows();
   virtual std::string getCommittedBlockPrefix();
-  virtual ShadowBB* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
+  virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
@@ -1480,13 +1484,11 @@ struct IATargetInfo {
   uint32_t targetStackDepth;
   DenseSet<uint32_t> mayReachTarget;
   DenseSet<uint32_t> mayFollowTarget;
-  DominatorTree* DT;
 
-IATargetInfo(uint32_t tCB, uint32_t tCI, uint32_t tSD, DominatorTree* _DT) : 
+IATargetInfo(uint32_t tCB, uint32_t tCI, uint32_t tSD) : 
     targetCallBlock(tCB), 
     targetCallInst(tCI),
-    targetStackDepth(tSD),
-    DT(_DT) {}
+    targetStackDepth(tSD) {}
 
 };
 
@@ -1504,6 +1506,8 @@ class InlineAttempt : public IntegrationAttempt {
   Function* CommitF;
   BasicBlock* returnBlock;
   PHINode* returnPHI;
+  BasicBlock* failedReturnBlock;
+  PHINode* failedReturnPHI;
 
   ImmutableArray<ShadowArg> argShadows;
 
@@ -1525,8 +1529,12 @@ class InlineAttempt : public IntegrationAttempt {
 
   IATargetInfo* targetCallInfo;
 
+  DominatorTree* DT;
   SmallDenseMap<uint32_t, uint32_t, 8> blocksReachableOnFailure;
-  
+  std::vector<SmallVector<BasicBlock*, 1> > failedBlocks;
+  ValueToValueMapTy* failedBlockMap;
+  DenseMap<std::pair<Instruction*, Use*>, PHINode*>* PHIForwards;
+
   bool isUnsharable() {
     return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
   }
@@ -1630,6 +1638,26 @@ class InlineAttempt : public IntegrationAttempt {
   void addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set);
   void markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx);
   void setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_t stackIdx);
+  virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
+  void getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets);
+  bool hasFailedReturnPath();
+  void initFailedBlockCommit();
+  void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
+  void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
+  SmallVector<BasicBlock*, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
+  BasicBlock::iterator emitFirstSubblockMergePHIs(uint32_t idx, SmallVector<BasicBlock*, 4>::iterator firstNonPCBlock);
+  bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
+  bool isSimpleMergeBlock(uint32_t i);
+  Value* getLocalFailedValue(Value* V, Use* U);
+  BasicBlock::iterator insertMergePHIs(uint32_t BBIdx, SmallVector<BasicBlock*, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset);
+  BasicBlock::iterator insertSimpleMergePHIs(uint32_t BBIdx);
+  BasicBlock::iterator insertPostCallPHIs(uint32_t OrigBBIdx, BasicBlock* InsertBB, uint32_t InsertBBOffset, ShadowInstruction* Call, BasicBlock* unspecPred);
+  Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U);
+  Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
+  BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<BasicBlock*, 4>::iterator PCPredsBegin, SmallVector<BasicBlock*, 4>::iterator PCPredsEnd);
+  void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, bool skipTerm);
+  BasicBlock::iterator commitSimpleFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
+  void commitSimpleFailedBlock(uint32_t i);
   
 };
 
@@ -1772,8 +1800,13 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  GlobalVariable* getStringArray(std::string& bytes, Module& M);
 
+ uint32_t findBlock(ShadowFunctionInvar* SFI, BasicBlock* BB);
  uint32_t findBlock(ShadowFunctionInvar* SFI, StringRef name);
  InlineAttempt* getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth);
+
+ Value* getCommittedValue(ShadowValue SV);
+ Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore);
+ Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd);
   
  struct IntAAProxy {
 

@@ -158,14 +158,71 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
 }
 
+static BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
+				       ValueToValueMapTy& VMap,
+				       const Twine &NameSuffix, 
+				       Function* F,
+				       uint32_t startIdx) {
+
+  BasicBlock *NewBB = BasicBlock::Create(BB->getContext(), "", F);
+  if (BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
+
+  // Loop over all instructions, and copy them over.
+  BasicBlock::const_iterator II = BB->begin();
+  std::advance(II, startIdx);
+
+  for (BasicBlock::const_iterator IE = BB->end(); II != IE; ++II) {
+    Instruction *NewInst = II->clone();
+    if (II->hasName())
+      NewInst->setName(II->getName()+NameSuffix);
+    NewBB->getInstList().push_back(NewInst);
+    VMap[II] = NewInst;                // Add instruction map to value.
+    
+  }
+  
+  return NewBB;
+
+}
+
 void IntegrationAttempt::commitCFG() {
 
   SaveProgress();
 
   Function* CF = getFunctionRoot()->CommitF;
   const Loop* currentLoop = L;
+  
+  InlineAttempt* LocalRoot = getFunctionRoot();
+  if((IntegrationAttempt*)LocalRoot != this)
+    LocalRoot = 0;
+
+  if(LocalRoot)
+    LocalRoot->initFailedBlockCommit();
 
   for(uint32_t i = 0; i < nBBs; ++i) {
+
+    // Create failed block if necessary:
+
+    uint32_t createFailedBlockFrom = UINT_MAX;
+
+    if(LocalRoot) {
+      // Determine if there should be a failed version of the head of this block:
+      SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = LocalRoot->blocksReachableOnFailure.find(i);
+      if(it != LocalRoot->blocksReachableOnFailure.end())
+	createFailedBlockFrom = it->second;
+    }
+
+    if(createFailedBlockFrom != UINT_MAX) {
+
+      ShadowBBInvar* BBI = getBBInvar(i);
+      BasicBlock* NewBB;
+      NewBB = CloneBasicBlockFrom(BBI->BB, *LocalRoot->failedBlockMap, ".failed_clone", 
+				  CF, createFailedBlockFrom);
+      LocalRoot->failedBlocks[i].push_back(NewBB);
+      (*LocalRoot->failedBlockMap)[BBI->BB] = NewBB;
+
+    }
+
+    // Now create the specialised block if it exists, and split the failed block where needed.
 
     ShadowBB* BB = BBs[i];
     if(!BB)
@@ -200,10 +257,22 @@ void IntegrationAttempt::commitCFG() {
       raw_string_ostream RSO(Name);
       RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
-    BB->committedTail = BB->committedHead = BasicBlock::Create(F.getContext(), Name, CF);
+    BB->committedBlocks.push_back(BasicBlock::Create(F.getContext(), Name, CF));
+
+    // Create extra empty blocks for each path condition that's effective here:
+    uint32_t nCondsHere = pass->countPathConditionsForBlock(BB);
+    for(uint32_t k = 0; k < nCondsHere; ++k) {
+
+      BasicBlock* newBlock = 
+	BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".pathcond", CF);
+
+      BB->committedBlocks.push_back(newBlock);
+
+    }
 
     // Determine if we need to create more BBs because of call inlining:
 
+    uint32_t instsSinceLastSplit = 0;
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* SI = &(BB->insts[j]);
@@ -215,13 +284,43 @@ void IntegrationAttempt::commitCFG() {
 
 	    if(!IA->commitsOutOfLine()) {
 
-	      std::string Name;
-	      {
-		raw_string_ostream RSO(Name);
-		RSO << IA->getCommittedBlockPrefix() << "callexit";
-	      }
-	      BB->committedTail = IA->returnBlock = BasicBlock::Create(F.getContext(), Name, CF);
+	      // Split the specialised block:
+
+	      std::string Pref = IA->getCommittedBlockPrefix();
+	      IA->returnBlock = 
+		BasicBlock::Create(F.getContext(), StringRef(Pref) + ".callexit", CF);
+	      BB->committedBlocks.push_back(IA->returnBlock);
 	      IA->CommitF = CF;
+
+	      // Split the unspecialised block:
+
+	      if(IA->hasFailedReturnPath()) {
+
+		if(j == createFailedBlockFrom) {
+
+		  // Use block as-is.
+		  IA->failedReturnBlock = LocalRoot->failedBlocks[i].back();
+
+		}
+		else {
+
+		  BasicBlock* toSplit = LocalRoot->failedBlocks[i].back();
+		  uint32_t instsToSplit = std::min(j - createFailedBlockFrom, instsSinceLastSplit);
+		  BasicBlock::iterator splitIterator = toSplit->begin();
+		  std::advance(splitIterator, instsToSplit);
+		  BasicBlock* splitBlock = 
+		    toSplit->splitBasicBlock(splitIterator, ".callsplit");
+		  LocalRoot->failedBlocks[i].push_back(splitBlock);
+		  IA->failedReturnBlock = splitBlock;
+		  
+		}
+
+	      }
+	      else {
+
+		IA->failedReturnBlock = 0;
+
+	      }
 
 	    }
 	    else {
@@ -240,9 +339,14 @@ void IntegrationAttempt::commitCFG() {
 	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name);
 	      IA->returnBlock = 0;
 
+	      release_assert(!IA->hasFailedReturnPath() && "Failed return paths only supported for inline commit at present");
+	      IA->failedReturnBlock = 0;
+
 	    }
 
 	    IA->commitCFG();
+	    instsSinceLastSplit = 0;
+	    continue;
 
 	  }
 
@@ -250,13 +354,15 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
+      ++instsSinceLastSplit;
+
     }
 
   }
 
 }
 
-static Value* getCommittedValue(ShadowValue SV) {
+Value* llvm::getCommittedValue(ShadowValue SV) {
 
   switch(SV.t) {
   case SHADOWVAL_OTHER:
@@ -307,16 +413,16 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
 BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
-  return BBs[0]->committedHead;
+  return BBs[0]->committedBlocks.front();
 
 }
 
-ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
+BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   if(BB->invar->idx == parentPA->invarInfo->latchIdx && succIdx == parentPA->invarInfo->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
-      return PI->getBB(succIdx);
+      return PI->getBB(succIdx)->committedBlocks.front();
     else {
       if(iterStatus == IterationStatusFinal) {
 	release_assert(pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)
@@ -325,7 +431,7 @@ ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& ma
 	return 0;
       }
       else
-	return parent->getBB(succIdx);
+	return parent->getBB(succIdx)->committedBlocks.front();
     }
 
   }
@@ -334,7 +440,20 @@ ShadowBB* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& ma
 
 }
 
-ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
+BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
+
+  if(shouldIgnoreEdge(BB->invar, getBBInvar(succIdx))) {
+
+    release_assert(failedBlocks[succIdx].size());
+    return failedBlocks[succIdx].front();
+
+  }
+
+  return IntegrationAttempt::getSuccessorBB(BB, succIdx, markUnreachable);
+
+}
+
+BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   ShadowBBInvar* SuccBBI = getBBInvar(succIdx);
 
@@ -349,7 +468,7 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, boo
     if(BB->invar->outerScope == L) {
       if(PeelAttempt* PA = getPeelAttempt(SuccBBI->naturalScope)) {
 	if(PA->isEnabled())
-	  return PA->Iterations[0]->getBB(*SuccBBI);
+	  return PA->Iterations[0]->getBB(*SuccBBI)->committedBlocks.front();
       }
     }
 
@@ -369,7 +488,11 @@ ShadowBB* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, boo
 	markUnreachable = true;
     }
   }
-  return SuccBB;
+
+  if(!SuccBB)
+    return 0;
+  else
+    return SuccBB->committedBlocks.front();
 
 }
 
@@ -397,7 +520,7 @@ ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
   
 }
 
-static Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
+Value* llvm::getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
   if(Ty == V->getType())
     return V;
@@ -408,7 +531,7 @@ static Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
 }
 
-static Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
+Value* llvm::getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
 
   if(Ty == V->getType())
     return V;
@@ -462,8 +585,8 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
     }
 
     // Emit any necessary casts into the predecessor block.
-    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), SourceBB->committedTail->getTerminator());
-    NewPN->addIncoming(PHIOp, SourceBB->committedTail);
+    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), SourceBB->committedBlocks.back()->getTerminator());
+    NewPN->addIncoming(PHIOp, SourceBB->committedBlocks.back());
     return;
 
   }
@@ -532,8 +655,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 	}
 
 	// Right, build the PHI:
-	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedTail;
-	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedTail;
+	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedBlocks.back();
+	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedBlocks.back();
 
 	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
 	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
@@ -555,8 +678,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
     getCommittedExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
-      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), predBBs[j]->committedTail->getTerminator());
-      NewPN->addIncoming(PHIOp, predBBs[j]->committedTail);
+      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), predBBs[j]->committedBlocks.back()->getTerminator());
+      NewPN->addIncoming(PHIOp, predBBs[j]->committedBlocks.back());
     }
 
   }
@@ -621,7 +744,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
       if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
 	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
-	IA->returnPHI->addIncoming(PHIVal, BB->committedTail);
+	IA->returnPHI->addIncoming(PHIVal, BB->committedBlocks.back());
       }
 
     }
@@ -655,12 +778,12 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     // Emit uncond branch
     bool markUnreachable = false;
-    ShadowBB* SBB = getSuccessorBB(BB, knownSucc, markUnreachable);
+    BasicBlock* SBB = getSuccessorBB(BB, knownSucc, markUnreachable);
     release_assert((SBB || markUnreachable) && "Failed to get successor BB");
     if(markUnreachable)
       new UnreachableInst(emitBB->getContext(), emitBB);
     else
-      BranchInst::Create(SBB->committedHead, emitBB);
+      BranchInst::Create(SBB, emitBB);
 
   }
   else {
@@ -677,7 +800,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 	// Argument is a BB.
 	bool markUnreachable = false;
-	ShadowBB* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx, markUnreachable);
+	BasicBlock* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx, markUnreachable);
 	release_assert((SBB || markUnreachable) && "Failed to get successor BB (2)");
 	if(markUnreachable) {
 	  // Create an unreachable BB to branch to:
@@ -686,7 +809,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	  newTerm->setOperand(i, UBB);
 	}
 	else
-	  newTerm->setOperand(i, SBB->committedHead);
+	  newTerm->setOperand(i, SBB);
 
       }
       else { 
@@ -858,10 +981,18 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	if(createRetPHI && willBeReplacedOrDeleted(ShadowValue(I)))
 	  createRetPHI = false;
 	
-	if(createRetPHI)
-	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), "retval", IA->returnBlock);
+	if(createRetPHI) {
+	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
+						    "retval", IA->returnBlock);
+	  if(IA->hasFailedReturnPath()) {
+	    IA->failedReturnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
+					  "failedretval", IA->failedReturnBlock);
+	    (*getFunctionRoot()->failedBlockMap)[I->invar->I] = IA->failedReturnPHI;
+	  }
+	}
 	else {
 	  I->committedVal = 0;
+	  IA->failedReturnPHI = 0;
 	  IA->returnPHI = 0;
 	}
 
@@ -1161,8 +1292,18 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
   for(; i < nBBs; ++i) {
 
     ShadowBB* BB = BBs[i];
-    if(!BB)
+
+    if(!BB) {
+
+      if(!ScopeL) {
+	// Commit an uncomplicated specialised block: no split points, no specialised companion.
+	InlineAttempt* LocalRoot = getFunctionRoot();
+	LocalRoot->commitSimpleFailedBlock(i);
+      }
+
       continue;
+
+    }
 
     if(ScopeL && !ScopeL->contains(BB->invar->naturalScope))
       break;
@@ -1195,14 +1336,87 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
     }
 
-    BasicBlock* emitBB = BB->committedHead;
+    uint32_t j;
+    // Even if there are path conditions, emit specialised PHIs into the first block.
+    for(j = 0; j < BB->insts.size() && inst_is<PHINode>(&(BB->insts[j])); ++j) {
+      
+      ShadowInstruction* I = &(BB->insts[j]);
+      I->committedVal = 0;
+      emitOrSynthInst(I, BB, BB->committedBlocks.front());
 
-    // Emit instructions for this block:
-    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
+    }
+
+    InlineAttempt* LocalRoot = getFunctionRoot();
+    if(LocalRoot != this)
+      LocalRoot = 0;
+
+    // Synthesise path condition checks, using a successive emitBB for each one:
+    SmallVector<BasicBlock*, 1>::iterator emitBlockIt;
+    if(LocalRoot)
+      emitBlockIt = LocalRoot->emitPathConditionChecks(BB);
+    
+    // emitBlockIt now points to the first non-path-condition block.
+    BasicBlock* emitBB = LocalRoot ? *emitBlockIt : BB->committedBlocks.front();
+
+    uint32_t startUnspecBlock = UINT_MAX;
+    SmallVector<BasicBlock*, 1>::iterator unspecBlockIt, lastUnspecBlock;
+
+    if(LocalRoot) {
+
+      SmallDenseMap<uint32_t, uint32_t, 8>::iterator unspecit = LocalRoot->blocksReachableOnFailure.find(i);
+      if(unspecit != LocalRoot->blocksReachableOnFailure.end()) {
+	startUnspecBlock = unspecit->second;
+	unspecBlockIt = LocalRoot->failedBlocks[i].begin();
+	lastUnspecBlock = LocalRoot->failedBlocks[i].end();
+	--lastUnspecBlock;
+      }
+
+    }
+
+    if(startUnspecBlock == 0) {
+
+      BasicBlock::iterator BI = LocalRoot->emitFirstSubblockMergePHIs(i, emitBlockIt);
+      BI = LocalRoot->commitFailedPHIs(LocalRoot->failedBlocks[i].front(), BI, i, BB->committedBlocks.begin(), emitBlockIt);
+
+      LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, unspecBlockIt != lastUnspecBlock);
+
+    }
+
+    // Emit instructions for this block (using the same j index as before)
+    for(; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* I = &(BB->insts[j]);
       I->committedVal = 0;
+      BasicBlock* oldEmitBB = emitBB;
       emitOrSynthInst(I, BB, emitBB);
+
+      if(startUnspecBlock != UINT_MAX && oldEmitBB != emitBB) {
+
+	if(startUnspecBlock > (j + 1))
+	  continue;
+
+	BasicBlock::iterator BI;
+
+	if(startUnspecBlock < (j + 1)) {
+
+	  // There is an unspecialised predecessor to this subblock.
+	  // Insert PHI merges joining the through-call and from-unspecialised-call paths.
+	  BasicBlock* unspecPred = *(unspecBlockIt++);
+	  ShadowInstruction* Call = &BB->insts[j];
+	  BI = LocalRoot->insertPostCallPHIs(i, *unspecBlockIt, j + 1, Call, unspecPred);
+
+	}
+	else {
+
+	  BI = (*unspecBlockIt)->begin();
+
+	}
+
+	// For first unspecialised subblock, leave the iterator where it was, pointing at
+	// the first subblock. There can't be a spec/unspec merge here.
+	LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, unspecBlockIt != lastUnspecBlock);
+
+      }
 
     }    
 
@@ -1215,7 +1429,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 void InlineAttempt::commitArgsAndInstructions() {
   
-  BasicBlock* emitBB = BBs[0]->committedHead;
+  BasicBlock* emitBB = BBs[0]->committedBlocks.front();
   for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SA = &(argShadows[i]);
