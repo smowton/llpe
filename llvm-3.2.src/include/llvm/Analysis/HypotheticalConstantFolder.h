@@ -194,6 +194,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    // Pass identifier
    static char ID;
 
+   DenseMap<Function*, DominatorTree*> DTs;
+
    ImprovedValSetMulti::MapTy::Allocator IMapAllocator;
 
    SmallPtrSet<Function*, 8> blacklistedFunctions;
@@ -1649,13 +1651,14 @@ class InlineAttempt : public IntegrationAttempt {
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);
   Value* getLocalFailedValue(Value* V, Use* U);
+  Value* tryGetLocalFailedValue(Value* V, Use* U);
   BasicBlock::iterator insertMergePHIs(uint32_t BBIdx, SmallVector<BasicBlock*, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset);
   BasicBlock::iterator insertSimpleMergePHIs(uint32_t BBIdx);
   BasicBlock::iterator insertPostCallPHIs(uint32_t OrigBBIdx, BasicBlock* InsertBB, uint32_t InsertBBOffset, ShadowInstruction* Call, BasicBlock* unspecPred);
   Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U);
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<BasicBlock*, 4>::iterator PCPredsBegin, SmallVector<BasicBlock*, 4>::iterator PCPredsEnd);
-  void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, bool skipTerm);
+  void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
   BasicBlock::iterator commitSimpleFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
   void commitSimpleFailedBlock(uint32_t i);
   

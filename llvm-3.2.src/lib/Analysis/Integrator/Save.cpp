@@ -215,8 +215,14 @@ void IntegrationAttempt::commitCFG() {
 
       ShadowBBInvar* BBI = getBBInvar(i);
       BasicBlock* NewBB;
-      NewBB = CloneBasicBlockFrom(BBI->BB, *LocalRoot->failedBlockMap, ".failed_clone", 
+      NewBB = CloneBasicBlockFrom(BBI->BB, *LocalRoot->failedBlockMap, "", 
 				  CF, createFailedBlockFrom);
+      std::string newName;
+      {
+	raw_string_ostream RSO(newName);
+	RSO << getCommittedBlockPrefix() << BBI->BB->getName() << " (failed)";
+      }
+      NewBB->setName(newName);
       LocalRoot->failedBlocks[i].push_back(NewBB);
       (*LocalRoot->failedBlockMap)[BBI->BB] = NewBB;
 
@@ -295,8 +301,10 @@ void IntegrationAttempt::commitCFG() {
 	      // Split the unspecialised block:
 
 	      if(IA->hasFailedReturnPath()) {
+		
+		release_assert(createFailedBlockFrom <= j + 1 && "Failed block should exist here");
 
-		if(j == createFailedBlockFrom) {
+		if(j + 1 == createFailedBlockFrom) {
 
 		  // Use block as-is.
 		  IA->failedReturnBlock = LocalRoot->failedBlocks[i].back();
@@ -305,13 +313,19 @@ void IntegrationAttempt::commitCFG() {
 		else {
 
 		  BasicBlock* toSplit = LocalRoot->failedBlocks[i].back();
-		  uint32_t instsToSplit = std::min(j - createFailedBlockFrom, instsSinceLastSplit);
+		  uint32_t instsToSplit = std::min((j+1) - createFailedBlockFrom, instsSinceLastSplit + 1);
 		  BasicBlock::iterator splitIterator = toSplit->begin();
 		  std::advance(splitIterator, instsToSplit);
 		  BasicBlock* splitBlock = 
 		    toSplit->splitBasicBlock(splitIterator, ".callsplit");
 		  LocalRoot->failedBlocks[i].push_back(splitBlock);
-		  IA->failedReturnBlock = splitBlock;
+
+		  // Create a pre-return block that merges return values
+		  // and then branches to the new split block.
+
+		  BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "prereturn", CF);
+		  IA->failedReturnBlock = preReturn;
+		  BranchInst::Create(splitBlock, preReturn);
 		  
 		}
 
@@ -976,24 +990,25 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
 	// Make a PHI node that will catch return values, and make it our committed
 	// value so that users get that instead of the call.
-
-	bool createRetPHI = !IA->F.getFunctionType()->getReturnType()->isVoidTy();
-	if(createRetPHI && willBeReplacedOrDeleted(ShadowValue(I)))
-	  createRetPHI = false;
+	
+	bool isNonVoid = !IA->F.getFunctionType()->getReturnType()->isVoidTy();
+	bool createRetPHI = isNonVoid && !willBeReplacedOrDeleted(ShadowValue(I));
 	
 	if(createRetPHI) {
 	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
 						    "retval", IA->returnBlock);
-	  if(IA->hasFailedReturnPath()) {
-	    IA->failedReturnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
-					  "failedretval", IA->failedReturnBlock);
-	    (*getFunctionRoot()->failedBlockMap)[I->invar->I] = IA->failedReturnPHI;
-	  }
 	}
 	else {
 	  I->committedVal = 0;
-	  IA->failedReturnPHI = 0;
 	  IA->returnPHI = 0;
+	}
+
+	if(IA->hasFailedReturnPath() && isNonVoid) {
+	  IA->failedReturnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
+					"failedretval", IA->failedReturnBlock);
+	}
+	else {
+	  IA->failedReturnPHI = 0;
 	}
 
 	// Emit further instructions in this ShadowBB to the successor block:
@@ -1109,7 +1124,14 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 
 	Module *M = emitBB->getParent()->getParent();
 	Function *StackRestore=Intrinsic::getDeclaration(M,Intrinsic::stackrestore);
+
 	CallInst::Create(StackRestore, SavedPtr, "", IA->returnBlock);
+
+	if(IA->failedReturnBlock) {
+	  CallInst::Create(StackRestore, SavedPtr, "", IA->failedReturnBlock->getFirstNonPHI());
+	  (*getFunctionRoot()->failedBlockMap)[SavedPtr] = SavedPtr;
+
+	}
 
 	if(IA->returnPHI && IA->returnPHI->getNumIncomingValues() == 0) {
 	  IA->returnPHI->eraseFromParent();
@@ -1376,9 +1398,9 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     if(startUnspecBlock == 0) {
 
       BasicBlock::iterator BI = LocalRoot->emitFirstSubblockMergePHIs(i, emitBlockIt);
-      BI = LocalRoot->commitFailedPHIs(LocalRoot->failedBlocks[i].front(), BI, i, BB->committedBlocks.begin(), emitBlockIt);
+      BasicBlock::iterator PostPHIBI = LocalRoot->commitFailedPHIs(LocalRoot->failedBlocks[i].front(), BI, i, BB->committedBlocks.begin(), emitBlockIt);
 
-      LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, unspecBlockIt != lastUnspecBlock);
+      LocalRoot->remapFailedBlock(PostPHIBI, *unspecBlockIt, i, std::distance(BI, PostPHIBI), unspecBlockIt != lastUnspecBlock);
 
     }
 
@@ -1395,26 +1417,54 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	if(startUnspecBlock > (j + 1))
 	  continue;
 
+	ShadowInstruction* Call = &BB->insts[j];	
+	InlineAttempt* CallIA = getInlineAttempt(Call);
+	if(!CallIA->hasFailedReturnPath())
+	  continue;
+
 	BasicBlock::iterator BI;
 
 	if(startUnspecBlock < (j + 1)) {
 
 	  // There is an unspecialised predecessor to this subblock.
-	  // Insert PHI merges joining the through-call and from-unspecialised-call paths.
 	  BasicBlock* unspecPred = *(unspecBlockIt++);
-	  ShadowInstruction* Call = &BB->insts[j];
+
+	  // If non-void, merge the failed-during-call and already-failed return values:
+	  if(CallIA->failedReturnPHI) {
+
+	    PHINode* NewPN =  makePHI(CallIA->F.getFunctionType()->getReturnType(), 
+				      "retvalmerge", *unspecBlockIt);
+	    NewPN->addIncoming(CallIA->failedReturnPHI, CallIA->failedReturnBlock);
+	    NewPN->addIncoming(LocalRoot->getUnspecValue(i, j, I->invar->I, &I->invar->I->use_begin().getUse()), unspecPred);
+	    // Map unspecialised call users to this unspec/spec merge point. We must dominate all
+	    // such users because this subblock is the unique successor of the call's block.
+	    (*LocalRoot->failedBlockMap)[I->invar->I] = NewPN;
+
+	  }
+
+	  // Insert PHI merges joining the through-call and from-unspecialised-call paths.
 	  BI = LocalRoot->insertPostCallPHIs(i, *unspecBlockIt, j + 1, Call, unspecPred);
 
 	}
 	else {
 
+	  // Map unspecialised call users direct to the return phi.
+	  if(CallIA->failedReturnPHI)
+	    (*getFunctionRoot()->failedBlockMap)[I->invar->I] = CallIA->failedReturnPHI;
+
 	  BI = (*unspecBlockIt)->begin();
+	  // Skip past the stackrestore instruction inserted by call handling:
+	  ++BI;
 
 	}
 
+	// Skip past a return PHI node if it exists.
+	if(CallIA->failedReturnPHI)
+	  ++BI;
+
 	// For first unspecialised subblock, leave the iterator where it was, pointing at
 	// the first subblock. There can't be a spec/unspec merge here.
-	LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, unspecBlockIt != lastUnspecBlock);
+	LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, j+1, unspecBlockIt != lastUnspecBlock);
 
       }
 

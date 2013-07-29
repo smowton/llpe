@@ -118,6 +118,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     instructionsCommitted = false;
     CommitF = 0;
     targetCallInfo = 0;
+    DT = pass->DTs[&F];
     if(_CI)
       Callers.push_back(_CI);
 
@@ -2701,6 +2702,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     if(!MI->isDeclaration()) {
       DominatorTree* NewDT = new DominatorTree();
       NewDT->runOnFunction(*MI);
+      DTs[MI] = NewDT;
       LoopInfo* NewLI = new LoopInfo();
       NewLI->runOnFunction(*MI, NewDT);
       LIs[MI] = NewLI;

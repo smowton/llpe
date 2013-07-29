@@ -18,7 +18,7 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
   if(MyRoot->targetCallInfo && 
      SI->parent->invar->idx == MyRoot->targetCallInfo->targetCallBlock &&
      SI->invar->idx == MyRoot->targetCallInfo->targetCallInst &&
-     MyRoot->targetCallInfo->targetStackDepth < pass->targetCallStack.size()) {
+     MyRoot->targetCallInfo->targetStackDepth + 1 < pass->targetCallStack.size()) {
 
     uint32_t newDepth = MyRoot->targetCallInfo->targetStackDepth + 1;
     IA->setTargetCall(pass->targetCallStack[newDepth], newDepth);
@@ -347,7 +347,6 @@ void InlineAttempt::initFailedBlockCommit() {
   failedBlocks.resize(nBBs);
   failedBlockMap = new ValueToValueMapTy();
   PHIForwards = new DenseMap<std::pair<Instruction*, Use*>, PHINode*>();
-  DT = &pass->getAnalysis<DominatorTree>(F);
 
 }
 
@@ -393,6 +392,7 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
   Value* testRoot;
 
   LLVMContext& LLC = BB->invar->BB->getContext();
+  Type* Int8Ptr = Type::getInt8PtrTy(LLC);
 
   if(!Cond.instBB) {
    
@@ -422,11 +422,14 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
 
     if(Cond.offset) {
 
-      Type* Int8Ptr = Type::getInt8PtrTy(LLC);
-      if(testRoot->getType() != Int8Ptr)
-	testRoot = new BitCastInst(testRoot, Int8Ptr, "", emitBlock);
+      if(testRoot->getType() != Int8Ptr) {
+	release_assert(CastInst::isCastable(testRoot->getType(), Int8Ptr));
+	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
+	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, "testcast", emitBlock);
+      }
 
       Value* offConst = ConstantInt::get(Type::getInt64Ty(LLC), Cond.offset);
+
       testRoot = GetElementPtrInst::Create(testRoot, ArrayRef<Value*>(&offConst, 1), "", emitBlock);
 
     }
@@ -462,19 +465,23 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
     {
 
       Type* IntTy = Type::getInt32Ty(LLC);
-      Type* CharPtr = Type::getInt8PtrTy(LLC);
-      Type* StrcmpArgTys[2] = { CharPtr, CharPtr };
+      Type* StrcmpArgTys[2] = { Int8Ptr, Int8Ptr };
       FunctionType* StrcmpType = FunctionType::get(IntTy, ArrayRef<Type*>(StrcmpArgTys, 2), false);
 
-      Constant* StrcmpFun = emitBlock->getParent()->getParent()->getFunction("strcmp");
+      Function* StrcmpFun = emitBlock->getParent()->getParent()->getFunction("strcmp");
       if(!StrcmpFun)
-	StrcmpFun = emitBlock->getParent()->getParent()->getOrInsertFunction("strcmp", StrcmpType);
+	StrcmpFun = cast<Function>(emitBlock->getParent()->getParent()->getOrInsertFunction("strcmp", StrcmpType));
       
-      if(testRoot->getType() != CharPtr)
-	testRoot = new BitCastInst(testRoot, CharPtr, "", emitBlock);
+      if(testRoot->getType() != Int8Ptr) {
+	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
+	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, "testcast", emitBlock);
+      }
+      
+      Value* CondCast = ConstantExpr::getBitCast(Cond.val, Int8Ptr);
 	
-      Value* StrcmpArgs[2] = { Cond.val, testRoot };
+      Value* StrcmpArgs[2] = { CondCast, testRoot };
       CallInst* CmpCall = CallInst::Create(StrcmpFun, ArrayRef<Value*>(StrcmpArgs, 2), "assume_test", emitBlock);
+      CmpCall->setCallingConv(StrcmpFun->getCallingConv());
       resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, CmpCall, Constant::getNullValue(CmpCall->getType()), "");
 
     }
@@ -584,6 +591,14 @@ bool InlineAttempt::isSimpleMergeBlock(uint32_t i) {
 
 Value* InlineAttempt::getLocalFailedValue(Value* V, Use* U) {
 
+  Value* Ret = tryGetLocalFailedValue(V, U);
+  release_assert(Ret);
+  return Ret;
+
+}
+
+Value* InlineAttempt::tryGetLocalFailedValue(Value* V, Use* U) {
+
   Instruction* I = dyn_cast<Instruction>(V);
   if(!I)
     return V;
@@ -592,10 +607,15 @@ Value* InlineAttempt::getLocalFailedValue(Value* V, Use* U) {
   if(it != PHIForwards->end())
     return it->second;
 
-  release_assert(failedBlockMap->count(I));
-  return (*failedBlockMap)[I];
+  ValueToValueMapTy::iterator it2 = failedBlockMap->find(I);
+  if(it2 == failedBlockMap->end())
+    return 0;
+  else
+    return it2->second;
 
 }
+
+
 
 BasicBlock::iterator InlineAttempt::insertMergePHIs(uint32_t BBIdx, SmallVector<BasicBlock*, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset) {
 
@@ -622,10 +642,13 @@ BasicBlock::iterator InlineAttempt::insertMergePHIs(uint32_t BBIdx, SmallVector<
 
     if(!ThisSBB)
       break;
-    if(!blocksReachableOnFailure.count(ThisBBIdx))
+
+    SmallDenseMap<uint32_t, uint32_t, 8>::iterator failIt = blocksReachableOnFailure.find(ThisBBIdx);
+    if(failIt == blocksReachableOnFailure.end())
       break;
 
-    for(uint32_t instIdx = 0, instLim = ThisSBB->invar->insts.size(); instIdx != instLim; ++instIdx) {
+    for(uint32_t instIdx = failIt->second, instLim = ThisSBB->invar->insts.size(); 
+	instIdx != instLim; ++instIdx) {
       
       SmallVector<Use*, 8> replaceUses;
       ShadowInstruction* SI = &ThisSBB->insts[instIdx];
@@ -756,10 +779,10 @@ Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value*
     // Pred is an instruction. If only a specialised definition exists, use that on both spec
     // and unspec incoming paths.
 
-    if(failedBlocks[blockIdx].size())
-      return getLocalFailedValue(V, U);
-    else
-      return getSpecValue(blockIdx, instIdx, V);
+    Value* Ret = tryGetLocalFailedValue(V, U);
+    if(!Ret)
+      Ret = getSpecValue(blockIdx, instIdx, V);
+    return Ret;
 
   }  
 
@@ -824,7 +847,7 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
       Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV);
 
       BasicBlock* specPred;
-      if(!edgeIsDead(getBBInvar(predBlockIdx), getBBInvar(BBIdx)))
+      if(isSpecToUnspecEdge(predBlockIdx, BBIdx))
 	specPred = getBB(predBlockIdx)->committedBlocks.back();
       else
 	specPred = 0;
@@ -889,30 +912,30 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
 }
 
-void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, bool skipTerm) {
+void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, uint32_t instIdx, bool skipTerm) {
 
   // Map each instruction operand to the most local PHI translation of the target instruction,
   // or if that doesn't exist the specialised version.
-
-  uint32_t instIdx = 0;
-  for(BasicBlock::iterator it = BB->begin(); it != BI; ++it)
-    ++instIdx;
 
   BasicBlock::iterator BE = BB->end();
   if(skipTerm)
     --BE;
 
+  ShadowBBInvar* BBI = getBBInvar(idx);
+
   for(; BI != BE; ++BI, ++instIdx) {
 
+    ShadowInstructionInvar& SII = BBI->insts[instIdx];
     Instruction* I = BI;
     
-    if(ReturnInst* RI = dyn_cast<ReturnInst>(BI)) {
+    ReturnInst* RI = dyn_cast<ReturnInst>(BI);
+    if(RI && !isRootMainCall()) {
 
       // Rewrite into a branch to and contribution to the failed return phi node.
       if(failedReturnPHI) {
 
 	Use* U = &RI->getOperandUse(0);
-	Value* Ret = getUnspecValue(idx, instIdx, *U, U);
+	Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
 	failedReturnPHI->addIncoming(Ret, BB);
 
       }
@@ -925,16 +948,19 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
     }
     else {
 
-      for(Instruction::op_iterator it = I->op_begin(), itend = I->op_end(); it != itend; ++it) {
+      uint32_t opIdx = 0;
+      for(Instruction::op_iterator it = I->op_begin(), itend = I->op_end(); it != itend; ++it, ++opIdx) {
 
 	Use* U = it;
 	Value* V = *U;
+
+	ShadowInstIdx& op = SII.operandIdxs[opIdx];
 
 	Value* Repl;
 	if(isa<BasicBlock>(V))
 	  Repl = (*failedBlockMap)[V];
 	else
-	  Repl = getUnspecValue(idx, instIdx, V, U);
+	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, U);
 
 	U->set(Repl);
 
@@ -970,9 +996,9 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
   else
     BI = CommitBB->begin();
 
-  BI = commitFailedPHIs(CommitBB, BI, i, failedBlocks[i].begin(), failedBlocks[i].begin());
+  BasicBlock::iterator PostPHIBI = commitFailedPHIs(CommitBB, BI, i, failedBlocks[i].begin(), failedBlocks[i].begin());
  
-  remapFailedBlock(BI, CommitBB, i, false);
+  remapFailedBlock(PostPHIBI, CommitBB, i, std::distance(BI, PostPHIBI), false);
 
 }
 
