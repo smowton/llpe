@@ -1,0 +1,160 @@
+diff --git a/mongoose.c b/mongoose.c
+index 0abee9a..215ee3f 100644
+--- a/mongoose.c
++++ b/mongoose.c
+@@ -18,6 +18,8 @@
+ // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ // THE SOFTWARE.
+ 
++#define NO_SSL
++
+ #if defined(_WIN32)
+ #if !defined(_CRT_SECURE_NO_WARNINGS)
+ #define _CRT_SECURE_NO_WARNINGS // Disable deprecation warning in VS2005
+@@ -237,7 +239,7 @@ struct pollfd {
+ #define closesocket(a) close(a)
+ #define mg_mkdir(x, y) mkdir(x, y)
+ #define mg_remove(x) remove(x)
+-#define mg_sleep(x) usleep((x) * 1000)
++#define mg_sleep(x) myusleep((x) * 1000)
+ #define ERRNO errno
+ #define INVALID_SOCKET (-1)
+ #define INT64_FMT PRId64
+@@ -400,6 +402,15 @@ static const char *month_names[] = {
+   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+ };
+ 
++static int myusleep(useconds_t usec) {
++
++	struct timespec ts;
++	ts.tv_sec = usec / 1000000;
++	ts.tv_nsec = (usec % 1000000) * 1000;
++	return nanosleep(&ts, 0);
++
++}
++
+ // Unified socket address. For IPv6 support, add IPv6 address structure
+ // in the union u.
+ union usa {
+@@ -549,7 +560,7 @@ static int is_file_opened(const struct file *filep) {
+ }
+ 
+ static int mg_fopen(struct mg_connection *conn, const char *path,
+-                    const char *mode, struct file *filep) {
++		    const char *mode, struct file *filep) {
+   if (!is_file_in_memory(conn, path, filep)) {
+ #ifdef _WIN32
+     wchar_t wbuf[PATH_MAX], wmode[20];
+@@ -621,6 +632,9 @@ static void cry(struct mg_connection *conn, const char *fmt, ...) {
+   (void) vsnprintf(buf, sizeof(buf), fmt, ap);
+   va_end(ap);
+ 
++  fprintf(stderr, "%s", buf);
++  fputc('\n', stderr);
++
+   // Do not lock when getting the callback value, here and below.
+   // I suppose this is fine, since function cannot disappear in the
+   // same way string option can.
+@@ -4885,6 +4899,16 @@ void mg_close_connection(struct mg_connection *conn) {
+   free(conn);
+ }
+ 
++void *my_calloc(size_t nmemb, size_t size) {
++
++  uint64_t bytes = nmemb * size;
++  void* ret = malloc(bytes);
++  if(ret)
++    memset((char*)ret, 0, bytes);
++  return ret;  
++
++}
++
+ struct mg_connection *mg_connect(const char *host, int port, int use_ssl,
+                                  char *ebuf, size_t ebuf_len) {
+   static struct mg_context fake_ctx;
+@@ -4893,7 +4917,7 @@ struct mg_connection *mg_connect(const char *host, int port, int use_ssl,
+ 
+   if ((sock = conn2(host, port, use_ssl, ebuf, ebuf_len)) == INVALID_SOCKET) {
+   } else if ((conn = (struct mg_connection *)
+-              calloc(1, sizeof(*conn) + MAX_REQUEST_SIZE)) == NULL) {
++              my_calloc(1, sizeof(*conn) + MAX_REQUEST_SIZE)) == NULL) {
+     snprintf(ebuf, ebuf_len, "calloc(): %s", strerror(ERRNO));
+     closesocket(sock);
+ #ifndef NO_SSL
+@@ -5075,7 +5099,7 @@ static void *worker_thread(void *thread_func_param) {
+   struct mg_context *ctx = thread_func_param;
+   struct mg_connection *conn;
+ 
+-  conn = (struct mg_connection *) calloc(1, sizeof(*conn) + MAX_REQUEST_SIZE);
++  conn = (struct mg_connection *) my_calloc(1, sizeof(*conn) + MAX_REQUEST_SIZE);
+   if (conn == NULL) {
+     cry(fc(ctx), "%s", "Cannot create new connection struct, OOM");
+   } else {
+@@ -5202,7 +5226,8 @@ static void *master_thread(void *thread_func_param) {
+   pthread_setschedparam(pthread_self(), SCHED_RR, &sched_param);
+ #endif
+ 
+-  pfd = calloc(ctx->num_listening_sockets, sizeof(pfd[0]));
++  pfd = my_calloc(ctx->num_listening_sockets, sizeof(pfd[0]));
++
+   while (pfd != NULL && ctx->stop_flag == 0) {
+     for (i = 0; i < ctx->num_listening_sockets; i++) {
+       pfd[i].fd = ctx->listening_sockets[i].sock;
+@@ -5284,7 +5309,7 @@ void mg_stop(struct mg_context *ctx) {
+ 
+   // Wait until mg_fini() stops
+   while (ctx->stop_flag != 2) {
+-    (void) mg_sleep(10);
++    (void) mg_sleep(1);
+   }
+   free_context(ctx);
+ 
+@@ -5308,7 +5333,7 @@ struct mg_context *mg_start(const struct mg_callbacks *callbacks,
+ 
+   // Allocate context and initialize reasonable general case defaults.
+   // TODO(lsm): do proper error handling here.
+-  if ((ctx = (struct mg_context *) calloc(1, sizeof(*ctx))) == NULL) {
++  if ((ctx = (struct mg_context *) my_calloc(1, sizeof(*ctx))) == NULL) {
+     return NULL;
+   }
+   ctx->callbacks = *callbacks;
+@@ -5342,15 +5367,34 @@ struct mg_context *mg_start(const struct mg_callbacks *callbacks,
+ 
+   // NOTE(lsm): order is important here. SSL certificates must
+   // be initialized before listening ports. UID must be set last.
+-  if (!set_gpass_option(ctx) ||
++  int failinit = 0;
++
++  if (!set_gpass_option(ctx)) {
++    cry(fc(ctx), "Failed set_gpass_option");
++    failinit = 1;
++  }
+ #if !defined(NO_SSL)
+-      !set_ssl_option(ctx) ||
++  if(!set_ssl_option(ctx)) {
++    cry(fc(ctx), "Failed set_ssl_option");
++    failinit = 1;
++  }
+ #endif
+-      !set_ports_option(ctx) ||
++  if(!set_ports_option(ctx)) {
++    cry(fc(ctx), "Failed set_ports_option");
++    failinit = 1;
++  }
+ #if !defined(_WIN32)
+-      !set_uid_option(ctx) ||
++  if(!set_uid_option(ctx)) {
++    cry(fc(ctx), "Failed set_uid_option");
++    failinit = 1;
++  }
+ #endif
+-      !set_acl_option(ctx)) {
++  if(!set_acl_option(ctx)) {
++    cry(fc(ctx), "Failed set_acl_option");
++    failinit = 1;
++  }
++
++  if(failinit) {
+     free_context(ctx);
+     return NULL;
+   }

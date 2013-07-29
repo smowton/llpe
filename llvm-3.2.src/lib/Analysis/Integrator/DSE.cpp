@@ -152,6 +152,13 @@ void* WriterUsedWalker::copyContext(void* V) {
 
 WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes, bool commitDisabledHere) {
 
+  if(I->invar->idx == 0 && pass->countPathConditionsForBlock(I->parent)) {
+
+    // Reaches a path condition check, where unspecialised code might use this value.
+    return WIRStopWholeWalk;
+
+  }
+
   if(isLifetimeEnd(StoreBase, I)) {
 
     return WIRStopThisPath;

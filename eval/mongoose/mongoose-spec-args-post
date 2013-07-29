@@ -1,0 +1,13 @@
+-intheuristics-root handle_request
+-int-target-stack=handle_request,54,0
+-int-target-stack=handle_ssi_file_request,entry,6
+-int-target-stack=mg_fopen,3,0
+-int-target-stack=fopen,entry,1
+-int-target-stack=_stdio_fopen,22,1
+-int-special-location __errno_location,4
+-int-model-function _pthread_cleanup_push_defer,_pthread_cleanup_push_defer_model
+-int-model-function _pthread_cleanup_pop_restore,_pthread_cleanup_pop_restore_model
+-int-path-condition-func 4,22,_locale_init
+-int-path-condition-intmem 1,entry,0,0,2,3,32
+-int-path-condition-intmem 0,__globals__,_stdio_user_locking.b,1,2,3
+-int-path-condition-str 4,__args__,0,./testfile.ssi,4,22

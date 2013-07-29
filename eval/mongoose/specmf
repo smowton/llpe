@@ -1,0 +1,67 @@
+TARGET_PROGS = mongoose
+PRE_BCS = $(patsubst %,%-pre.bc,$(TARGET_PROGS))
+TARGET_BCS = $(patsubst %,%.bc,$(TARGET_PROGS))
+OPT_PROGS = $(patsubst %,%-opt,$(TARGET_PROGS))
+TIMED_PROGS = $(patsubst %,%-orig-timed,$(TARGET_PROGS))
+TIMED_OPT_PROGS = $(patsubst %,%-opt-timed,$(TARGET_PROGS))
+STRIPPED_PROGS = $(patsubst %,%-orig-stripped,$(TARGET_PROGS))
+STRIPPED_OPT_PROGS = $(patsubst %,%-opt-stripped,$(TARGET_PROGS))
+
+OPT_MODS = opt -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorAnalyses.so -load /home/chris/integrator/llvm/Release+Debug/lib/IntegratorTransforms.so
+
+.PHONY: allbase allopt clean
+
+allbase: $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(STRIPPED_PROGS)
+
+allopt: $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_OPT_PROGS)
+
+mongoose-opt: mongoose-opt.bc
+	/usr/bin/llvm-gcc-uclibc $^ -o $@
+
+mongoose-opt.bc: mongoose-spec.bc
+	opt $^ -std-compile-opts -o $@
+
+mongoose-spec.bc: mongoose-models.bc mongoose-spec-args-post
+	bash -c "cat mongoose-spec-args-post | xargs /usr/bin/opt -load /home/chris/integrator/release_32/Release+Debug/lib/LLVMDataStructure.so -load /home/chris/integrator/llvm-3.2.src/Release+Debug/lib/IntegratorAnalyses.so -load /home/chris/integrator/llvm-3.2.src/Release+Debug/lib/IntegratorTransforms.so $< -o $@ -integrator"
+
+mongoose-models.bc: modelfuncs.bc mongoose-simp.bc
+	llvm-link $^ -o $@
+
+mongoose-simp.bc: mongoose.bc
+	/usr/bin/opt -loop-simplify -lcssa -globalopt -strip-debug mongoose.bc -o mongoose-simp.bc
+
+mongoose mongoose.bc: mongoose.c main.c mongoose.h
+	/usr/bin/llvm-gcc-uclibc -g mongoose.c main.c -o mongoose -std=c99 -O2 -W -Wall -pedantic -fno-inline -Wl,--plugin-opt,also-emit-llvm -lpthread
+
+%.bc %: %.o timeprogram.o
+	/usr/bin/llvm-gcc-uclibc -std=gnu99   -g -O2 -Wl,--as-needed  -o $@ $^ libver.a ../lib/libcoreutils.a  ../lib/libcoreutils.a -Wl,--plugin-opt,also-emit-llvm,-u,__uClibc_main_timed
+
+%-elim.bc: %.bc
+	~/integrator/scripts/opt-with-mods.sh -define-exts -null-symbol __h_errno_location $^ -null-symbol __pthread_initialize_minimal -null-symbol __preinit_array_start -null-symbol __preinit_array_end -null-symbol __init_array_start -null-symbol __init_array_end -o $@
+
+%-pre.bc: %-elim.bc
+	~/integrator/scripts/prepare-int.sh $^ -o $@
+
+%-opt-int.bc: %-opt.bc
+	$(OPT_MODS) -internalize -internalize-public-api-list=__uClibc_main -simplify-libcalls -libcalls-allow-internal -globalopt-allow-internal-malloc -std-compile-opts -globalopt -malloc-elim -globalopt $^ -o $@
+
+%-opt-timed-int.bc: %-opt.bc
+	$(OPT_MODS) -internalize -internalize-public-api-list=__uClibc_main_timed -libcalls-allow-internal -globalopt-allow-internal-malloc -std-compile-opts -globalopt -malloc-elim -globalopt $^ -o $@
+
+%-opt: %-opt-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspec.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-opt-timed: %-opt-timed-int.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crtspectime.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-orig-timed: %.bc
+	~/dragonegg-binutils/ld ~/integ-examples/libs/libc/install-llvm/usr/lib/crt1time.o ~/integ-examples/libs/libc/install-llvm/usr/lib/crti.o $^ ~/integ-examples/libs/libc/install-llvm/usr/lib/libc.a ~/integ-examples/libs/libc/install-llvm/usr/lib/crtn.o -o $@
+
+%-stripped: %
+	strip $^ -o $@
+
+%-orig-stripped: %
+	strip $^ -o $@
+
+clean:
+	-rm -f $(TARGET_PROGS) $(TARGET_BCS) $(PRE_BCS) $(TIMED_PROGS) $(OPT_PROGS) $(TIMED_OPT_PROGS) $(STRIPPED_PROGS) $(STRIPPED_OPT_PROGS)
