@@ -1301,6 +1301,7 @@ protected:
   void rerunTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V);
   bool containsYieldCalls();
+  void addCheckpointFailedBlocks();
 
   // Stat collection and printing:
 

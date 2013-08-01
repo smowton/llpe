@@ -1587,6 +1587,8 @@ void IntegrationHeuristicsPass::commit() {
     rerunDSEAndDIE();
   }
 
+  RootIA->addCheckpointFailedBlocks();
+
   errs() << "Writing specialised module";
 
   std::string Name;

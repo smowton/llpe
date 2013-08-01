@@ -637,7 +637,8 @@ bool IntegrationAttempt::containsYieldCalls() {
     if(BBI->naturalScope != L) {
 
       const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
-      if(peelChildren.count(subL)) {
+      PeelAttempt* LPA;
+      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {
 
 	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
 	  ++i;
@@ -675,6 +676,9 @@ bool IntegrationAttempt::containsYieldCalls() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
+
+    if((!it->second->isTerminated()) || (!it->second->isEnabled()))
+      continue;
 
     if(it->second->containsYieldCalls())
       return true;
@@ -719,5 +723,68 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
   }
 
   return false;
+
+}
+
+void IntegrationAttempt::addCheckpointFailedBlocks() {
+
+  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
+
+    ShadowBBInvar* BBI = getBBInvar(i);
+    ShadowBB* BB = getBB(*BBI);
+
+    if(!BB)
+      continue;
+
+    if(BBI->naturalScope != L) {
+
+      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      PeelAttempt* LPA;
+
+      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {
+
+	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
+	  ++i;
+	--i;
+	continue;
+	
+      }
+
+    }
+
+    for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
+
+      ShadowInstruction* SI = &BB->insts[j];
+
+      if(requiresRuntimeCheck2(ShadowValue(SI))) {
+
+	// Treat tested exit PHIs as a block.
+	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))
+	  continue;
+
+	getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+
+      }
+
+    }
+
+  }
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    addCheckpointFailedBlocks();
+    if(it->second->hasFailedReturnPath())
+      getFunctionRoot()->markBlockAndSuccsFailed(it->first->parent->invar->idx, it->first->invar->idx + 1);
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
+      it->second->Iterations[i]->addCheckpointFailedBlocks();
+
+  }
 
 }
