@@ -129,8 +129,6 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
 
   // The case for a resolved select instruction has already been handled.
 
-  bool verbose = false;
-  
   SmallVector<ShadowValue, 4> Vals;
   if(inst_is<SelectInst>(I)) {
 
@@ -170,8 +168,24 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
 
   }
 
-  bool anyInfo = false;
+  bool ret = getMergeValue(Vals, NewPB);
+  ImprovedValSetSingle* NewIVS;
+  if(NewPB && (NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) && NewIVS->isWhollyUnknown()) {
 
+    for(SmallVector<ShadowValue, 1>::iterator it = Vals.begin(), itend = Vals.end(); it != itend; ++it)
+      valueEscaped(*it, I->parent);
+
+  }
+
+  return ret;
+
+}
+
+bool IntegrationAttempt::getMergeValue(SmallVector<ShadowValue, 4>& Vals, ImprovedValSet*& NewPB) {
+
+  bool anyInfo = false;
+  bool verbose = false;
+  
   // For now, only support straight copying of multis; otherwise just return overdef.
 
   bool anyMultis = false;
@@ -1774,10 +1788,18 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
   else {
 
     tryEvaluateOrdinaryInst(SI, NewPB);
+
     if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
       if(!IVS->isInitialised())
 	IVS->setOverdef();
+      if(IVS->isWhollyUnknown()) {
+
+	for(uint32_t i = 0, ilim = SI->invar->operandIdxs.size(); i != ilim; ++i)
+	  valueEscaped(SI->getOperand(i), SI->parent);
+
+      }
     }
+
     return true;
 
   }

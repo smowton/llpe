@@ -29,9 +29,15 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
   // Grey: part of a dead block.
 
   InstArgImprovement* IAI = SV.getIAI();
-
+  ShadowInstruction* SI = SV.getInst();
+  
   if(!IAI)
     return "#aaaaaa";
+
+  if(SI && (inst_is<LoadInst>(SI) || SI->isCopyInst())) {
+    if(!SI->isThreadLocal)
+      return "orangered";
+  }
 
   if(IAI->dieStatus != INSTSTATUS_ALIVE)
     return "red";

@@ -2784,6 +2784,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   IA->analyse();
   errs() << "\n";
 
+  IA->findTentativeLoads();
+
   // Function sharing is now decided, and hence the graph structure, so create
   // graph tags for the GUI.
   rootTag = RootIA->createTag(0);

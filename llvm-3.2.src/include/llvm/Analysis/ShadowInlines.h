@@ -120,6 +120,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   int32_t getFrameNo();
   int32_t getHeapKey();
   int32_t getFramePos();
+  bool isNullOrConst();
 
 };
 
@@ -685,13 +686,18 @@ struct ShadowInstruction {
   ShadowBB* parent;
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
-  //SmallVector<ShadowInstruction*, 1> indirectUsers;
   SmallVector<ShadowValue, 1> indirectDIEUsers;
   Value* committedVal;
-  // Storage for allocation instructions:
+  // Of a successful copy instruction, records the values read.
+  SmallVector<IVSRange, 4>* memcpyValues;
+  // Of a load, memcpy or realloc, is there no need to check for thread interference?
+  bool isThreadLocal;
+
   LocStore store;
   uint64_t storeSize;
   int32_t allocIdx;
+
+  void initTypeSpecificData();
 
   uint32_t getNumOperands() {
     return invar->operandIdxs.size();
@@ -722,6 +728,7 @@ struct ShadowInstruction {
   }
 
   bool resolved();
+  bool isCopyInst();
 
 };
 
@@ -861,8 +868,12 @@ struct LocalStoreMap {
   SmallVector<SharedStoreMap*, 4> frames;
   SharedTreeRoot heap;
 
+  // Objects that are certainly not effected by thread yields.
   DenseSet<ShadowValue> threadLocalObjects;
+  // Objects that are certainly not reachable from objects older than specialisation start
   DenseSet<ShadowValue> noAliasOldObjects;
+  // Objects all of whose pointers are known, and therefore are not aliased by unknown pointers.
+  DenseSet<ShadowValue> unescapedObjects;
 
   bool allOthersClobbered;
   uint32_t refCount;
@@ -1215,6 +1226,27 @@ inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValS
 
 }
 
+inline bool tryGetUniqueIV(ShadowValue V, std::pair<ValSetType, ImprovedVal>& Out) {
+
+  ImprovedValSet* IVS;
+  getIVOrSingleVal(V, IVS, Out);
+  if(!IVS)
+    return true;
+  
+  ImprovedValSetSingle* IVSingle = dyn_cast<ImprovedValSetSingle>(IVS);
+  if(!IVSingle)
+    return true;
+
+  if(IVSingle->Values.size() != 1)
+    return false;
+
+  Out.first = IVSingle->SetType;
+  Out.second = IVSingle->Values[0];
+
+  return true;
+
+}
+
 inline bool IVsEqualShallow(ImprovedValSet*, ImprovedValSet*);
 
 inline bool IVMatchesVal(ShadowValue V, ImprovedValSet* IV) {
@@ -1485,6 +1517,15 @@ inline ShadowValue ShadowValue::stripPointerCasts() {
     release_assert(0 && "Bad val type in stripPointerCasts");
     llvm_unreachable();
   }
+
+}
+
+inline bool ShadowValue::isNullOrConst() {
+
+  if(t == SHADOWVAL_GV)
+    return u.GV->G->isConstant();
+
+  return isa<ConstantPointerNull>(getBareVal());
 
 }
 

@@ -951,6 +951,8 @@ protected:
   uint32_t pendingEdges;
 
   BarrierState barrierState;
+
+  bool tentativeLoadsRun;
    
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
@@ -977,7 +979,8 @@ protected:
     inlineChildren(1),
     peelChildren(1),
     pendingEdges(0),
-    barrierState(BARRIER_NONE) 
+    barrierState(BARRIER_NONE),
+    tentativeLoadsRun(false)  
       { 
       }
 
@@ -1078,6 +1081,7 @@ protected:
   void getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop);
   void getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs);
   bool tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB);
+  bool getMergeValue(SmallVector<ShadowValue, 4>& Vals, ImprovedValSet*& NewPB);
   bool tryEvaluateMultiInst(ShadowInstruction* I, ImprovedValSet*& NewPB);
   bool tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValSet*& NewIV);
   MultiCmpResult tryEvaluateMultiEq(ShadowInstruction* SI);
@@ -1125,6 +1129,7 @@ protected:
   virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
+  virtual void popAllocas(LocalStoreMap*) = 0;
 
   // VFS call forwarding:
 
@@ -1282,7 +1287,15 @@ protected:
 
   void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
   bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
+
+  // Tentative load determination
   
+  bool shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx);
+  bool shouldCheckCopy(ShadowInstruction& SI, ShadowValue& PtrOp, ShadowValue& LenSV);
+  bool shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
+  bool shouldCheckLoad(ShadowInstruction& SI);
+  void findTentativeLoads();
+
   // Stat collection and printing:
 
   void collectAllBlockStats();
@@ -1393,6 +1406,7 @@ public:
   virtual bool commitsOutOfLine();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
+  virtual void popAllocas(LocalStoreMap*);  
 
 };
 
@@ -1661,6 +1675,7 @@ class InlineAttempt : public IntegrationAttempt {
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
   BasicBlock::iterator commitSimpleFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
   void commitSimpleFailedBlock(uint32_t i);
+  virtual void popAllocas(LocalStoreMap*);
   
 };
 
@@ -1810,6 +1825,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  Value* getCommittedValue(ShadowValue SV);
  Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore);
  Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd);
+
+ void valueEscaped(ShadowValue, ShadowBB*);
+ void intersectSets(DenseSet<ShadowValue>* Target, MutableArrayRef<DenseSet<ShadowValue>* > Merge);
   
  struct IntAAProxy {
 
