@@ -542,7 +542,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].parent = newBB;
     insts[i].allocIdx = -1;
     insts[i].memcpyValues = 0;
-    insts[i].isThreadLocal = false;
+    insts[i].isThreadLocal = TLS_MUSTCHECK;
     insts[i].storeSize = 0;
     insts[i].allocIdx = INT_MAX;
   }

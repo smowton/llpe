@@ -35,7 +35,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
     return "#aaaaaa";
 
   if(SI && (inst_is<LoadInst>(SI) || SI->isCopyInst())) {
-    if(!SI->isThreadLocal)
+    if(SI->isThreadLocal == TLS_MUSTCHECK)
       return "orangered";
   }
 

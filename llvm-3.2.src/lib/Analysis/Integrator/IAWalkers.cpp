@@ -40,6 +40,10 @@ struct QueueWalkVisitor : public ShadowBBVisitor {
 
   }
 
+  void leaveLoop(PeelAttempt* LPA, void* Ctx) {
+    W->leaveLoop(LPA, Ctx);
+  }
+
 };
 
 void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor* Visitor, void* Ctx, bool& firstPred) {
@@ -61,6 +65,8 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
     PeelAttempt* LPA = getPeelAttempt(ChildL);
     if(LPA && LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
 
+      Visitor->enterLoop(LPA, Ctx);
+
       for(unsigned i = 0; i < LPA->Iterations.size(); ++i)
 	LPA->Iterations[i]->visitLoopExitingBlocksBW(ExitedBB, ExitingBB, Visitor, Ctx, firstPred);
 
@@ -79,6 +85,8 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
 WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB->invar->BB == &(F.getEntryBlock())) {
+
+    Walker->leaveCall(this, Ctx);
 
     if(Callers.empty())
       return Walker->reachedTop();
@@ -118,6 +126,7 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
     if(iterationCount == 0) {
 
+      Walker->leaveLoop(parentPA, Ctx);
       ShadowBB* BB = parent->getBB(parentPA->invarInfo->preheaderIdx);
       Walker->queueWalkFrom(BB->insts.size(), BB, Ctx, false);
 
@@ -264,6 +273,7 @@ void BackwardIAWalker::walkInternal() {
 
 	// Enter this call instruction from its return blocks:
 	InlineAttempt* IA = BB->IA->getInlineAttempt(StoppedCI);
+	enterCall(IA, Ctx);
 	IA->queueReturnBlocks(this, Ctx);
 
       }

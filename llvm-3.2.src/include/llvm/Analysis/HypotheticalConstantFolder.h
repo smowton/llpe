@@ -827,6 +827,11 @@ class IAWalker {
   void walk();
   void queueWalkFrom(uint32_t idx, ShadowBB*, void* context, bool copyContext);
 
+  virtual void enterCall(InlineAttempt* IA, void* Ctx) {}
+  virtual void leaveCall(InlineAttempt* IA, void* Ctx) {}
+  virtual void enterLoop(PeelAttempt*, void* Ctx) {}
+  virtual void leaveLoop(PeelAttempt*, void* Ctx) {}
+
 };
 
 class BackwardIAWalker : public IAWalker {
@@ -850,10 +855,6 @@ class ForwardIAWalker : public IAWalker {
   
  public:
 
-  virtual void enterCall(InlineAttempt* IA, void* Ctx) {}
-  virtual void leaveCall(InlineAttempt* IA, void* Ctx) {}
-  virtual void enterLoop(PeelAttempt*, void* Ctx) {}
-  virtual void leaveLoop(PeelAttempt*, void* Ctx) {}
   virtual void hitIgnoredEdge() {}
   virtual bool shouldContinue() { return true; }
   ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* IC = 0, bool ign = false);
@@ -866,6 +867,7 @@ struct ShadowBBVisitor {
 ShadowBBVisitor(bool ign = false) : doIgnoreEdges(ign) { }
 
   virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) = 0;
+  virtual void enterLoop(PeelAttempt*, void*) { }
   virtual void hitIgnoredEdge() { }
 
 };
@@ -1290,11 +1292,15 @@ protected:
 
   // Tentative load determination
   
-  bool shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx);
-  bool shouldCheckCopy(ShadowInstruction& SI, ShadowValue& PtrOp, ShadowValue& LenSV);
-  bool shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
-  bool shouldCheckLoad(ShadowInstruction& SI);
+  ThreadLocalState shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx);
+  ThreadLocalState shouldCheckCopy(ShadowInstruction& SI, ShadowValue& PtrOp, ShadowValue& LenSV);
+  ThreadLocalState shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
+  ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
   void findTentativeLoads();
+  void resetTentativeLoads();
+  void rerunTentativeLoads();
+  bool requiresRuntimeCheck2(ShadowValue V);
+  bool containsYieldCalls();
 
   // Stat collection and printing:
 
@@ -1488,6 +1494,8 @@ class PeelAttempt {
    void dropExitingStoreRefs();
    void dropNonterminatedStoreRefs();
 
+   bool containsYieldCalls();
+
   IntegratorTag* createTag(IntegratorTag* parent);
 
  };
@@ -1658,6 +1666,7 @@ class InlineAttempt : public IntegrationAttempt {
   void getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets);
   bool hasFailedReturnPath();
   void initFailedBlockCommit();
+  ShadowValue getPathConditionSV(PathCondition& Cond);
   void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
   void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
   SmallVector<BasicBlock*, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
@@ -1828,6 +1837,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  void valueEscaped(ShadowValue, ShadowBB*);
  void intersectSets(DenseSet<ShadowValue>* Target, MutableArrayRef<DenseSet<ShadowValue>* > Merge);
+
+ bool requiresRuntimeCheck(ShadowValue V);
   
  struct IntAAProxy {
 

@@ -175,7 +175,7 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
 
     if(inst_is<MemTransferInst>(I)) {
 
-      if(!(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
+      if(I->isThreadLocal == TLS_MUSTCHECK || !(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 
 	ShadowValue Pointer = I->getCallArgOperand(1);
 	SVAAResult R = aliasSVs(Pointer, MISize, StorePtr, Size, true);
@@ -221,7 +221,9 @@ WalkInstructionResult IntegrationAttempt::noteBytesWrittenBy(ShadowInstruction* 
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());
 
-    if(mayBeReplaced(I) && !commitDisabledHere) {
+    // If isThreadLocal == TLS_MUSTCHECK then the load will happen for real
+    // despite its known value.
+    if(I->isThreadLocal != TLS_MUSTCHECK && mayBeReplaced(I) && !commitDisabledHere) {
 
       // mayBeReplaced implies a single value.
       ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(I->i.PB);

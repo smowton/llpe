@@ -681,6 +681,14 @@ LocStore(const LocStore& other) : store(other.store) {}
 
 };
 
+enum ThreadLocalState {
+
+  TLS_MUSTCHECK, /* instruction might have been clobbered by other threads; check at runtime */
+  TLS_NOCHECK, /* instruction might have been clobbered, but check would be redundant */
+  TLS_NEVERCHECK /* instruction cannot possibly be clobbered */
+
+};
+
 struct ShadowInstruction {
 
   ShadowBB* parent;
@@ -691,7 +699,7 @@ struct ShadowInstruction {
   // Of a successful copy instruction, records the values read.
   SmallVector<IVSRange, 4>* memcpyValues;
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
-  bool isThreadLocal;
+  ThreadLocalState isThreadLocal;
 
   LocStore store;
   uint64_t storeSize;

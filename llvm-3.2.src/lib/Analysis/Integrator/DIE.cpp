@@ -222,7 +222,7 @@ void IntegrationAttempt::visitUsers(ShadowValue V, VisitorContext& Visitor) {
 
 }
 
-bool llvm::willBeDeleted(ShadowValue V) {
+static bool _willBeDeleted(ShadowValue V) {
 
   uint32_t dieStatus;
 
@@ -243,9 +243,17 @@ bool llvm::willBeDeleted(ShadowValue V) {
 
 }
 
-bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
+bool llvm::willBeDeleted(ShadowValue V) {
 
-  if(willBeDeleted(V))
+  if(requiresRuntimeCheck(V))
+    return false;
+  return _willBeDeleted(V);
+
+}
+
+static bool _willBeReplacedOrDeleted(ShadowValue V) {
+
+  if(_willBeDeleted(V))
     return true;
   if(mayBeReplaced(V)) {
 
@@ -267,9 +275,20 @@ bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
 }
 
+bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
+
+  if(requiresRuntimeCheck(V))
+    return false;
+  return _willBeReplacedOrDeleted(V);
+
+}
+
 bool llvm::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
-  if(willBeDeleted(V))
+  if(requiresRuntimeCheck(V))
+    return false;
+
+  if(_willBeDeleted(V))
     return true;
   if(getConstReplacement(V))
     return true;
@@ -296,7 +315,7 @@ public:
 
     if(CallInst* CI = dyn_cast_inst<CallInst>(UserI)) {
 
-      if(isa<MemIntrinsic>(CI) && willBeDeleted(ShadowValue(UserI)))
+      if(isa<MemIntrinsic>(CI) && !requiresRuntimeCheck(CI))
 	return;
 
       if(UserI->parent->IA->isResolvedVFSCall(CI)) {
@@ -419,6 +438,12 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 
   }
   else {
+
+    if(requiresRuntimeCheck(V))
+      return false;
+
+
+      return false;
 
     DIVisitor DIV(V);
 

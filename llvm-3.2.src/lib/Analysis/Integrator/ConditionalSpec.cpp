@@ -381,6 +381,28 @@ uint32_t IntegrationHeuristicsPass::countPathConditionsForBlock(ShadowBB* BB) {
 
 }
 
+ShadowValue InlineAttempt::getPathConditionSV(PathCondition& Cond) {
+
+  if(!Cond.instBB) {
+   
+    return ShadowValue(&pass->shadowGlobals[Cond.instIdx]);
+    
+  }
+  else {
+
+    InlineAttempt* testCtx = getIAWithTargetStackDepth(this, Cond.instStackIdx);
+    
+    if(Cond.instBB == (BasicBlock*)ULONG_MAX)
+      return ShadowValue(&testCtx->argShadows[Cond.instIdx]);
+    else {
+      uint32_t blockIdx = findBlock(testCtx->invarInfo, Cond.instBB);
+      return ShadowValue(&testCtx->getBB(blockIdx)->insts[Cond.instIdx]);
+    }
+
+  }
+
+}
+
 void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt) {
 
   if(stackIdx != Cond.fromStackIdx || BB->invar->BB != Cond.fromBB)
@@ -389,31 +411,10 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
   BasicBlock* emitBlock = *(emitBlockIt++);
 
   Instruction* resultInst = 0;
-  Value* testRoot;
+  Value* testRoot = getCommittedValue(getPathConditionSV(Cond));
 
   LLVMContext& LLC = BB->invar->BB->getContext();
   Type* Int8Ptr = Type::getInt8PtrTy(LLC);
-
-  if(!Cond.instBB) {
-   
-    testRoot = pass->shadowGlobals[Cond.instIdx].G;
-    
-  }
-  else {
-
-    InlineAttempt* testCtx = getIAWithTargetStackDepth(this, Cond.instStackIdx);
-    ShadowValue V;
-    
-    if(Cond.instBB == (BasicBlock*)ULONG_MAX)
-      V = ShadowValue(&testCtx->argShadows[Cond.instIdx]);
-    else {
-      uint32_t blockIdx = findBlock(testCtx->invarInfo, Cond.instBB);
-      V = ShadowValue(&testCtx->getBB(blockIdx)->insts[Cond.instIdx]);
-    }
-
-    testRoot = getCommittedValue(V);
-
-  }
 
   switch(Ty) {
 

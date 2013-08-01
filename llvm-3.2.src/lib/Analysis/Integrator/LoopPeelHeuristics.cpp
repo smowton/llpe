@@ -1582,8 +1582,10 @@ static Value* getWrittenPointer(Instruction* I) {
 
 void IntegrationHeuristicsPass::commit() {
 
-  if(!SkipDIE)
+  if(!SkipDIE) {
+    RootIA->rerunTentativeLoads();
     rerunDSEAndDIE();
+  }
 
   errs() << "Writing specialised module";
 
@@ -2784,8 +2786,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   IA->analyse();
   errs() << "\n";
 
-  IA->findTentativeLoads();
-
   // Function sharing is now decided, and hence the graph structure, so create
   // graph tags for the GUI.
   rootTag = RootIA->createTag(0);
@@ -2803,6 +2803,10 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     estimateIntegrationBenefit();
     errs() << "\n";
   }
+
+  IA->findTentativeLoads();
+  // Finding any tentative loads may bring stored values and loaded pointers back to life.
+  mustRecomputeDIE = true;
 
   IA->noteChildBarriers();
   IA->prepareCommit();

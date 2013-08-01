@@ -547,7 +547,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 
   std::auto_ptr<raw_string_ostream> RSO(report ? new raw_string_ostream(*report) : 0);
 
-  LI->isThreadLocal = true;
+  LI->isThreadLocal = TLS_NEVERCHECK;
 
   for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB->Overdef; ++i) {
 
@@ -565,7 +565,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
     }
 
     if(!LI->parent->localStore->threadLocalObjects.count(LIPB.Values[i].V))
-      LI->isThreadLocal = false;
+      LI->isThreadLocal = TLS_MUSTCHECK;
 
     std::auto_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
     ImprovedValSetSingle ThisPB;
@@ -633,7 +633,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
 
   if(tryResolveLoadFromConstant(LI, NewPB, error.get())) {
 
-    LI->isThreadLocal = true;
+    LI->isThreadLocal = TLS_NEVERCHECK;
 
     ImprovedValSetSingle* NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB);
     if(NewIVS && NewIVS->Overdef && pass->verboseOverdef)
@@ -2646,7 +2646,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
     CopySI->memcpyValues->clear();
 
   // No need to check the copy instruction is as expected in any of the coming failure cases.
-  CopySI->isThreadLocal = true;
+  CopySI->isThreadLocal = TLS_NEVERCHECK;
 
   if(Size == ULONG_MAX || PtrSet.isWhollyUnknown() || PtrSet.Values.size() != 1 || SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() != 1) {
 
@@ -2700,7 +2700,9 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
   // Now dependent on the source location's value.
   BB->IA->noteDependency(SrcPtrSet.Values[0].V);
 
-  CopySI->isThreadLocal = BB->localStore->threadLocalObjects.count(SrcPtrSet.Values[0].V);
+  CopySI->isThreadLocal = 
+    BB->localStore->threadLocalObjects.count(SrcPtrSet.Values[0].V) ? 
+    TLS_NEVERCHECK : TLS_MUSTCHECK;
 
   if(!CopySI->memcpyValues)
     CopySI->memcpyValues = new SmallVector<IVSRange, 4>();
@@ -4731,7 +4733,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
-  bool verbose = BB->invar->BB->getParent()->getName() == "_stdio_fopen";
+  bool verbose = false;
   if(verbose) {
 
     errs() << "Dump at block " << BB->invar->BB->getName() << "\n";
