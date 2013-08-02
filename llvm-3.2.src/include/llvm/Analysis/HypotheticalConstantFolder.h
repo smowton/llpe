@@ -1271,7 +1271,9 @@ protected:
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  bool synthCommittedPointer(ShadowValue, BasicBlock* emitBB);
+  bool synthCommittedPointer(ShadowValue, ImprovedVal, BasicBlock* emitBB, Value*&);
+  Value* trySynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB);
+  Value* trySynthInst(ShadowInstruction* I, BasicBlock*& emitBB);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
@@ -1556,7 +1558,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   DominatorTree* DT;
   SmallDenseMap<uint32_t, uint32_t, 8> blocksReachableOnFailure;
-  std::vector<SmallVector<BasicBlock*, 1> > failedBlocks;
+  std::vector<SmallVector<std::pair<BasicBlock*, uint32_t>, 1> > failedBlocks;
   ValueToValueMapTy* failedBlockMap;
   DenseMap<std::pair<Instruction*, Use*>, PHINode*>* PHIForwards;
 
@@ -1683,7 +1685,6 @@ class InlineAttempt : public IntegrationAttempt {
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<BasicBlock*, 4>::iterator PCPredsBegin, SmallVector<BasicBlock*, 4>::iterator PCPredsEnd);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
-  BasicBlock::iterator commitSimpleFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
   void commitSimpleFailedBlock(uint32_t i);
   virtual void popAllocas(LocalStoreMap*);
   

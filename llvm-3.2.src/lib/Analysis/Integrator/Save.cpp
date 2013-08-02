@@ -158,32 +158,6 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
 }
 
-static BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
-				       ValueToValueMapTy& VMap,
-				       const Twine &NameSuffix, 
-				       Function* F,
-				       uint32_t startIdx) {
-
-  BasicBlock *NewBB = BasicBlock::Create(BB->getContext(), "", F);
-  if (BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
-
-  // Loop over all instructions, and copy them over.
-  BasicBlock::const_iterator II = BB->begin();
-  std::advance(II, startIdx);
-
-  for (BasicBlock::const_iterator IE = BB->end(); II != IE; ++II) {
-    Instruction *NewInst = II->clone();
-    if (II->hasName())
-      NewInst->setName(II->getName()+NameSuffix);
-    NewBB->getInstList().push_back(NewInst);
-    VMap[II] = NewInst;                // Add instruction map to value.
-    
-  }
-  
-  return NewBB;
-
-}
-
 void IntegrationAttempt::commitCFG() {
 
   SaveProgress();
@@ -191,45 +165,14 @@ void IntegrationAttempt::commitCFG() {
   Function* CF = getFunctionRoot()->CommitF;
   const Loop* currentLoop = L;
   
-  InlineAttempt* LocalRoot = getFunctionRoot();
-  if((IntegrationAttempt*)LocalRoot != this)
-    LocalRoot = 0;
-
-  if(LocalRoot)
-    LocalRoot->initFailedBlockCommit();
+  initFailedBlockCommit();
 
   for(uint32_t i = 0; i < nBBs; ++i) {
 
     // Create failed block if necessary:
+    createFailedBlock(i + BBsOffset);
 
-    uint32_t createFailedBlockFrom = UINT_MAX;
-
-    if(LocalRoot) {
-      // Determine if there should be a failed version of the head of this block:
-      SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = LocalRoot->blocksReachableOnFailure.find(i);
-      if(it != LocalRoot->blocksReachableOnFailure.end())
-	createFailedBlockFrom = it->second;
-    }
-
-    if(createFailedBlockFrom != UINT_MAX) {
-
-      ShadowBBInvar* BBI = getBBInvar(i);
-      BasicBlock* NewBB;
-      NewBB = CloneBasicBlockFrom(BBI->BB, *LocalRoot->failedBlockMap, "", 
-				  CF, createFailedBlockFrom);
-      std::string newName;
-      {
-	raw_string_ostream RSO(newName);
-	RSO << getCommittedBlockPrefix() << BBI->BB->getName() << " (failed)";
-      }
-      NewBB->setName(newName);
-      LocalRoot->failedBlocks[i].push_back(NewBB);
-      (*LocalRoot->failedBlockMap)[BBI->BB] = NewBB;
-
-    }
-
-    // Now create the specialised block if it exists, and split the failed block where needed.
-
+    // Now create the specialised block if it exists:
     ShadowBB* BB = BBs[i];
     if(!BB)
       continue;
@@ -238,18 +181,24 @@ void IntegrationAttempt::commitCFG() {
 
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
-      if(PA && PA->isEnabled()) {
+      if(PA && PA->isEnabled() && PA->isTerminated()) {
+
+	const Loop* skipL = BB->invar->naturalScope;
+
+	// Create failed blocks before the loop iterations, so they're available as branch targets.
+	for(unsigned j = i; j != nBBs && skipL->contains(getBBInvar(j + BBsOffset)->naturalScope); ++j)
+	  createFailedBlock(j + BBsOffset);
+
+	// Create the loop iterations
 	for(unsigned i = 0; i < PA->Iterations.size(); ++i)
 	  PA->Iterations[i]->commitCFG();
-      }
-      
-      // If the loop has terminated, skip emitting the blocks in this context.
-      if(PA && PA->isEnabled() && PA->isTerminated()) {
-	const Loop* skipL = BB->invar->naturalScope;
+
+	// If the loop has terminated, skip emitting specialised blocks in this context.
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
 	  ++i;
 	--i;
 	continue;
+
       }
 
     }
@@ -278,7 +227,6 @@ void IntegrationAttempt::commitCFG() {
 
     // Determine if we need to create more BBs because of call inlining:
 
-    uint32_t instsSinceLastSplit = 0;
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* SI = &(BB->insts[j]);
@@ -298,36 +246,13 @@ void IntegrationAttempt::commitCFG() {
 	      BB->committedBlocks.push_back(IA->returnBlock);
 	      IA->CommitF = CF;
 
-	      // Split the unspecialised block:
-
+	      // Direct the call to the appropriate fail block:
 	      if(IA->hasFailedReturnPath()) {
 		
-		release_assert(createFailedBlockFrom <= j + 1 && "Failed block should exist here");
-
-		if(j + 1 == createFailedBlockFrom) {
-
-		  // Use block as-is.
-		  IA->failedReturnBlock = LocalRoot->failedBlocks[i].back();
-
-		}
-		else {
-
-		  BasicBlock* toSplit = LocalRoot->failedBlocks[i].back();
-		  uint32_t instsToSplit = std::min((j+1) - createFailedBlockFrom, instsSinceLastSplit + 1);
-		  BasicBlock::iterator splitIterator = toSplit->begin();
-		  std::advance(splitIterator, instsToSplit);
-		  BasicBlock* splitBlock = 
-		    toSplit->splitBasicBlock(splitIterator, ".callsplit");
-		  LocalRoot->failedBlocks[i].push_back(splitBlock);
-
-		  // Create a pre-return block that merges return values
-		  // and then branches to the new split block.
-
-		  BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "prereturn", CF);
-		  IA->failedReturnBlock = preReturn;
-		  BranchInst::Create(splitBlock, preReturn);
-		  
-		}
+		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "loop_prereturn", CF);
+		IA->failedReturnBlock = preReturn;
+		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(i, j + 1);
+		BranchInst::Create(targetBlock, preReturn);
 
 	      }
 	      else {
@@ -359,7 +284,6 @@ void IntegrationAttempt::commitCFG() {
 	    }
 
 	    IA->commitCFG();
-	    instsSinceLastSplit = 0;
 	    continue;
 
 	  }
@@ -368,7 +292,17 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
-      ++instsSinceLastSplit;
+      // If we have a disabled call, exit phi for a disabled loop, or tentative load
+      // then insert a break for a check.
+      if(requiresRuntimeCheck(SI)) {
+
+	if(j + 1 != jlim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
+	  continue;
+
+	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".checkpass", CF);
+	BB->committedBlocks.push_back(newSpecBlock);
+
+      }
 
     }
 
@@ -1206,9 +1140,24 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
 
 bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
 
-  ShadowValue Base;
-  int64_t Offset;
-  if(!getBaseAndConstantOffset(I, Base, Offset))
+  Value* Result;
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(I));
+  if((!IVS) || IVS->SetType != ValSetTypePB || IVS->Values.size() != 1)
+    return false;
+
+  bool ret = synthCommittedPointer(I, emitBB, Result);
+  if(ret)
+    I.setCommittedValue(Result);
+  return ret;
+  
+}
+
+bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
+
+  ShadowValue Base = IV.V;
+  int64_t Offset = IV.Offset;
+
+  if(Offset == LLONG_MAX)
     return false;
   
   if(Base == I)
@@ -1222,7 +1171,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
 
     // Rep as a constant expression:
-    I.setCommittedVal(getGVOffset(GV, Offset, I.getType()));
+    Result = (getGVOffset(GV, Offset, I.getType()));
 
   }
   else {
@@ -1248,16 +1197,55 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
 
     // Cast back:
     if(I.getType() == Int8Ptr) {
-      I.setCommittedVal(OffsetI);
+      Result = (OffsetI);
     }
     else {
-      I.setCommittedVal(CastInst::CreatePointerCast(OffsetI, I.getType(), "synthcastback", emitBB));
+      Result = (CastInst::CreatePointerCast(OffsetI, I.getType(), "synthcastback", emitBB));
     }
 
   }
 
   return true;
 
+}
+
+Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB) {
+
+  if(Ty == ValSetTypeScalar)
+    return IV.V.getVal();
+  else if(Ty == ValSetTypeFD) {
+    
+    if(I != IV.V.getInst() && 
+       IV.V.objectAvailableFrom(this)) {
+    
+      return IV.V.getInst()->committedVal;
+
+    }
+    
+  }
+  else if(Ty == ValSetTypePB) {
+
+    Value* V;
+    if(synthCommittedPointer(ShadowValue(I), IV, emitBB, V))
+      return V;
+
+  }
+
+  return 0;
+
+}
+
+Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock*& emitBB) {
+
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
+  if(!IVS)
+    return 0;
+
+  if(IVS->Values.size() != 1)
+    return 0;
+
+  return trySynthVal(I, IVS->SetType, IVS->Values[0], emitBB);
+  
 }
 
 void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB) {
@@ -1272,26 +1260,14 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
   if(willBeDeleted(ShadowValue(I)) && !inst_is<TerminatorInst>(I))
     return;
 
-  if(Constant* C = getConstReplacement(ShadowValue(I))) {
-    I->committedVal = C;
-    return;
-  }
+  if(!requiresRuntimeCheck(I)) {
 
-  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
-
-  if(IVS && 
-     IVS->SetType == ValSetTypeFD && 
-     IVS->Values.size() == 1 && 
-     I != IVS->Values[0].V.getInst() && 
-     IVS->Values[0].V.objectAvailableFrom(this)) {
-
-    I->committedVal = IVS->Values[0].V.getInst()->committedVal;
-    return;
+    if(Value* V = trySynthInst(I, emitBB)) {
+      I->committedVal = V;
+      return;
+    }
 
   }
-      
-  if(synthCommittedPointer(ShadowValue(I), emitBB))
-    return;
 
   // Already emitted calls above:
   if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
@@ -1317,12 +1293,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
     if(!BB) {
 
-      if(!ScopeL) {
-	// Commit an uncomplicated specialised block: no split points, no specialised companion.
-	InlineAttempt* LocalRoot = getFunctionRoot();
-	LocalRoot->commitSimpleFailedBlock(i);
-      }
-
+      commitSimpleFailedBlock(i);
       continue;
 
     }
@@ -1334,23 +1305,29 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
-      if(PA && PA->isEnabled()) {
+      if(PA && PA->isEnabled() && PA->isTerminated()) {
 
 	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
 	  PA->Iterations[j]->commitInstructions();
 
-      }
-      
-      // If the loop has terminated, skip populating the blocks in this context.
-      if(PA && PA->isEnabled() && PA->isTerminated()) {
+	SmallVector<std::pair<BasicBlock*, uint32_t>, 1> emptyVec;
+
+	// If the loop has terminated, skip populating the blocks in this context.
 	const Loop* skipL = BB->invar->naturalScope;
-	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
+	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope))) {
+
+	  populateFailedBlock(i, emptyVec.begin(), emptyVec.end());
 	  ++i;
+
+	}
+
       }
       else {
+
 	// Emit blocks for the residualised loop
 	// (also has the side effect of winding us past the loop)
 	commitLoopInstructions(BB->invar->naturalScope, i);
+
       }
 
       --i;
@@ -1368,39 +1345,16 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
     }
 
-    InlineAttempt* LocalRoot = getFunctionRoot();
-    if(LocalRoot != this)
-      LocalRoot = 0;
-
     // Synthesise path condition checks, using a successive emitBB for each one:
-    SmallVector<BasicBlock*, 1>::iterator emitBlockIt;
-    if(LocalRoot)
-      emitBlockIt = LocalRoot->emitPathConditionChecks(BB);
-    
-    // emitBlockIt now points to the first non-path-condition block.
-    BasicBlock* emitBB = LocalRoot ? *emitBlockIt : BB->committedBlocks.front();
+    SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBlockIt = emitPathConditionChecks(BB);
+    SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathConditionLimit = emitBlockIt;
 
-    uint32_t startUnspecBlock = UINT_MAX;
-    SmallVector<BasicBlock*, 1>::iterator unspecBlockIt, lastUnspecBlock;
+    // If the PHI nodes are loop exit PHIs that need their values checking, emit the check.
+    if(j != 0) {
 
-    if(LocalRoot) {
-
-      SmallDenseMap<uint32_t, uint32_t, 8>::iterator unspecit = LocalRoot->blocksReachableOnFailure.find(i);
-      if(unspecit != LocalRoot->blocksReachableOnFailure.end()) {
-	startUnspecBlock = unspecit->second;
-	unspecBlockIt = LocalRoot->failedBlocks[i].begin();
-	lastUnspecBlock = LocalRoot->failedBlocks[i].end();
-	--lastUnspecBlock;
-      }
-
-    }
-
-    if(startUnspecBlock == 0) {
-
-      BasicBlock::iterator BI = LocalRoot->emitFirstSubblockMergePHIs(i, emitBlockIt);
-      BasicBlock::iterator PostPHIBI = LocalRoot->commitFailedPHIs(LocalRoot->failedBlocks[i].front(), BI, i, BB->committedBlocks.begin(), emitBlockIt);
-
-      LocalRoot->remapFailedBlock(PostPHIBI, *unspecBlockIt, i, std::distance(BI, PostPHIBI), unspecBlockIt != lastUnspecBlock);
+      ShadowInstruction* prevSI = &BB->insts[j-1];
+      if(inst_is<PHINode>(prevSI) && requiresRuntimeCheck(ShadowValue(prevSI)))
+	emitBlockIt = emitExitPHIChecks(emitBlockIt, BB);
 
     }
 
@@ -1409,66 +1363,15 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
       ShadowInstruction* I = &(BB->insts[j]);
       I->committedVal = 0;
-      BasicBlock* oldEmitBB = emitBB;
+      BasicBlock* emitBB = emitBlockIt->first;
       emitOrSynthInst(I, BB, emitBB);
 
-      if(startUnspecBlock != UINT_MAX && oldEmitBB != emitBB) {
+      if(requiresRuntimeCheck(ShadowValue(I)))
+	emitBlockIt = emitOrdinaryInstCheck(emitBlockIt, I);
 
-	if(startUnspecBlock > (j + 1))
-	  continue;
+    }
 
-	ShadowInstruction* Call = &BB->insts[j];	
-	InlineAttempt* CallIA = getInlineAttempt(Call);
-	if(!CallIA->hasFailedReturnPath())
-	  continue;
-
-	BasicBlock::iterator BI;
-
-	if(startUnspecBlock < (j + 1)) {
-
-	  // There is an unspecialised predecessor to this subblock.
-	  BasicBlock* unspecPred = *(unspecBlockIt++);
-
-	  // If non-void, merge the failed-during-call and already-failed return values:
-	  if(CallIA->failedReturnPHI) {
-
-	    PHINode* NewPN =  makePHI(CallIA->F.getFunctionType()->getReturnType(), 
-				      "retvalmerge", *unspecBlockIt);
-	    NewPN->addIncoming(CallIA->failedReturnPHI, CallIA->failedReturnBlock);
-	    NewPN->addIncoming(LocalRoot->getUnspecValue(i, j, I->invar->I, &I->invar->I->use_begin().getUse()), unspecPred);
-	    // Map unspecialised call users to this unspec/spec merge point. We must dominate all
-	    // such users because this subblock is the unique successor of the call's block.
-	    (*LocalRoot->failedBlockMap)[I->invar->I] = NewPN;
-
-	  }
-
-	  // Insert PHI merges joining the through-call and from-unspecialised-call paths.
-	  BI = LocalRoot->insertPostCallPHIs(i, *unspecBlockIt, j + 1, Call, unspecPred);
-
-	}
-	else {
-
-	  // Map unspecialised call users direct to the return phi.
-	  if(CallIA->failedReturnPHI)
-	    (*getFunctionRoot()->failedBlockMap)[I->invar->I] = CallIA->failedReturnPHI;
-
-	  BI = (*unspecBlockIt)->begin();
-	  // Skip past the stackrestore instruction inserted by call handling:
-	  ++BI;
-
-	}
-
-	// Skip past a return PHI node if it exists.
-	if(CallIA->failedReturnPHI)
-	  ++BI;
-
-	// For first unspecialised subblock, leave the iterator where it was, pointing at
-	// the first subblock. There can't be a spec/unspec merge here.
-	LocalRoot->remapFailedBlock(BI, *unspecBlockIt, i, j+1, unspecBlockIt != lastUnspecBlock);
-
-      }
-
-    }    
+    populateFailedBlock(i, BB->committedBlocks.begin(), pathConditionLimit);
 
   }
   

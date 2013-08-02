@@ -63,7 +63,7 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
 
     const Loop* ChildL = immediateChildLoop(MyL, ExitingBBL);
     PeelAttempt* LPA = getPeelAttempt(ChildL);
-    if(LPA && LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
+    if(LPA && LPA->isTerminated()) {
 
       Visitor->enterLoop(LPA, Ctx);
 

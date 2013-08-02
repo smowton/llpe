@@ -911,7 +911,7 @@ struct ShadowBB {
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
   LocalStoreMap* localStore;
-  SmallVector<BasicBlock*, 1> committedBlocks;
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1> committedBlocks;
   
   bool useSpecialVarargMerge;
   bool inAnyLoop;
@@ -947,6 +947,7 @@ struct ShadowBB {
   void clobberMayAliasOldObjects();
   void clobberGlobalObjects();
   void clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose);
+  BasicBlock* getCommittedBlockAt(uint32_t);
 
 };
 
