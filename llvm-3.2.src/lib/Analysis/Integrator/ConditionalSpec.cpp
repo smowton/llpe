@@ -3,8 +3,10 @@
 
 #include "llvm/Module.h"
 #include "llvm/BasicBlock.h"
+#include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
+#include "llvm/Analysis/LoopInfo.h"
 
 using namespace llvm;
 
@@ -342,7 +344,7 @@ bool InlineAttempt::hasFailedReturnPath() {
 
 // Save phase bits:
 
-void PeelIteration::initFailedBlockCommit() {}
+void IntegrationAttempt::initFailedBlockCommit() {}
 
 void InlineAttempt::initFailedBlockCommit() {
 
@@ -405,12 +407,12 @@ ShadowValue InlineAttempt::getPathConditionSV(PathCondition& Cond) {
 
 }
 
-void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt) {
+void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
   if(stackIdx != Cond.fromStackIdx || BB->invar->BB != Cond.fromBB)
     return;
 
-  BasicBlock* emitBlock = *(emitBlockIt++);
+  BasicBlock* emitBlock = (emitBlockIt++)->first;
 
   Instruction* resultInst = 0;
   Value* testRoot = getCommittedValue(getPathConditionSV(Cond));
@@ -494,27 +496,27 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
   // resultInst is a boolean indicating if the path condition matched.
   // Branch to the next specialised block on pass, or the first non-specialised block otherwise.
 
-  BranchInst::Create(*emitBlockIt, failedBlocks[BB->invar->idx].front(), resultInst, emitBlock);
+  BranchInst::Create(emitBlockIt->first, failedBlocks[BB->invar->idx].front().first, resultInst, emitBlock);
 
 }
 
-void InlineAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt) {
+void InlineAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
   for(std::vector<PathCondition>::iterator it = Conds.begin(), itend = Conds.end(); it != itend; ++it)
     emitPathConditionCheck(*it, Ty, BB, stackIdx, emitBlockIt);
 
 }
 
-SmallVector<BasicBlock*, 1>::iterator PeelIteration::emitPathConditionChecks(ShadowBB* BB) { 
+SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) { 
 
   // No path conditions within loops at the moment.
   return BB->committedBlocks.begin();
 
 }
 
-SmallVector<BasicBlock*, 1>::iterator InlineAttempt::emitPathConditionChecks(ShadowBB* BB) {
+SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator InlineAttempt::emitPathConditionChecks(ShadowBB* BB) {
 
-  SmallVector<BasicBlock*, 1>::iterator it = BB->committedBlocks.begin();
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it = BB->committedBlocks.begin();
 
   IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
   if(!Info)
@@ -532,7 +534,7 @@ BasicBlock::iterator InlineAttempt::emitFirstSubblockMergePHIs(uint32_t idx, Sma
 
   ShadowBB* BB = getBB(idx);
   if(!BB)
-    return failedBlocks[idx].front()->begin();
+    return failedBlocks[idx].front().first->begin();
 
   // This top unspecialised subblock is a spec/unspec merge point if (a) path condition checks
   // exist, or (b) there are spec predecessors that branch to unspec.
@@ -560,12 +562,12 @@ BasicBlock::iterator InlineAttempt::emitFirstSubblockMergePHIs(uint32_t idx, Sma
 	specit != pathCondEnd; ++specit)
       specPreds.push_back(std::make_pair(specit->first, this));
 
-    return insertMergePHIs(idx, specPreds, unspecPreds, failedBlocks[idx].front(), 0);
+    return insertMergePHIs(idx, specPreds, unspecPreds, failedBlocks[idx].front().first, 0);
 
   }
   else {
 
-    return failedBlocks[idx].front()->begin();
+    return failedBlocks[idx].front().first->begin();
 
   }
   
@@ -665,7 +667,7 @@ BasicBlock::iterator InlineAttempt::insertMergePHIs(uint32_t BBIdx, SmallVector<
 
     }
 
-    for(uint32_t instIdx = 0, instLim = ThisSBB->invar->insts.size(); instIdx != instLim; ++instIdx) {
+    for(uint32_t instIdx = 0, instLim = ThisBBI->insts.size(); instIdx != instLim; ++instIdx) {
       
       SmallVector<Use*, 8> replaceUses;
       Instruction* I = ThisBBI->insts[instIdx].I;
@@ -704,7 +706,7 @@ BasicBlock::iterator InlineAttempt::insertMergePHIs(uint32_t BBIdx, SmallVector<
 	for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = specPreds.begin(), itend = specPreds.end(); it != itend; ++it) {
 
 	  BasicBlock* PredBB = it->first;
-	  Value* Op = getValAsType(it->second->getSpecValue(ThisBBIdx, instIdx), NewNode->getType(), 
+	  Value* Op = getValAsType(it->second->getSpecValue(ThisBBIdx, instIdx, I), NewNode->getType(), 
 				   PredBB->getTerminator());
 	  NewNode->addIncoming(Op, PredBB);
       
@@ -712,7 +714,7 @@ BasicBlock::iterator InlineAttempt::insertMergePHIs(uint32_t BBIdx, SmallVector<
 
 	for(SmallVector<BasicBlock*, 4>::iterator it = unspecPreds.begin(), itend = unspecPreds.end(); it != itend; ++it) {
 
-	  Value* Op = getUnspecValue(ThisBBIdx, instIdx, replaceUses.front());
+	  Value* Op = getUnspecValue(ThisBBIdx, instIdx, I, replaceUses.front());
 	  NewNode->addIncoming(Op, *it);
 	  
 	}
@@ -745,8 +747,8 @@ BasicBlock::iterator InlineAttempt::insertSimpleMergePHIs(uint32_t BBIdx) {
   // the user's given goal stack. This cannot involve loop exiting branches.
 
   ShadowBBInvar* BBI = getBBInvar(BBIdx);
-  SmallVector<BasicBlock*, 4> specPreds;
-  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> unspecPreds;
+  SmallVector<BasicBlock*, 4> unspecPreds;
+  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
 
   for(uint32_t i = 0, ilim = BBI->predIdxs.size(); i != ilim; ++i) {
     
@@ -755,20 +757,20 @@ BasicBlock::iterator InlineAttempt::insertSimpleMergePHIs(uint32_t BBIdx) {
       
       // A specialised block exists and reaches us! Gather the specialised value this way:
       ShadowBB* PredSBB = getBB(idx);
-      specPreds.push_back(std::make_pair(PredSBB->committedBlocks.back(), this));
+      specPreds.push_back(std::make_pair(PredSBB->committedBlocks.back().first, this));
 
     }
     
     if(failedBlocks[i].size()) {
       
       // Consume the unspecialised value when accessed from an unspecialised block:
-      unspecPreds.push_back(failedBlocks[i].back());
+      unspecPreds.push_back(failedBlocks[i].back().first);
       
     }
     
   }
 
-  return insertMergePHIs(BBIdx, specPreds, unspecPreds, failedBlocks[BBIdx].front(), 0);
+  return insertMergePHIs(BBIdx, specPreds, unspecPreds, failedBlocks[BBIdx].front().first, 0);
 
 }
 
@@ -883,7 +885,7 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
 
 }
 
-BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 4>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 4>::iterator PCPredsEnd) {
+BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd) {
 
   // Create PHI nodes for this unspecialised block, starting at BI.
   // Cases:
@@ -924,13 +926,13 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
       BasicBlock* specPred;
       if(isSpecToUnspecEdge(predBlockIdx, BBIdx))
-	specPred = getBB(predBlockIdx)->committedBlocks.back();
+	specPred = getBB(predBlockIdx)->committedBlocks.back().first;
       else
 	specPred = 0;
 
       BasicBlock* unspecPred;
       if(failedBlocks[predBlockIdx].size())
-	unspecPred = failedBlocks[predBlockIdx].back();
+	unspecPred = failedBlocks[predBlockIdx].back().first;
       else
 	unspecPred = 0;
 
@@ -967,8 +969,9 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 	  
     }
 
-    for(SmallVector<BasicBlock*, 4>::iterator PCIt = PCPredsBegin; PCIt != PCPredsEnd; ++PCIt)
-      newPreds.push_back(std::make_pair(PCVal, *PCIt));
+    for(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCIt = PCPredsBegin; 
+	PCIt != PCPredsEnd; ++PCIt)
+      newPreds.push_back(std::make_pair(PCVal, PCIt->first));
 
     // Clear node:
     for(uint32_t i = PN->getNumIncomingValues(); i > 0; --i)
@@ -1048,7 +1051,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 
 }
 
-void PeelIteration::commitSimpleFailedBlock(uint32_t i) { }
+void IntegrationAttempt::commitSimpleFailedBlock(uint32_t i) { }
 
 void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
@@ -1058,7 +1061,7 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
   release_assert(failedBlocks[i].size() == 1 && "commitSimpleFailedBlock with a split block?");
 
   BasicBlock::iterator BI;
-  BasicBlock* CommitBB = failedBlocks[i].front();
+  BasicBlock* CommitBB = failedBlocks[i].front().first;
 
   bool isMerge = isSimpleMergeBlock(i);
 
@@ -1142,18 +1145,18 @@ static BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
 
 }
 
-void PeelIteration::createFailedBlock(uint32_t idx) {}
+void IntegrationAttempt::createFailedBlock(uint32_t idx) {}
 
 void InlineAttempt::createFailedBlock(uint32_t idx) {
 
-  SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = blocksReachableOnFailure.find(i);
+  SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = blocksReachableOnFailure.find(idx);
   if(it == blocksReachableOnFailure.end())
     return;
 
   uint32_t createFailedBlockFrom = it->second;
 
   ShadowBBInvar* BBI = getBBInvar(idx);
-  BasicBlock* NewBB = CloneBasicBlockFrom(BBI->BB, *failedBlockMap, "", CF, createFailedBlockFrom);
+  BasicBlock* NewBB = CloneBasicBlockFrom(BBI->BB, *failedBlockMap, "", CommitF, createFailedBlockFrom);
   std::string newName;
   {
     raw_string_ostream RSO(newName);
@@ -1161,7 +1164,7 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
   }
 
   NewBB->setName(newName);
-  failedBlocks[i].push_back(std::make_pair(NewBB, createFailedBlockFrom));
+  failedBlocks[idx].push_back(std::make_pair(NewBB, createFailedBlockFrom));
   (*failedBlockMap)[BBI->BB] = NewBB;
 
   bool splitInsts[BBI->insts.size()];
@@ -1176,13 +1179,13 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       if(i + 1 == createFailedBlockFrom)
 	continue;
 
-      BasicBlock* toSplit = failedBlocks[i].back().first;
+      BasicBlock* toSplit = failedBlocks[idx].back().first;
       uint32_t instsToSplit = std::min((i+1) - createFailedBlockFrom, instsSinceLastSplit + 1);
       BasicBlock::iterator splitIterator = toSplit->begin();
       std::advance(splitIterator, instsToSplit);
       BasicBlock* splitBlock = 
 	toSplit->splitBasicBlock(splitIterator, ".checksplit");
-      failedBlocks[i].push_back(std::make_pair(splitBlock, i + 1));
+      failedBlocks[idx].push_back(std::make_pair(splitBlock, i + 1));
 
       instsSinceLastSplit = 0;
 
@@ -1197,12 +1200,12 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
 
 }
 
-void InlineAttempt::getSubBlockForInst(uint32_t blockIdx, uint32_t instIdx) {
+BasicBlock* InlineAttempt::getSubBlockForInst(uint32_t blockIdx, uint32_t instIdx) {
 
-  release_assert(failedBlocks.count(blockIdx) && "Failed block should exist");
+  release_assert(failedBlocks[blockIdx].size() && "Failed block should exist");
   
-  SmallVector<std::pair<BasicBlock*, uint32_t> >& splits = failedBlocks[blockIdx];
-  SmallVector<std::pair<BasicBlock*, uint32_t> >::iterator it = splits.begin(), itend = splits.end();
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>& splits = failedBlocks[blockIdx];
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it = splits.begin(), itend = splits.end();
 
   while(it->second < instIdx) {
     ++it;
@@ -1222,7 +1225,7 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
        LPA->isTerminated() && LPA->isEnabled()) {
       
       for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-	LPA->Iterations[i]->collectSpecPreds(predBlock, instBlock, instIdx, preds);
+	LPA->Iterations[i]->collectSpecPreds(predBlock, predIdx, instBlock, instIdx, preds);
 
       return;
 
@@ -1238,7 +1241,7 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
     return;
 
   BasicBlock* pred = PredBB->getCommittedBlockAt(predIdx);
-  Value* committedVal = getCommittedValue(ShadowValue(&InstBB->insts[instIdx]));
+  Value* committedVal = getCommittedValue(ShadowValue(SI));
 
   preds.push_back(std::make_pair(committedVal, pred));
 
@@ -1253,7 +1256,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
        LPA->isTerminated() && LPA->isEnabled()) {
       
       for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-	LPA->Iterations[i]->collectCallFailingEdges(predBlock, instBlock, instIdx, preds);
+	LPA->Iterations[i]->collectCallFailingEdges(predBlock, predIdx, instBlock, instIdx, preds);
 
       return;
 
@@ -1268,17 +1271,17 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
   if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
     if(IA->failedReturnPHI)
-      preds.push_back(IA->failedReturnPHI, CallIA->failedReturnBlock);
+      preds.push_back(std::make_pair(IA->failedReturnPHI, IA->failedReturnBlock));
 
   }
   else {
     
-    if(runtimeCheckRequired(SI)) {
+    if(requiresRuntimeCheck(SI)) {
 
       ShadowBB* PredBB = getBB(*predBlock);
       BasicBlock* pred = PredBB->getCommittedBlockAt(predIdx);
       Value* committedVal = getCommittedValue(ShadowValue(&InstBB->insts[instIdx]));
-      preds.push_back(committedVal, pred);
+      preds.push_back(std::make_pair(committedVal, pred));
 
     }
 
@@ -1286,7 +1289,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
 
 }
 
-void PeelIteration::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) { }
+void IntegrationAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) { }
 
 void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) {
   
@@ -1321,14 +1324,14 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
     // PHI node checks are done as a group; all others are tested one at a time.
     // Find the bounds of the group.
 
-    uint32_t failedInstLim = it->first;
+    uint32_t failedInstLim = it->second;
     uint32_t firstFailedInst = failedInstLim - 1;
     
     uint32_t insertedPHIs = 0;
 
     while(firstFailedInst != 0 && 
-	  isa<PHINode>(BBI->insts[firstFailedInst]) && 
-	  isa<PHINode>(BBI->insts[firstFailedInst - 1]))
+	  isa<PHINode>(BBI->insts[firstFailedInst].I) && 
+	  isa<PHINode>(BBI->insts[firstFailedInst - 1].I))
       --firstFailedInst;
 
     // For each instruction tested here insert a PHI gathering the values from failed blocks
@@ -1351,9 +1354,9 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 	++insertedPHIs;
 
 	PHINode* NewPN =  makePHI(failedI->getType(), "spec-unspec-merge", it->first);
-	for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator it = specPreds.begin(),
-	      itend = specPreds.end(); it != itend; ++it)
-	  NewPN->addIncoming(it->first, it->second);
+	for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator specit = specPreds.begin(),
+	      specend = specPreds.end(); specit != specend; ++it)
+	  NewPN->addIncoming(specit->first, specit->second);
 
 	if(it != failedBlocks[idx].begin()) {
 
@@ -1361,11 +1364,11 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 	  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator predIt = it;
 	  --predIt;
 
-	  NewPN->addIncoming(getUnspecValue(idx, failedInst, failedI, &failedI->use_begin().getUse()), *predIt);
+	  NewPN->addIncoming(getUnspecValue(idx, failedInst, failedI, &failedI->use_begin().getUse()), predIt->first);
 
 	}
 
-	(*LocalRoot->failedBlockMap)[failedI] = NewPN;
+	(*failedBlockMap)[failedI] = NewPN;
 
       }
 
@@ -1386,13 +1389,13 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
     std::advance(BI, insertedPHIs);
 
     // Remap the normal instructions
-    remapFailedBlock(BI, *it->first, idx, it->second, it != lastit);
+    remapFailedBlock(BI, it->first, idx, it->second, it != lastit);
 
   }
   
 }
 
-Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS) {
+Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB) {
 
   release_assert(isa<Instruction>(realInst) && "Checked instruction must be residualised");
   release_assert(IVS && IVS->Values.size() != 0 && "Must have an IVS for PHI check (multis not implemented)");
@@ -1400,7 +1403,7 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
   Value* thisCheck = 0;
   for(uint32_t j = 0, jlim = IVS->Values.size(); j != jlim; ++j) {
 
-    Value* thisVal = trySynthVal(SI, IVS->SetType, IVS->Values[j], emitBB);
+    Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
     Value* newCheck;
     if(thisVal->getType()->isFloatingPointTy())
       newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisCheck, "check");
@@ -1423,7 +1426,7 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
   Value* realInst = getCommittedValue(ShadowValue(SI));
   ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI->i.PB);
 
-  return emitCompareCheck(realInst, IVS);
+  return emitCompareCheck(realInst, IVS, emitBB);
 
 }
 
@@ -1433,7 +1436,7 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_
   BasicBlock* emitBB = (emitIt++)->first;
   Value* prevCheck = 0;
 
-  uint32_t i;
+  uint32_t i, ilim;
   for(i = 0, ilim = BB->invar->insts.size(); i != ilim && inst_is<PHINode>(&BB->insts[i]); ++i) {
     
     ShadowInstruction* SI = &BB->insts[i];
@@ -1447,7 +1450,7 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_
 
   }
 
-  BasicBlock* successTarget = *emitIt;
+  BasicBlock* successTarget = emitIt->first;
   // i is the index of the first non-PHI at this point.
   BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, i);
 
@@ -1457,9 +1460,9 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_
 
 }
 
-void IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB) {
+Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB) {
 
-  release_assert(SI->memcpyValues && SI->memcpyValues.size() && "memcpyValues not set for checked copy?");
+  release_assert(SI->memcpyValues && SI->memcpyValues->size() && "memcpyValues not set for checked copy?");
 
   Value* prevCheck = 0;
   Value* writtenPtr = getCommittedValue(SI->getOperand(0));
@@ -1485,12 +1488,12 @@ void IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emit
     Value* ElPtr = GetElementPtrInst::Create(writtenPtr, ArrayRef<Value*>(&OffsetCI, 1), "", emitBB);
 
     Type* TargetType = PointerType::getUnqual(it->second.Values[0].V.getType());
-    if(!TargetType->isInt8Ty())
+    if(ElPtr->getType() != TargetType)
       ElPtr = new BitCastInst(ElPtr, TargetType, "", emitBB);
 
     Value* Loaded = new LoadInst(ElPtr, "", emitBB);
 
-    Value* thisCheck = emitCompareCheck(Loaded, IVS->second, emitBB);
+    Value* thisCheck = emitCompareCheck(Loaded, &it->second, emitBB);
     if(!prevCheck)
       prevCheck = thisCheck;
     else
@@ -1513,7 +1516,7 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uin
   else
     Check = emitAsExpectedCheck(SI, emitBB);
     
-  BasicBlock* successTarget = *emitIt;
+  BasicBlock* successTarget = emitIt->first;
   BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(SI->parent->invar->idx, SI->invar->idx + 1);
 
   BranchInst::Create(successTarget, failTarget, Check, emitBB);

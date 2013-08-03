@@ -1271,8 +1271,9 @@ protected:
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  bool synthCommittedPointer(ShadowValue, ImprovedVal, BasicBlock* emitBB, Value*&);
-  Value* trySynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB);
+  bool synthCommittedPointer(ShadowValue I, BasicBlock* emitBB);
+  bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
+  Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB);
   Value* trySynthInst(ShadowInstruction* I, BasicBlock*& emitBB);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
@@ -1291,6 +1292,21 @@ protected:
 
   void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
   bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
+  virtual void initFailedBlockCommit();
+  uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
+  Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
+  virtual void commitSimpleFailedBlock(uint32_t i);
+  void getSplitInsts(ShadowBBInvar*, bool* splits);
+  virtual void createFailedBlock(uint32_t idx);
+  void collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
+  void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
+  virtual void populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd);
+  Value* emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB);
+  Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowBB* BB);
+  Value* emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB);
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowInstruction* SI);
+  virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
 
   // Tentative load determination
   
@@ -1302,7 +1318,7 @@ protected:
   void resetTentativeLoads();
   void rerunTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V);
-  bool containsYieldCalls();
+  bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
 
   // Stat collection and printing:
@@ -1497,7 +1513,7 @@ class PeelAttempt {
    void dropExitingStoreRefs();
    void dropNonterminatedStoreRefs();
 
-   bool containsYieldCalls();
+   bool containsTentativeLoads();
 
   IntegratorTag* createTag(IntegratorTag* parent);
 
@@ -1668,25 +1684,27 @@ class InlineAttempt : public IntegrationAttempt {
   virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   void getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets);
   bool hasFailedReturnPath();
-  void initFailedBlockCommit();
+  virtual void initFailedBlockCommit();
   ShadowValue getPathConditionSV(PathCondition& Cond);
-  void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
-  void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<BasicBlock*, 1>::iterator& emitBlockIt);
-  SmallVector<BasicBlock*, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
-  BasicBlock::iterator emitFirstSubblockMergePHIs(uint32_t idx, SmallVector<BasicBlock*, 4>::iterator firstNonPCBlock);
+  void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
+  void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
+  virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
+  BasicBlock::iterator emitFirstSubblockMergePHIs(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator firstPCBlock, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator firstNonPCBlock);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);
   Value* getLocalFailedValue(Value* V, Use* U);
   Value* tryGetLocalFailedValue(Value* V, Use* U);
-  BasicBlock::iterator insertMergePHIs(uint32_t BBIdx, SmallVector<BasicBlock*, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset);
+  BasicBlock::iterator insertMergePHIs(uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset);
   BasicBlock::iterator insertSimpleMergePHIs(uint32_t BBIdx);
-  BasicBlock::iterator insertPostCallPHIs(uint32_t OrigBBIdx, BasicBlock* InsertBB, uint32_t InsertBBOffset, ShadowInstruction* Call, BasicBlock* unspecPred);
+  BasicBlock::iterator insertSubBlockPHIs(uint32_t OrigBBIdx, BasicBlock* InsertBB, uint32_t InsertBBOffset, BasicBlock* unspecPred);
   Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U);
-  Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
-  BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<BasicBlock*, 4>::iterator PCPredsBegin, SmallVector<BasicBlock*, 4>::iterator PCPredsEnd);
+  BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
-  void commitSimpleFailedBlock(uint32_t i);
+  virtual void commitSimpleFailedBlock(uint32_t i);
   virtual void popAllocas(LocalStoreMap*);
+  virtual void createFailedBlock(uint32_t idx);
+  virtual void populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd);
+  BasicBlock* getSubBlockForInst(uint32_t, uint32_t);
   
 };
 
@@ -1841,6 +1859,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void intersectSets(DenseSet<ShadowValue>* Target, MutableArrayRef<DenseSet<ShadowValue>* > Merge);
 
  bool requiresRuntimeCheck(ShadowValue V);
+ PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
   
  struct IntAAProxy {
 

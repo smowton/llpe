@@ -190,8 +190,8 @@ void IntegrationAttempt::commitCFG() {
 	  createFailedBlock(j + BBsOffset);
 
 	// Create the loop iterations
-	for(unsigned i = 0; i < PA->Iterations.size(); ++i)
-	  PA->Iterations[i]->commitCFG();
+	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
+	  PA->Iterations[j]->commitCFG();
 
 	// If the loop has terminated, skip emitting specialised blocks in this context.
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
@@ -212,7 +212,7 @@ void IntegrationAttempt::commitCFG() {
       raw_string_ostream RSO(Name);
       RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
-    BB->committedBlocks.push_back(BasicBlock::Create(F.getContext(), Name, CF));
+    BB->committedBlocks.push_back(std::make_pair(BasicBlock::Create(F.getContext(), Name, CF), 0));
 
     // Create extra empty blocks for each path condition that's effective here:
     uint32_t nCondsHere = pass->countPathConditionsForBlock(BB);
@@ -221,7 +221,7 @@ void IntegrationAttempt::commitCFG() {
       BasicBlock* newBlock = 
 	BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".pathcond", CF);
 
-      BB->committedBlocks.push_back(newBlock);
+      BB->committedBlocks.push_back(std::make_pair(newBlock, 0));
 
     }
 
@@ -243,7 +243,7 @@ void IntegrationAttempt::commitCFG() {
 	      std::string Pref = IA->getCommittedBlockPrefix();
 	      IA->returnBlock = 
 		BasicBlock::Create(F.getContext(), StringRef(Pref) + ".callexit", CF);
-	      BB->committedBlocks.push_back(IA->returnBlock);
+	      BB->committedBlocks.push_back(std::make_pair(IA->returnBlock, j+1));
 	      IA->CommitF = CF;
 
 	      // Direct the call to the appropriate fail block:
@@ -296,11 +296,11 @@ void IntegrationAttempt::commitCFG() {
       // then insert a break for a check.
       if(requiresRuntimeCheck(SI)) {
 
-	if(j + 1 != jlim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
+	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
 
 	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".checkpass", CF);
-	BB->committedBlocks.push_back(newSpecBlock);
+	BB->committedBlocks.push_back(std::make_pair(newSpecBlock, j+1));
 
       }
 
@@ -361,7 +361,7 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
 BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
-  return BBs[0]->committedBlocks.front();
+  return BBs[0]->committedBlocks.front().first;
 
 }
 
@@ -370,7 +370,7 @@ BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
   if(BB->invar->idx == parentPA->invarInfo->latchIdx && succIdx == parentPA->invarInfo->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
-      return PI->getBB(succIdx)->committedBlocks.front();
+      return PI->getBB(succIdx)->committedBlocks.front().first;
     else {
       if(iterStatus == IterationStatusFinal) {
 	release_assert(pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)
@@ -379,7 +379,7 @@ BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
 	return 0;
       }
       else
-	return parent->getBB(succIdx)->committedBlocks.front();
+	return parent->getBB(succIdx)->committedBlocks.front().first;
     }
 
   }
@@ -393,7 +393,7 @@ BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
   if(shouldIgnoreEdge(BB->invar, getBBInvar(succIdx))) {
 
     release_assert(failedBlocks[succIdx].size());
-    return failedBlocks[succIdx].front();
+    return failedBlocks[succIdx].front().first;
 
   }
 
@@ -416,7 +416,7 @@ BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, b
     if(BB->invar->outerScope == L) {
       if(PeelAttempt* PA = getPeelAttempt(SuccBBI->naturalScope)) {
 	if(PA->isEnabled())
-	  return PA->Iterations[0]->getBB(*SuccBBI)->committedBlocks.front();
+	  return PA->Iterations[0]->getBB(*SuccBBI)->committedBlocks.front().first;
       }
     }
 
@@ -440,7 +440,7 @@ BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, b
   if(!SuccBB)
     return 0;
   else
-    return SuccBB->committedBlocks.front();
+    return SuccBB->committedBlocks.front().first;
 
 }
 
@@ -489,8 +489,7 @@ Value* llvm::getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
   return CastInst::Create(Op, V, Ty, "speccast", insertAtEnd);
 
 }
-
-static PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
+PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
   // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
 
@@ -533,8 +532,8 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
     }
 
     // Emit any necessary casts into the predecessor block.
-    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), SourceBB->committedBlocks.back()->getTerminator());
-    NewPN->addIncoming(PHIOp, SourceBB->committedBlocks.back());
+    Value* PHIOp = getValAsType(getCommittedValue(SourceV), PN->getType(), SourceBB->committedBlocks.back().first->getTerminator());
+    NewPN->addIncoming(PHIOp, SourceBB->committedBlocks.back().first);
     return;
 
   }
@@ -603,8 +602,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 	}
 
 	// Right, build the PHI:
-	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedBlocks.back();
-	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedBlocks.back();
+	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedBlocks.back().first;
+	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedBlocks.back().first;
 
 	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
 	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
@@ -626,8 +625,8 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
     getCommittedExitPHIOperands(I, i, predValues, &predBBs);
 
     for(uint32_t j = 0; j < predValues.size(); ++j) {
-      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), predBBs[j]->committedBlocks.back()->getTerminator());
-      NewPN->addIncoming(PHIOp, predBBs[j]->committedBlocks.back());
+      Value* PHIOp = getValAsType(getCommittedValue(predValues[j]), NewPN->getType(), predBBs[j]->committedBlocks.back().first->getTerminator());
+      NewPN->addIncoming(PHIOp, predBBs[j]->committedBlocks.back().first);
     }
 
   }
@@ -692,7 +691,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
       if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
 	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
-	IA->returnPHI->addIncoming(PHIVal, BB->committedBlocks.back());
+	IA->returnPHI->addIncoming(PHIVal, BB->committedBlocks.back().first);
       }
 
     }
@@ -1145,14 +1144,14 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB
   if((!IVS) || IVS->SetType != ValSetTypePB || IVS->Values.size() != 1)
     return false;
 
-  bool ret = synthCommittedPointer(I, emitBB, Result);
+  bool ret = synthCommittedPointer(&I, I.getType(), IVS->Values[0], emitBB, Result);
   if(ret)
-    I.setCommittedValue(Result);
+    I.setCommittedVal(Result);
   return ret;
   
 }
 
-bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
+bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
 
   ShadowValue Base = IV.V;
   int64_t Offset = IV.Offset;
@@ -1160,18 +1159,18 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, ImprovedVal IV, Ba
   if(Offset == LLONG_MAX)
     return false;
   
-  if(Base == I)
+  if(I && Base == *I)
     return false;
 
   if(!Base.objectAvailableFrom(this))
     return false;
 
-  Type* Int8Ptr = Type::getInt8PtrTy(I.getLLVMContext());
+  Type* Int8Ptr = Type::getInt8PtrTy(emitBB->getContext());
 
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
 
     // Rep as a constant expression:
-    Result = (getGVOffset(GV, Offset, I.getType()));
+    Result = (getGVOffset(GV, Offset, targetType));
 
   }
   else {
@@ -1191,16 +1190,16 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, ImprovedVal IV, Ba
     if(Offset == 0)
       OffsetI = CastI;
     else {
-      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(I.getLLVMContext()), (uint64_t)Offset, true);
+      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
       OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
     }
 
     // Cast back:
-    if(I.getType() == Int8Ptr) {
+    if(targetType == Int8Ptr) {
       Result = (OffsetI);
     }
     else {
-      Result = (CastInst::CreatePointerCast(OffsetI, I.getType(), "synthcastback", emitBB));
+      Result = (CastInst::CreatePointerCast(OffsetI, targetType, "synthcastback", emitBB));
     }
 
   }
@@ -1209,7 +1208,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, ImprovedVal IV, Ba
 
 }
 
-Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB) {
+Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB) {
 
   if(Ty == ValSetTypeScalar)
     return IV.V.getVal();
@@ -1226,7 +1225,10 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, ValSetType Ty, Impr
   else if(Ty == ValSetTypePB) {
 
     Value* V;
-    if(synthCommittedPointer(ShadowValue(I), IV, emitBB, V))
+    ShadowValue SV;
+    if(I)
+      SV = ShadowValue(I);
+    if(synthCommittedPointer(I ? &SV : 0, targetType, IV, emitBB, V))
       return V;
 
   }
@@ -1244,7 +1246,7 @@ Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock*& emitB
   if(IVS->Values.size() != 1)
     return 0;
 
-  return trySynthVal(I, IVS->SetType, IVS->Values[0], emitBB);
+  return trySynthVal(I, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
   
 }
 
@@ -1341,7 +1343,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       
       ShadowInstruction* I = &(BB->insts[j]);
       I->committedVal = 0;
-      emitOrSynthInst(I, BB, BB->committedBlocks.front());
+      emitOrSynthInst(I, BB, BB->committedBlocks.front().first);
 
     }
 
@@ -1382,7 +1384,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 void InlineAttempt::commitArgsAndInstructions() {
   
-  BasicBlock* emitBB = BBs[0]->committedBlocks.front();
+  BasicBlock* emitBB = BBs[0]->committedBlocks.front().first;
   for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SA = &(argShadows[i]);

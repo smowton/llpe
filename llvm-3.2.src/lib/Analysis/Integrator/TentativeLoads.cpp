@@ -553,9 +553,6 @@ void IntegrationAttempt::findTentativeLoads() {
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
 	itend = inlineChildren.end(); it != itend; ++it) {
 
-    if(!it->second->isEnabled())
-      continue;
-
     it->second->findTentativeLoads();
 
   }
@@ -563,7 +560,7 @@ void IntegrationAttempt::findTentativeLoads() {
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
-    if((!it->second->isTerminated()) || (!it->second->isEnabled()))
+    if(!it->second->isTerminated())
       continue;
 
     for(uint32_t i = 0; i < it->second->Iterations.size(); ++i)
@@ -580,9 +577,6 @@ void IntegrationAttempt::resetTentativeLoads() {
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
 	itend = inlineChildren.end(); it != itend; ++it) {
 
-    if(!it->second->isEnabled())
-      continue;
-    
     it->second->resetTentativeLoads();
 
   }
@@ -590,7 +584,7 @@ void IntegrationAttempt::resetTentativeLoads() {
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
     
-    if((!it->second->isTerminated()) || (!it->second->isEnabled()))
+    if(!it->second->isTerminated())
       continue;
     
     for(uint32_t i = 0; i < it->second->Iterations.size(); ++i)
@@ -617,28 +611,30 @@ bool llvm::requiresRuntimeCheck(ShadowValue V) {
 
 }
 
-bool PeelAttempt::containsYieldCalls() {
+bool PeelAttempt::containsTentativeLoads() {
 
   for(uint32_t i = 0, ilim = Iterations.size(); i != ilim; ++i)
-    if(Iterations[i]->containsYieldCalls())
+    if(Iterations[i]->containsTentativeLoads())
       return true;
 
   return false;
 
 }
 
-bool IntegrationAttempt::containsYieldCalls() {
+bool IntegrationAttempt::containsTentativeLoads() {
 
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
 
     ShadowBBInvar* BBI = getBBInvar(i);
     ShadowBB* BB = getBB(*BBI);
+    if(!BB)
+      continue;
 
     if(BBI->naturalScope != L) {
 
       const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
       PeelAttempt* LPA;
-      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {
+      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
 
 	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
 	  ++i;
@@ -652,12 +648,11 @@ bool IntegrationAttempt::containsYieldCalls() {
     for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
 
       ShadowInstructionInvar& SII = BBI->insts[j];
-      ShadowInstruction* SI = BB ? &BB->insts[j] : 0;
+      ShadowInstruction* SI = &BB->insts[j];
 
-      if(isa<CallInst>(SII.I)) {
+      if(isa<LoadInst>(SII.I) || isa<MemTransferInst>(SII.I)) {
 
-	Function* Called = SI ? getCalledFunction(SI) : cast<CallInst>(SII.I)->getCalledFunction();
-	if((!Called) || pass->yieldFunctions.count(Called))
+	if(SI->isThreadLocal != TLS_NEVERCHECK)
 	  return true;
 
       }
@@ -669,7 +664,7 @@ bool IntegrationAttempt::containsYieldCalls() {
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
 	itend = inlineChildren.end(); it != itend; ++it) {
 
-    if(it->second->containsYieldCalls())
+    if(it->second->containsTentativeLoads())
       return true;
 
   }
@@ -677,10 +672,10 @@ bool IntegrationAttempt::containsYieldCalls() {
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
-    if((!it->second->isTerminated()) || (!it->second->isEnabled()))
+    if(!it->second->isTerminated())
       continue;
 
-    if(it->second->containsYieldCalls())
+    if(it->second->containsTentativeLoads())
       return true;
 
   }
@@ -700,7 +695,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
   else if (val_is<CallInst>(V)) {
       
     InlineAttempt* IA = getInlineAttempt(V.u.I);
-    if(IA && (!IA->isEnabled()) && IA->containsYieldCalls())
+    if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
       return true;
 
   }
@@ -713,7 +708,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
       if(predBBI->naturalScope != L && ((!L) || L->contains(predBBI->naturalScope))) {
 
 	PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope));
-	if(LPA && (!LPA->isEnabled()) && LPA->containsYieldCalls())
+	if(LPA && (!LPA->isEnabled()) && LPA->containsTentativeLoads())
 	  return true;
 
       }
@@ -773,7 +768,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
 	itend = inlineChildren.end(); it != itend; ++it) {
 
-    addCheckpointFailedBlocks();
+    it->second->addCheckpointFailedBlocks();
     if(it->second->hasFailedReturnPath())
       getFunctionRoot()->markBlockAndSuccsFailed(it->first->parent->invar->idx, it->first->invar->idx + 1);
 

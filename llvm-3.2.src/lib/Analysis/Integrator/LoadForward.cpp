@@ -2832,148 +2832,6 @@ void llvm::initSpecialFunctionsMap(Module& M) {
 
 }
 
-void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
-
-  if(MemIntrinsic* MI = dyn_cast_inst<MemIntrinsic>(SI)) {
-
-    if(isa<MemTransferInst>(MI))
-      executeMemcpyInst(SI);
-    else
-      executeMemsetInst(SI);
-    return;
-
-  }
-
-  Function* F = getCalledFunction(SI);
-
-  if(F) {
-
-    // Try to execute a special instruction:
-
-    {
-      DenseMap<Function*, specialfunctions>::iterator it = SpecialFunctionMap.find(F);
-      if(it != SpecialFunctionMap.end()) {
-      
-	switch(it->second) {
-	
-	case SF_MALLOC:
-	  executeMallocInst(SI);
-	  break;
-	case SF_REALLOC:
-	  executeReallocInst(SI);
-	  break;
-	case SF_FREE:
-	  executeFreeInst(SI);
-	  break;
-	case SF_VASTART:
-	  executeVaStartInst(SI);
-	  break;
-	case SF_VACOPY:
-	  executeVaCopyInst(SI);
-	  break;
-
-	}
-
-	return;
-
-      }
-    }
-
-    // Try to spot a special location:
-    {
-      SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = GlobalIHP->specialLocations.find(F);
-      if(it != GlobalIHP->specialLocations.end()) {
-
-	if(!SI->i.PB) {
-	  ImprovedValSetSingle* init = newIVS();
-	  init->SetType = ValSetTypePB;
-	  init->Values.push_back(ImprovedVal(ShadowValue(F), 0));
-	  SI->i.PB = init;
-	}
-
-	return;
-
-      }
-    }
-
-    // All unannotated calls return an unknown value:
-    if(SI->i.PB)
-      deleteIV(SI->i.PB);
-    SI->i.PB = newOverdefIVS();
-
-    // See if we can discard the call because it's annotated read-only:
-    if(F->onlyReadsMemory())
-      return;
-
-    // Otherwise do selective clobbering for annotated syscalls:
-
-    if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
-
-      if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
-	return;
-      
-      const LibCallFunctionInfo::LocationMRInfo *Details = 0;
-
-      if(FI->LocationDetails)
-	Details = FI->LocationDetails;
-      else if(FI->getLocationDetailsFor)
-	Details = FI->getLocationDetailsFor(ShadowValue(SI));
-
-      release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
-
-      for (unsigned i = 0; Details[i].Location; ++i) {
-
-	if(!(Details[i].MRInfo & AliasAnalysis::Mod))
-	  continue;
-
-	ShadowValue ClobberV;
-	uint64_t ClobberSize = 0;
-	if(Details[i].Location->getLocation) {
-	  Details[i].Location->getLocation(ShadowValue(SI), ClobberV, ClobberSize);
-	}
-	else {
-	  ClobberV = SI->getCallArgOperand(Details[i].Location->argIndex);
-	  ClobberSize = Details[i].Location->argSize;
-	}
-
-	if(ClobberV.isInval())
-	  continue;
-
-	ImprovedValSetSingle ClobberSet;
-	getImprovedValSetSingle(ClobberV, ClobberSet);
-	// All currently annotated syscalls write scalar values.
-	ImprovedValSetSingle OD(ValSetTypeScalar, true);
-	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI);
-
-      }
-
-      // TODO: introduce a category for functions that actually do this.
-      /*
-      if(GlobalIHP->yieldFunctions.count(F))
-	SI->parent->clobberGlobalObjects();
-      */
-
-      return;
-
-    }
-
-  }
-  else {
-
-    // Unknown calls return unknown
-    if(SI->i.PB)
-      deleteIV(SI->i.PB);
-    SI->i.PB = newOverdefIVS();
-
-  }
-
-  // Finally clobber all locations; this call is entirely unhandled
-  //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
-  ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
-
-}
-
 static bool containsOldObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(Ptr.SetType != ValSetTypePB)
@@ -3124,17 +2982,6 @@ struct SetMAOVisitor : public ReachableObjectVisitor {
 
 };
 
-void ShadowBB::setAllObjectsMayAliasOld() {
-
-  localStore = localStore->getWritableFrameList();
-
-  DenseSet<ShadowValue>* preservePtr[1] = { &localStore->unescapedObjects };
-
-  intersectSets(&localStore->noAliasOldObjects,
-		MutableArrayRef<DenseSet<ShadowValue>* >(preservePtr));
-
-}
-
 static void setObjectsMayAliasOld(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(reachesAllPointers(Ptr, BB, true)) {
@@ -3144,6 +2991,24 @@ static void setObjectsMayAliasOld(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
   
   SetMAOVisitor V;
   visitReachableObjects(Ptr, BB, V);
+
+}
+
+static void setValueMayAliasOld(ShadowValue V, ShadowBB* BB) {
+
+  if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(V))) {
+
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
+      setObjectsMayAliasOld(it.val(), BB);
+
+  }
+  else {
+    
+    ImprovedValSetSingle IVS;
+    getImprovedValSetSingle(V, IVS);
+    setObjectsMayAliasOld(IVS, BB);
+
+  }
 
 }
 
@@ -3164,6 +3029,200 @@ struct SetTGVisitor : public ReachableObjectVisitor {
 
 };
 
+static void setObjectsThreadGlobal(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+
+  if(reachesAllPointers(Ptr, BB, false)) {
+    BB->setAllObjectsThreadGlobal();
+    return;
+  }
+  
+  SetTGVisitor V;
+  visitReachableObjects(Ptr, BB, V);
+
+}
+
+
+static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
+
+  if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(V))) {
+
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
+      setObjectsThreadGlobal(it.val(), BB);
+
+  }
+  else {
+    
+    ImprovedValSetSingle IVS;
+    getImprovedValSetSingle(V, IVS);
+    setObjectsThreadGlobal(IVS, BB);
+
+  }
+
+}
+
+void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
+
+  if(MemIntrinsic* MI = dyn_cast_inst<MemIntrinsic>(SI)) {
+
+    if(isa<MemTransferInst>(MI))
+      executeMemcpyInst(SI);
+    else
+      executeMemsetInst(SI);
+    return;
+
+  }
+
+  Function* F = getCalledFunction(SI);
+
+  if(F) {
+
+    // Try to execute a special instruction:
+
+    {
+      DenseMap<Function*, specialfunctions>::iterator it = SpecialFunctionMap.find(F);
+      if(it != SpecialFunctionMap.end()) {
+      
+	switch(it->second) {
+	
+	case SF_MALLOC:
+	  executeMallocInst(SI);
+	  break;
+	case SF_REALLOC:
+	  executeReallocInst(SI);
+	  break;
+	case SF_FREE:
+	  executeFreeInst(SI);
+	  break;
+	case SF_VASTART:
+	  executeVaStartInst(SI);
+	  break;
+	case SF_VACOPY:
+	  executeVaCopyInst(SI);
+	  break;
+
+	}
+
+	return;
+
+      }
+    }
+
+    // Try to spot a special location:
+    {
+      SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = GlobalIHP->specialLocations.find(F);
+      if(it != GlobalIHP->specialLocations.end()) {
+
+	if(!SI->i.PB) {
+	  ImprovedValSetSingle* init = newIVS();
+	  init->SetType = ValSetTypePB;
+	  init->Values.push_back(ImprovedVal(ShadowValue(F), 0));
+	  SI->i.PB = init;
+	}
+
+	return;
+
+      }
+    }
+
+    // All unannotated calls return an unknown value:
+    if(SI->i.PB)
+      deleteIV(SI->i.PB);
+    SI->i.PB = newOverdefIVS();
+
+    // See if we can discard the call because it's annotated read-only:
+    if(F->onlyReadsMemory())
+      return;
+
+    // Otherwise do selective clobbering for annotated syscalls:
+
+    if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+
+      if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
+	return;
+      
+      const LibCallFunctionInfo::LocationMRInfo *Details = 0;
+
+      if(FI->LocationDetails)
+	Details = FI->LocationDetails;
+      else if(FI->getLocationDetailsFor)
+	Details = FI->getLocationDetailsFor(ShadowValue(SI));
+
+      release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
+
+      for (unsigned i = 0; Details[i].Location; ++i) {
+
+	if(!(Details[i].MRInfo & AliasAnalysis::Mod))
+	  continue;
+
+	ShadowValue ClobberV;
+	uint64_t ClobberSize = 0;
+	if(Details[i].Location->getLocation) {
+	  Details[i].Location->getLocation(ShadowValue(SI), ClobberV, ClobberSize);
+	}
+	else {
+	  ClobberV = SI->getCallArgOperand(Details[i].Location->argIndex);
+	  ClobberSize = Details[i].Location->argSize;
+	}
+
+	if(ClobberV.isInval())
+	  continue;
+
+	ImprovedValSetSingle ClobberSet;
+	getImprovedValSetSingle(ClobberV, ClobberSet);
+	// All currently annotated syscalls write scalar values.
+	ImprovedValSetSingle OD(ValSetTypeScalar, true);
+	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI);
+
+      }
+
+      // TODO: introduce a category for functions that actually do this.
+      /*
+      if(GlobalIHP->yieldFunctions.count(F))
+	SI->parent->clobberGlobalObjects();
+      */
+
+      return;
+
+    }
+
+  }
+  else {
+
+    // Unknown calls return unknown
+    if(SI->i.PB)
+      deleteIV(SI->i.PB);
+    SI->i.PB = newOverdefIVS();
+
+  }
+
+  // Finally clobber all locations; this call is entirely unhandled
+  //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
+  ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
+
+  // Args to an unhandled call escape, may be stored in old object, and may be visible from other threads.
+  for(uint32_t i = 0, ilim = SI->invar->operandIdxs.size(); i != ilim; ++i) {
+    
+    ShadowValue Op = SI->getOperand(i);
+    valueEscaped(Op, SI->parent);
+    setValueMayAliasOld(Op, SI->parent);
+    setValueThreadGlobal(Op, SI->parent);
+
+  }
+
+}
+
+void ShadowBB::setAllObjectsMayAliasOld() {
+
+  localStore = localStore->getWritableFrameList();
+
+  DenseSet<ShadowValue>* preservePtr[1] = { &localStore->unescapedObjects };
+
+  intersectSets(&localStore->noAliasOldObjects,
+		MutableArrayRef<DenseSet<ShadowValue>* >(preservePtr));
+
+}
+
 void ShadowBB::setAllObjectsThreadGlobal() {
 
   localStore = localStore->getWritableFrameList();
@@ -3174,18 +3233,6 @@ void ShadowBB::setAllObjectsThreadGlobal() {
 
   intersectSets(&localStore->threadLocalObjects, 
 		MutableArrayRef<DenseSet<ShadowValue>* >(preservePtr));
-
-}
-
-static void setObjectsThreadGlobal(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
-
-  if(reachesAllPointers(Ptr, BB, false)) {
-    BB->setAllObjectsThreadGlobal();
-    return;
-  }
-  
-  SetTGVisitor V;
-  visitReachableObjects(Ptr, BB, V);
 
 }
 
