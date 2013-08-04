@@ -1269,13 +1269,13 @@ protected:
   void fixupHeaderPHIs(ShadowBB* BB);
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  void emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB);
+  void emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  bool synthCommittedPointer(ShadowValue I, BasicBlock* emitBB);
+  bool synthCommittedPointer(ShadowValue I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
-  Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB);
-  Value* trySynthInst(ShadowInstruction* I, BasicBlock*& emitBB);
-  void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB);
+  Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
+  Value* trySynthInst(ShadowInstruction* I, BasicBlock* emitBB);
+  void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 

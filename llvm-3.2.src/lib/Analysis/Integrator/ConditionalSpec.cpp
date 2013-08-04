@@ -1168,7 +1168,10 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
   (*failedBlockMap)[BBI->BB] = NewBB;
 
   bool splitInsts[BBI->insts.size()];
+  memset(splitInsts, 0, sizeof(bool) * BBI->insts.size());
   getSplitInsts(BBI, splitInsts);
+
+  release_assert((!splitInsts[BBI->insts.size() - 1]) && "Can't split after terminator");
 
   uint32_t instsSinceLastSplit = 0;
   for(uint32_t i = 0, ilim = BBI->insts.size(); i != ilim; ++i) {
@@ -1317,9 +1320,9 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 
   }
 
-  for(; it != lastit; ++it) {
+  for(; it != endit; ++it) {
 
-    release_assert(it->first != 0);
+    release_assert(it->second != 0);
 
     // PHI node checks are done as a group; all others are tested one at a time.
     // Find the bounds of the group.
@@ -1355,7 +1358,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 
 	PHINode* NewPN =  makePHI(failedI->getType(), "spec-unspec-merge", it->first);
 	for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator specit = specPreds.begin(),
-	      specend = specPreds.end(); specit != specend; ++it)
+	      specend = specPreds.end(); specit != specend; ++specit)
 	  NewPN->addIncoming(specit->first, specit->second);
 
 	if(it != failedBlocks[idx].begin()) {
@@ -1406,9 +1409,9 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
     Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
     Value* newCheck;
     if(thisVal->getType()->isFloatingPointTy())
-      newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisCheck, "check");
+      newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, "check");
     else
-      newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisCheck, "check");
+      newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, "check");
 
     if(thisCheck)
       thisCheck = BinaryOperator::CreateOr(newCheck, thisCheck, "", emitBB);

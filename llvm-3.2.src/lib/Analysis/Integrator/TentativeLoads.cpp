@@ -19,6 +19,21 @@
 
 using namespace llvm;
 
+static uint32_t TLProgressN = 0;
+const uint32_t TLProgressLimit = 1000;
+
+static void TLProgress() {
+
+  TLProgressN++;
+  if(TLProgressN == TLProgressLimit) {
+
+    errs() << ".";
+    TLProgressN = 0;
+
+  }
+
+}
+
 class TentativeLoadWalker : public BackwardIAWalker {
 
 public:
@@ -546,6 +561,8 @@ void IntegrationAttempt::findTentativeLoads() {
 
       SI.isThreadLocal = shouldCheckLoad(SI);
 
+      TLProgress();
+
     }
     
   }
@@ -596,8 +613,12 @@ void IntegrationAttempt::resetTentativeLoads() {
 
 void IntegrationAttempt::rerunTentativeLoads() {
 
+  errs() << "Finding tentative loads";
+
   resetTentativeLoads();
   findTentativeLoads();
+
+  errs() << "\n";
 
 }
 
@@ -738,6 +759,9 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
       if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {
 
+	for(uint32_t k = 0, klim = LPA->Iterations.size(); k != klim; ++k)
+	  LPA->Iterations[k]->addCheckpointFailedBlocks();	
+
 	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
 	  ++i;
 	--i;
@@ -750,6 +774,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
     for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction* SI = &BB->insts[j];
+      InlineAttempt* IA;
 
       if(requiresRuntimeCheck2(ShadowValue(SI))) {
 
@@ -760,25 +785,15 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 	getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
 
       }
+      else if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
+
+	IA->addCheckpointFailedBlocks();
+	if(IA->hasFailedReturnPath())
+	  getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+
+      }
 
     }
-
-  }
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
-
-    it->second->addCheckpointFailedBlocks();
-    if(it->second->hasFailedReturnPath())
-      getFunctionRoot()->markBlockAndSuccsFailed(it->first->parent->invar->idx, it->first->invar->idx + 1);
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
-      it->second->Iterations[i]->addCheckpointFailedBlocks();
 
   }
 

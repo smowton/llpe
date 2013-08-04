@@ -2805,8 +2805,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     estimateIntegrationBenefit();
     errs() << "\n";
   }
-
+  
+  errs() << "Finding tentative loads";
   IA->findTentativeLoads();
+  errs() << "\n";
+
   // Finding any tentative loads may bring stored values and loaded pointers back to life.
   mustRecomputeDIE = true;
 

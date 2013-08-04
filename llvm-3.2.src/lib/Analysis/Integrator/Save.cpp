@@ -186,7 +186,7 @@ void IntegrationAttempt::commitCFG() {
 	const Loop* skipL = BB->invar->naturalScope;
 
 	// Create failed blocks before the loop iterations, so they're available as branch targets.
-	for(unsigned j = i; j != nBBs && skipL->contains(getBBInvar(j + BBsOffset)->naturalScope); ++j)
+	for(unsigned j = i + 1; j != nBBs && skipL->contains(getBBInvar(j + BBsOffset)->naturalScope); ++j)
 	  createFailedBlock(j + BBsOffset);
 
 	// Create the loop iterations
@@ -251,7 +251,7 @@ void IntegrationAttempt::commitCFG() {
 		
 		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "loop_prereturn", CF);
 		IA->failedReturnBlock = preReturn;
-		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(i, j + 1);
+		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
 		BranchInst::Create(targetBlock, preReturn);
 
 	      }
@@ -903,7 +903,9 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
 }
 
-void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock*& emitBB) {
+void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBBIter) {
+
+  BasicBlock* emitBB = emitBBIter->first;
 
   if(InlineAttempt* IA = getInlineAttempt(I)) {
 
@@ -945,7 +947,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock
 	}
 
 	// Emit further instructions in this ShadowBB to the successor block:
-	emitBB = IA->returnBlock;
+	++emitBBIter;
+	release_assert(emitBBIter->first == IA->returnBlock);
 	
       }
       else {
@@ -1137,14 +1140,14 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
 
 }
 
-bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, BasicBlock* emitBB) {
+bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBB) {
 
   Value* Result;
   ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(I));
   if((!IVS) || IVS->SetType != ValSetTypePB || IVS->Values.size() != 1)
     return false;
 
-  bool ret = synthCommittedPointer(&I, I.getType(), IVS->Values[0], emitBB, Result);
+  bool ret = synthCommittedPointer(&I, I.getType(), IVS->Values[0], emitBB->first, Result);
   if(ret)
     I.setCommittedVal(Result);
   return ret;
@@ -1208,7 +1211,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
 }
 
-Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock*& emitBB) {
+Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar)
     return IV.V.getVal();
@@ -1237,7 +1240,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 
 }
 
-Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock*& emitBB) {
+Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB) {
 
   ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
   if(!IVS)
@@ -1250,7 +1253,7 @@ Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock*& emitB
   
 }
 
-void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, BasicBlock*& emitBB) {
+void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB) {
 
   if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
     emitCall(BB, I, emitBB);
@@ -1264,7 +1267,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
 
   if(!requiresRuntimeCheck(I)) {
 
-    if(Value* V = trySynthInst(I, emitBB)) {
+    if(Value* V = trySynthInst(I, emitBB->first)) {
       I->committedVal = V;
       return;
     }
@@ -1277,11 +1280,11 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Bas
 
   // We'll emit an instruction. Is it special?
   if(inst_is<PHINode>(I))
-    emitPHINode(BB, I, emitBB);
+    emitPHINode(BB, I, emitBB->first);
   else if(inst_is<TerminatorInst>(I))
-    emitTerminator(BB, I, emitBB);
+    emitTerminator(BB, I, emitBB->first);
   else
-    emitInst(BB, I, emitBB);
+    emitInst(BB, I, emitBB->first);
 
 }
 
@@ -1318,7 +1321,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	const Loop* skipL = BB->invar->naturalScope;
 	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope))) {
 
-	  populateFailedBlock(i, emptyVec.begin(), emptyVec.end());
+	  populateFailedBlock(i + BBsOffset, emptyVec.begin(), emptyVec.end());
 	  ++i;
 
 	}
@@ -1338,14 +1341,18 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     }
 
     uint32_t j;
+    SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPHIsTo = BB->committedBlocks.begin();
+      
     // Even if there are path conditions, emit specialised PHIs into the first block.
     for(j = 0; j < BB->insts.size() && inst_is<PHINode>(&(BB->insts[j])); ++j) {
       
       ShadowInstruction* I = &(BB->insts[j]);
       I->committedVal = 0;
-      emitOrSynthInst(I, BB, BB->committedBlocks.front().first);
+      emitOrSynthInst(I, BB, emitPHIsTo);
 
     }
+
+    release_assert(emitPHIsTo == BB->committedBlocks.begin() && "PHI emission should not move the emit pointer");
 
     // Synthesise path condition checks, using a successive emitBB for each one:
     SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBlockIt = emitPathConditionChecks(BB);
@@ -1365,15 +1372,14 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
       ShadowInstruction* I = &(BB->insts[j]);
       I->committedVal = 0;
-      BasicBlock* emitBB = emitBlockIt->first;
-      emitOrSynthInst(I, BB, emitBB);
+      emitOrSynthInst(I, BB, emitBlockIt);
 
       if(requiresRuntimeCheck(ShadowValue(I)))
 	emitBlockIt = emitOrdinaryInstCheck(emitBlockIt, I);
 
     }
 
-    populateFailedBlock(i, BB->committedBlocks.begin(), pathConditionLimit);
+    populateFailedBlock(i + BBsOffset, BB->committedBlocks.begin(), pathConditionLimit);
 
   }
   
@@ -1384,7 +1390,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 void InlineAttempt::commitArgsAndInstructions() {
   
-  BasicBlock* emitBB = BBs[0]->committedBlocks.front().first;
+  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBB = BBs[0]->committedBlocks.begin();
   for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SA = &(argShadows[i]);
