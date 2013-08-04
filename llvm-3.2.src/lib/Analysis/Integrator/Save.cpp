@@ -143,9 +143,33 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
 }
 
-Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name) {
+Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name, bool addFailedReturnFlag) {
 
-  Function* NewF = Function::Create(F->getFunctionType(), LT, Name, F->getParent());
+  FunctionType* NewFType = F->getFunctionType();
+
+  if(addFailedReturnFlag) {
+
+    Type* OldReturn = NewFType->getReturnType();
+    Type* FlagType = Type::getInt1Ty(F->getContext());
+    Type* NewReturn;
+
+    if(OldReturn->isVoidTy()) {
+
+      NewReturn = FlagType;
+
+    }
+    else {
+
+      Type* NewReturnArgs[2] = { OldReturn, FlagType };
+      NewReturn = StructType::get(F->getContext(), ArrayRef<Type*>(NewReturnArgs, 2));
+
+    }
+
+    NewFType = FunctionType::get(NewReturn, ArrayRef<Type*>(&*NewFType->param_begin(), &*NewFType->param_end()), NewFType->isVarArg());
+
+  }
+
+  Function* NewF = Function::Create(NewFType, LT, Name, F->getParent());
 
   Function::arg_iterator DestI = NewF->arg_begin();
   for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
@@ -236,20 +260,21 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(IA->isEnabled()) {
 
+	    std::string Pref = IA->getCommittedBlockPrefix();
+
 	    if(!IA->commitsOutOfLine()) {
 
 	      // Split the specialised block:
 
-	      std::string Pref = IA->getCommittedBlockPrefix();
 	      IA->returnBlock = 
-		BasicBlock::Create(F.getContext(), StringRef(Pref) + ".callexit", CF);
+		BasicBlock::Create(F.getContext(), StringRef(Pref) + "callexit", CF);
 	      BB->committedBlocks.push_back(std::make_pair(IA->returnBlock, j+1));
 	      IA->CommitF = CF;
 
 	      // Direct the call to the appropriate fail block:
 	      if(IA->hasFailedReturnPath()) {
 		
-		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "loop_prereturn", CF);
+		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "prereturn", CF);
 		IA->failedReturnBlock = preReturn;
 		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
 		BranchInst::Create(targetBlock, preReturn);
@@ -275,11 +300,17 @@ void IntegrationAttempt::commitCFG() {
 	      if(IA->CommitF)
 		continue;
 
-	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name);
+	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name, IA->hasFailedReturnPath());
 	      IA->returnBlock = 0;
-
-	      release_assert(!IA->hasFailedReturnPath() && "Failed return paths only supported for inline commit at present");
 	      IA->failedReturnBlock = 0;
+
+	      // Requires a break afterwards if the target function might branch onto a failed path.
+	      if(IA->hasFailedReturnPath()) {
+
+		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), StringRef(Pref) + "OOL callexit", CF);
+		BB->committedBlocks.push_back(std::make_pair(newBlock, j+1));
+
+	      }
 
 	    }
 
@@ -673,15 +704,35 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(!IA->returnBlock) {
 
-      if((!F.getReturnType()->isVoidTy()) && I->i.dieStatus != INSTSTATUS_ALIVE) {
-	// Return a null value, since this isn't used:
-	Constant* retVal = Constant::getNullValue(F.getReturnType());
-	ReturnInst::Create(emitBB->getContext(), retVal, emitBB);
+      Value* retVal;
+      if((!F.getFunctionType()->getReturnType()->isVoidTy()) && I->i.dieStatus != INSTSTATUS_ALIVE)
+	retVal = UndefValue::get(F.getReturnType());
+      else if(F.getFunctionType()->getReturnType()->isVoidTy())
+	retVal = 0;
+      else
+	retVal = getCommittedValue(I->getOperand(0));
+
+      if(IA->hasFailedReturnPath() && !IA->isRootMainCall()) {
+
+	Value* retFlag = ConstantInt::getTrue(emitBB->getContext());	
+	if(!retVal) {
+	  
+	  retVal = retFlag;
+	  
+	}
+	else {
+
+	  StructType* retType = cast<StructType>(getFunctionRoot()->CommitF->getFunctionType()->getReturnType());
+	  Type* normalRet = retType->getElementType(0);
+	  Constant* undefRet = UndefValue::get(normalRet);
+	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, retFlag, NULL);
+	  retVal = InsertValueInst::Create(aggTemplate, retVal, 0, "success_ret", emitBB);
+
+	}
+
       }
-      else {
-	// Normal return (vararg function or root function)
-	emitInst(BB, I, emitBB);
-      }
+
+      ReturnInst::Create(emitBB->getContext(), retVal, emitBB);
 
     }
     else {
@@ -953,99 +1004,84 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
       }
       else {
 
-	FunctionType* FType = IA->CommitF->getFunctionType();
-	bool mustReconstruct = false;
+	FunctionType* FType = IA->F.getFunctionType();
 
-	// Resolved calls through a function pointer might produce a type mismatch.
-	// Only allow shortening the argument list at the moment.
+	// Build a call to IA->CommitF with same attributes but perhaps less arguments.
+	// Most of this code borrowed from Transforms/IPO/DeadArgumentElimination.cpp
+
+	CallInst* OldCI = cast_inst<CallInst>(I);
+
+	SmallVector<AttributeWithIndex, 8> AttributesVec;
+	const AttrListPtr &CallPAL = OldCI->getAttributes();
+
+	Attributes FnAttrs = CallPAL.getFnAttributes();
 	  
-	if(!FType->isVarArg()) {
-	  
-	  unsigned FParams = FType->getNumParams();
-	  unsigned CIParams = cast_inst<CallInst>(I)->getNumArgOperands();
+	std::vector<Value*> Args;
 
-	  if(FParams < CIParams) {
-	    mustReconstruct = true;
-	  }
-	  else if(FParams > CIParams) {
-	    release_assert(0 && "Function has higher arity than call");
-	  }
+	uint32_t ilim;
+	if(FType->isVarArg())
+	  ilim = OldCI->getNumArgOperands();
+	else
+	  ilim = FType->getNumParams();
 
-	  FunctionType* CIFType = cast<FunctionType>(cast<PointerType>(cast_inst<CallInst>(I)->getCalledValue()->getType())->getElementType());
-	  if(CIFType->getReturnType()->isVoidTy() && !FType->getReturnType()->isVoidTy())
-	    mustReconstruct = true;
-
-	}
-
-	if(!mustReconstruct) {
-
-	  CallInst* CI = cast<CallInst>(I->invar->I->clone());
-	  I->committedVal = CI;
-	  emitBB->getInstList().push_back(CI);
-
-	  for(uint32_t i = 0, ilim = CI->getNumArgOperands(); i != ilim; ++i) {
-
-	    ShadowValue op = I->getCallArgOperand(i);
-	    Value* opV = getCommittedValue(op);
-	    Type* needTy;
-	    if(i < FType->getNumParams()) {
-	      // Normal argument: cast to target function type.
-	      needTy = FType->getParamType(i);
-	    }
-	    else {
-	      // Vararg: cast to old callinst arg type.
-	      needTy = CI->getArgOperand(i)->getType();
-	    }
-	    CI->setArgOperand(i, getValAsType(opV, needTy, CI));
-
-	  }
-
-	  CI->setCalledFunction(IA->CommitF);
-
-	}
-	else {
-
-	  // Build a call to IA->CommitF with same attributes but less arguments.
-	  // Most of this code borrowed from Transforms/IPO/DeadArgumentElimination.cpp
-
-	  errs() << "Rebuilt call\n";
-
-	  CallInst* OldCI = cast_inst<CallInst>(I);
-
-	  SmallVector<AttributeWithIndex, 8> AttributesVec;
-	  const AttrListPtr &CallPAL = OldCI->getAttributes();
-
-	  Attributes FnAttrs = CallPAL.getFnAttributes();
-	  
-	  std::vector<Value*> Args;
-	  for(uint32_t i = 0, ilim = FType->getNumParams(); i != ilim; ++i) {
+	for(uint32_t i = 0; i != ilim; ++i) {
 	    
-	    Attributes Attrs = CallPAL.getParamAttributes(i + 1);
-	    if(Attrs.hasAttributes())
-	      AttributesVec.push_back(AttributeWithIndex::get(Args.size(), Attrs));
+	  Attributes Attrs = CallPAL.getParamAttributes(i + 1);
+	  if(Attrs.hasAttributes())
+	    AttributesVec.push_back(AttributeWithIndex::get(Args.size(), Attrs));
 
-	    // (Except this bit, a clone of emitInst)
-	    ShadowValue op = I->getCallArgOperand(i);
-	    Value* opV = getCommittedValue(op);
-	    Type* needTy = FType->getParamType(i);
-	    Args.push_back(getValAsType(opV, needTy, emitBB));
+	  // (Except this bit, a clone of emitInst)
+	  ShadowValue op = I->getCallArgOperand(i);
+	  Value* opV = getCommittedValue(op);
+	  Type* needTy;
+	  if(i < FType->getNumParams()) {
+	    // Normal argument: cast to target function type.
+	    needTy = FType->getParamType(i);
+	  }
+	  else {
+	    // Vararg: cast to old callinst arg type.
+	    needTy = OldCI->getArgOperand(i)->getType();
+	  }
+	  Args.push_back(getValAsType(opV, needTy, emitBB));
+
+	}
+
+	if (FnAttrs.hasAttributes())
+	  AttributesVec.push_back(AttributeWithIndex::get(AttrListPtr::FunctionIndex,
+							  FnAttrs));
+	  
+	AttrListPtr NewCallPAL = AttrListPtr::get(IA->CommitF->getContext(), AttributesVec);
+
+	CallInst* NewCI = cast<CallInst>(CallInst::Create(IA->CommitF, Args, "", emitBB));
+	NewCI->setCallingConv(OldCI->getCallingConv());
+	NewCI->setAttributes(NewCallPAL);
+	if(OldCI->isTailCall())
+	  NewCI->setTailCall();
+	NewCI->setDebugLoc(OldCI->getDebugLoc());
+	  
+	I->committedVal = NewCI;
+
+	if(IA->hasFailedReturnPath()) {
+
+	  // This out-of-line call might fail. If it did, branch to unspecialised code.
+
+	  Value* CallFailed;
+	  if(IA->F.getFunctionType()->getReturnType()->isVoidTy()) {
+
+	    CallFailed = NewCI;
 
 	  }
+	  else {
 
-	  if (FnAttrs.hasAttributes())
-	    AttributesVec.push_back(AttributeWithIndex::get(AttrListPtr::FunctionIndex,
-							    FnAttrs));
-	  
-	  AttrListPtr NewCallPAL = AttrListPtr::get(IA->CommitF->getContext(), AttributesVec);
+	    CallFailed = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(1), "retfailflag", emitBB);
+	    I->committedVal = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(0), "ret", emitBB);
+	    
+	  }
 
-	  CallInst* newI = cast<CallInst>(CallInst::Create(IA->CommitF, Args, "", emitBB));
-	  newI->setCallingConv(OldCI->getCallingConv());
-	  newI->setAttributes(NewCallPAL);
-	  if(OldCI->isTailCall())
-	    newI->setTailCall();
-	  newI->setDebugLoc(OldCI->getDebugLoc());
-	  
-	  I->committedVal = newI;
+	  ++emitBBIter;
+	  BasicBlock* successTarget = emitBBIter->first;
+	  BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx + 1);
+	  BranchInst::Create(successTarget, failTarget, CallFailed, emitBB);
 
 	}
 

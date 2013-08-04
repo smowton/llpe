@@ -1010,17 +1010,47 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
     ReturnInst* RI = dyn_cast<ReturnInst>(BI);
     if(RI && !isRootMainCall()) {
 
-      // Rewrite into a branch to and contribution to the failed return phi node.
-      if(failedReturnPHI) {
+      if(failedReturnBlock) {
 
-	Use* U = &RI->getOperandUse(0);
-	Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
-	failedReturnPHI->addIncoming(Ret, BB);
+	// Rewrite into a branch to and contribution to the failed return phi node.
+	if(failedReturnPHI) {
+
+	  Use* U = &RI->getOperandUse(0);
+	  Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
+	  failedReturnPHI->addIncoming(Ret, BB);
+
+	}
+
+	RI->eraseFromParent();
+	BranchInst::Create(failedReturnBlock, BB);
+
+      }
+      else {
+
+	// Out-of-line commit
+	Value* Ret;
+	Value* FailFlag = ConstantInt::getFalse(BB->getContext());
+	
+	if(F.getFunctionType()->getReturnType()->isVoidTy())
+	  Ret = FailFlag;
+	else {
+
+	  Use* U = &RI->getOperandUse(0);
+	  Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
+	  StructType* retType = cast<StructType>(CommitF->getFunctionType()->getReturnType());
+	  Type* normalRet = Ret->getType();
+	  Constant* undefRet = UndefValue::get(normalRet);
+	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, FailFlag, NULL);
+	  Ret = InsertValueInst::Create(aggTemplate, Ret, 0, "fail_ret", RI);
+
+	}
+	
+	// Existing RI might have wrong operand count, so replace it.
+	ReturnInst::Create(BB->getContext(), Ret, RI);
+	RI->eraseFromParent();
 
       }
 
-      RI->eraseFromParent();
-      BranchInst::Create(failedReturnBlock, BB);
       // Bail out since we just ate the loop's controlling iterator
       return;
 

@@ -1785,7 +1785,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool blockCertainlyExecutes(ShadowBB*);
  bool blockAssumedToExecute(ShadowBB*);
 
- Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name);
+ Function* cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name, bool addFailedReturnFlag);
 
  Constant* getGVOffset(Constant* GV, int64_t Offset, Type* targetType);
 
