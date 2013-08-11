@@ -218,7 +218,7 @@ void IntegrationAttempt::commitCFG() {
 	  PA->Iterations[j]->commitCFG();
 
 	// If the loop has terminated, skip emitting specialised blocks in this context.
-	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope)))
+	while(i < nBBs && skipL->contains(getBBInvar(i + BBsOffset)->naturalScope))
 	  ++i;
 	--i;
 	continue;
@@ -445,10 +445,9 @@ BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, b
     // Only enter if we're emitting the loop in its proper scope: otherwise we're
     // writing the residual version of a loop.
     if(BB->invar->outerScope == L) {
-      if(PeelAttempt* PA = getPeelAttempt(SuccBBI->naturalScope)) {
-	if(PA->isEnabled())
-	  return PA->Iterations[0]->getBB(*SuccBBI)->committedBlocks.front().first;
-      }
+      PeelAttempt* PA;
+      if((PA = getPeelAttempt(SuccBBI->naturalScope)) && PA->isTerminated() && PA->isEnabled())
+	return PA->Iterations[0]->getBB(*SuccBBI)->committedBlocks.front().first;
     }
 
     // Otherwise loop unexpanded or disabled: jump direct to the residual loop.
@@ -598,55 +597,17 @@ void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint
 
   }
 
-  getExitPHIOperands(SI, valOpIdx, ops, BBs, true);
+  getExitPHIOperands(SI, valOpIdx, ops, BBs, false);
 
 
 }
 
 void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPN) {
 
-  // Special case: populating the header PHI of a residualised loop that has some specialised iterations.
-  // Populate with PHI([latch_value, last_spec_latch], [latch_value, general_latch])
-  // This can't be a header of an terminated loop or that of a specialised iteration since populate
-  // is not called for those.
-
-  if(BB->invar->naturalScope && BB->invar->BB == BB->invar->naturalScope->getHeader()) {
-    if(PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope)) {
-      if(PA->isEnabled()) {
-
-	// Find the latch arg:
-	uint32_t latchIdx = PA->invarInfo->latchIdx;
-	int latchOperand = cast<PHINode>(I->invar->I)->
-	  getBasicBlockIndex(BB->invar->naturalScope->getLoopLatch());
-	release_assert(latchOperand >= 0);
-
-	ShadowValue lastLatchOperand, generalLatchOperand;
-	
-	ShadowInstIdx& valIdx = I->invar->operandIdxs[latchOperand];
-	if(valIdx.blockIdx == INVALID_BLOCK_IDX || valIdx.instIdx == INVALID_INSTRUCTION_IDX) {
-	  lastLatchOperand = I->getOperand(latchOperand);
-	  generalLatchOperand = lastLatchOperand;
-	}
-	else {
-	  lastLatchOperand = ShadowValue(PA->Iterations.back()->getInst(valIdx.blockIdx, valIdx.instIdx));
-	  generalLatchOperand = ShadowValue(getInst(valIdx.blockIdx, valIdx.instIdx));
-	}
-
-	// Right, build the PHI:
-	BasicBlock* lastLatchBlock = PA->Iterations.back()->getBB(latchIdx)->committedBlocks.back().first;
-	BasicBlock* generalLatchBlock = getBB(latchIdx)->committedBlocks.back().first;
-
-	Value* lastLatchVal = getValAsType(getCommittedValue(lastLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
-	Value* generalLatchVal = getValAsType(getCommittedValue(generalLatchOperand), NewPN->getType(), lastLatchBlock->getTerminator());
-
-	NewPN->addIncoming(lastLatchVal, lastLatchBlock);
-	NewPN->addIncoming(generalLatchVal, generalLatchBlock);
-
-	return;
-
-      }
-    }
-  }
+  // There used to be a case here handling loops with one or more specialised iterations
+  // but which were ultimately unbounded. I scrapped that because it's too complicated
+  // handling the intermediate case between straightened and fully general loops,
+  // but it's in git if you need it.
 
   // Emit a normal PHI; all arguments have already been prepared.
   for(uint32_t i = 0, ilim = I->invar->operandIdxs.size(); i != ilim; i++) {

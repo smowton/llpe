@@ -1307,6 +1307,7 @@ protected:
   Value* emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB);
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowInstruction* SI);
   virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
+  bool hasSpecialisedCompanion(ShadowBBInvar* BBI);
 
   // Tentative load determination
   
@@ -1577,6 +1578,7 @@ class InlineAttempt : public IntegrationAttempt {
   std::vector<SmallVector<std::pair<BasicBlock*, uint32_t>, 1> > failedBlocks;
   ValueToValueMapTy* failedBlockMap;
   DenseMap<std::pair<Instruction*, Use*>, PHINode*>* PHIForwards;
+  DenseSet<PHINode*>* ForwardingPHIs;
 
   bool isUnsharable() {
     return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
@@ -1689,14 +1691,14 @@ class InlineAttempt : public IntegrationAttempt {
   void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
   void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
   virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
-  BasicBlock::iterator emitFirstSubblockMergePHIs(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator firstPCBlock, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator firstNonPCBlock);
+  void markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI);
+  void remapBlockUsers(ShadowInstructionInvar& SI, BasicBlock* BB, PHINode* Replacement);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);
+  BasicBlock::iterator skipMergePHIs(BasicBlock::iterator it);
+  void createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruction* NewI);
   Value* getLocalFailedValue(Value* V, Use* U);
   Value* tryGetLocalFailedValue(Value* V, Use* U);
-  BasicBlock::iterator insertMergePHIs(uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<BasicBlock*, 4>& unspecPreds, BasicBlock* InsertBB, uint32_t BBOffset);
-  BasicBlock::iterator insertSimpleMergePHIs(uint32_t BBIdx);
-  BasicBlock::iterator insertSubBlockPHIs(uint32_t OrigBBIdx, BasicBlock* InsertBB, uint32_t InsertBBOffset, BasicBlock* unspecPred);
   Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);

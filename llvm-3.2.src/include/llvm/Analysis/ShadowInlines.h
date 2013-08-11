@@ -312,6 +312,7 @@ ImprovedValSet(bool M) : isMulti(M) { }
   virtual ImprovedValSet* getReadableCopy() = 0;
   virtual void print(raw_ostream&, bool brief = false) = 0;
   virtual ~ImprovedValSet() {}
+  virtual bool isWhollyUnknown() = 0;
   
 };
 
@@ -338,7 +339,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() > 0;
   }
 
-  bool isWhollyUnknown() {
+  virtual bool isWhollyUnknown() {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() == 0;
   }
 
@@ -596,6 +597,10 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   ImprovedValSet* getReadableCopy() {
     MapRefCount++;
     return this;
+  }
+
+  virtual bool isWhollyUnknown() {
+    return false;
   }
 
   virtual void print(raw_ostream&, bool brief = false);

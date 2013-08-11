@@ -707,6 +707,9 @@ bool IntegrationAttempt::containsTentativeLoads() {
 
 bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
 
+  if(V.getType()->isVoidTy())
+    return false;
+
   if(val_is<LoadInst>(V) || val_is<MemTransferInst>(V)) {
     
     if(V.u.I->isThreadLocal == TLS_MUSTCHECK)
@@ -717,7 +720,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
       
     InlineAttempt* IA = getInlineAttempt(V.u.I);
     if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
-      return true;
+      return !V.u.I->i.PB->isWhollyUnknown();
 
   }
   else if(val_is<PHINode>(V)) {
@@ -730,7 +733,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
 
 	PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope));
 	if(LPA && (!LPA->isEnabled()) && LPA->containsTentativeLoads())
-	  return true;
+	  return !V.u.I->i.PB->isWhollyUnknown();
 
       }
 
