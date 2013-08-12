@@ -841,14 +841,21 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 void InlineAttempt::remapBlockUsers(ShadowInstructionInvar& SI, BasicBlock* BB, PHINode* Replacement) {
 
   Instruction* I = SI.I;
+
   for(Instruction::use_iterator UI = I->use_begin(), UE = I->use_end(); UI != UE; ++UI) {
 
     Instruction* UseInst = cast<Instruction>(*UI);
-    BasicBlock* UseBB = UseInst->getParent();
+    if(UseInst->getParent()->getParent() != &F) {
 
-    if(cast<BasicBlock>((*failedBlockMap)[UseBB]) == BB) {
+      // Spurious user due to block cloning
+      continue;
 
-      std::pair<Instruction*, Use*> K = std::make_pair(UseInst, &UI.getUse());
+    }
+
+    // If the user maps to a cloned instruction in block BB...
+    if(cast<Instruction>((*failedBlockMap)[UseInst])->getParent() == BB) {
+
+      std::pair<Instruction*, Use*> K = std::make_pair(SI.I, &UI.getUse());
       (*PHIForwards)[K] = Replacement;
 
     }
@@ -887,6 +894,11 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
   // If the instruction needs PHI forwarding, add PHI nodes in each (cloned) block where this is necessary.
   // The specialised companion(s) of this instruction have been created already so getSpecValue works.
 
+  // Note that NewI might be in a different block to failedBlockMap[OrigSI.I->Parent] due to forwarding
+  // performed before now. failedBlockMap[OrigSI.I] has been updated to point to NewI however.
+  // We should start merging from the block after wherever NewI is defined, and use NewI rather than anything 
+  // directly derived from OrigSI when forwarding.
+
   std::vector<std::pair<Instruction*, uint32_t> > predBlocks(1, std::make_pair(NewI, OrigSI.idx));
 
   // 1. Find the predecessor blocks for each user, setting the vector cell for each (original program)
@@ -913,6 +925,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
     ShadowBBInvar* thisBBI = getBBInvar(thisBlockIdx);
 
     Instruction* thisBlockInst;
+    bool instDefined = false;
 
     if(i != 0) {
 
@@ -1009,8 +1022,10 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
     }
     else {
 
-      // This is the subblock that defines NewI; just use it.
+      // This is the subblock that defines NewI, or one of its preds; just use it.
       thisBlockInst = NewI;
+      if(failedBlocks[thisBlockIdx].front().first == NewI->getParent())
+	instDefined = true;
 
     }
 
@@ -1020,6 +1035,17 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       itend = failedBlocks[thisBlockIdx].end();
     ++it;
     for(; it != itend; ++it) {
+
+      // This is the head and instruction not defined yet?
+      if(i == 0 && !instDefined) {
+
+	if(it->first == NewI->getParent()) {
+	  // Defined here
+	  instDefined = true;
+	  continue;
+	}
+
+      }
 
       // Not needed at this offset?
       if(it->second > predBlocks[i].second)
@@ -1036,6 +1062,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
       thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, it->first);
       ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+
+      remapBlockUsers(OrigSI, it->first, cast<PHINode>(thisBlockInst));
 
     }
     
@@ -1072,9 +1100,20 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
   // Map each instruction operand to the most local PHI translation of the target instruction,
   // or if that doesn't exist the specialised version.
 
+  // If this block is a non-final subblock (i.e. skipTerm is true) then skip creating
+  // PHI forwards of the second-to-last instruction (i.e. the instruction before the terminator)
+  // as that will be special-cased in populateFailedBlock at the start of the next subblock.
+
   BasicBlock::iterator BE = BB->end();
-  if(skipTerm)
+  Instruction* testedInst;
+  if(skipTerm) {
     --BE;
+    --BE;
+    testedInst = BE;
+    ++BE;
+  }
+  else
+    testedInst = 0;
 
   ShadowBBInvar* BBI = getBBInvar(idx);
 
@@ -1136,7 +1175,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
     }
     else {
 
-      if(anySpecialisedCompanions && !SII.I->getType()->isVoidTy())
+      if(anySpecialisedCompanions && I != testedInst && !SII.I->getType()->isVoidTy())
 	createForwardingPHIs(SII, I);
 
       uint32_t opIdx = 0;
@@ -1485,6 +1524,9 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 	}
 
 	(*failedBlockMap)[failedI] = NewPN;
+
+	// Insert PHI forwarding of this merge where necessary:
+	createForwardingPHIs(BBI->insts[failedInst], NewPN);
 
       }
 
