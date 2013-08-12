@@ -350,7 +350,7 @@ void InlineAttempt::initFailedBlockCommit() {
 
   failedBlocks.resize(nBBs);
   failedBlockMap = new ValueToValueMapTy();
-  PHIForwards = new DenseMap<std::pair<Instruction*, Use*>, PHINode*>();
+  PHIForwards = new DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>();
   ForwardingPHIs = new DenseSet<PHINode*>();
 
 }
@@ -573,29 +573,32 @@ bool InlineAttempt::isSimpleMergeBlock(uint32_t i) {
 
 }
 
-Value* InlineAttempt::getLocalFailedValue(Value* V, Use* U) {
+Value* InlineAttempt::getLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
-  Value* Ret = tryGetLocalFailedValue(V, U);
+  Value* Ret = tryGetLocalFailedValue(V, UseBlock);
   release_assert(Ret);
   return Ret;
 
 }
 
-Value* InlineAttempt::tryGetLocalFailedValue(Value* V, Use* U) {
+Value* InlineAttempt::tryGetLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
   Instruction* I = dyn_cast<Instruction>(V);
   if(!I)
     return V;
 
-  DenseMap<std::pair<Instruction*, Use*>, PHINode*>::iterator it = PHIForwards->find(std::make_pair(I, U));
-  if(it != PHIForwards->end())
-    return it->second;
-
   ValueToValueMapTy::iterator it2 = failedBlockMap->find(I);
   if(it2 == failedBlockMap->end())
     return 0;
-  else
-    return it2->second;
+
+  Instruction* CloneI = cast<Instruction>(it2->second);
+
+  DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>::iterator it = 
+    PHIForwards->find(std::make_pair(CloneI, UseBlock));
+  if(it != PHIForwards->end())
+    return it->second;
+
+  return CloneI;
 
 }
 
@@ -651,7 +654,7 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
 }
 
-Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U) {
+Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* UseBlock) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
 
@@ -664,7 +667,7 @@ Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value*
     // Pred is an instruction. If only a specialised definition exists, use that on both spec
     // and unspec incoming paths.
 
-    Value* Ret = tryGetLocalFailedValue(V, U);
+    Value* Ret = tryGetLocalFailedValue(V, UseBlock);
     if(!Ret)
       Ret = getSpecValue(blockIdx, instIdx, V);
     return Ret;
@@ -718,6 +721,19 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
   uint32_t instIdx = 0;
 
+  // If BBI is a loop header, skip the latch predecessor for the time being and we'll come back to it
+  // after the latch operand is committed.
+  
+  uint32_t ignorePred = UINT_MAX;
+
+  if(BBI->naturalScope) {
+
+    ShadowLoopInvar* LInfo = invarInfo->LInfo[BBI->naturalScope];
+    if(LInfo->headerIdx == BBIdx)
+      ignorePred = LInfo->latchIdx;
+
+  }
+
   for(BasicBlock::iterator BE = BB->end(); BI != BE && isa<PHINode>(BI); ++BI, ++instIdx) {
 
     ShadowInstructionInvar* PNInfo = &BBI->insts[instIdx];
@@ -731,10 +747,14 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
     for(uint32_t i = 0, ilim = PNInfo->operandBBs.size(); i != ilim; ++i) {
 
       uint32_t predBlockIdx = PNInfo->operandBBs[i];
+
+      if(predBlockIdx == ignorePred)
+	continue;
+
       ShadowInstIdx predOp = PNInfo->operandIdxs[i];
       Value* predV = OrigPN->getIncomingValue(i);
 
-      Value* unspecV = getUnspecValue(predOp.blockIdx, predOp.instIdx, predV, &OrigPN->getOperandUse(i));
+      Value* unspecV = getUnspecValue(predOp.blockIdx, predOp.instIdx, predV, failedBlocks[predBlockIdx].back().first);
       Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV);
 
       BasicBlock* specPred;
@@ -838,32 +858,6 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 
 }
 
-void InlineAttempt::remapBlockUsers(ShadowInstructionInvar& SI, BasicBlock* BB, PHINode* Replacement) {
-
-  Instruction* I = SI.I;
-
-  for(Instruction::use_iterator UI = I->use_begin(), UE = I->use_end(); UI != UE; ++UI) {
-
-    Instruction* UseInst = cast<Instruction>(*UI);
-    if(UseInst->getParent()->getParent() != &F) {
-
-      // Spurious user due to block cloning
-      continue;
-
-    }
-
-    // If the user maps to a cloned instruction in block BB...
-    if(cast<Instruction>((*failedBlockMap)[UseInst])->getParent() == BB) {
-
-      std::pair<Instruction*, Use*> K = std::make_pair(SI.I, &UI.getUse());
-      (*PHIForwards)[K] = Replacement;
-
-    }
-
-  }
-
-}
-
 static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<std::pair<BasicBlock*, Instruction*>, 4>& unspecPreds, BasicBlock* InsertBB) {
 
   PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, "clonemerge", InsertBB->begin());
@@ -907,13 +901,40 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
   for(uint32_t i = 0, ilim = OrigSI.userIdxs.size(); i != ilim; ++i) {
 
     ShadowBBInvar* UseBBI = getBBInvar(OrigSI.userIdxs[i].blockIdx);
-    markBBAndPreds(UseBBI, OrigSI.userIdxs[i].instIdx, predBlocks, OrigSI.parent);
+    // If the user is a PHI node then it effectively uses in the predecessor it draws from.
+    ShadowInstructionInvar& UseSI = UseBBI->insts[OrigSI.userIdxs[i].instIdx];
+    if(isa<PHINode>(UseSI.I)) {
+
+      for(uint32_t j = 0, jlim = UseSI.operandIdxs.size(); j != jlim; ++j) {
+
+	if(UseSI.operandIdxs[j].blockIdx == OrigSI.parent->idx && UseSI.operandIdxs[j].instIdx == OrigSI.idx) {
+
+	  ShadowBBInvar* PredBBI = getBBInvar(UseSI.operandBBs[j]);
+	  markBBAndPreds(PredBBI, -1 /* needed in whole block */, predBlocks, OrigSI.parent);
+
+	}
+
+      }
+
+    }
+    else {
+
+      markBBAndPreds(UseBBI, OrigSI.userIdxs[i].instIdx, predBlocks, OrigSI.parent);
+
+    }
 
   }
 
   // 2. Proceed forwards through those blocks, inserting forwarding each time there is a merge from
   // specialised code and each time conflicting versions of the forwarded value are presented
   // by block predecessors.
+
+  // Keep track of the stack of loops we're inside: loops with break edges inside them create
+  // new loop variants and their header phis must be created incomplete and finished on completion.
+  // Start it off containing the definition loop, which will never be popped.
+  
+  SmallVector<const Loop*, 4> loopStack;
+  loopStack.push_back(OrigSI.parent->naturalScope);
 
   for(uint32_t i = 0, ilim = predBlocks.size(); i != ilim; ++i) {
 
@@ -933,91 +954,186 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // merge point (path conditions, etc) or if there are conflicting unspec
       // definitions or both.
 
-      uint32_t nCondsHere;
-      ShadowBB* thisBB = getBB(thisBlockIdx);
-      if(thisBB)
-	nCondsHere = pass->countPathConditionsForBlock(thisBB);
-      else
-	nCondsHere = 0;
+      // If this is a loop header, check whether there are any break edges in the loop. If not,
+      // we can simply set all such blocks to use the same definition as the preheader; if there are,
+      // we must create an incomplete header phi and complete it after exiting.
 
-      bool isSpecToUnspec = isSimpleMergeBlock(thisBlockIdx);
+      bool skipSubBlock = false;
 
-      bool shouldMergeHere = nCondsHere != 0 || isSpecToUnspec;
-      if(!shouldMergeHere) {
+      const Loop* currentLoop = loopStack.back();
+      if(currentLoop != thisBBI->naturalScope) {
 
-	Instruction* UniqueIncoming = 0;
-	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	if((!currentLoop) || currentLoop->contains(thisBBI->naturalScope)) {
 
-	  uint32_t predRelIdx = thisBBI->predIdxs[j] - OrigSI.parent->idx;
-	  release_assert(predRelIdx < predBlocks.size());
-	  Instruction* predInst = predBlocks[predRelIdx].first;
-	  release_assert(predInst);
-	  if(!UniqueIncoming)
-	    UniqueIncoming = predInst;
-	  else if(UniqueIncoming != predInst) {
-	    UniqueIncoming = 0;
-	    break;
+	  // Entered a new loop.
+	  ShadowLoopInvar* LInfo = invarInfo->LInfo[thisBBI->naturalScope];
+
+	  // The entire loop should be in our scope of consideration:
+	  release_assert(OrigSI.parent->idx <= LInfo->preheaderIdx);
+	  release_assert(OrigSI.parent->idx + predBlocks.size() >= LInfo->latchIdx);
+
+	  // Are there any breaks in the loop body? These can only be due to instruction checks
+	  // not path conditions or can't-reach-target conditions.
+
+	  bool loopHasBreaks = false;
+	  for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j) {
+
+	    if(failedBlocks[j].size() > 1)
+	      loopHasBreaks = true;
+
+	  }
+
+	  Instruction* PreheaderInst = predBlocks[LInfo->preheaderIdx - OrigSI.parent->idx].first;
+
+	  if(!loopHasBreaks) {
+
+	    // If not use the preheader value everywhere and skip the loop.
+
+	    for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j)
+	      predBlocks[j - OrigSI.parent->idx].first = PreheaderInst;
+
+	    i = LInfo->latchIdx - OrigSI.parent->idx;
+	    continue;
+
+	  }
+	  else {
+
+	    // Otherwise create a phi that doesn't merge the latch edge and complete it later.
+	    // Since this is top-of-block within a loop, this can currently only merge unspecialised
+	    // values from the preheader and latch, so just create phi [preheader].
+	    // This will need to change if path conditions become possible here.
+
+	    BasicBlock* insertBlock = failedBlocks[thisBlockIdx].front().first;
+	    SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
+	    SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
+	    unspecPreds.push_back(std::make_pair(failedBlocks[LInfo->preheaderIdx].back().first, PreheaderInst));
+
+	    thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
+	    ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+	    loopStack.push_back(thisBBI->naturalScope);
+	    skipSubBlock = true;
+
 	  }
 
 	}
+	else {
 
-	if(!UniqueIncoming)
-	  shouldMergeHere = true;
+	  // Left one or more loops, complete the corresponding header PHIs.
+	  // As noted above this just means adding a pred for the latch.
+
+	  while(thisBBI->naturalScope != loopStack.back()) {
+
+	    const Loop* exitLoop = loopStack.back();
+	    loopStack.pop_back();
+	    // Lowest level loop should never be popped.
+	    release_assert(loopStack.size());
+
+	    ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
+
+	    PHINode* PN = cast<PHINode>(predBlocks[LInfo->headerIdx - OrigSI.parent->idx].first);
+	    PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
+			    failedBlocks[LInfo->latchIdx].back().first);
+
+	  }
+
+	  // Now process the block as per usual.
+
+	}
 
       }
 
       BasicBlock* insertBlock = failedBlocks[thisBlockIdx].front().first;
 
-      if(shouldMergeHere) {
+      // This only skips when we've just entered a loop and created to a header phi.
+      // In this case we move on to process subblocks.
+      if(!skipSubBlock) {
 
-	SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
-	SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
+	uint32_t nCondsHere;
+	ShadowBB* thisBB = getBB(thisBlockIdx);
 
-	if(isSpecToUnspec) {
+	if(thisBB)
+	  nCondsHere = pass->countPathConditionsForBlock(thisBB);
+	else
+	  nCondsHere = 0;
 
-	  // Some specialised predecessors branch straight to unspec code.
+	bool isSpecToUnspec = isSimpleMergeBlock(thisBlockIdx);
+
+	bool shouldMergeHere = nCondsHere != 0 || isSpecToUnspec;
+	if(!shouldMergeHere) {
+
+	  Instruction* UniqueIncoming = 0;
 	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
 
-	    uint32_t pred = thisBBI->predIdxs[j];
-
-	    if(isSpecToUnspecEdge(pred, thisBlockIdx))
-	      specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().first, this));
+	    uint32_t predRelIdx = thisBBI->predIdxs[j] - OrigSI.parent->idx;
+	    release_assert(predRelIdx < predBlocks.size());
+	    Instruction* predInst = predBlocks[predRelIdx].first;
+	    release_assert(predInst);
+	    if(!UniqueIncoming)
+	      UniqueIncoming = predInst;
+	    else if(UniqueIncoming != predInst) {
+	      UniqueIncoming = 0;
+	      break;
+	    }
 
 	  }
 
-	}
-	if(nCondsHere) {
-
-	  // The first n specialised blocks are specialised predecessors.
-	  for(uint32_t k = 0, klim = nCondsHere; k != klim; ++k)
-	    specPreds.push_back(std::make_pair(thisBB->committedBlocks[k].first, this));
+	  if(!UniqueIncoming)
+	    shouldMergeHere = true;
 
 	}
 
-	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	if(shouldMergeHere) {
 
-	  uint32_t pred = thisBBI->predIdxs[j];
-	  uint32_t relidx = pred - OrigSI.parent->idx;
-	  unspecPreds.push_back(std::make_pair(failedBlocks[pred].back().first, predBlocks[relidx].first));
+	  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
+	  SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
 
-	}
+	  if(isSpecToUnspec) {
 
-	// Further subdivisions of this block should use the new PHI
-	thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
-	ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+	    // Some specialised predecessors branch straight to unspec code.
+	    for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+
+	      uint32_t pred = thisBBI->predIdxs[j];
+
+	      if(isSpecToUnspecEdge(pred, thisBlockIdx))
+		specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().first, this));
+
+	    }
+
+	  }
+	  if(nCondsHere) {
+
+	    // The first n specialised blocks are specialised predecessors.
+	    for(uint32_t k = 0, klim = nCondsHere; k != klim; ++k)
+	      specPreds.push_back(std::make_pair(thisBB->committedBlocks[k].first, this));
+
+	  }
+
+	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+
+	    uint32_t pred = thisBBI->predIdxs[j];
+	    uint32_t relidx = pred - OrigSI.parent->idx;
+	    unspecPreds.push_back(std::make_pair(failedBlocks[pred].back().first, predBlocks[relidx].first));
+
+	  }
+
+	  // Further subdivisions of this block should use the new PHI
+	  thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
+	  ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
 	
-      }
-      else {
+	}
+	else {
 	
-	// Further subdivisions of this block should use the same value as our predecessors
-	// The preds necessarily match so just use the first.
-	thisBlockInst = predBlocks[thisBBI->predIdxs[0] - OrigSI.parent->idx].first;
+	  // Further subdivisions of this block should use the same value as our predecessors
+	  // The preds necessarily match so just use the first.
+	  thisBlockInst = predBlocks[thisBBI->predIdxs[0] - OrigSI.parent->idx].first;
+
+	}
 
       }
 
       // Map instruction users to the appropriate local forward:
       if(thisBlockInst != NewI)
-	remapBlockUsers(OrigSI, insertBlock, cast<PHINode>(thisBlockInst));
+	(*PHIForwards)[std::make_pair(NewI, insertBlock)] = cast<PHINode>(thisBlockInst);
       
     }
     else {
@@ -1042,8 +1158,9 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	if(it->first == NewI->getParent()) {
 	  // Defined here
 	  instDefined = true;
-	  continue;
 	}
+
+	continue;
 
       }
 
@@ -1063,11 +1180,28 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, it->first);
       ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
 
-      remapBlockUsers(OrigSI, it->first, cast<PHINode>(thisBlockInst));
+      (*PHIForwards)[std::make_pair(NewI, it->first)] = cast<PHINode>(thisBlockInst);
 
     }
     
     predBlocks[i].first = thisBlockInst;
+
+  }
+
+  // If there are loops that exit exactly as this value goes out of scope, finish their headers.
+
+  while(OrigSI.parent->naturalScope != loopStack.back()) {
+
+    const Loop* exitLoop = loopStack.back();
+    loopStack.pop_back();
+    // Lowest level loop should never be popped.
+    release_assert(loopStack.size());
+    
+    ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
+    
+    PHINode* PN = cast<PHINode>(predBlocks[LInfo->headerIdx - OrigSI.parent->idx].first);
+    PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
+		    failedBlocks[LInfo->latchIdx].back().first);
 
   }
 
@@ -1131,9 +1265,10 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 
 	// Rewrite into a branch to and contribution to the failed return phi node.
 	if(failedReturnPHI) {
-
-	  Use* U = &RI->getOperandUse(0);
-	  Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
+	  
+	  ReturnInst* OrigRI = cast<ReturnInst>(SII.I);
+	  Value* V = OrigRI->getOperand(0);
+	  Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB);
 	  release_assert(Ret);
 	  failedReturnPHI->addIncoming(Ret, BB);
 
@@ -1153,8 +1288,9 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	  Ret = FailFlag;
 	else {
 
-	  Use* U = &RI->getOperandUse(0);
-	  Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, *U, U);
+	  ReturnInst* OrigRI = cast<ReturnInst>(SII.I);
+	  Value* V = OrigRI->getOperand(0);
+	  Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB);
 	  StructType* retType = cast<StructType>(CommitF->getFunctionType()->getReturnType());
 	  Type* normalRet = Ret->getType();
 	  Constant* undefRet = UndefValue::get(normalRet);
@@ -1192,7 +1328,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	if(isa<BasicBlock>(V))
 	  Repl = (*failedBlockMap)[V];
 	else
-	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, U);
+	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, BB);
 
 	((Use*)replit)->set(Repl);
 
@@ -1440,6 +1576,50 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
 
 }
 
+void IntegrationAttempt::populateFailedHeaderPHIs(const Loop*) {}
+
+void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
+
+  // Add the latch predecessor to each header phi.
+  ShadowLoopInvar* LInfo = invarInfo->LInfo[PopulateL];
+
+  if(failedBlocks[LInfo->headerIdx].empty())
+    return;
+
+  ShadowBBInvar* headerBBI = getBBInvar(LInfo->headerIdx);
+  BasicBlock* headerBlock = failedBlocks[LInfo->headerIdx].front().first;
+  uint32_t instIdx = 0;
+ 
+  for(BasicBlock::iterator BI = skipMergePHIs(headerBlock->begin()), BE = headerBlock->end();
+      BI != BE && isa<PHINode>(BI); ++BI, ++instIdx) {
+  
+    PHINode* PN = cast<PHINode>(BI);
+    ShadowInstructionInvar& PNInfo = headerBBI->insts[instIdx];
+    PHINode* OrigPN = cast<PHINode>(PNInfo.I);
+
+    for(uint32_t i = 0, ilim = PNInfo.operandBBs.size(); i != ilim; ++i) {
+
+      if(PNInfo.operandBBs[i] == LInfo->latchIdx) {
+
+	Value* origPredVal = OrigPN->getIncomingValue(i);
+	ShadowInstIdx predOp = PNInfo.operandIdxs[i];
+
+	Value* predVal = getUnspecValue(predOp.blockIdx, predOp.instIdx, 
+					origPredVal, failedBlocks[LInfo->latchIdx].back().first);
+	BasicBlock* predBlock = failedBlocks[LInfo->latchIdx].back().first;
+
+	PN->addIncoming(predVal, predBlock);
+
+	break;
+
+      }
+
+    }
+    
+  }
+
+}
+
 void IntegrationAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) { }
 
 void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) {
@@ -1517,7 +1697,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 	  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator predIt = it;
 	  --predIt;
 
-	  Value* NewV = getUnspecValue(idx, failedInst, failedI, &failedI->use_begin().getUse());
+	  Value* NewV = getUnspecValue(idx, failedInst, failedI, it->first);
 	  release_assert(NewV);
 	  NewPN->addIncoming(NewV, predIt->first);
 

@@ -1301,6 +1301,7 @@ protected:
   void collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   virtual void populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd);
+  virtual void populateFailedHeaderPHIs(const Loop*);
   Value* emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB);
   Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowBB* BB);
@@ -1577,7 +1578,8 @@ class InlineAttempt : public IntegrationAttempt {
   SmallDenseMap<uint32_t, uint32_t, 8> blocksReachableOnFailure;
   std::vector<SmallVector<std::pair<BasicBlock*, uint32_t>, 1> > failedBlocks;
   ValueToValueMapTy* failedBlockMap;
-  DenseMap<std::pair<Instruction*, Use*>, PHINode*>* PHIForwards;
+  // Indexes from CLONED instruction/block to replacement PHI node to use in that block.
+  DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>* PHIForwards;
   DenseSet<PHINode*>* ForwardingPHIs;
 
   bool isUnsharable() {
@@ -1692,20 +1694,20 @@ class InlineAttempt : public IntegrationAttempt {
   void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
   virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
   void markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI);
-  void remapBlockUsers(ShadowInstructionInvar& SI, BasicBlock* BB, PHINode* Replacement);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);
   BasicBlock::iterator skipMergePHIs(BasicBlock::iterator it);
   void createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruction* NewI);
-  Value* getLocalFailedValue(Value* V, Use* U);
-  Value* tryGetLocalFailedValue(Value* V, Use* U);
-  Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Use* U);
+  Value* getLocalFailedValue(Value* V, BasicBlock*);
+  Value* tryGetLocalFailedValue(Value* V, BasicBlock*);
+  Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* BB);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
   virtual void commitSimpleFailedBlock(uint32_t i);
   virtual void popAllocas(LocalStoreMap*);
   virtual void createFailedBlock(uint32_t idx);
   virtual void populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd);
+  virtual void populateFailedHeaderPHIs(const Loop* PopulateL);
   BasicBlock* getSubBlockForInst(uint32_t, uint32_t);
   
 };

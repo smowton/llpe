@@ -236,8 +236,15 @@ void IntegrationAttempt::commitCFG() {
       raw_string_ostream RSO(Name);
       RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
-    BB->committedBlocks.push_back(std::make_pair(BasicBlock::Create(F.getContext(), Name, CF), 0));
+    BasicBlock* firstNewBlock = BasicBlock::Create(F.getContext(), Name);
+    BB->committedBlocks.push_back(std::make_pair(firstNewBlock, 0));
 
+    // The function entry block is just the first one listed: create at front if necessary.
+    if((!L) && i == 0 && commitsOutOfLine())
+      CF->getBasicBlockList().push_front(firstNewBlock);
+    else
+      CF->getBasicBlockList().push_back(firstNewBlock);
+      
     // Create extra empty blocks for each path condition that's effective here:
     uint32_t nCondsHere = pass->countPathConditionsForBlock(BB);
     for(uint32_t k = 0; k < nCondsHere; ++k) {
@@ -1291,36 +1298,57 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
   for(; i < nBBs; ++i) {
 
-    ShadowBB* BB = BBs[i];
+    ShadowBBInvar* BBI = getBBInvar(i + BBsOffset);
 
-    if(!BB) {
-
-      commitSimpleFailedBlock(i);
-      continue;
-
-    }
-
-    if(ScopeL && !ScopeL->contains(BB->invar->naturalScope))
+    if(ScopeL && !ScopeL->contains(BBI->naturalScope))
       break;
 
-    if(BB->invar->naturalScope != ScopeL) {
+    if(BBI->naturalScope != ScopeL) {
 
       // Entering a loop. First write the blocks for each iteration that's being unrolled:
-      PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
+      PeelAttempt* PA = getPeelAttempt(BBI->naturalScope);
       if(PA && PA->isEnabled() && PA->isTerminated()) {
 
 	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
 	  PA->Iterations[j]->commitInstructions();
 
 	SmallVector<std::pair<BasicBlock*, uint32_t>, 1> emptyVec;
+	SmallVector<const Loop*, 4> loopStack;
+	loopStack.push_back(ScopeL);
 
 	// If the loop has terminated, skip populating the blocks in this context.
-	const Loop* skipL = BB->invar->naturalScope;
-	while(i < nBBs && ((!BBs[i]) || skipL->contains(BBs[i]->invar->naturalScope))) {
+	const Loop* skipL = BBI->naturalScope;
+	while(i < nBBs && skipL->contains(getBBInvar(i + BBsOffset)->naturalScope)) {
+
+	  const Loop* ThisL = getBBInvar(i + BBsOffset)->naturalScope;
+	  const Loop* TopL = loopStack.back();
+	  if(ThisL != loopStack.back()) {
+
+	    if((!TopL) || TopL->contains(ThisL))
+	      loopStack.push_back(ThisL);
+	    else {
+
+	      // Exiting subloops, finish failed header PHIs off:
+	      while(ThisL != loopStack.back()) {
+		
+		const Loop* ExitL = loopStack.back();
+		populateFailedHeaderPHIs(ExitL);
+		loopStack.pop_back();
+		
+	      }
+
+	    }
+
+	  }
 
 	  populateFailedBlock(i + BBsOffset, emptyVec.begin(), emptyVec.end());
 	  ++i;
 
+	}
+
+	while(loopStack.back() != ScopeL) {
+	  populateFailedHeaderPHIs(loopStack.back());
+	  loopStack.pop_back();
 	}
 
       }
@@ -1328,13 +1356,19 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 	// Emit blocks for the residualised loop
 	// (also has the side effect of winding us past the loop)
-	commitLoopInstructions(BB->invar->naturalScope, i);
+	commitLoopInstructions(BBI->naturalScope, i);
 
       }
 
       --i;
       continue;
 
+    }
+
+    ShadowBB* BB = BBs[i];
+    if(!BB) {
+      commitSimpleFailedBlock(BBsOffset + i);
+      continue;
     }
 
     uint32_t j;
@@ -1379,9 +1413,12 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     populateFailedBlock(i + BBsOffset, BB->committedBlocks.begin(), pathConditionLimit);
 
   }
-  
-  if(ScopeL != L)
-    fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
+
+  if(ScopeL != L) {
+    populateFailedHeaderPHIs(ScopeL);
+    if(BBs[thisLoopHeaderIdx])
+      fixupHeaderPHIs(BBs[thisLoopHeaderIdx]);
+  }
 
 }
 
