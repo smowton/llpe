@@ -989,8 +989,17 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 	    // If not use the preheader value everywhere and skip the loop.
 
-	    for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j)
+	    for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j) {
+
 	      predBlocks[j - OrigSI.parent->idx].first = PreheaderInst;
+
+	      // In this case there are no block splits:
+	      if(PreheaderInst != NewI) {
+		BasicBlock* thisFailedBlock = failedBlocks[j].front().first;
+		(*PHIForwards)[std::make_pair(NewI, thisFailedBlock)] = cast<PHINode>(PreheaderInst);
+	      }
+
+	    }
 
 	    i = LInfo->latchIdx - OrigSI.parent->idx;
 	    continue;
