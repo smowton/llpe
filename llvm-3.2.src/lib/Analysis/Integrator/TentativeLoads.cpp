@@ -303,7 +303,7 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
     if(LI->isVolatile())
       TLWFail;
       
-    return markGoodBytes(LI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), vctx);
+    return markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), vctx);
 
   }
   else if(StoreInst* StoreI = dyn_cast_inst<StoreInst>(SI)) {
@@ -353,7 +353,7 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
 }
 
 ThreadLocalState IntegrationAttempt::shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx) {
-  
+
   TentativeLoadWalker W(Start, Ptr, Size, initCtx);
   W.walk();
   return W.shouldCheckLoad;
