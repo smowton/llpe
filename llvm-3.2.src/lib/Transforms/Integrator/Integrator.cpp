@@ -197,19 +197,44 @@ public:
 	  }
 	  break;
 	case 4:
-	  switch(IA->barrierState) {
-	  case BARRIER_HERE:
-	    val = wxString("BARRIER");
-	    break;
-	  case BARRIER_CHILD:
-	    val = wxString("CHILD");
-	    break;
-	  case BARRIER_NONE:
-	    val = wxEmptyString;
-	    break;
+
+	  {
+	    std::string barrierString;
+	    {
+	      raw_string_ostream RSO(barrierString);
+	      switch(IA->barrierState) {
+	      case BARRIER_HERE:
+		RSO << "B ";
+		break;
+	      case BARRIER_CHILD:
+		RSO << "(B) ";
+		break;
+	      default:
+		break;
+	      }
+
+	      switch(IA->yieldState) {
+	      case BARRIER_HERE:
+		RSO << "Y ";
+		break;
+	      case BARRIER_CHILD:
+		RSO << "(Y) ";
+		break;
+	      default:
+		break;
+	      }
+
+	      if(IA->checkedInstructionsHere || IA->checkedInstructionsChildren)
+		RSO << "T" << IA->checkedInstructionsHere << "/" << IA->checkedInstructionsChildren;
+
+	    }
+
+	    val = wxString(barrierString);
+
 	  }
-	  break;
-	}
+
+	}      
+
       }
       break;
     case IntegratorTypePA:

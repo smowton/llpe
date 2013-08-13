@@ -290,6 +290,8 @@ WalkInstructionResult TentativeLoadWalker::walkCopyInst(ShadowValue CopyFrom, Sh
 
 }
 
+#define TLWFail do { shouldCheckLoad = TLS_MUSTCHECK; SI->parent->IA->yieldState = BARRIER_HERE; } while(0);
+
 WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI, void* vctx) {
 
   // Reached allocation site, which defines all bytes? (and if realloc, checks the copy):
@@ -298,20 +300,16 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
 
   if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
-    if(LI->isVolatile()) {
-      shouldCheckLoad = TLS_MUSTCHECK;
-      return WIRStopWholeWalk;
-    }
+    if(LI->isVolatile())
+      TLWFail;
       
     return markGoodBytes(LI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), vctx);
 
   }
   else if(StoreInst* StoreI = dyn_cast_inst<StoreInst>(SI)) {
     
-    if(StoreI->isVolatile()) {
-      shouldCheckLoad = TLS_MUSTCHECK;
-      return WIRStopWholeWalk;
-    }
+    if(StoreI->isVolatile())
+      TLWFail;
 
     return markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), vctx);
 
@@ -343,12 +341,8 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
 	return markGoodBytes(SI->getCallArgOperand(1), RF->readSize, vctx);
 
       }
-      else if((!F) || GlobalIHP->yieldFunctions.count(F)) {
-
-	shouldCheckLoad = TLS_MUSTCHECK;
-	return WIRStopWholeWalk;
-
-      }      
+      else if((!F) || GlobalIHP->yieldFunctions.count(F))
+	TLWFail;
 
     }
 
@@ -632,6 +626,68 @@ bool llvm::requiresRuntimeCheck(ShadowValue V) {
 
 }
 
+void IntegrationAttempt::countTentativeInstructions() {
+
+  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
+
+    ShadowBBInvar* BBI = getBBInvar(i);
+    ShadowBB* BB = getBB(*BBI);
+    if(!BB)
+      continue;
+
+    if(BBI->naturalScope != L) {
+
+      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      PeelAttempt* LPA;
+      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
+
+	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
+	  ++i;
+	--i;
+	continue;
+
+      }
+
+    }
+
+    for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
+
+      ShadowInstruction* SI = &BB->insts[j];
+
+      if(requiresRuntimeCheck2(ShadowValue(SI)))
+	++checkedInstructionsHere;
+
+    }
+
+  }
+
+  checkedInstructionsChildren = checkedInstructionsHere;
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    it->second->countTentativeInstructions();
+    checkedInstructionsChildren += it->second->checkedInstructionsChildren;
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isTerminated())
+      continue;
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
+     
+      it->second->Iterations[i]->countTentativeInstructions();
+      checkedInstructionsChildren += it->second->Iterations[i]->checkedInstructionsChildren;
+
+    }
+
+  }
+
+}
+
 bool PeelAttempt::containsTentativeLoads() {
 
   for(uint32_t i = 0, ilim = Iterations.size(); i != ilim; ++i)
@@ -799,5 +855,35 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
     }
 
   }
+
+}
+
+bool IntegrationAttempt::noteChildYields() {
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    if(it->second->noteChildYields() && yieldState == BARRIER_NONE)
+      yieldState = BARRIER_CHILD;
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isTerminated())
+      continue;
+
+    for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
+	  iterend = it->second->Iterations.end(); iterit != iterend; ++iterit) {
+
+      if((*iterit)->noteChildYields() && yieldState == BARRIER_NONE)
+	yieldState = BARRIER_CHILD;
+
+    }
+
+  }
+
+  return yieldState != BARRIER_NONE;
 
 }

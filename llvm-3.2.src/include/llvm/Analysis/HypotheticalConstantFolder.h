@@ -955,6 +955,11 @@ protected:
   BarrierState barrierState;
 
   bool tentativeLoadsRun;
+
+  uint32_t checkedInstructionsHere;
+  uint32_t checkedInstructionsChildren;
+
+  BarrierState yieldState;
    
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
@@ -982,7 +987,10 @@ protected:
     peelChildren(1),
     pendingEdges(0),
     barrierState(BARRIER_NONE),
-    tentativeLoadsRun(false)  
+    tentativeLoadsRun(false),
+    checkedInstructionsHere(0),
+    checkedInstructionsChildren(0),
+    yieldState(BARRIER_NONE)
       { 
       }
 
@@ -1224,6 +1232,8 @@ protected:
   // DOT export:
 
   bool noteChildBarriers();
+  bool noteChildYields();
+  void countTentativeInstructions();
   void printRHS(ShadowValue, raw_ostream& Out);
   void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief);

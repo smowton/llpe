@@ -2813,7 +2813,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   // Finding any tentative loads may bring stored values and loaded pointers back to life.
   mustRecomputeDIE = true;
 
+  // Collect some diagnostic information about optimisation barriers for the GUI
   IA->noteChildBarriers();
+  IA->noteChildYields();
+  IA->countTentativeInstructions();
+
   IA->prepareCommit();
 
   if(!SkipDIE)
