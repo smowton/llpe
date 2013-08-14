@@ -1776,7 +1776,7 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
 	continue;
 
       // Shift value to least significant position:
-      Constant* ShiftAmt = ConstantInt::get(I64, it.start());
+      Constant* ShiftAmt = ConstantInt::get(I64, it.start() * 8);
       Value* Shifted = BinaryOperator::CreateLShr(realInst, ShiftAmt, "", emitBB);
       
       // Truncate to size:

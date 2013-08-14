@@ -85,6 +85,7 @@ static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore
 static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
 static cl::opt<bool> UseDSA("int-use-dsa");
 static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
+static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2213,6 +2214,28 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     
     targetCallStack.push_back(std::make_pair(BB, instIdx));
     
+  }
+
+  for(cl::list<std::string>::iterator it = SimpleVolatiles.begin(),
+	itend = SimpleVolatiles.end(); it != itend; ++it) {
+
+    Function* LoadF;
+    BasicBlock* BB;
+    uint64_t Offset;
+
+    parseFBI("int-simple-volatile-load", *it, *(F.getParent()), LoadF, BB, Offset);
+
+    BasicBlock::iterator BI = BB->begin();
+    std::advance(BI, Offset);
+    LoadInst* LI = dyn_cast<LoadInst>(BI);
+
+    if(!LI) {
+      errs() << "int-simple-volatile-load: " << *it << " does not denote a load\n";
+      exit(1);
+    }
+
+    simpleVolatileLoads.insert(LI);
+
   }
 
   this->verboseOverdef = VerboseOverdef;

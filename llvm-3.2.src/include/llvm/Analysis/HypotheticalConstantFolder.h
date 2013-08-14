@@ -168,6 +168,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
+   DenseSet<LoadInst*> simpleVolatileLoads;
 
    DataLayout* TD;
    AliasAnalysis* AA;
@@ -316,6 +317,12 @@ class IntegrationHeuristicsPass : public ModulePass {
      if(it == maxLoopIters.end())
        return false;
      return it->second == C;
+   }
+
+   bool volatileLoadIsSimple(LoadInst* LI) {
+
+     return simpleVolatileLoads.count(LI);
+
    }
 
    void runDSEAndDIE();

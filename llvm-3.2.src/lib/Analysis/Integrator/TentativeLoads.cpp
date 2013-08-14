@@ -300,7 +300,7 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
 
   if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
-    if(LI->isVolatile())
+    if(LI->isVolatile() && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
       TLWFail;
       
     return markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), vctx);
