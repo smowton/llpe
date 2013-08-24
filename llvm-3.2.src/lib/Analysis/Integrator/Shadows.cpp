@@ -172,13 +172,21 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialiser
 
 }
 
+const GlobalValue* llvm::getUnderlyingGlobal(const GlobalValue* V) {
+
+  if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V))
+    return getUnderlyingGlobal(GA->getAliasedGlobal());
+  return V;
+
+}
+
 static const GlobalVariable* getGlobalVar(const Value* V) {
 
-  if(const GlobalVariable* GV = dyn_cast<GlobalVariable>(V))
-    return GV;
-  if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V))
-    return getGlobalVar(GA->getAliasedGlobal());
-  return 0;
+  const GlobalValue* GV = dyn_cast<GlobalValue>(V);
+  if(!GV)
+    return 0;
+
+  return dyn_cast<GlobalVariable>(getUnderlyingGlobal(GV));
 
 }
 

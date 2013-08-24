@@ -1881,7 +1881,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  bool requiresRuntimeCheck(ShadowValue V);
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
-  
+
+ const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
+   
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);

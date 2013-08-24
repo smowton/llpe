@@ -2897,6 +2897,15 @@ static void visitReachableObjects(ImprovedValSet* Obj, ShadowBB* BB, ReachableOb
 
 }
 
+static bool isFunction(const Value* V) {
+
+  if(const GlobalValue* GV = dyn_cast<GlobalValue>(V))
+    return isa<Function>(getUnderlyingGlobal(GV));
+  else
+    return false;
+
+}
+
 static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V) {
 
   V.visitPtr(Ptr, BB);
@@ -2916,7 +2925,7 @@ static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, Reach
 	continue;
       break;
     case SHADOWVAL_OTHER:
-      release_assert(isa<ConstantPointerNull>(ThisPtr.u.V));
+      release_assert(isa<ConstantPointerNull>(ThisPtr.u.V) || isFunction(ThisPtr.u.V));
       continue;
     default:
       break;
