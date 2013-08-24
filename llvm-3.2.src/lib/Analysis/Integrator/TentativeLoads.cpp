@@ -776,7 +776,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
       
     InlineAttempt* IA = getInlineAttempt(V.u.I);
     if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
-      return !V.u.I->i.PB->isWhollyUnknown();
+      return V.u.I->i.PB && !V.u.I->i.PB->isWhollyUnknown();
 
   }
   else if(val_is<PHINode>(V)) {
