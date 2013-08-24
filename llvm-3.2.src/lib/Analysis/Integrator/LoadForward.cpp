@@ -1133,6 +1133,7 @@ SharedStoreMap* SharedStoreMap::getWritableStoreMap() {
     if(!it->store)
       continue;
     newMap->store[i] = LocStore(it->store->getReadableCopy());
+    newMap->empty = false;
   }
 
   // Drop reference on the existing map (can't destroy it):
@@ -3434,8 +3435,7 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
     }
     else {
       
-      // Start with a plain local store map giving no locations.
-      // getEmptyMap clears the map if it's writable or makes a new blank one otherwise.
+      // Start with a plain local store map giving no locations except unescaped objects that cannot alias this one.
       noteBarrierInst(WriteSI);
       StoreBB->clobberAllExcept(StoreBB->localStore->unescapedObjects, false);
       LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
@@ -4414,6 +4414,7 @@ void MergeBlockVisitor::mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStore
 	if(mergeFromStore[i].store && !mergeToStore[i].store) {
 	  mergeToStore[i] = LocStore(thisFrameIA->getAllocaWithIdx(i)->store);
 	  mergeToStore[i].store = mergeToStore[i].store->getReadableCopy();
+	  mergeToFrame->empty = false;
 	}
 	
       }
