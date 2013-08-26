@@ -748,8 +748,18 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
   
   if(BOp->getOpcode() == Instruction::Sub) {
 
-    if(!Op0Ptr)
-      return false;
+    if(!Op0Ptr) {
+
+      // This is a constant - pointer, which some compilers e.g. DragonEgg-3.2 + gcc-4.6 can produce.
+      // Mark it as pointer with unknown offset, to hopefully catch it later in the special case under ::Add
+      // below.
+
+      ImpType = ValSetTypePB;
+      Improved.V = Ops[1].second.V;
+      Improved.Offset = LLONG_MAX;
+      return true;
+
+    }
 
     if(!Op1Ptr) {
 
@@ -779,8 +789,58 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
   }
   else if(BOp->getOpcode() == Instruction::Add) {
 
-    if(Op0Ptr && Op1Ptr)
-      return false;
+    if(Op0Ptr && Op1Ptr) {
+
+      // Check for the special case mentioned above: some compilers generate constructions like:
+      // (const - ptr) + ptr, where the former operand is noted as (ptr + ?) since ImprovedVal
+      // has no way to indicate the negation of a pointer at the moment.
+      // Try to find that case if it has happened here.
+
+      // Need a common base and at least one non-? offset:
+      if(Ops[0].second.V != Ops[1].second.V)
+	return false;
+
+      uint32_t checkNegOp;
+      if(Ops[0].second.Offset == LLONG_MAX)
+	checkNegOp = 0;
+      else
+	checkNegOp = 1;
+      
+      uint32_t otherOp = checkNegOp == 0 ? 1 : 0;
+      if(Ops[otherOp].second.Offset == LLONG_MAX)
+	return false;
+
+      ShadowValue checkOp = SI->getOperand(checkNegOp);
+
+      if((!checkOp.isInst()) || checkOp.u.I->invar->I->getOpcode() != Instruction::Sub)
+	return false;
+
+      ConstantInt* SubOp0 = dyn_cast_or_null<ConstantInt>(getConstReplacement(checkOp.u.I->getOperand(0)));
+      if(!SubOp0)
+	return false;
+
+      ShadowInstruction* SubOp1 = checkOp.u.I->getOperand(1).getInst();
+      if(!SubOp1)
+	return false;
+
+      ShadowValue SubOp1Base;
+      int64_t SubOp1Offset;
+      if(!getBaseAndConstantOffset(ShadowValue(SubOp1), SubOp1Base, SubOp1Offset))
+	return false;
+
+      if(SubOp1Base != Ops[checkNegOp].second.V)
+	return false;
+
+      // OK, the special case applies: We have (p + c1) + (c2 - (p + c3))
+      // (or commute the topmost + operator) = c1 + c2 - c3.
+
+      ImpType = ValSetTypeScalar;
+      int64_t NewVal = (Ops[otherOp].second.Offset + ((int64_t)SubOp0->getLimitedValue())) - SubOp1Offset;
+      Improved.V = ShadowValue(ConstantInt::getSigned(BOp->getType(), NewVal));
+
+      return true;
+
+    }
     
     std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0] : Ops[1];
     ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Ops[1].second.V.getVal() : Ops[0].second.V.getVal());

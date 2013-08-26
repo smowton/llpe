@@ -387,9 +387,13 @@ Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size
   }
 
   assert(PV.isByteArray());
-
-  Type* targetType = Type::getIntNTy(Ctx, Size * 8);
-  return constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD);
+  
+  if(Size <= 8) {
+    Type* targetType = Type::getIntNTy(Ctx, Size * 8);
+    return constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD);
+  }
+  else
+    return ConstantDataArray::get(Ctx, ArrayRef<uint8_t>((uint8_t*)PV.partialBuf, Size));
 
 }
 
@@ -1323,8 +1327,9 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     if(!ResultPV) {
 
-      // Try to extract the entire value
-      if(IVSSize == Size && Offset == 0) {
+      // Try to extract the entire value. Scalar splat values need expanding anyway, so fall through
+      // in that case.
+      if(IVSSize == Size && Offset == 0 && IVS->SetType != ValSetTypeScalarSplat) {
 	Result = *IVS;
 	LFV3(errs() << "Return whole value\n");
 	return;
@@ -1556,9 +1561,9 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 
       // If we're trying to synthesise a pointer from raw bytes, only a null pointer is allowed.
       unsigned char* checkBuf = (unsigned char*)PV.partialBuf;
-      for(unsigned i = 0; i < PV.partialBufBytes; ++i) {
+      for(unsigned j = 0; j < PV.partialBufBytes; ++j) {
 	
-	if(checkBuf[i]) {
+	if(checkBuf[j]) {
 	  if(error)
 	    *error = "Cast non-zero to pointer";
 	  return false;
@@ -1566,6 +1571,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 	
       }
 
+      Values[i].Offset = 0;
       SetType = ValSetTypePB;
 
     }
@@ -1928,12 +1934,18 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
   else {
 
     // C is a primitive, constant-aggregate-zero, constant-data-array or similar.
-    // Attempt bytewise extraction and present as an integer.
+    // Attempt bytewise extraction and present as a CDA.
     SmallVector<uint8_t, 16> Buffer(TargetSize);
     if(ReadDataFromGlobal(FromC, Offset, Buffer.data(), TargetSize, *GlobalTD)) {
 
-      Type* Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
-      Constant* SubC = constFromBytes((uint8_t*)Buffer.data(), Target, GlobalTD);
+      Constant* SubC;
+      if(TargetSize <= 8) {
+	Type* Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+	SubC = constFromBytes((uint8_t*)Buffer.data(), Target, GlobalTD);
+      }
+      else
+	SubC = ConstantDataArray::get(FromC->getContext(), ArrayRef<uint8_t>(Buffer));
+
       AddIVSConst(Offset, TargetSize, SubC);
       
     }
@@ -1975,8 +1987,14 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
 
   }
 
-  if(!targetType)
-    targetType = Type::getIntNTy(subVals[0].second.Values[0].V.getLLVMContext(), TargetSize * 8);
+  LLVMContext& Ctx = subVals[0].second.Values[0].V.getLLVMContext();
+
+  if(!targetType) {
+    if(TargetSize > 8)
+      targetType = ArrayType::get(Type::getInt8Ty(Ctx), TargetSize);
+    else
+      targetType = Type::getIntNTy(Ctx, TargetSize * 8);
+  }
 
   return constFromBytes((uint8_t*)buffer.data(), targetType, GlobalTD);
 
@@ -2562,7 +2580,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
   if(!SI->store.store) {
 
     // Only alloc the first time; always carry out the copy implied by realloc.
-    ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
+    ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(1)));
     Type* allocType = 0;
     if(AllocSize)
       allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
@@ -2671,6 +2689,9 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
 	  
 	}
 	else {
+
+	  if(val_is<ConstantPointerNull>(SrcPtrSet.Values[i].V))
+	    continue;
 
 	  LocStore* store = BB->getReadableStoreFor(Obj);
 	  if(!store)

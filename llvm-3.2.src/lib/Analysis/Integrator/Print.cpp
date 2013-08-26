@@ -65,6 +65,19 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& ROS, const Value* V, boo
 
   }
 
+  if(brief) {
+
+    if(const GlobalValue* GV = dyn_cast<GlobalValue>(V)) {
+     
+      ROS << GV->getName();
+      return;
+
+    }
+
+    // Otherwise print in full:
+
+  }
+
   ROS << *V;
 
 }

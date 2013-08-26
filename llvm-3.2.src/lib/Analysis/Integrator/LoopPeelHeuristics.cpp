@@ -75,6 +75,7 @@ static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", c
 static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
+static cl::opt<bool> SkipTL("skip-check-elim");
 static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
 static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
 static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
@@ -1174,25 +1175,10 @@ void InlineAttempt::addExtraTags(IntegratorTag* myTag) {
 
 static uint32_t getTagBlockIdx(const IntegratorTag* t, IntegrationAttempt* Ctx) {
 
-  if(t->type == IntegratorTypeIA) {
-    
-    uint32_t blockIdx = UINT_MAX;
-    InlineAttempt* IA = (InlineAttempt*)t->ptr;
-    for(uint32_t i = 0, ilim = IA->Callers.size(); i != ilim; ++i) {
-
-      blockIdx = std::min(blockIdx, IA->Callers[i]->parent->invar->idx);
-
-    }
-
-    return blockIdx;
-
-  }
-  else {
-
-    PeelAttempt* PA = (PeelAttempt*)t->ptr;
-    return PA->invarInfo->headerIdx;
-
-  }
+  if(t->type == IntegratorTypeIA)
+    return (uint32_t)((InlineAttempt*)t->ptr)->SeqNumber;
+  else
+    return (uint32_t)((PeelAttempt*)t->ptr)->Iterations[0]->SeqNumber;
 
 }
 
@@ -1583,10 +1569,10 @@ static Value* getWrittenPointer(Instruction* I) {
 
 void IntegrationHeuristicsPass::commit() {
 
-  if(!SkipDIE) {
+  if(!SkipTL)
     RootIA->rerunTentativeLoads();
+  if(!SkipDIE)
     rerunDSEAndDIE();
-  }
 
   RootIA->addCheckpointFailedBlocks();
 
@@ -2828,10 +2814,12 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     estimateIntegrationBenefit();
     errs() << "\n";
   }
-  
-  errs() << "Finding tentative loads";
-  IA->findTentativeLoads();
-  errs() << "\n";
+
+  if(!SkipTL) {  
+    errs() << "Finding tentative loads";
+    IA->findTentativeLoads();
+    errs() << "\n";
+  }
 
   // Finding any tentative loads may bring stored values and loaded pointers back to life.
   mustRecomputeDIE = true;
