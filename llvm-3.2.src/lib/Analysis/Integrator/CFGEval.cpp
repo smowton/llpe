@@ -235,7 +235,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
     }
 
     // Create a store reference for each live successor
-    ++SI->parent->localStore->refCount;
+    ++SI->parent->u.localStore->refCount;
 
     // And similarly count the edge towards determining block certainty:
     ++pendingEdges;
@@ -245,7 +245,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   //errs() << "Leaving block " << SI->parent->invar->BB->getParent()->getName() << "/" << SI->parent->invar->BB->getName() << " with store " << SI->parent->localStore << " refcount " << SI->parent->localStore->refCount << "\n";
 
   // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
-  SI->parent->localStore->dropReference();
+  SI->parent->u.localStore->dropReference();
 
   uint32_t uniqueSucc = 0xffffffff;
 

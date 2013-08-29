@@ -90,6 +90,9 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   bool isVal() {
     return t == SHADOWVAL_OTHER;
   }
+  bool isGV() {
+    return t == SHADOWVAL_GV;
+  }
   ShadowArg* getArg() {
     return t == SHADOWVAL_ARG ? u.A : 0;
   }
@@ -179,6 +182,47 @@ inline bool operator>(ShadowValue V1, ShadowValue V2) {
 inline bool operator>=(ShadowValue V1, ShadowValue V2) {
   return !(V1 < V2);
 }
+
+// Characteristics for using ShadowValues in hashsets (DenseSet, or as keys in DenseMaps)
+template<> struct DenseMapInfo<ShadowValue> {
+  
+  typedef DenseMapInfo<int> TypeInfo;
+  typedef DenseMapInfo<void*> VoidInfo;
+  typedef DenseMapInfo<std::pair<int, void*> > PairInfo;
+
+  static inline ShadowValue getEmptyKey() {
+    return ShadowValue((Value*)VoidInfo::getEmptyKey());
+  }
+
+  static inline ShadowValue getTombstoneKey() {
+    return ShadowValue((Value*)VoidInfo::getTombstoneKey());
+  }
+
+  static unsigned getHashValue(const ShadowValue& V) {
+    void* hashPtr;
+    switch(V.t) {
+    case SHADOWVAL_INVAL:
+      hashPtr = 0; break;
+    case SHADOWVAL_ARG:
+      hashPtr = V.u.A; break;
+    case SHADOWVAL_INST:
+      hashPtr = V.u.I; break;
+    case SHADOWVAL_GV:
+      hashPtr = V.u.GV; break;
+    case SHADOWVAL_OTHER:
+      hashPtr = V.u.V; break;
+    default:
+      release_assert(0 && "Bad value type");
+      hashPtr = 0;
+    }
+    return PairInfo::getHashValue(std::make_pair((int)V.t, hashPtr));
+  }
+
+  static bool isEqual(const ShadowValue& V1, const ShadowValue& V2) {
+    return V1 == V2;
+  }
+
+ };
 
 // ImprovedValSetSingle: an SCCP-like value giving candidate constants or pointer base addresses for a value.
 // May be: 
@@ -667,6 +711,10 @@ InstArgImprovement() : PB(0), dieStatus(INSTSTATUS_ALIVE) { }
 };
 
 class ShadowBB;
+class OrdinaryStoreExtraState;
+
+template<class, class> class LocalStoreMap;
+template<class, class> class MergeBlockVisitor;
 
 struct LocStore {
 
@@ -675,14 +723,38 @@ struct LocStore {
 LocStore(ImprovedValSet* s) : store(s) {}
 LocStore() : store(0) {}
 LocStore(const LocStore& other) : store(other.store) {}
-													    
-  LocStore* getReadableCopy() {
 
-    LocStore* copy = new LocStore(*this);
-    copy->store = copy->store->getReadableCopy();
-    return copy;
+  static LocStore& getBaseStoreFor(ShadowValue V) {
+
+    return V.getBaseStore();
 
   }
+
+  static bool LT(const LocStore* a, const LocStore* b) {
+
+    return a->store < b->store;
+
+  }
+
+  static bool EQ(const LocStore* a, const LocStore* b) {
+
+    return a->store == b->store;
+    
+  }
+
+  static LocalStoreMap<LocStore, OrdinaryStoreExtraState>* getMapForBlock(ShadowBB*);
+
+  bool isValid() { return !!store; }
+
+  // Insert checkStore here to verify store after each merge:
+  void checkMergedResult(ShadowValue&) {  }
+
+  // Simple forwards:
+  LocStore getReadableCopy() { return LocStore(store->getReadableCopy());  }
+  void dropReference() {  store->dropReference();  }
+  void print(raw_ostream& RSO, bool brief) { store->print(RSO, brief); }
+
+  static void mergeStores(LocStore* mergeFrom, LocStore* mergeTo, ShadowValue& MergeV, MergeBlockVisitor<LocStore, OrdinaryStoreExtraState>*);
 
 };
 
@@ -816,70 +888,7 @@ struct ShadowBBInvar {
 
 };
 
-#define HEAPTREEORDER 16
-#define HEAPTREEORDERLOG2 4
-
-class MergeBlockVisitor;
-
-struct SharedTreeNode {
-
-  // These point to SharedTreeNodes or LocStores if this is the bottom layer.
-  void* children[HEAPTREEORDER];
-  int refCount;
-
-SharedTreeNode() : refCount(1) {
-
-  memset(children, 0, sizeof(void*) * HEAPTREEORDER);
-
-}
-
-  void dropReference(uint32_t height);
-  LocStore* getReadableStoreFor(uint32_t idx, uint32_t height);
-  LocStore* getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore);
-  SharedTreeNode* getWritableNode(uint32_t height);
-  void mergeHeaps(SmallVector<SharedTreeNode*, 4>& others, bool allOthersClobbered, uint32_t height, uint32_t idx, MergeBlockVisitor* visitor);
-  void commitToBase(uint32_t height, uint32_t idx);
-  void print(raw_ostream&, bool brief, uint32_t height, uint32_t idx);
-
-};
-
-struct SharedTreeRoot {
-
-  SharedTreeNode* root;
-  uint32_t height;
-
-SharedTreeRoot() : root(0), height(0) { }
-  void clear();
-  void dropReference();
-  LocStore* getReadableStoreFor(ShadowValue& V);
-  LocStore* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
-  void growToHeight(uint32_t newHeight);
-  void grow(uint32_t idx);
-  bool mustGrowFor(uint32_t idx);
-
-};
-
-struct SharedStoreMap {
-
-  std::vector<LocStore> store;
-  uint32_t refCount;
-  InlineAttempt* IA;
-  bool empty;
-
-SharedStoreMap(InlineAttempt* _IA, uint32_t initSize) : store(initSize), refCount(1), IA(_IA), empty(true) { }
-
-  SharedStoreMap* getWritableStoreMap();
-  void dropReference();
-  void clear();
-  SharedStoreMap* getEmptyMap();
-  void print(raw_ostream&, bool brief);
-
-};
-
-struct LocalStoreMap {
-
-  SmallVector<SharedStoreMap*, 4> frames;
-  SharedTreeRoot heap;
+struct OrdinaryStoreExtraState {
 
   // Objects that are certainly not effected by thread yields.
   DenseSet<ShadowValue> threadLocalObjects;
@@ -888,25 +897,113 @@ struct LocalStoreMap {
   // Objects all of whose pointers are known, and therefore are not aliased by unknown pointers.
   DenseSet<ShadowValue> unescapedObjects;
 
-  bool allOthersClobbered;
-  uint32_t refCount;
+  void copyFrom(const OrdinaryStoreExtraState& es) { *this = es; }
+  static void doMerge(LocalStoreMap<LocStore, OrdinaryStoreExtraState>* toMap, 
+		      SmallVector<LocalStoreMap<LocStore, OrdinaryStoreExtraState>*, 4>::iterator fromBegin, 
+		      SmallVector<LocalStoreMap<LocStore, OrdinaryStoreExtraState>*, 4>::iterator fromEnd,
+		      bool verbose);
+  static void dump(LocalStoreMap<LocStore, OrdinaryStoreExtraState>* map);
 
-LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCount(1) {}
-
-  void clear();
-  LocalStoreMap* getEmptyMap();
-  void dropReference();
-  LocalStoreMap* getWritableFrameList();
-  void print(raw_ostream&, bool brief = false);
-  bool empty();
-  void copyEmptyFrames(SmallVector<SharedStoreMap*, 4>&);
-  void copyFramesFrom(const LocalStoreMap&);
-  std::vector<LocStore>& getWritableFrame(int32_t frameNo);
-  void pushStackFrame(InlineAttempt*);
-  void popStackFrame();
-  LocStore* getReadableStoreFor(ShadowValue& V);
-  
 };
+
+// Define types for DSE stores:
+
+struct TrackedStore {
+
+  ShadowInstruction* I;
+  uint64_t outstandingBytes;
+  bool isNeeded;
+
+  TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), outstandingBytes(ob), isNeeded(false) {}
+  void derefBytes(uint64_t nBytes);
+
+};
+
+typedef SmallVector<TrackedStore*, 1> DSEMapEntry;
+
+typedef IntervalMap<uint64_t, DSEMapEntry, IntervalMapImpl::NodeSizer<uint64_t, DSEMapEntry>::LeafSize, HalfOpenNoMerge> DSEMapTy;
+
+struct TrackedAlloc {
+
+  ShadowInstruction* SI;
+  uint64_t nRefs;
+  bool isNeeded;
+
+  void dropReference();
+
+  TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), nRefs(1), isNeeded(false) {}
+
+};
+
+class DSEMapPointer;
+extern DSEMapPointer DSEEmptyMapPtr;
+
+class DSEStoreExtraState;
+
+struct DSEMapPointer {
+
+  DSEMapTy* M;
+  TrackedAlloc* A;
+  
+DSEMapPointer() : M(0), A(0) {}
+DSEMapPointer(DSEMapTy* _M, TrackedAlloc* _A) : M(_M), A(_A) {}
+DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
+
+  static DSEMapPointer& getBaseStoreFor(ShadowValue V) {
+
+    // The default map used for a value not mentioned in a given block.
+    // For DSE this is just an empty map, and the given object
+    // is never modified (it is either getReadableCopy'd or used as a merge-from store)
+    // so just return a statically allocated pointer.
+    return DSEEmptyMapPtr;
+
+  }
+
+  static bool LT(const DSEMapPointer* a, const DSEMapPointer* b) {
+
+    return a->M < b->M;
+
+  }
+
+  static bool EQ(const DSEMapPointer* a, const DSEMapPointer* b) {
+
+    return a->M == b->M;
+
+  }
+
+  static LocalStoreMap<DSEMapPointer, DSEStoreExtraState>* getMapForBlock(ShadowBB* BB);
+  bool isValid() { return !!M; }
+  void checkMergedResult(ShadowValue&) { }
+  DSEMapPointer getReadableCopy();
+  void dropReference();
+  void print(raw_ostream& RSO, bool brief) { }
+  static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
+			  ShadowValue& V, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
+  void useWriters(int64_t Offset, uint64_t Size);
+  void setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* SI);
+
+};
+
+struct DSEStoreExtraState {
+
+  void copyFrom(const DSEStoreExtraState& es) { }
+  static void doMerge(LocalStoreMap<DSEMapPointer, DSEStoreExtraState>* toMap, 
+		      SmallVector<LocalStoreMap<DSEMapPointer, DSEStoreExtraState>*, 4>::iterator fromBegin, 
+		      SmallVector<LocalStoreMap<DSEMapPointer, DSEStoreExtraState>*, 4>::iterator fromEnd,
+		      bool verbose) {
+
+  }
+  static void dump(LocalStoreMap<DSEMapPointer, DSEStoreExtraState>*) { }
+
+};
+
+#include "SharedTree.h"
+
+typedef LocalStoreMap<LocStore, OrdinaryStoreExtraState> OrdinaryLocalStore;
+typedef LocalStoreMap<DSEMapPointer, DSEStoreExtraState> DSELocalStore;
+
+typedef MergeBlockVisitor<LocStore, OrdinaryStoreExtraState> OrdinaryMerger;
+typedef MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState> DSEMerger;
 
 struct ShadowBB {
 
@@ -915,7 +1012,12 @@ struct ShadowBB {
   bool* succsAlive;
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
-  LocalStoreMap* localStore;
+
+  union {
+    OrdinaryLocalStore* localStore;
+    DSELocalStore* dseStore;
+  } u;
+
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1> committedBlocks;
   
   bool useSpecialVarargMerge;
@@ -953,8 +1055,15 @@ struct ShadowBB {
   void clobberGlobalObjects();
   void clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose);
   BasicBlock* getCommittedBlockAt(uint32_t);
+  DSEMapPointer* getWritableDSEStore(ShadowValue O);
 
 };
+
+inline LocalStoreMap<LocStore, OrdinaryStoreExtraState>* LocStore::getMapForBlock(ShadowBB* BB) {
+
+  return BB->u.localStore;
+
+}
 
 struct ShadowLoopInvar {
 

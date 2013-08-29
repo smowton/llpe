@@ -25,7 +25,7 @@ void InlineAttempt::sharingInit() {
 
   if(pass->enableSharing) {
 
-    storeAtEntry = BBs[0]->localStore;
+    storeAtEntry = BBs[0]->u.localStore;
     storeAtEntry->refCount++;
 
     clearExternalDependencies();

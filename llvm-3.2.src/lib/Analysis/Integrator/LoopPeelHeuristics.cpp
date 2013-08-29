@@ -694,7 +694,7 @@ void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
 
     }
 
-    BB->localStore->dropReference();
+    BB->u.localStore->dropReference();
 
   }
 
@@ -722,7 +722,7 @@ void PeelIteration::dropLatchStoreRef() {
   ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->invarInfo->headerIdx);
   
   if(!edgeIsDead(LatchBB->invar, HeaderBBI))
-    LatchBB->localStore->dropReference();
+    LatchBB->u.localStore->dropReference();
 
 }
 
@@ -2240,15 +2240,7 @@ unsigned IntegrationHeuristicsPass::getMallocAlignment() {
 void IntegrationHeuristicsPass::runDSEAndDIE() {
 
   errs() << "Killing memory instructions";
-
-  DEBUG(dbgs() << "Finding dead MTIs\n");
-  RootIA->tryKillAllMTIs();
-
-  DEBUG(dbgs() << "Finding dead stores\n");
-  RootIA->tryKillAllStores();
-
-  DEBUG(dbgs() << "Finding dead allocations\n");
-  RootIA->tryKillAllAllocs();
+  RootIA->tryKillStores(false, false);
 
   DEBUG(dbgs() << "Finding dead VFS operations\n");
   RootIA->tryKillAllVFSOps();

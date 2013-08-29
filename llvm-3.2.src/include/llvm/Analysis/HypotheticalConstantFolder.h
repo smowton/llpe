@@ -74,6 +74,7 @@ class ShadowLoopInvar;
 class TargetLibraryInfo;
 class VFSCallAliasAnalysis;
 class EQTDDataStructures;
+class ShadowBB;
 
 inline void release_assert_fail(const char* str) {
 
@@ -90,6 +91,17 @@ extern VFSCallAliasAnalysis* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
 extern EQTDDataStructures* GlobalDSA;
 extern IntegrationHeuristicsPass* GlobalIHP;
+
+struct ShadowBBVisitor {
+
+  bool doIgnoreEdges;
+ShadowBBVisitor(bool ign = false) : doIgnoreEdges(ign) { }
+
+  virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) = 0;
+  virtual void enterLoop(PeelAttempt*, void*) { }
+  virtual void hitIgnoredEdge() { }
+
+};
 
 // Include structures and functions for working with instruction and argument shadows.
 #include "ShadowInlines.h"
@@ -361,6 +373,47 @@ class IntegrationHeuristicsPass : public ModulePass {
 
 };
 
+// Define a wrapper class for using the IHP's instruction text cache when printing instructions:
+template<class T> class PrintCacheWrapper {
+
+  IntegrationHeuristicsPass& IHP;
+  T Val;
+  bool brief;
+
+ public:
+ 
+ PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val, bool _brief) : IHP(_IHP), Val(_Val), brief(_brief) { }
+  void printTo(raw_ostream& ROS) {
+
+    IHP.printValue(ROS, Val, brief);
+    
+  }
+
+ };
+
+ // Caching instruction text for debug and DOT export:
+inline PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) {
+  return PrintCacheWrapper<const Value*>(*GlobalIHP, &V, brief);
+}
+inline PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) {
+  return PrintCacheWrapper<ShadowValue>(*GlobalIHP, V, brief);
+}
+inline PrintCacheWrapper<ShadowValue> itcache(ShadowInstruction* SI, bool brief = false) {
+  return itcache(ShadowValue(SI), brief);
+}
+inline PrintCacheWrapper<ShadowValue> itcache(ShadowArg* SA, bool brief = false) {
+  return itcache(ShadowValue(SA), brief);
+}
+
+template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T> Wrapper) {
+  Wrapper.printTo(ROS);
+  return ROS;
+}
+
+inline void printSV(raw_ostream& RSO, ShadowValue V) {
+  RSO << itcache(V);
+}
+
 inline ImprovedValSetSingle* newIVS() {
 
   return new (GlobalIHP->IVSAllocator.Allocate()) ImprovedValSetSingle();
@@ -443,24 +496,6 @@ inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
 
 }
 
-// Define a wrapper class for using the IHP's instruction text cache when printing instructions:
-template<class T> class PrintCacheWrapper {
-
-  IntegrationHeuristicsPass& IHP;
-  T Val;
-  bool brief;
-
- public:
- 
- PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val, bool _brief) : IHP(_IHP), Val(_Val), brief(_brief) { }
-  void printTo(raw_ostream& ROS) {
-
-    IHP.printValue(ROS, Val, brief);
-    
-  }
-
-};
-
 inline LocStore& ShadowValue::getBaseStore() {
 
   switch(t) {
@@ -483,67 +518,7 @@ inline LocStore& ShadowValue::getBaseStore() {
 
 }
 
-template<class T> raw_ostream& operator<<(raw_ostream& ROS, PrintCacheWrapper<T> Wrapper) {
-  Wrapper.printTo(ROS);
-  return ROS;
-}
-
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
-
-// Caching instruction text for debug and DOT export:
- inline PrintCacheWrapper<const Value*> itcache(const Value& V, bool brief = false) {
-   return PrintCacheWrapper<const Value*>(*GlobalIHP, &V, brief);
- }
- inline PrintCacheWrapper<ShadowValue> itcache(ShadowValue V, bool brief = false) {
-   return PrintCacheWrapper<ShadowValue>(*GlobalIHP, V, brief);
- }
- inline PrintCacheWrapper<ShadowValue> itcache(ShadowInstruction* SI, bool brief = false) {
-   return itcache(ShadowValue(SI), brief);
- }
- inline PrintCacheWrapper<ShadowValue> itcache(ShadowArg* SA, bool brief = false) {
-   return itcache(ShadowValue(SA), brief);
- }
-
-// Characteristics for using ShadowValues in hashsets (DenseSet, or as keys in DenseMaps)
-template<> struct DenseMapInfo<ShadowValue> {
-  
-  typedef DenseMapInfo<int> TypeInfo;
-  typedef DenseMapInfo<void*> VoidInfo;
-  typedef DenseMapInfo<std::pair<int, void*> > PairInfo;
-
-  static inline ShadowValue getEmptyKey() {
-    return ShadowValue((Value*)VoidInfo::getEmptyKey());
-  }
-
-  static inline ShadowValue getTombstoneKey() {
-    return ShadowValue((Value*)VoidInfo::getTombstoneKey());
-  }
-
-  static unsigned getHashValue(const ShadowValue& V) {
-    void* hashPtr;
-    switch(V.t) {
-    case SHADOWVAL_INVAL:
-      hashPtr = 0; break;
-    case SHADOWVAL_ARG:
-      hashPtr = V.u.A; break;
-    case SHADOWVAL_INST:
-      hashPtr = V.u.I; break;
-    case SHADOWVAL_GV:
-      hashPtr = V.u.GV; break;
-    case SHADOWVAL_OTHER:
-      hashPtr = V.u.V; break;
-    default:
-      release_assert(0 && "Bad value type");
-      hashPtr = 0;
-    }
-    return PairInfo::getHashValue(std::make_pair((int)V.t, hashPtr));
-  }
-
-  static bool isEqual(const ShadowValue& V1, const ShadowValue& V2) {
-    return V1 == V2;
-  }
-
- };
 
 // Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a value
 // or partially with a Constant plus a byte extent and offset from which that Constant should be read.
@@ -868,17 +843,6 @@ class ForwardIAWalker : public IAWalker {
   
 };
 
-struct ShadowBBVisitor {
-
-  bool doIgnoreEdges;
-ShadowBBVisitor(bool ign = false) : doIgnoreEdges(ign) { }
-
-  virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) = 0;
-  virtual void enterLoop(PeelAttempt*, void*) { }
-  virtual void hitIgnoredEdge() { }
-
-};
-
 enum BarrierState {
 
   BARRIER_NONE,
@@ -1146,7 +1110,7 @@ protected:
   virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) = 0;
-  virtual void popAllocas(LocalStoreMap*) = 0;
+  virtual void popAllocas(OrdinaryLocalStore*) = 0;
 
   // VFS call forwarding:
 
@@ -1175,19 +1139,9 @@ protected:
   
   // Dead store and allocation elim:
 
-  bool tryKillStore(ShadowInstruction* SI);
-  bool tryKillMemset(ShadowInstruction* MI);
-  bool tryKillMTI(ShadowInstruction* MTI);
-  bool tryKillAlloc(ShadowInstruction* Alloc);
-  bool tryKillRead(ShadowInstruction*, ReadFile&);
-  bool tryKillWriterTo(ShadowInstruction* Writer, ShadowValue WritePtr, uint64_t Size);
-  bool DSEHandleWrite(ShadowValue Writer, uint64_t WriteSize, ShadowValue StorePtr, uint64_t Size, ShadowValue StoreBase, int64_t StoreOffset, std::vector<bool>* deadBytes);
-  bool isLifetimeEnd(ShadowValue Alloc, ShadowInstruction* I);
-  WalkInstructionResult noteBytesWrittenBy(ShadowInstruction* I, ShadowValue StorePtr, ShadowValue StoreBase, int64_t StoreOffset, uint64_t Size, std::vector<bool>* writtenBytes, bool commitDisabledHere);
-  bool callUsesPtr(ShadowInstruction*, ShadowValue, uint64_t Size);
-  void tryKillAllMTIs();
-  void tryKillAllStores();
-  void tryKillAllAllocs();
+  void DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowBB* BB);
+  void DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, ShadowInstruction* Writer, ShadowBB* BB);
+  void tryKillStoresInLoop(const Loop* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader = false);
 
   // User visitors:
   
@@ -1290,8 +1244,13 @@ protected:
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool synthCommittedPointer(ShadowValue I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
+  bool canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV);
+  bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
+  bool canSynthMTI(ShadowInstruction* I);
+  void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd);
+  bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
   Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
-  Value* trySynthInst(ShadowInstruction* I, BasicBlock* emitBB);
+  bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
@@ -1390,7 +1349,9 @@ public:
   void dropExitingStoreRefs();
   void dropLatchStoreRef();
 
-  virtual InlineAttempt* getFunctionRoot(); 
+  virtual InlineAttempt* getFunctionRoot() {
+    return parent->getFunctionRoot();
+  }
 
   void visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor); 
   virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor); 
@@ -1450,7 +1411,7 @@ public:
   virtual bool commitsOutOfLine();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
-  virtual void popAllocas(LocalStoreMap*);  
+  virtual void popAllocas(OrdinaryLocalStore*);  
 
 };
 
@@ -1578,7 +1539,7 @@ class InlineAttempt : public IntegrationAttempt {
     return localAllocas[i];
   }
 
-  LocalStoreMap* storeAtEntry;
+  OrdinaryLocalStore* storeAtEntry;
   DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
   SmallPtrSet<ShadowInstruction*, 4> escapingMallocs;
   bool hasVFSOps;
@@ -1609,7 +1570,9 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual BasicBlock* getEntryBlock(); 
 
-  virtual InlineAttempt* getFunctionRoot(); 
+  virtual InlineAttempt* getFunctionRoot() {
+    return this;
+  }
 
   bool isOwnCallUnused(); 
 
@@ -1721,13 +1684,23 @@ class InlineAttempt : public IntegrationAttempt {
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
   virtual void commitSimpleFailedBlock(uint32_t i);
-  virtual void popAllocas(LocalStoreMap*);
+  virtual void popAllocas(OrdinaryLocalStore*);
   virtual void createFailedBlock(uint32_t idx);
   virtual void populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd);
   virtual void populateFailedHeaderPHIs(const Loop* PopulateL);
   BasicBlock* getSubBlockForInst(uint32_t, uint32_t);
+
+  void tryKillStores(bool commitDisabledHere, bool disableWrites);
   
 };
+
+inline int32_t getFrameSize(InlineAttempt* IA) {
+  return IA->invarInfo->frameSize;
+}
+
+inline ShadowValue getStackAllocationWithIndex(InlineAttempt* IA, uint32_t i) {
+  return IA->getAllocaWithIdx(i);
+}
 
 inline IntegrationAttempt* ShadowValue::getCtx() {
 
@@ -1851,8 +1824,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
 
- void commitStoreToBase(LocalStoreMap* Map);
- void commitFrameToBase(SharedStoreMap* Map);
+ void commitStoreToBase(OrdinaryLocalStore* Map);
+ void commitFrameToBase(SharedStoreMap<LocStore, OrdinaryStoreExtraState>* Map);
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
  void doCallStoreMerge(ShadowBB* BB, InlineAttempt* IA);
@@ -1883,32 +1856,22 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
+
+ enum specialfunctions {
+
+   SF_MALLOC,
+   SF_REALLOC,
+   SF_FREE,
+   SF_VASTART,
+   SF_VACOPY
+
+ };
+
+ extern DenseMap<Function*, specialfunctions> SpecialFunctionMap;
    
  struct IntAAProxy {
 
    virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);
-
- };
-
- struct MergeBlockVisitor : public ShadowBBVisitor {
-   
-   LocalStoreMap* newMap;
-   bool mergeToBase;
-   bool useVarargMerge;
-   SmallVector<ShadowBB*, 4> incomingBlocks;
-   bool verbose;
-   
- MergeBlockVisitor(bool mtb, bool uvm = false, bool v = false) : ShadowBBVisitor(true), newMap(0), mergeToBase(mtb), useVarargMerge(uvm), verbose(v) { }
-   
-   void mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, ShadowValue& MergeV);
-   void mergeValues(ImprovedValSetSingle& to, ImprovedValSetSingle& from);
-   void mergeFrames(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd, uint32_t idx);
-   void mergeHeaps(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd);
-   void mergeFlags(LocalStoreMap* toMap, SmallVector<LocalStoreMap*, 4>::iterator fromBegin, SmallVector<LocalStoreMap*, 4>::iterator fromEnd);
-   void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
-     incomingBlocks.push_back(BB);
-   }
-   void doMerge();
 
  };
 

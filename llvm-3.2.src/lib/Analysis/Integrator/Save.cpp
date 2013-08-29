@@ -1158,7 +1158,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, SmallVector<std::p
   
 }
 
-bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
+bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
 
   ShadowValue Base = IV.V;
   int64_t Offset = IV.Offset;
@@ -1171,6 +1171,18 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
   if(!Base.objectAvailableFrom(this))
     return false;
+
+  return true;
+
+}
+
+bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
+
+  if(!canSynthPointer(I, IV))
+    return false;
+
+  ShadowValue Base = IV.V;
+  int64_t Offset = IV.Offset;
 
   Type* Int8Ptr = Type::getInt8PtrTy(emitBB->getContext());
 
@@ -1215,6 +1227,23 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
 }
 
+bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV) {
+
+  if(Ty == ValSetTypeScalar)
+    return true;
+  else if(Ty == ValSetTypeFD)
+    return (I != IV.V.getInst() && IV.V.objectAvailableFrom(this));
+  else if(Ty == ValSetTypePB) {
+    ShadowValue SV;
+    if(I)
+      SV = ShadowValue(I);
+    return canSynthPointer(I ? &SV : 0, IV);
+  }
+
+  return false;
+
+}
+
 Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar)
@@ -1244,16 +1273,171 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 
 }
 
-Value* IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB) {
+void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd) {
+
+  uint32_t chunkSize = std::distance(chunkBegin, chunkEnd);
+  if(chunkSize == 0)
+    return;
+
+  Type* BytePtr = Type::getInt8PtrTy(emitBB->getContext());
+
+  // Create pointer that should be written through:
+  Type* targetType;
+  if(chunkSize == 1)
+    targetType = PointerType::getUnqual(chunkBegin->second.Values[0].V.getType());
+  else
+    targetType = BytePtr;
+
+  // We have already checked that the target is visible, so this must succeed:
+  Value* targetPtrSynth;
+  ImprovedVal targetPtr;
+  ShadowValue targetPtrOp = I->getCallArgOperand(0);
+  getBaseAndConstantOffset(targetPtrOp, targetPtr.V, targetPtr.Offset);
+  targetPtr.Offset += chunkBegin->first.first;
+  synthCommittedPointer(0, targetType, targetPtr, emitBB, targetPtrSynth);
+  
+  if(chunkSize == 1) {
+
+    // Emit as simple store.
+    ImprovedVal& IV = chunkBegin->second.Values[0];
+    Value* newVal = trySynthVal(I, IV.V.getType(), chunkBegin->second.SetType, IV, emitBB);
+    new StoreInst(newVal, targetPtrSynth, emitBB);
+
+  }
+  else {
+
+    // Emit as memcpy-from-packed-struct.
+    SmallVector<Type*, 4> Types;
+    SmallVector<Constant*, 4> Copy;
+    uint64_t lastOffset = 0;
+    for(SmallVector<IVSRange, 4>::iterator it = chunkBegin; it != chunkEnd; ++it) {
+
+      ImprovedVal& IV = it->second.Values[0];
+      Value* newVal = trySynthVal(I, IV.V.getType(), it->second.SetType, IV, emitBB);
+      Types.push_back(newVal->getType());
+      Copy.push_back(cast<Constant>(newVal));
+      lastOffset = it->first.second;
+
+    }
+
+    StructType* SType = StructType::get(emitBB->getContext(), Types, /*isPacked=*/true);
+    Constant* CS = ConstantStruct::get(SType, Copy);
+    GlobalVariable* GCS = new GlobalVariable(PointerType::getUnqual(SType), true, 
+					     GlobalValue::InternalLinkage, CS);
+    Constant* GCSPtr = ConstantExpr::getBitCast(GCS, BytePtr);
+
+    Type* Int64Ty = Type::getInt64Ty(emitBB->getContext());
+    Constant* MemcpySize = ConstantInt::get(Int64Ty, lastOffset - chunkBegin->first.first);
+
+    Type *Tys[3] = {BytePtr, BytePtr, Int64Ty};
+    Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
+						   Intrinsic::memcpy, 
+						   ArrayRef<Type*>(Tys, 3));
+
+    Value *CallArgs[] = {
+      targetPtrSynth, GCSPtr, MemcpySize,
+      ConstantInt::get(Type::getInt32Ty(emitBB->getContext()), 1),
+      ConstantInt::get(Type::getInt1Ty(emitBB->getContext()), 0)
+    };
+	
+    CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+
+  }
+
+}
+
+bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
+
+  if(!I->memcpyValues)
+    return false;
+
+  // Can we describe the target?
+  ShadowValue TargetPtr = I->getCallArgOperand(0);
+  {
+    ImprovedVal Test;
+    if(!getBaseAndConstantOffset(TargetPtr, Test.V, Test.Offset))
+      return false;
+    if(!canSynthVal(I, ValSetTypePB, Test))
+      return false;
+  }
+  
+  // Can we describe all the copied values?
+  for(SmallVector<IVSRange, 4>::iterator it = I->memcpyValues->begin(),
+	itend = I->memcpyValues->end(); it != itend; ++it) {
+
+    if(it->second.isWhollyUnknown() || it->second.Values.size() != 1)
+      return false;
+
+    if(!canSynthVal(I, it->second.SetType, it->second.Values[0]))
+      return false;
+
+  }
+
+  return true;
+
+}
+
+bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
+
+  if(!canSynthMTI(I))
+    return false;
+
+  // OK, the entire memcpy is made of things we can synthesise -- do it!
+  // The method: for consecutive scalars or pointers-to-globals, synthesise a packed struct and
+  // memcpy from it. For non-constant pointers and FDs, produce stores.
+
+  SmallVector<IVSRange, 4>::iterator chunkBegin = I->memcpyValues->begin();
+
+  for(SmallVector<IVSRange, 4>::iterator it = I->memcpyValues->begin(),
+	itend = I->memcpyValues->end(); it != itend; ++it) {
+
+    if(it->second.SetType == ValSetTypeScalar || 
+       (it->second.SetType == ValSetTypePB && it->second.Values[0].V.isGV())) {
+
+      // Emit shortly.
+      continue;
+
+    }
+    else {
+
+      // Emit the chunk.
+      emitChunk(I, emitBB, chunkBegin, it);
+
+      // Emit this item (simple store, same as a singleton chunk).
+      SmallVector<IVSRange, 4>::iterator nextit = it;
+      ++nextit;
+      emitChunk(I, emitBB, it, nextit);
+
+      // Next chunk starts /after/ this.
+      chunkBegin = nextit;
+
+    }
+
+  }
+
+  // Emit the rest if any.
+  emitChunk(I, emitBB, chunkBegin, I->memcpyValues->end());
+
+  return true;
+
+}
+
+bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result) {
+
+  if(inst_is<MemTransferInst>(I)) {
+    Result = 0;
+    return trySynthMTI(I, emitBB);
+  }
 
   ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
   if(!IVS)
-    return 0;
+    return false;
 
   if(IVS->Values.size() != 1)
-    return 0;
+    return false;
 
-  return trySynthVal(I, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
+  Result = trySynthVal(I, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
+  return true;
   
 }
 
@@ -1271,7 +1455,8 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
 
   if(!requiresRuntimeCheck(I)) {
 
-    if(Value* V = trySynthInst(I, emitBB->first)) {
+    Value* V;
+    if(trySynthInst(I, emitBB->first, V)) {
       I->committedVal = V;
       return;
     }
