@@ -2,6 +2,7 @@
 // only taking into account that we've been computing a probable flow through the program.
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/VFSCallModRef.h"
 
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
@@ -55,7 +56,7 @@ void TrackedStore::derefBytes(uint64_t nBytes) {
 
 static DSEMapTy::Allocator DSEMapAllocator;
 static DSEMapTy DSEEmptyMap(DSEMapAllocator);
-DSEMapPointer DSEEmptyMapPtr(&DSEEmptyMap, 0);
+DSEMapPointer llvm::DSEEmptyMapPtr(&DSEEmptyMap, 0);
 
 DSELocalStore* DSEMapPointer::getMapForBlock(ShadowBB* BB) {
 
@@ -89,7 +90,7 @@ static bool GCStores(DSEMapTy::iterator argit) {
 
       thisStore->derefBytes(entrySize);
 
-      if(entryit == DSEMapEntry::iterator(entry.back())) {
+      if(&*entryit == &entry.back()) {
 	entry.pop_back();
 	break;
       }
@@ -160,8 +161,8 @@ static void derefBytes(DSEMapEntry& entry, uint64_t nBytes) {
   
 }
 
-void DSEMapPointer::dropReference() { 
-    
+void DSEMapPointer::release() {
+
   // The store entries themselves are not reference counted, so drop refs to all mentioned
   // TrackedStores and delete the map.
 
@@ -174,7 +175,18 @@ void DSEMapPointer::dropReference() {
 
   }
 
-  A->dropReference();
+  M->clear();
+
+  if(A) {
+    A->dropReference();
+    A = 0;
+  }
+
+}
+
+void DSEMapPointer::dropReference() { 
+    
+  release();
   delete M;
 
 }
@@ -294,7 +306,8 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
   DSEMapTy::iterator fromit = mergeFrom->M->begin();
 
-  while(fromit != mergeFrom->M->end()) {
+  for(DSEMapTy::iterator fromit = mergeFrom->M->begin(), fromend = mergeFrom->M->end();
+      fromit != fromend; ++fromit) {
 
     DSEMapTy::iterator toit = mergeTo->M->find(fromit.start());
 
@@ -407,7 +420,7 @@ void DSEMapPointer::useWriters(int64_t Offset, uint64_t Size) {
     for(DSEMapEntry::iterator Eit = E.begin(), Eend = E.end(); Eit != Eend; ++Eit)
       (*Eit)->isNeeded = true;
 
-    derefBytes(E, Size);
+    derefBytes(E, it.stop() - it.start());
     
   }
 
@@ -530,6 +543,13 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
 
   for(uint64_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
 
+    if(val_is<ConstantPointerNull>(IVS.Values[i].V))
+      continue;
+
+    ShadowGV* GV;
+    if((GV = IVS.Values[i].V.getGV()) && GV->G->isConstant())
+      continue;
+
     DSEMapPointer* store = BB->getWritableDSEStore(IVS.Values[i].V);
     // The allocation is needed (and no need to track it anymore).
     if(store->A) {
@@ -537,8 +557,15 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
       store->A->dropReference();
       store->A = 0;
     }
+
+    uint64_t Offset = IVS.Values[i].Offset;
+
+    if(Offset == LLONG_MAX) {
+      Offset = 0;
+      Size = AliasAnalysis::UnknownSize;
+    }
     
-    store->useWriters(IVS.Values[i].Offset, Size);
+    store->useWriters(Offset, Size);
 
   }
       
@@ -563,6 +590,7 @@ void InlineAttempt::tryKillStores(bool commitDisabledHere, bool disableWrites) {
 
   if(isRootMainCall())
     BBs[0]->u.dseStore = new DSELocalStore(0);
+
   if(invarInfo->frameSize != -1) {
     BBs[0]->u.dseStore = BBs[0]->u.dseStore->getWritableFrameList();
     BBs[0]->u.dseStore->pushStackFrame(this);
@@ -577,20 +605,18 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
   DSEProgress();
 
   ShadowLoopInvar* LInfo = L ? invarInfo->LInfo[L] : 0;
+  
+  uint32_t startIdx;
+  if(L)
+    startIdx = LInfo->headerIdx;
+  else
+    startIdx = 0;
 
-  for(uint32_t i = BBsOffset, ilim = (BBsOffset + nBBs); i != ilim; ++i) {
+  for(uint32_t i = startIdx, ilim = nBBs + BBsOffset; i != ilim && ((!L) || L->contains(getBBInvar(i)->naturalScope)); ++i) {
 
     ShadowBB* BB = getBB(i);
     if(!BB)
       continue;
-
-    if(pass->countPathConditionsForBlock(BB)) {
-      
-      // Reaches a path condition check, where unspecialised code might use this value.
-      setAllNeeded(BB->u.dseStore);
-      BB->u.dseStore = BB->u.dseStore->getEmptyMap();
-      
-    }
 
     if(BB->invar->naturalScope != L) {
 
@@ -599,7 +625,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
 
-	LPA->Iterations[0]->BBs[0]->u.dseStore = BB->u.dseStore;
+	LPA->Iterations[0]->BBs[0]->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
 	bool commitDisabled = commitDisabledHere || !LPA->isEnabled();
 	uint32_t latchIdx = NewLInfo->latchIdx;
 
@@ -614,10 +640,10 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       }
       else {
 
-	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
+	// Give header its store:
+	BB->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
 
-	  // Give header its store:
-	  BB->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
+	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
 
 	  if(!disableWrites) {
 	    // Passing true for the last parameter causes the store to be given to the header from the latch
@@ -630,7 +656,6 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	}
 	else {
 
-	  BB->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
 	  tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), disableWrites);
 
 	}
@@ -644,12 +669,22 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     }
 
-    if(i != 0) {
+    if(i != startIdx) {
 
       doDSEStoreMerge(BB);
 
     }
+
+    if(pass->countPathConditionsForBlock(BB)) {
       
+      // Reaches a path condition check, where unspecialised code might use this value.
+      setAllNeeded(BB->u.dseStore);
+      BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+      
+    }
+
+    bool brokeOnUnreachableCall = false;
+
     for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction* I = &BB->insts[j];
@@ -700,6 +735,15 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	  IA->tryKillStores(commitDisabledHere || (!IA->isEnabled()), disableWrites);
 	  doDSECallMerge(BB, IA);
 
+	  if(!BB->u.dseStore) {
+
+	    // The call never returns: no sense analysing the rest of this block.
+	    // This block cannot have any live successors in this case.
+	    brokeOnUnreachableCall = true;
+	    break;
+
+	  }
+
 	}
 	else {
 
@@ -717,13 +761,17 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	    if(findit->second == SF_FREE) {
 
 	      // Release the map and a tracked alloc reference for this location:
-	      DSEMapPointer* store = BB->getWritableDSEStore(ShadowValue(I));
-	      store->dropReference();
-	      store->M = 0;
-	      if(store->A) {
-		store->A->dropReference();
-		store->A = 0;
-	      }
+	      ShadowValue PtrOp = I->getCallArgOperand(0);
+	      ShadowValue Ptr;
+	      int64_t Offset;
+	      if(!getBaseAndConstantOffset(PtrOp, Ptr, Offset))
+		continue;
+	      
+	      if(val_is<ConstantPointerNull>(Ptr))
+		continue;
+
+	      DSEMapPointer* store = BB->getWritableDSEStore(Ptr);
+	      store->release();
 	      
 	    }
 	    else if(findit->second == SF_MALLOC || findit->second == SF_REALLOC) {
@@ -735,6 +783,57 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	    }
 	      
+	  }
+	  else if(F) {
+
+	    if(F->doesNotAccessMemory())
+	      continue;
+
+	    // Known system calls may read from any pointer-typed argument,
+	    // pending more accurate definition of their read behaviour.
+	    // We'll assume they don't write at the moment, since the definitions
+	    // in VFSCallModRef are /worst/ case write assumptions used for clobbering,
+	    // whereas here we need /conservative/ always-overwrites information.
+
+	    const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F);
+
+	    if(FI) {
+
+	      if(FI->UniversalBehavior == llvm::AliasAnalysis::NoModRef)
+		continue;
+
+	      FunctionType* FType = F->getFunctionType();
+
+	      for(uint32_t arg = 0, arglim = I->getNumArgOperands(); arg != arglim; ++arg) {
+
+		// Can't hold a pointer?
+		if(GlobalAA->getTypeStoreSize(FType->getParamType(arg)) < 8)
+		  continue;
+
+		// Known not a pointer?
+		ShadowValue argval = I->getCallArgOperand(arg);
+		ImprovedValSetSingle argivs;
+		if(getImprovedValSetSingle(argval, argivs)) {
+
+		  if(argivs.SetType == ValSetTypeScalar || argivs.SetType == ValSetTypeFD)
+		    continue;
+
+		}
+
+		// OK, assume the call reads any amount through the pointer.
+		DSEHandleRead(argval, AliasAnalysis::UnknownSize, BB);
+
+	      }
+	    
+	    }
+	    else {
+
+	      // Call with unknown properties blocks everything:
+	      setAllNeeded(BB->u.dseStore);
+	      BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+
+	    }
+
 	  }
 	  else {
 
@@ -787,6 +886,16 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     }
 
+    if(!BB->u.dseStore) {
+
+      // Block doesn't have a store due to a never-returns call.
+      // Can't have any successors either in this case.
+
+      release_assert(brokeOnUnreachableCall);
+      continue;
+
+    }
+
     // Give a store copy to each successor block that needs it. If latchToHeader is true,
     // ignore branches to outside the current loop; otherwise ignore any latch->header edge.
 
@@ -798,9 +907,9 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       ShadowBBInvar* SuccBBI = getBBInvar(BB->invar->succIdxs[i]);
       if(L) {
 
-	if(latchToHeader && !L->contains(SuccBBI->naturalScope))
+	if(L != this->L && latchToHeader && !L->contains(SuccBBI->naturalScope))
 	  continue;
-	else if((!latchToHeader) && SuccBBI->idx == LInfo->headerIdx) {
+	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == LInfo->headerIdx) {
 	  release_assert(BB->invar->idx == LInfo->latchIdx);
 	  continue;
 	}
@@ -812,11 +921,13 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     }
 
+    // Drop stack allocations here.
+
     if(BB->invar->succIdxs.size() == 0) {
 
       if(invarInfo->frameSize != -1) {
-	BBs[0]->u.dseStore = BBs[0]->u.dseStore->getWritableFrameList();
-	BBs[0]->u.dseStore->popStackFrame();
+	BB->u.dseStore = BB->u.dseStore->getWritableFrameList();
+	BB->u.dseStore->popStackFrame();
       }
 
     }
@@ -825,7 +936,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
       BB->u.dseStore->dropReference();
-	 
+
   }
 
 }

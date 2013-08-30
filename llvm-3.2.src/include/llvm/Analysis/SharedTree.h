@@ -395,6 +395,20 @@ SharedTreeRoot() : root(0), height(0) { }
 
 };
 
+static uint32_t getRequiredHeight(uint32_t idx) {
+
+  uint32_t height = 0;
+
+  do {
+
+    idx >>= HEAPTREEORDERLOG2;
+    ++height;
+
+  } while(idx);
+
+  return height;
+
+}
 
 template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType, ExtraState>::getReadableStoreFor(ShadowValue& V) {
 
@@ -405,6 +419,9 @@ template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType,
   // Is a valid allocation instruction?
   int32_t idx = V.getHeapKey();
   if(idx < 0)
+   return 0;
+
+  if(getRequiredHeight(idx) > height)
     return 0;
 
   // OK search:
@@ -426,21 +443,6 @@ template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, Extra
 
 }
 
-static uint32_t getRequiredHeight(uint32_t idx) {
-
-  uint32_t height = 0;
-
-  do {
-
-    idx >>= HEAPTREEORDERLOG2;
-    ++height;
-
-  } while(idx);
-
-  return height;
-
-}
-
 template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::grow(uint32_t idx) {
 
   // Need to make the tree taller first (hopefully the above test is cheaper than getReqdHeight)
@@ -450,6 +452,10 @@ template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, Extra
 }
 
 template<class ChildType, class ExtraState> bool SharedTreeRoot<ChildType, ExtraState>::mustGrowFor(uint32_t idx) {
+
+  // Can't accommodate more than 2^32 heap items! Change this if we use a uint64_t for heap indices.
+  if(height == (32 / HEAPTREEORDERLOG2))
+    return false;
 
   return idx >= (uint32_t)(HEAPTREEORDER << ((height - 1) * HEAPTREEORDERLOG2));
 

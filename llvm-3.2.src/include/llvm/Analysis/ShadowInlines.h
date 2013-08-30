@@ -976,7 +976,8 @@ DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
   void checkMergedResult(ShadowValue&) { }
   DSEMapPointer getReadableCopy();
   void dropReference();
-  void print(raw_ostream& RSO, bool brief) { }
+  void release();
+  void print(raw_ostream& RSO, bool brief);
   static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
 			  ShadowValue& V, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
   void useWriters(int64_t Offset, uint64_t Size);

@@ -110,3 +110,29 @@ void IntegrationHeuristicsPass::disableValueCache() {
   
 }
 
+void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
+
+  if(!M)
+    return;
+
+  for(DSEMapTy::iterator it = M->begin(), itend = M->end(); it != itend; ++it) {
+
+    errs() << it.start() << "-" << it.stop() << ": { ";
+    DSEMapEntry& entry = it.val();
+
+    for(DSEMapEntry::iterator eit = entry.begin(), eend = entry.end(); eit != eend; ++eit) {
+
+      if(eit != entry.begin())
+	RSO << ", ";
+      if(!*eit)
+	RSO << "NULL!";
+      else
+	RSO << itcache((*eit)->I, brief);
+
+    }
+
+    errs() << " }\n";
+
+  }
+
+}

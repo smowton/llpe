@@ -1437,7 +1437,7 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
     return false;
 
   Result = trySynthVal(I, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
-  return true;
+  return !!Result;
   
 }
 
