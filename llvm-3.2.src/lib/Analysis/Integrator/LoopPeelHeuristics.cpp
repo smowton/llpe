@@ -2809,7 +2809,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   if(!SkipTL) {  
     errs() << "Finding tentative loads";
-    IA->findTentativeLoads();
+    IA->findTentativeLoads(false, false);
     errs() << "\n";
   }
 

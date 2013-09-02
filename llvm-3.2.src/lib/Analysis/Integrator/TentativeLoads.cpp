@@ -8,8 +8,6 @@
 // when the load was known to be from a thread-private object. We will set the same flag wherever
 // it's clear that checking this load would be redundant.
 
-// The order in which loads are visited is unimportant.
-
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/Function.h"
@@ -34,139 +32,87 @@ static void TLProgress() {
 
 }
 
-class TentativeLoadWalker : public BackwardIAWalker {
+static TLMapTy::Allocator TLMapAllocator;
+static TLMapTy TLEmptyMap(TLMapAllocator);
+TLMapPointer llvm::TLEmptyMapPtr(&TLEmptyMap);
 
-public:
+TLLocalStore* TLMapPointer::getMapForBlock(ShadowBB* BB) {
 
-  struct Ctx {
+  return BB->u.tlStore;
 
-    bool* goodBytes;
-    void* ignoreUntil;
+}
 
-    Ctx(uint64_t size) : ignoreUntil(0) {
+TLMapPointer TLMapPointer::getReadableCopy() {
 
-      goodBytes = new bool[size];
-      memset(goodBytes, 0, sizeof(bool) * size);
+  TLMapTy* newMap = new TLMapTy(TLMapAllocator);
+  for(TLMapTy::iterator it = M->begin(), itend = M->end(); it != itend;) {
 
-    }
-
-    Ctx(Ctx* other, uint64_t size) : ignoreUntil(other->ignoreUntil) {
-
-      goodBytes = new bool[size];
-      memcpy(goodBytes, other->goodBytes, sizeof(bool) * size);
-
-    }
-
-    ~Ctx() {
-      
-      delete[] goodBytes;
-
-    }
-
-    void fill(uint64_t from, uint64_t limit) {
-
-      for(uint64_t i = from; i != limit; ++i)
-	goodBytes[i] = true;
-      
-    }
-
-  };
-
-protected:
-
-  virtual bool shouldEnterCall(ShadowInstruction*, void*) { return true; }
-
-  // The blocked-by-unexpanded case is taken care of in walkInstruction.
-  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*) { return false; }
-
-  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void* Context);
-  virtual WalkInstructionResult mayAscendFromContext(IntegrationAttempt*, void* Ctx);
-
-  WalkInstructionResult markGoodBytes(ShadowValue GoodPtr, uint64_t Len, void* vctx, uint64_t Offset = 0);
-  WalkInstructionResult walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue LenSV, void*);
-
-  virtual void enterCall(InlineAttempt* IA, void* Ctx);
-  virtual void leaveCall(InlineAttempt* IA, void* Ctx);
-  virtual void enterLoop(PeelAttempt*, void* Ctx);
-  virtual void leaveLoop(PeelAttempt*, void* Ctx);
-
-  WalkInstructionResult walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, ShadowBB* BB, void* vctx);
-  WalkInstructionResult walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>& Conds, ShadowBB* BB, uint32_t stackDepth, void* vctx);
-  virtual WalkInstructionResult walkFromBlock(ShadowBB* BB, void* vctx);
-
-  virtual void* copyContext(void* x) {
-
-    return new Ctx((Ctx*)x, readSize);
+    newMap->insert(it.start(), it.stop(), *it);
 
   }
 
-  virtual void freeContext(void* x) {
+  return TLMapPointer(newMap);
 
-    delete ((Ctx*)x);
+}
+
+void TLMapPointer::dropReference() {
+
+  delete M;
+  M = 0;
+
+}
+
+void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, ShadowValue& V, TLMerger* Visitor) {
+
+  // Intersect the sets per byte. The values are just booleans, so overwriting without erasing is fine.
+
+  SmallVector<std::pair<uint64_t, uint64_t>, 4> keepRanges;
+
+  for(TLMapTy::iterator it = mergeFrom->M->begin(), itend = mergeFrom->M->end();
+      it != itend; ++it) {
+
+    for(TLMapTy::iterator toit = mergeTo->M->find(it.start()), toitend = mergeTo->M->end();
+	toit != toitend && toit.start() < it.stop(); ++toit) {
+
+      uint64_t keepStart = std::max(toit.start(), it.start());
+      uint64_t keepStop = std::min(toit.stop(), it.stop());
+      keepRanges.push_back(std::make_pair(keepStart, keepStop));
+
+    }
 
   }
 
-  ImprovedVal readPtr;
-  uint64_t readSize;
+  mergeTo->M->clear();
+  for(SmallVector<std::pair<uint64_t, uint64_t>, 4>::iterator it = keepRanges.begin(),
+	itend = keepRanges.end(); it != itend; ++it) {
 
-public:
+    mergeTo->M->insert(it->first, it->second, true);
 
-  TentativeLoadWalker(ShadowInstruction& Start, ImprovedVal Ptr, uint64_t Size, void* initialCtx) : 
-    BackwardIAWalker(Start.invar->idx, Start.parent, /* skipFirst = */ true, 
-		     initialCtx, 0, /* doIgnoreEdges = */ true),
-    readPtr(Ptr), 
-    readSize(Size),
-    shouldCheckLoad(TLS_NOCHECK) {}
-
-  ThreadLocalState shouldCheckLoad;
-
-};
-
-void TentativeLoadWalker::enterCall(InlineAttempt* IA, void* vctx) {
-
-  Ctx* ctx = (Ctx*)vctx;
-  if((!ctx->ignoreUntil) && !IA->isEnabled())
-    ctx->ignoreUntil = IA;
+  }
 
 }
 
-void TentativeLoadWalker::leaveCall(InlineAttempt* IA, void* vctx) {
+TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
-  Ctx* ctx = (Ctx*)vctx;
-  if(ctx->ignoreUntil == IA)
-    ctx->ignoreUntil = 0;
-  
-}
+  u.tlStore = u.tlStore->getWritableFrameList();
+  bool isNewStore;
+  TLMapPointer* ret = u.tlStore->getOrCreateStoreFor(O, &isNewStore);
 
-void TentativeLoadWalker::enterLoop(PeelAttempt* LPA, void* vctx) {
+  if(isNewStore)
+    ret->M = new TLMapTy(TLMapAllocator);
 
-  Ctx* ctx = (Ctx*)vctx;
-  if((!ctx->ignoreUntil) && !LPA->isEnabled())
-    ctx->ignoreUntil = LPA;
-  
-  
-}
-
-void TentativeLoadWalker::leaveLoop(PeelAttempt* LPA, void* vctx) {
-
-  Ctx* ctx = (Ctx*)vctx;
-  if(ctx->ignoreUntil == LPA)
-    ctx->ignoreUntil = 0;
+  return ret;
 
 }
 
-// Prevent walking up from the allocation context, since the edges followed must route around the allocation.
-WalkInstructionResult TentativeLoadWalker::mayAscendFromContext(IntegrationAttempt* IA, void* Ctx) {
+static void markAllObjectsTentative(ShadowBB* BB) {
 
-  ShadowInstruction* readInst = readPtr.V.getInst();
-  if(readInst && readInst->parent->IA == IA)
-    return WIRStopThisPath;
-
-  return WIRContinue;
+  BB->u.tlStore = BB->u.tlStore->getEmptyMap();
+  BB->u.tlStore->allOthersClobbered = true;
 
 }
 
-WalkInstructionResult TentativeLoadWalker::markGoodBytes(ShadowValue GoodPtr, uint64_t Len, void* vctx, uint64_t Offset) {
+static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled, ShadowBB* BB, uint64_t Offset = 0) {
 
   // ignoreUntil indicates we're within a disabled context. The loads and stores here will
   // be committed unmodified, in particular without checks that their results are as expected,
@@ -181,40 +127,22 @@ WalkInstructionResult TentativeLoadWalker::markGoodBytes(ShadowValue GoodPtr, ui
   
   // Here the load %y must be checked, because the load %x cannot be checked.   
 
-  Ctx* ctx = (Ctx*)vctx;
-
-  if(ctx->ignoreUntil)
-    return WIRContinue;
+  if(!contextEnabled)
+    return;
 
   std::pair<ValSetType, ImprovedVal> PtrTarget;
   if(!tryGetUniqueIV(GoodPtr, PtrTarget))
-    return WIRContinue;
+    return;
 
   if(PtrTarget.first != ValSetTypePB)
-    return WIRContinue;
+    return;
 
-  uint64_t FirstDef, FirstNotDef, Ignored;
-  if(!GetDefinedRange(readPtr.V, readPtr.Offset, readSize, 
-		      PtrTarget.second.V, PtrTarget.second.Offset + Offset, Len,
-		      FirstDef, FirstNotDef, Ignored))
-    return WIRContinue;
-
-  bool allGood = true;
-
-  for(uint64_t i = 0, ilim = readSize; i != ilim && (allGood || i < FirstNotDef); ++i) {
-
-    if(i >= FirstDef && i < FirstNotDef)
-      ctx->goodBytes[i] = true;
-    else if(!ctx->goodBytes[i])
-      allGood = false;
-
-  }
-
-  return allGood ? WIRStopThisPath : WIRContinue;
+  TLMapPointer* store = BB->getWritableTLStore(PtrTarget.second.V);
+  store->M->insert(PtrTarget.second.Offset + Offset, PtrTarget.second.Offset + Offset + Len, true);
 
 }
 
-WalkInstructionResult TentativeLoadWalker::walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, ShadowBB* BB, void* vctx) {
+static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool contextEnabled, ShadowBB* BB) {
 
   ShadowValue CondSV = BB->IA->getFunctionRoot()->getPathConditionSV(Cond);
   uint64_t Len = 0;
@@ -230,88 +158,72 @@ WalkInstructionResult TentativeLoadWalker::walkPathCondition(PathConditionTypes 
     llvm_unreachable();
   }
 
-  return markGoodBytes(CondSV, Len, vctx, Cond.offset);
+  markGoodBytes(CondSV, Len, contextEnabled, BB, Cond.offset);
 
 }
 
-WalkInstructionResult TentativeLoadWalker::walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>& Conds, ShadowBB* BB, uint32_t stackDepth, void* vctx) {
+static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>& Conds, bool contextEnabled, ShadowBB* BB, uint32_t stackDepth) {
 
   for(std::vector<PathCondition>::iterator it = Conds.begin(), itend = Conds.end(); it != itend; ++it) {
 
     if(stackDepth != it->fromStackIdx || BB->invar->BB != it->fromBB)
       continue;
 
-    WalkInstructionResult WIR = walkPathCondition(Ty, *it, BB, vctx);
-    if(WIR != WIRContinue)
-      return WIR;
+    walkPathCondition(Ty, *it, contextEnabled, BB);
 
   }
 
-  return WIRContinue;
-
 }
 
-WalkInstructionResult TentativeLoadWalker::walkFromBlock(ShadowBB* BB, void* vctx) {
+static void walkPathConditions(ShadowBB* BB, bool contextEnabled) {
 
   InlineAttempt* IA = BB->IA->getFunctionRoot();
+
   if(IA->targetCallInfo) {
 
-    WalkInstructionResult WIR = 
-      walkPathConditions(PathConditionTypeIntmem, BB->IA->pass->rootIntmemPathConditions, 
-			 BB, IA->targetCallInfo->targetStackDepth, vctx);
-
-    if(WIR != WIRContinue)
-      return WIR;
-
-    return walkPathConditions(PathConditionTypeString, BB->IA->pass->rootStringPathConditions, 
-			      BB, IA->targetCallInfo->targetStackDepth, vctx);
-
-  }
-  else {
-
-    return WIRContinue;
+    walkPathConditions(PathConditionTypeIntmem, BB->IA->pass->rootIntmemPathConditions, 
+		       contextEnabled, BB, IA->targetCallInfo->targetStackDepth);
+    walkPathConditions(PathConditionTypeString, BB->IA->pass->rootStringPathConditions, 
+		       contextEnabled, BB, IA->targetCallInfo->targetStackDepth);
 
   }
 
 }
 
-WalkInstructionResult TentativeLoadWalker::walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue LenSV, void* vctx) {
+static void walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue LenSV, bool contextEnabled, ShadowBB* BB) {
 
   ConstantInt* LenC = cast_or_null<ConstantInt>(getConstReplacement(LenSV));
   if(!LenC)
-    return WIRContinue;
+    return;
   uint64_t Len = LenC->getLimitedValue(); 
 
-  WalkInstructionResult WIR = markGoodBytes(CopyTo, Len, vctx);
-  if(WIR == WIRStopThisPath)
-    return WIR;
-
-  return markGoodBytes(CopyFrom, Len, vctx);
+  markGoodBytes(CopyTo, Len, contextEnabled, BB);
+  markGoodBytes(CopyFrom, Len, contextEnabled, BB);
 
 }
 
-#define TLWFail do { shouldCheckLoad = TLS_MUSTCHECK; SI->parent->IA->yieldState = BARRIER_HERE; } while(0);
 
-WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI, void* vctx) {
+static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
-  // Reached allocation site, which defines all bytes? (and if realloc, checks the copy):
-  if(SI == readPtr.V.getInst())
-    return WIRStopThisPath;
+  if(inst_is<AllocaInst>(SI)) {
 
-  if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
+    markGoodBytes(ShadowValue(SI), SI->storeSize, contextEnabled, SI->parent);
+
+  }
+  else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
     if(LI->isVolatile() && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
-      TLWFail;
-      
-    return markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), vctx);
+      markAllObjectsTentative(SI->parent);
+    else
+      markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
 
   }
   else if(StoreInst* StoreI = dyn_cast_inst<StoreInst>(SI)) {
     
     if(StoreI->isVolatile())
-      TLWFail;
-
-    return markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), vctx);
+      markAllObjectsTentative(SI->parent);
+    else
+      markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
   else if(inst_is<CallInst>(SI)) {
@@ -320,71 +232,66 @@ WalkInstructionResult TentativeLoadWalker::walkInstruction(ShadowInstruction* SI
 
       ConstantInt* LengthCI = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(2)));
       if(!LengthCI)
-	return WIRContinue;
+	return;
       uint64_t MemSize = LengthCI->getLimitedValue();
 
-      return markGoodBytes(SI->getCallArgOperand(0), MemSize, vctx);
+      markGoodBytes(SI->getCallArgOperand(0), MemSize, contextEnabled, SI->parent);
 
     }
     else if(inst_is<MemTransferInst>(SI)) {
 
-      return walkCopyInst(SI->getCallArgOperand(0), SI->getCallArgOperand(1), SI->getCallArgOperand(2), vctx);
+      walkCopyInst(SI->getCallArgOperand(0), SI->getCallArgOperand(1), SI->getCallArgOperand(2), contextEnabled, SI->parent);
 
     }
     else {
 
-      // Don't check realloc here -- the is-allocation-site check at the top takes care of it.
-      
       Function* F = getCalledFunction(SI);
+      DenseMap<Function*, specialfunctions>::iterator findit;
       if(ReadFile* RF = SI->parent->IA->tryGetReadFile(cast_inst<CallInst>(SI))) {
 
-	return markGoodBytes(SI->getCallArgOperand(1), RF->readSize, vctx);
+	markGoodBytes(SI->getCallArgOperand(1), RF->readSize, contextEnabled, SI->parent);
+
+      }
+      else if((findit = SpecialFunctionMap.find(F)) != SpecialFunctionMap.end()) {
+
+	switch(findit->second) {
+
+	case SF_REALLOC:
+
+	  walkCopyInst(SI, SI->getCallArgOperand(0), SI->getCallArgOperand(1), contextEnabled, SI->parent);
+	  // Fall through to:
+
+	case SF_MALLOC:
+	  
+	  markGoodBytes(ShadowValue(SI), SI->storeSize, contextEnabled, SI->parent);
+
+	default:
+	  break;
+
+	}
 
       }
       else if((!F) || GlobalIHP->yieldFunctions.count(F))
-	TLWFail;
+	markAllObjectsTentative(SI->parent);
 
     }
 
   }
 
-  return WIRContinue;
-
 }
 
-ThreadLocalState IntegrationAttempt::shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx) {
+static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
 
-  TentativeLoadWalker W(Start, Ptr, Size, initCtx);
-  W.walk();
-  return W.shouldCheckLoad;
+  TLMapPointer* Map = BB->u.tlStore->getReadableStoreFor(Ptr.V);
+  if(!Map)
+    return BB->u.tlStore->allOthersClobbered;
+
+  TLMapTy::iterator it = Map->M->find(Ptr.Offset);
+  return (it != Map->M->end() && ((int64_t)it.start()) <= Ptr.Offset && ((int64_t)it.stop()) > Ptr.Offset + ((int64_t)Size));
     
 }
 
-static void fillCtx(TentativeLoadWalker::Ctx* initCtx, SmallVector<IVSRange, 4>& vals, int64_t Offset, uint64_t Len) {
-
-  // Gap at left?
-  initCtx->fill(0, vals[0].first.first - Offset);
-
-  if(vals.size() > 1) {
-    // Gaps between members?
-    for(uint32_t i = 0, ilim = vals.size() - 1; i != ilim; ++i)
-      initCtx->fill(vals[i].first.second - Offset, vals[i + 1].first.first - Offset);
-  }
-
-  // Gap at right?
-  initCtx->fill(vals.back().first.second - Offset, Len);
-  
-  // Members already unknown at copy time?
-  for(uint32_t i = 0, ilim = vals.size(); i != ilim; ++i) {
-
-    if(vals[i].second.isWhollyUnknown())
-      initCtx->fill(vals[i].first.first - Offset, vals[i].first.second - Offset);
-    
-  }
-
-}
-
-ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, ShadowValue& PtrOp, ShadowValue& LenSV) {
+ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, ShadowValue PtrOp, ShadowValue LenSV) {
 
   ConstantInt* LenC = cast_or_null<ConstantInt>(getConstReplacement(LenSV));
   std::pair<ValSetType, ImprovedVal> Ptr;
@@ -402,10 +309,20 @@ ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, Shad
     return TLS_NEVERCHECK;
 
   // Create an initial context that marks as "don't care" bytes that are wholly unknown at the copy.
-  TentativeLoadWalker::Ctx* initCtx = new TentativeLoadWalker::Ctx(Len);
-  fillCtx(initCtx, *SI.memcpyValues, Ptr.second.Offset, Len);
-  
-  return shouldCheckRead(SI, Ptr.second, Len, initCtx);
+  for(SmallVector<IVSRange, 4>::iterator it = SI.memcpyValues->begin(),
+	itend = SI.memcpyValues->end(); it != itend; ++it) {
+
+    if(it->second.isWhollyUnknown())
+      continue;
+
+    ImprovedVal ReadPtr = Ptr.second;
+    ReadPtr.Offset += it->first.first;
+    if(shouldCheckRead(ReadPtr, it->first.second - it->first.first, SI.parent))
+      return TLS_MUSTCHECK;
+
+  }
+
+  return TLS_NEVERCHECK;
     
 }
 
@@ -414,20 +331,27 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, 
   if(Ptr.V.isNullOrConst())
     return TLS_NEVERCHECK;
 
-  TentativeLoadWalker::Ctx* initCtx = new TentativeLoadWalker::Ctx(LoadSize);
   ImprovedValSetMulti* IV = dyn_cast<ImprovedValSetMulti>(SI.i.PB);
-
   if(IV) {
 
     SmallVector<IVSRange, 4> vals;
-    for(ImprovedValSetMulti::MapIt it = IV->Map.begin(), itend = IV->Map.end(); it != itend; ++it)
-      vals.push_back(std::make_pair(std::make_pair(it.start(), it.stop()), it.val()));
+    for(ImprovedValSetMulti::MapIt it = IV->Map.begin(), itend = IV->Map.end(); it != itend; ++it) {
 
-    fillCtx(initCtx, vals, 0, LoadSize);
+      if(it.val().isWhollyUnknown())
+	continue;      
+
+      ImprovedVal ReadPtr = Ptr;
+      ReadPtr.Offset += it.start();
+      if(shouldCheckRead(ReadPtr, it.stop() - it.start(), SI.parent))
+	return TLS_MUSTCHECK;
+
+    }
+
+    return TLS_NEVERCHECK;
 
   }
 
-  return shouldCheckRead(SI, Ptr, LoadSize, initCtx);
+  return shouldCheckRead(Ptr, LoadSize, SI.parent) ? TLS_MUSTCHECK : TLS_NEVERCHECK;
   
 }
 
@@ -482,20 +406,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
   else {
 
     // Realloc instruction
-    ShadowValue PtrOp = SI.getCallArgOperand(0);
-    std::pair<ValSetType, ImprovedVal> Ptr;
-    if((!tryGetUniqueIV(PtrOp, Ptr)) || Ptr.first != ValSetTypePB)
-      return TLS_NEVERCHECK;
-    
-    if((!SI.memcpyValues) || (!SI.memcpyValues->size()))
-      return TLS_NEVERCHECK;
-    
-    uint64_t Len = Ptr.second.V.getAllocSize();
-
-    TentativeLoadWalker::Ctx* initCtx = new TentativeLoadWalker::Ctx(Len);
-    fillCtx(initCtx, *SI.memcpyValues, 0, Len);
-    
-    return shouldCheckRead(SI, Ptr.second, Len, initCtx);    
+    return shouldCheckCopy(SI, SI.getCallArgOperand(0), SI.getCallArgOperand(1));
 
   }
 
@@ -518,65 +429,219 @@ bool ShadowInstruction::isCopyInst() {
 
 }
 
-void IntegrationAttempt::findTentativeLoads() {
+static void doTLStoreMerge(ShadowBB* BB) {
+
+  TLMerger V(false);
+  BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
+  V.doMerge();
+
+  BB->u.tlStore = V.newMap;
+
+}
+
+static void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
+
+  TLMerger V(false);
+  IA->visitLiveReturnBlocks(V);
+  V.doMerge();
+  
+  BB->u.tlStore = V.newMap;
+
+}
+
+void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass) {
+
+  if(isRootMainCall()) {
+    BBs[0]->u.tlStore = new TLLocalStore(0);
+    BBs[0]->u.tlStore->allOthersClobbered = false;
+  }
+
+  if(invarInfo->frameSize != -1) {
+    BBs[0]->u.tlStore = BBs[0]->u.tlStore->getWritableFrameList();
+    BBs[0]->u.tlStore->pushStackFrame(this);
+  }
+
+  findTentativeLoadsInLoop(0, commitDisabledHere, secondPass);
+
+}
+
+void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader) {
 
   // Don't repeat search due to sharing:
   if(tentativeLoadsRun)
     return;
 
-  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
+  TLProgress();
 
-    ShadowBB* BB = BBs[i];
+  ShadowLoopInvar* LInfo = L ? invarInfo->LInfo[L] : 0;
+  
+  uint32_t startIdx;
+  if(L)
+    startIdx = LInfo->headerIdx;
+  else
+    startIdx = 0;
+
+  for(uint32_t i = startIdx, ilim = nBBs + BBsOffset; i != ilim && ((!L) || L->contains(getBBInvar(i)->naturalScope)); ++i) {
+
+    ShadowBB* BB = getBB(i);
     if(!BB)
       continue;
-
+    
     if(BB->invar->naturalScope != L) {
 
-      DenseMap<const Loop*, PeelAttempt*>::iterator findit = peelChildren.find(BB->invar->naturalScope);
-      if(findit != peelChildren.end() && findit->second->isTerminated()) {
-	while(i != ilim && findit->first->contains(getBBInvar(BBsOffset + i)->naturalScope))
-	  ++i;
-	--i;
-	continue;
+      ShadowLoopInvar* NewLInfo = invarInfo->LInfo[BB->invar->naturalScope];
+
+      PeelAttempt* LPA;
+      if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
+
+	LPA->Iterations[0]->BBs[0]->u.tlStore = getBB(NewLInfo->preheaderIdx)->u.tlStore;
+	bool commitDisabled = commitDisabledHere || !LPA->isEnabled();
+	uint32_t latchIdx = NewLInfo->latchIdx;
+
+	for(uint32_t j = 0, jlim = LPA->Iterations.size(); j != jlim; ++j) {
+
+	  LPA->Iterations[j]->findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabled, secondPass);
+	  if(j + 1 != jlim)
+	    LPA->Iterations[j + 1]->BBs[0]->u.tlStore = LPA->Iterations[j]->getBB(latchIdx)->u.tlStore;
+
+	}
+	
+      }
+      else {
+
+	// Give header its store:
+	BB->u.tlStore = getBB(NewLInfo->preheaderIdx)->u.tlStore;
+
+	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
+
+	  if(!secondPass) {
+	    // Passing true for the last parameter causes the store to be given to the header from the latch
+	    // and not to any exit blocks. 
+	    findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), false, true);
+	    BB->u.tlStore = getBB(NewLInfo->latchIdx)->u.tlStore;
+	  }
+	  findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), true);
+
+	}
+	else {
+
+	  findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), secondPass);
+
+	}
+
       }
 
+      while(i != ilim && BB->invar->naturalScope->contains(getBBInvar(i)->naturalScope))
+	++i;
+      --i;
+      continue;
+
     }
+
+    if(i != startIdx) {
+
+      doTLStoreMerge(BB);
+
+    }
+
+    walkPathConditions(BB, !commitDisabledHere);
+
+    bool brokeOnUnreachableCall = false;
 
     for(uint32_t j = 0, jlim = BB->invar->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction& SI = BB->insts[j];
       
-      if(!(inst_is<LoadInst>(&SI) || SI.isCopyInst()))
-	continue;
-
       // Known always good (as opposed to TLS_NOCHECK, resulting from a previous tentative loads run?)
       if(SI.isThreadLocal == TLS_NEVERCHECK)
 	continue;
 
-      SI.isThreadLocal = shouldCheckLoad(SI);
+      // Known that we must check when this block is reached from a loop preheader?
+      // If so whether it is tentative from the latch is irrelevant.
+      if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
+	continue;
 
-      TLProgress();
+      if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+	SI.isThreadLocal = shouldCheckLoad(SI);
+	if(SI.isThreadLocal == TLS_MUSTCHECK)
+	  yieldState = BARRIER_HERE;
+      }
+
+      updateTLStore(&SI, !commitDisabledHere);
+
+      if(inst_is<CallInst>(&SI)) {
+
+	if(InlineAttempt* IA = getInlineAttempt(&SI)) {
+
+	  IA->BBs[0]->u.tlStore = BB->u.tlStore;
+	  IA->findTentativeLoads(commitDisabledHere || !IA->isEnabled(), secondPass);
+	  doTLCallMerge(BB, IA);
+
+	  if(!BB->u.tlStore) {
+
+	    // Call exit unreachable
+	    brokeOnUnreachableCall = true;
+	    break;
+
+	  }	    
+
+	}
+
+      }
 
     }
-    
-  }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+    if(!BB->u.tlStore) {
 
-    it->second->findTentativeLoads();
+      // Block doesn't have a store due to a never-returns call.
+      // Can't have any successors either in this case.
 
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isTerminated())
+      release_assert(brokeOnUnreachableCall);
       continue;
 
-    for(uint32_t i = 0; i < it->second->Iterations.size(); ++i)
-      it->second->Iterations[i]->findTentativeLoads();
+    }
 
+    // Give a store copy to each successor block that needs it. If latchToHeader is true,
+    // ignore branches to outside the current loop; otherwise ignore any latch->header edge.
+
+    for(uint32_t i = 0; i < BB->invar->succIdxs.size(); ++i) {
+
+      if(!BB->succsAlive[i])
+	continue;
+      
+      ShadowBBInvar* SuccBBI = getBBInvar(BB->invar->succIdxs[i]);
+      if(L) {
+
+	if(L != this->L && latchToHeader && !L->contains(SuccBBI->naturalScope))
+	  continue;
+	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == LInfo->headerIdx) {
+	  release_assert(BB->invar->idx == LInfo->latchIdx);
+	  continue;
+	}
+
+      }
+
+      // Create a store reference for each live successor
+      ++BB->u.tlStore->refCount;
+
+    }
+
+    // Drop stack allocations here.
+
+    if(BB->invar->succIdxs.size() == 0) {
+
+      if(invarInfo->frameSize != -1) {
+	BB->u.tlStore = BB->u.tlStore->getWritableFrameList();
+	BB->u.tlStore->popStackFrame();
+      }
+
+    }
+
+    // Drop the reference belonging to this block.
+
+    if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
+      BB->u.tlStore->dropReference();
+    
   }
 
 }
@@ -605,12 +670,12 @@ void IntegrationAttempt::resetTentativeLoads() {
 
 }
 
-void IntegrationAttempt::rerunTentativeLoads() {
+void InlineAttempt::rerunTentativeLoads() {
 
   errs() << "Finding tentative loads";
 
   resetTentativeLoads();
-  findTentativeLoads();
+  findTentativeLoads(false, false);
 
   errs() << "\n";
 

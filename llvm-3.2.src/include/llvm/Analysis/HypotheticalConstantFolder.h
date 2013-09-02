@@ -1288,13 +1288,11 @@ protected:
 
   // Tentative load determination
   
-  ThreadLocalState shouldCheckRead(ShadowInstruction& Start, ImprovedVal& Ptr, uint64_t Size, void* initCtx);
-  ThreadLocalState shouldCheckCopy(ShadowInstruction& SI, ShadowValue& PtrOp, ShadowValue& LenSV);
+  ThreadLocalState shouldCheckCopy(ShadowInstruction& SI, ShadowValue PtrOp, ShadowValue LenSV);
   ThreadLocalState shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
   ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
-  void findTentativeLoads();
+  void findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
   void resetTentativeLoads();
-  void rerunTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V);
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
@@ -1691,6 +1689,10 @@ class InlineAttempt : public IntegrationAttempt {
   BasicBlock* getSubBlockForInst(uint32_t, uint32_t);
 
   void tryKillStores(bool commitDisabledHere, bool disableWrites);
+
+  void findTentativeLoads(bool commitDisabledHere, bool secondPass);
+  void rerunTentativeLoads();
+
   
 };
 

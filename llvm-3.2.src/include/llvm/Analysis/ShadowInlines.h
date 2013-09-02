@@ -616,6 +616,22 @@ struct HalfOpenNoMerge {
 
 };
 
+struct HalfOpenWithMerge {
+
+  static inline bool startLess(const uint64_t &x, const uint64_t &a) {
+    return x < a;
+  }
+
+  static inline bool stopLess(const uint64_t &b, const uint64_t &x) {
+    return b <= x;
+  }
+
+  static inline bool adjacent(const uint64_t &a, const uint64_t &b) {
+    return a == b;
+  }
+
+};
+
 struct ImprovedValSetMulti : public ImprovedValSet {
 
   typedef IntervalMap<uint64_t, ImprovedValSetSingle, IntervalMapImpl::NodeSizer<uint64_t, ImprovedValSetSingle>::LeafSize, HalfOpenNoMerge> MapTy;
@@ -998,13 +1014,77 @@ struct DSEStoreExtraState {
 
 };
 
+// Define types for the TL store:
+
+typedef IntervalMap<uint64_t, bool, IntervalMapImpl::NodeSizer<uint64_t, bool>::LeafSize, HalfOpenWithMerge> TLMapTy;
+
+class TLMapPointer;
+extern TLMapPointer TLEmptyMapPtr;
+class TLStoreExtraState;
+
+struct TLMapPointer {
+
+  TLMapTy* M;
+
+TLMapPointer() : M(0) {}
+TLMapPointer(TLMapTy* _M) : M(_M) {}
+TLMapPointer(const TLMapPointer& other) : M(other.M) {}
+
+  static TLMapPointer& getBaseStoreFor(ShadowValue V) {
+
+    // Like DSE, objects all have the same 'base value':
+    // an empty intervalmap representing all bytes of all objects
+    // in the tentative state.
+    
+    return TLEmptyMapPtr;
+
+  }
+
+  static bool LT(const TLMapPointer* a, const TLMapPointer* b) {
+
+    return a->M < b->M;
+
+  }
+
+  static bool EQ(const TLMapPointer* a, const TLMapPointer* b) {
+
+    return a->M == b->M;
+
+  }
+
+  static LocalStoreMap<TLMapPointer, TLStoreExtraState>* getMapForBlock(ShadowBB* BB);
+  bool isValid() { return !!M; }
+  void checkMergedResult(ShadowValue&) { }
+  TLMapPointer getReadableCopy();
+  void dropReference();
+  void print(raw_ostream& RSO, bool brief);
+  static void mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, 
+			  ShadowValue& V, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
+  
+};
+
+struct TLStoreExtraState {
+
+  void copyFrom(const TLStoreExtraState& other) {  }
+
+  static void doMerge(LocalStoreMap<TLMapPointer, TLStoreExtraState>* toMap, 
+		      SmallVector<LocalStoreMap<TLMapPointer, TLStoreExtraState>*, 4>::iterator fromBegin, 
+		      SmallVector<LocalStoreMap<TLMapPointer, TLStoreExtraState>*, 4>::iterator fromEnd,
+		      bool verbose) { }
+
+  static void dump(LocalStoreMap<TLMapPointer, TLStoreExtraState>*) { }
+
+};
+
 #include "SharedTree.h"
 
 typedef LocalStoreMap<LocStore, OrdinaryStoreExtraState> OrdinaryLocalStore;
 typedef LocalStoreMap<DSEMapPointer, DSEStoreExtraState> DSELocalStore;
+typedef LocalStoreMap<TLMapPointer, TLStoreExtraState> TLLocalStore;
 
 typedef MergeBlockVisitor<LocStore, OrdinaryStoreExtraState> OrdinaryMerger;
 typedef MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState> DSEMerger;
+typedef MergeBlockVisitor<TLMapPointer, TLStoreExtraState> TLMerger;
 
 struct ShadowBB {
 
@@ -1017,6 +1097,7 @@ struct ShadowBB {
   union {
     OrdinaryLocalStore* localStore;
     DSELocalStore* dseStore;
+    TLLocalStore* tlStore;
   } u;
 
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1> committedBlocks;
@@ -1057,6 +1138,7 @@ struct ShadowBB {
   void clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose);
   BasicBlock* getCommittedBlockAt(uint32_t);
   DSEMapPointer* getWritableDSEStore(ShadowValue O);
+  TLMapPointer* getWritableTLStore(ShadowValue O);
 
 };
 
