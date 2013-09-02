@@ -1322,8 +1322,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
     StructType* SType = StructType::get(emitBB->getContext(), Types, /*isPacked=*/true);
     Constant* CS = ConstantStruct::get(SType, Copy);
-    GlobalVariable* GCS = new GlobalVariable(PointerType::getUnqual(SType), true, 
-					     GlobalValue::InternalLinkage, CS);
+    GlobalVariable* GCS = new GlobalVariable(*(emitBB->getParent()->getParent()), SType, 
+					     true, GlobalValue::InternalLinkage, CS);
     Constant* GCSPtr = ConstantExpr::getBitCast(GCS, BytePtr);
 
     Type* Int64Ty = Type::getInt64Ty(emitBB->getContext());

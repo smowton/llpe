@@ -766,6 +766,10 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
   if(V.getType()->isVoidTy())
     return false;
 
+  // This indicates a member of a disabled loop that hasn't been analysed.
+  if(!V.u.I->i.PB)
+    return false;
+
   if(val_is<LoadInst>(V) || val_is<MemTransferInst>(V)) {
     
     if(V.u.I->isThreadLocal == TLS_MUSTCHECK)
@@ -776,7 +780,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
       
     InlineAttempt* IA = getInlineAttempt(V.u.I);
     if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
-      return V.u.I->i.PB && !V.u.I->i.PB->isWhollyUnknown();
+      return !V.u.I->i.PB->isWhollyUnknown();
 
   }
   else if(val_is<PHINode>(V)) {

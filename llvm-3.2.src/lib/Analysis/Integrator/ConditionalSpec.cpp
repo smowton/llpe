@@ -1740,12 +1740,38 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
   Value* thisCheck = 0;
   for(uint32_t j = 0, jlim = IVS->Values.size(); j != jlim; ++j) {
 
-    Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
     Value* newCheck;
-    if(thisVal->getType()->isFloatingPointTy())
-      newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, "check");
-    else
-      newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, "check");
+
+    if(IVS->SetType == ValSetTypePB && 
+       IVS->Values[j].Offset == LLONG_MAX && 
+       IVS->Values[j].V.getAllocSize() != ULONG_MAX) {
+
+      ImprovedVal BaseVal = IVS->Values[j];
+      BaseVal.Offset = 0;
+      ImprovedVal LimitVal = IVS->Values[j];
+      LimitVal.Offset = IVS->Values[j].V.getAllocSize();
+
+      Value* Base = trySynthVal(0, realInst->getType(), IVS->SetType, BaseVal, emitBB);
+      release_assert(Base && "Couldn't synth base");
+      Value* Limit = trySynthVal(0, realInst->getType(), IVS->SetType, LimitVal, emitBB);
+      release_assert(Base && "Couldn't synth limit");
+     
+      Value* BaseCheck = new ICmpInst(*emitBB, CmpInst::ICMP_UGE, realInst, Base, "checkbase");
+      Value* LimitCheck = new ICmpInst(*emitBB, CmpInst::ICMP_ULT, realInst, Limit, "checklimit");
+      newCheck = BinaryOperator::CreateAnd(BaseCheck, LimitCheck, "qptrcheck", emitBB);
+      
+    }
+    else {
+
+      Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
+      assert(thisVal && "Couldn't synthesise value for check?");
+
+      if(thisVal->getType()->isFloatingPointTy())
+	newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, "check");
+      else
+	newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, "check");
+
+    }
 
     if(thisCheck)
       thisCheck = BinaryOperator::CreateOr(newCheck, thisCheck, "", emitBB);
@@ -1826,7 +1852,7 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_
   // i is the index of the first non-PHI at this point.
   BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, i);
 
-  BranchInst::Create(successTarget, failTarget, emitBB); 
+  BranchInst::Create(successTarget, failTarget, prevCheck, emitBB); 
 
   return emitIt;
 

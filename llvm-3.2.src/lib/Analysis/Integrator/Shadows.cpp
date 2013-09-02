@@ -126,7 +126,7 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialiser
 
     if(it->isConstant()) {
       shadowGlobals[i].store.store = 0;
-      shadowGlobals[i].storeSize = 0;
+      shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(shadowGlobals[i].G->getType());
       continue;
     }
 
@@ -414,7 +414,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   for(BasicBlock::iterator it = F.getEntryBlock().begin(), itend = F.getEntryBlock().end(); it != itend && isa<AllocaInst>(it); ++it)
     ++RetInfo.frameSize;
 
-  if(!RetInfo.frameSize) {
+  // "&& RootIA" checks whether we're inside the initial context creation, in which case we should
+  // allocate a frame whether or not main can ever allocate to avoid the frame index underflowing
+  // in some circumstances.
+  if((!RetInfo.frameSize) && RootIA) {
 
     // Magic value indicating the function will never alloca anything and we can skip all frame processing.
     RetInfo.frameSize = -1;
