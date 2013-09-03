@@ -87,6 +87,8 @@ static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore
 static cl::opt<bool> UseDSA("int-use-dsa");
 static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
 static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
+static cl::opt<bool> DumpDSE("int-dump-dse");
+static cl::opt<bool> DumpTL("int-dump-tl");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1567,12 +1569,29 @@ static Value* getWrittenPointer(Instruction* I) {
 }
 */
 
+namespace llvm {
+
+  void DSEDump(IntegrationAttempt*);
+  void TLDump(IntegrationAttempt*);
+
+}
+
 void IntegrationHeuristicsPass::commit() {
 
-  if(!SkipTL)
+  if(!SkipTL) {
     RootIA->rerunTentativeLoads();
-  if(!SkipDIE)
+    if(DumpTL) {
+      TLDump(RootIA);
+      exit(0);
+    }
+  }
+  if(!SkipDIE) {
     rerunDSEAndDIE();
+    if(DumpDSE) {
+      DSEDump(RootIA);
+      exit(0);
+    }
+  }
 
   RootIA->addCheckpointFailedBlocks();
 

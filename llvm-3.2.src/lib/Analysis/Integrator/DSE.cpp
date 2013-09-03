@@ -692,6 +692,15 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       if(disableWrites && !(inst_is<LoadInst>(I) || inst_is<MemTransferInst>(I)))
 	continue;
 
+      // This will be a branch to unspecialised code in the output program;
+      // assume store is needed if it is live over this point.
+      if(requiresRuntimeCheck(ShadowValue(I))) {
+
+	setAllNeeded(BB->u.dseStore);
+	BB->u.dseStore = BB->u.dseStore->getEmptyMap();	
+
+      }
+
       if(inst_is<MemIntrinsic>(I)) {
 	
 	ConstantInt* SizeC = cast_or_null<ConstantInt>(getConstReplacement(I->getCallArgOperand(2)));
@@ -780,6 +789,11 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	      
 	      DSEMapPointer* store = BB->getWritableDSEStore(ShadowValue(I));
 	      store->A = new TrackedAlloc(I);
+
+	    }
+	    else if(findit->second == SF_VACOPY) {
+
+	      DSEHandleRead(I->getCallArgOperand(1), 24, BB);
 
 	    }
 	      
