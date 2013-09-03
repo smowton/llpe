@@ -45,11 +45,8 @@ TLLocalStore* TLMapPointer::getMapForBlock(ShadowBB* BB) {
 TLMapPointer TLMapPointer::getReadableCopy() {
 
   TLMapTy* newMap = new TLMapTy(TLMapAllocator);
-  for(TLMapTy::iterator it = M->begin(), itend = M->end(); it != itend;) {
-
+  for(TLMapTy::iterator it = M->begin(), itend = M->end(); it != itend; ++it)
     newMap->insert(it.start(), it.stop(), *it);
-
-  }
 
   return TLMapPointer(newMap);
 
@@ -130,6 +127,10 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   if(!contextEnabled)
     return;
 
+  // If allOthersClobbered is false then no object is tentative.
+  if(!BB->u.tlStore->allOthersClobbered)
+    return;
+
   std::pair<ValSetType, ImprovedVal> PtrTarget;
   if(!tryGetUniqueIV(GoodPtr, PtrTarget))
     return;
@@ -137,8 +138,60 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   if(PtrTarget.first != ValSetTypePB)
     return;
 
-  TLMapPointer* store = BB->getWritableTLStore(PtrTarget.second.V);
-  store->M->insert(PtrTarget.second.Offset + Offset, PtrTarget.second.Offset + Offset + Len, true);
+  SmallVector<std::pair<uint64_t, uint64_t>, 1> addRanges;
+
+  TLMapPointer* store = BB->u.tlStore->getReadableStoreFor(PtrTarget.second.V);
+  uint64_t start = PtrTarget.second.Offset + Offset;
+  uint64_t stop = PtrTarget.second.Offset + Offset + Len;
+
+  if(!store) {
+   
+    addRanges.push_back(std::make_pair(start, stop));
+
+  }
+  else {
+
+    TLMapTy::iterator it = store->M->find(start), itend = store->M->end();
+
+    // Gap at left?
+
+    if(it.start() > start)
+      addRanges.push_back(std::make_pair(start, it.start()));
+
+    for(; it != itend && it.start() < stop; ++it) {
+    
+      // Gap to the right of this extent?
+      if(it.stop() < stop) {
+
+	TLMapTy::iterator nextit = it;
+	++nextit;
+
+	uint64_t gapend;
+	if(nextit == itend)
+	  gapend = stop;
+	else
+	  gapend = std::min(stop, nextit.start());
+
+	if(it.stop() != gapend)
+	  addRanges.push_back(std::make_pair(it.stop(), gapend));
+
+      }
+
+    }
+
+  }
+  
+  if(!addRanges.empty()) {
+
+    TLMapPointer* writeStore = BB->getWritableTLStore(PtrTarget.second.V);
+    for(SmallVector<std::pair<uint64_t, uint64_t>, 1>::iterator it = addRanges.begin(),
+	  itend = addRanges.end(); it != itend; ++it) {
+
+      writeStore->M->insert(it->first, it->second, true);
+
+    }
+
+  }
 
 }
 
@@ -287,7 +340,9 @@ static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
     return BB->u.tlStore->allOthersClobbered;
 
   TLMapTy::iterator it = Map->M->find(Ptr.Offset);
-  return (it != Map->M->end() && ((int64_t)it.start()) <= Ptr.Offset && ((int64_t)it.stop()) > Ptr.Offset + ((int64_t)Size));
+  bool coveredByMap = (it != Map->M->end() && ((int64_t)it.start()) <= Ptr.Offset && ((int64_t)it.stop()) >= Ptr.Offset + ((int64_t)Size));
+
+  return !coveredByMap;
     
 }
 

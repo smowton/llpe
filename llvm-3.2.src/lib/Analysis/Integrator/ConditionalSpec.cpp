@@ -1529,6 +1529,11 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
   ShadowBB* InstBB = getBB(*instBlock);
   ShadowInstruction* SI = &InstBB->insts[instIdx];
 
+  // If we're called from a context that has loop predecessors then the
+  // value may only be checked on some iterations:
+  if(!requiresRuntimeCheck(ShadowValue(SI)))
+    return;
+
   ShadowBB* PredBB = getBB(*predBlock);
   if(!PredBB)
     return;
