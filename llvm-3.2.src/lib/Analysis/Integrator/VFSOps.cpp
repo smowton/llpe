@@ -107,6 +107,8 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
   CallInst* CI = cast<CallInst>(SI->invar->I);
+
+
   
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
     const FunctionType *FT = SysOpen->getFunctionType();

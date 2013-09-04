@@ -106,6 +106,7 @@ static void markAllObjectsTentative(ShadowBB* BB) {
 
   BB->u.tlStore = BB->u.tlStore->getEmptyMap();
   BB->u.tlStore->allOthersClobbered = true;
+  BB->IA->yieldState = BARRIER_HERE;
 
 }
 
@@ -122,7 +123,7 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   // }
   // %1 = load %y
   
-  // Here the load %y must be checked, because the load %x cannot be checked.   
+  // Here the load %y must be checked, because the load %x cannot be checked.
 
   if(!contextEnabled)
     return;
@@ -153,27 +154,36 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
 
     TLMapTy::iterator it = store->M->find(start), itend = store->M->end();
 
-    // Gap at left?
+    if(it == itend || it.start() >= stop) {
 
-    if(it.start() > start)
-      addRanges.push_back(std::make_pair(start, it.start()));
+      addRanges.push_back(std::make_pair(start, stop));
 
-    for(; it != itend && it.start() < stop; ++it) {
+    }
+    else {
+
+      // Gap at left?
+
+      if(it.start() > start)
+	addRanges.push_back(std::make_pair(start, it.start()));
+
+      for(; it != itend && it.start() < stop; ++it) {
     
-      // Gap to the right of this extent?
-      if(it.stop() < stop) {
+	// Gap to the right of this extent?
+	if(it.stop() < stop) {
 
-	TLMapTy::iterator nextit = it;
-	++nextit;
+	  TLMapTy::iterator nextit = it;
+	  ++nextit;
 
-	uint64_t gapend;
-	if(nextit == itend)
-	  gapend = stop;
-	else
-	  gapend = std::min(stop, nextit.start());
+	  uint64_t gapend;
+	  if(nextit == itend)
+	    gapend = stop;
+	  else
+	    gapend = std::min(stop, nextit.start());
 
-	if(it.stop() != gapend)
-	  addRanges.push_back(std::make_pair(it.stop(), gapend));
+	  if(it.stop() != gapend)
+	    addRanges.push_back(std::make_pair(it.stop(), gapend));
+
+	}
 
       }
 
@@ -335,9 +345,36 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
 static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
 
+  // Read from null?
+  if(val_is<ConstantPointerNull>(Ptr.V))
+    return false;
+
+  // Read from constant global?
+  if(Ptr.V.isGV() && Ptr.V.u.GV->G->isConstant())
+    return false;
+
+  //bool verbose = BB->IA->SeqNumber == 75 && BB->invar->BB->getName() == "9";
+  bool verbose = false;
+
+  if(verbose)
+    errs() << "Read from " << itcache(Ptr.V) << ":\n";
+
   TLMapPointer* Map = BB->u.tlStore->getReadableStoreFor(Ptr.V);
-  if(!Map)
+  if(!Map) {
+    if(verbose)
+      errs() << "Whole map: " << BB->u.tlStore->allOthersClobbered << "\n";
     return BB->u.tlStore->allOthersClobbered;
+  }
+
+  if(verbose) {
+
+    for(TLMapTy::iterator it = Map->M->begin(), itend = Map->M->end(); it != itend; ++it) {
+
+      errs() << it.start() << "-" << it.stop() << "\n";
+
+    }
+
+  }
 
   TLMapTy::iterator it = Map->M->find(Ptr.Offset);
   bool coveredByMap = (it != Map->M->end() && ((int64_t)it.start()) <= Ptr.Offset && ((int64_t)it.stop()) >= Ptr.Offset + ((int64_t)Size));
@@ -363,7 +400,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, Shad
   if((!SI.memcpyValues) || (!SI.memcpyValues->size()))
     return TLS_NEVERCHECK;
 
-  // Create an initial context that marks as "don't care" bytes that are wholly unknown at the copy.
+  // Check each concrete value that was successfully read during information prop
   for(SmallVector<IVSRange, 4>::iterator it = SI.memcpyValues->begin(),
 	itend = SI.memcpyValues->end(); it != itend; ++it) {
 
@@ -377,7 +414,8 @@ ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, Shad
 
   }
 
-  return TLS_NEVERCHECK;
+  // No value requires a runtime check
+  return TLS_NOCHECK;
     
 }
 
@@ -402,11 +440,11 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, 
 
     }
 
-    return TLS_NEVERCHECK;
+    return TLS_NOCHECK;
 
   }
 
-  return shouldCheckRead(Ptr, LoadSize, SI.parent) ? TLS_MUSTCHECK : TLS_NEVERCHECK;
+  return shouldCheckRead(Ptr, LoadSize, SI.parent) ? TLS_MUSTCHECK : TLS_NOCHECK;
   
 }
 
@@ -452,7 +490,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
   }
   else if(inst_is<MemTransferInst>(&SI)) {
 
-    ShadowValue PtrOp = SI.getCallArgOperand(0);
+    ShadowValue PtrOp = SI.getCallArgOperand(1);
     ShadowValue Len = SI.getCallArgOperand(2);
 
     return shouldCheckCopy(SI, PtrOp, Len);
@@ -611,15 +649,15 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       if(SI.isThreadLocal == TLS_NEVERCHECK)
 	continue;
 
-      // Known that we must check when this block is reached from a loop preheader?
-      // If so whether it is tentative from the latch is irrelevant.
-      if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
-	continue;
-
       if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+
+	// Known that we must check when this block is reached from a loop preheader?
+	// If so whether it is tentative from the latch is irrelevant.
+	if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
+	  continue;
+
 	SI.isThreadLocal = shouldCheckLoad(SI);
-	if(SI.isThreadLocal == TLS_MUSTCHECK)
-	  yieldState = BARRIER_HERE;
+
       }
 
       updateTLStore(&SI, !commitDisabledHere);

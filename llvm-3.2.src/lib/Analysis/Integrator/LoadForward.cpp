@@ -908,6 +908,9 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 	if(writeWholeObject) {
 	  M->Underlying = 0;
 	}
+	else if(u.localStore->allOthersClobbered) {
+	  M->Underlying = new ImprovedValSetSingle(ValSetTypeUnknown, true);
+	}
 	else {
 	  M->Underlying = V.getBaseStore().store->getReadableCopy();
 	  LFV3(errs() << "Create new store with multi based on " << M->Underlying << "\n");
@@ -2192,11 +2195,13 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
     initVal = new ImprovedValSetSingle(ValSetTypeUnknown, true);
   }
 
-  if(trackAlloc) {
+  if(trackAlloc || SI->parent->u.localStore->allOthersClobbered) {
 
     // malloc and realloc instructions should also be inserted into the path store,
     // as a flag that the allocation exists here. Their baseStore should be deallocated,
     // to indicate that on other paths the object does not exist.
+
+    // Insert the initialiser if objects are default clobbered, too.
 
     SI->store.store = new ImprovedValSetSingle(ValSetTypeDeallocated, false);
    

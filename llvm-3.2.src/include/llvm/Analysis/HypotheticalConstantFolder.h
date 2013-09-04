@@ -1841,7 +1841,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  IntegratorTag* searchFunctions(IntegratorTag* thisTag, std::string&, IntegratorTag*& startAt);
 
- GlobalVariable* getStringArray(std::string& bytes, Module& M);
+ GlobalVariable* getStringArray(std::string& bytes, Module& M, bool addNull=false);
 
  uint32_t findBlock(ShadowFunctionInvar* SFI, BasicBlock* BB);
  uint32_t findBlock(ShadowFunctionInvar* SFI, StringRef name);

@@ -42,6 +42,15 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
   if(IAI->dieStatus != INSTSTATUS_ALIVE)
     return "red";
 
+  if(ShadowInstruction* SI = SV.getInst()) {
+
+    if(GlobalIHP->barrierInstructions.count(SI)) {
+      textColour = "white";
+      return "black";
+    }
+
+  }
+
   if(val_is<CallInst>(SV)) {
     if(inlineChildren.find(SV.getInst()) != inlineChildren.end())
       return "yellow";
@@ -58,15 +67,6 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
       return "darkgreen";
   }
 
-  if(ShadowInstruction* SI = SV.getInst()) {
-
-    if(GlobalIHP->barrierInstructions.count(SI)) {
-      textColour = "white";
-      return "black";
-    }
-
-  }
-  
   return "white";
 
 }
@@ -280,7 +280,7 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
 
 	GlobalVariable* GV = cast<GlobalVariable>(it->val);
 	ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
-	Out << "\"" << CDA->getAsString() << "\"";
+	Out << "\"" << CDA->getAsCString() << "\"";
 
       }
       else {

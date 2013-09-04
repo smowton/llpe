@@ -2428,7 +2428,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       }
     case PathConditionTypeString:
       {
-	GlobalVariable* NewGV = getStringArray(assumeStr, *IA->F.getParent());
+	GlobalVariable* NewGV = getStringArray(assumeStr, *IA->F.getParent(), /*addNull=*/true);
 	assumeC = NewGV;
 	// Register the new global:
 	shadowGlobals[newGVIndex].G = NewGV;

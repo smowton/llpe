@@ -265,6 +265,16 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
     for(uint32_t j = 0; PI != PE; ++PI, ++j) {
 
       SBB.predIdxs[j] = BBIndices[*PI];
+      
+      if(SBB.predIdxs[j] > i) {
+
+	if((!SBB.naturalScope) || SBB.BB != SBB.naturalScope->getHeader()) {
+
+	  errs() << "Warning: block " << SBB.BB->getName() << " in " << F.getName() << " has predecessor " << (*PI)->getName() << " that comes after it topologically, but this is not a loop header. The program is not in well-nested natural loop form.\n";
+
+	}
+
+      }
 
     }
 
