@@ -31,21 +31,58 @@ static void DIEProgress() {
 
 }
 
+static bool isAllocationInstruction(ShadowValue V) {
+
+  if(val_is<AllocaInst>(V))
+    return true;
+
+  if(val_is<CallInst>(V)) {
+
+    ShadowInstruction* SI = V.getInst();
+
+    Function* F = getCalledFunction(SI);
+    DenseMap<Function*, specialfunctions>::iterator findit;
+
+    if((findit = SpecialFunctionMap.find(F)) != SpecialFunctionMap.end()) {
+
+      switch(findit->second) {
+
+      case SF_REALLOC:
+      case SF_MALLOC:
+	return true;
+
+      default:
+	break;
+
+      }
+
+    }
+
+  }
+
+  return false;
+
+}
+
 bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
   if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+
     if(getInlineAttempt(I))
       return true;
     if(forwardableOpenCalls.count(CI))
       return true;
+    if(isAllocationInstruction(ShadowValue(I)))
+       return true;
+
     return false;
+
   }
 
   switch(I->invar->I->getOpcode()) {
   default:
     return true;
   case Instruction::VAArg:
-  case Instruction::Alloca:
   case Instruction::Invoke:
   case Instruction::Store:
   case Instruction::Br:
@@ -236,7 +273,7 @@ static bool _willBeDeleted(ShadowValue V) {
     return false;
   }
 
-  if(val_is<AllocaInst>(V))
+  if(isAllocationInstruction(V))
     return dieStatus == (INSTSTATUS_DEAD | INSTSTATUS_UNUSED_WRITER);
   else
     return dieStatus != INSTSTATUS_ALIVE;
@@ -313,10 +350,8 @@ public:
     if(!UserI)
       return;
 
-    if(CallInst* CI = dyn_cast_inst<CallInst>(UserI)) {
-
-      if(isa<MemIntrinsic>(CI) && !requiresRuntimeCheck(CI))
-	return;
+    CallInst* CI;
+    if((CI = dyn_cast_inst<CallInst>(UserI)) && !isa<MemIntrinsic>(CI)) {
 
       if(UserI->parent->IA->isResolvedVFSCall(CI)) {
 
@@ -429,6 +464,8 @@ bool InlineAttempt::isOwnCallUnused() {
 
 bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 
+  bool verbose = false;
+
   if(val_is<ReturnInst>(V)) {
     
     if(F.getType()->isVoidTy())
@@ -442,20 +479,50 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
     if(requiresRuntimeCheck(V))
       return false;
 
-
-      return false;
-
-    DIVisitor DIV(V);
-
-    // At the moment only FDs have indirect users like this. Check that each is dead:
+    // At the moment only FDs and allocations have indirect users like this.
+    // These are instructions that don't directly use this instruction
+    // but will do in the final committed program. Check that each is dead:
     if(ShadowInstruction* I = V.getInst()) {
+
       for(uint32_t i = 0; i < I->indirectDIEUsers.size(); ++i) {
-	if(!willBeDeleted(I->indirectDIEUsers[i]))
+
+	if(!willBeDeleted(I->indirectDIEUsers[i])) {
+
+	  if(verbose) {
+	    errs() << itcache(V) << " used by " << itcache(I->indirectDIEUsers[i]);
+	    if(IntegrationAttempt* IA = I->indirectDIEUsers[i].getCtx()) {
+
+	      errs() << " in context " << IA->SeqNumber;
+
+	    }
+	    errs() << "\n";
+	  }
+
 	  return false;
+
+	}
+
       }
+
+      if(InlineAttempt* IA = getInlineAttempt(I)) {
+
+	if(IA->hasFailedReturnPath())
+	  return false;
+
+      }
+
     }
 
+    DIVisitor DIV(V);
     visitUsers(V, DIV);
+    
+    if(verbose) {
+      if(DIV.maybeLive)
+	errs() << itcache(V) << " used directly\n";
+      else
+	errs() << itcache(V) << " not used\n";
+    }
+    
 
     return !DIV.maybeLive;
 

@@ -1311,8 +1311,11 @@ template<class X> inline bool val_is(ShadowValue V) {
     return isa<X>(V.u.GV->G);
   case SHADOWVAL_INST:
     return inst_is<X>(V.u.I);
-  case SHADOWVAL_ARG:
+  case SHADOWVAL_ARG: {
+    if(!V.u.A->invar)
+      return false;
     return isa<X>(V.u.A->invar->A);
+  }
   default:
     return false;
   }

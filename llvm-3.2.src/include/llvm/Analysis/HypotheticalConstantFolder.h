@@ -1856,6 +1856,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  bool requiresRuntimeCheck(ShadowValue V);
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
+ 
+ void releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB);
+ void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
 

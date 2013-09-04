@@ -1578,6 +1578,9 @@ namespace llvm {
 
 void IntegrationHeuristicsPass::commit() {
 
+  RootIA->addCheckpointFailedBlocks();
+  mustRecomputeDIE = true;
+
   if(!SkipTL) {
     RootIA->rerunTentativeLoads();
     if(DumpTL) {
@@ -1592,8 +1595,6 @@ void IntegrationHeuristicsPass::commit() {
       exit(0);
     }
   }
-
-  RootIA->addCheckpointFailedBlocks();
 
   errs() << "Writing specialised module";
 

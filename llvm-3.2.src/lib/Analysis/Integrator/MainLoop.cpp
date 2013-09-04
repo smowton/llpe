@@ -43,12 +43,14 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
       if(IVMatchesVal(Op, SArg->i.PB))
 	continue;
 
+      releaseIndirectUse(ShadowValue(SArg), SArg->i.PB);
       deleteIV(SArg->i.PB);
 
     }
 
     anyChange = true;
     copyImprovedVal(Op, SArg->i.PB);
+    noteIndirectUse(ShadowValue(SArg), SArg->i.PB);
 
   }
 

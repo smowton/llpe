@@ -39,7 +39,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
       return "orangered";
   }
 
-  if(IAI->dieStatus != INSTSTATUS_ALIVE)
+  if(willBeDeleted(SV))
     return "red";
 
   if(ShadowInstruction* SI = SV.getInst()) {

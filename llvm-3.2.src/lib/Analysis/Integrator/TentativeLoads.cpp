@@ -282,11 +282,13 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
   }
   else if(StoreInst* StoreI = dyn_cast_inst<StoreInst>(SI)) {
-    
-    if(StoreI->isVolatile())
-      markAllObjectsTentative(SI->parent);
-    else
-      markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
+
+    // I don't think there's a need to regard a volatile /store/ as a yield point, as this is *outgoing* interthread communication
+    // if it communication at all. Compare pthread_unlock which is not a yield point to pthread_lock, which is.
+    //if(StoreI->isVolatile())
+    //markAllObjectsTentative(SI->parent);
+    //else
+    markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
   else if(inst_is<CallInst>(SI)) {
@@ -887,7 +889,7 @@ bool IntegrationAttempt::containsTentativeLoads() {
 
       if(isa<LoadInst>(SII.I) || isa<MemTransferInst>(SII.I)) {
 
-	if(SI->isThreadLocal != TLS_NEVERCHECK)
+	if(SI->isThreadLocal == TLS_MUSTCHECK)
 	  return true;
 
       }
@@ -950,7 +952,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
       if(predBBI->naturalScope != L && ((!L) || L->contains(predBBI->naturalScope))) {
 
 	PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope));
-	if(LPA && (!LPA->isEnabled()) && LPA->containsTentativeLoads())
+	if(LPA && LPA->isTerminated() && (!LPA->isEnabled()) && LPA->containsTentativeLoads())
 	  return !V.u.I->i.PB->isWhollyUnknown();
 
       }

@@ -1866,6 +1866,54 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
 }
 
+static bool willUseIndirectly(ImprovedValSet* IV) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV)) {
+
+    if((IVS->SetType == ValSetTypeFD || IVS->SetType == ValSetTypePB) && IVS->Values.size() == 1)
+      return true;
+
+  }
+
+  return false;
+
+}
+
+void llvm::releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB) {
+
+  if(willUseIndirectly(OldPB)) {
+
+    ImprovedValSetSingle* OldIVS = cast<ImprovedValSetSingle>(OldPB);
+    if(ShadowInstruction* Used = OldIVS->Values[0].V.getInst()) {
+	
+      SmallVector<ShadowValue, 1>::iterator findit = 
+	std::find(Used->indirectDIEUsers.begin(), Used->indirectDIEUsers.end(), V);
+      if(findit != Used->indirectDIEUsers.end())
+	Used->indirectDIEUsers.erase(findit);
+
+    }
+
+  }
+
+}
+
+void llvm::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
+
+  if(willUseIndirectly(NewPB)) {
+	
+    ImprovedValSetSingle* NewIVS = cast<ImprovedValSetSingle>(NewPB);
+    if(ShadowInstruction* WillUse = NewIVS->Values[0].V.getInst()) {
+
+      if(std::find(WillUse->indirectDIEUsers.begin(), WillUse->indirectDIEUsers.end(), V) 
+	 == WillUse->indirectDIEUsers.end())
+	WillUse->indirectDIEUsers.push_back(V);
+
+    }
+      
+  }
+
+}
+
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
   ImprovedValSet* OldPB = getIVSRef(V);
@@ -1893,22 +1941,10 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
   if((!OldPBValid) || !IVsEqualShallow(OldPB, NewPB)) {
 
-    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
+    if(OldPBValid)
+      releaseIndirectUse(V, OldPB);
 
-      if(IVS->SetType == ValSetTypeFD) {
-	
-	for(uint32_t i = 0; i < IVS->Values.size(); ++i) {
-
-	  ShadowInstruction* OpenCall = IVS->Values[i].V.getInst();
-	  if(std::find(OpenCall->indirectDIEUsers.begin(), OpenCall->indirectDIEUsers.end(), V) 
-	     == OpenCall->indirectDIEUsers.end())
-	    OpenCall->indirectDIEUsers.push_back(V);
-
-	}
-
-      }
-
-    }
+    noteIndirectUse(V, NewPB);
 
     if(pass->verboseOverdef) {
       if(ShadowInstruction* I = V.getInst()) {
