@@ -712,7 +712,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	if(inst_is<MemTransferInst>(I)) {
 
-	  if(I->isThreadLocal == TLS_MUSTCHECK || !canSynthMTI(I)) {
+	  if(commitDisabledHere || I->isThreadLocal == TLS_MUSTCHECK || !canSynthMTI(I)) {
 
 	    // If it will be emitted for real, it will read at runtime.
 	    DSEHandleRead(I->getCallArgOperand(1), MISize, BB);

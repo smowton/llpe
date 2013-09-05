@@ -1821,6 +1821,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeVaStartInst(ShadowInstruction* SI);
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
+ bool clobberSyscallModLocations(Function* F, ShadowInstruction* SI);
  void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction*);
  void writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB);
 

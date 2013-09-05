@@ -411,20 +411,26 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     // TODO: Add LF resolution code notifying file size. All users so far have just
     // used stat as an existence test. Similarly set errno = ENOENT as appropriate.
 
+    // Return false in all cases so that we fall through to handleUnexpandedCall and clobber the stat buffer.
+
     std::string Filename;
     if (!getConstantString(SI->getCallArgOperand(0), SI, Filename)) {
       LPDEBUG("Can't resolve stat call " << itcache(*CI) << " because its filename argument is unresolved\n");
-      return true;
+      return false;
     }
     
     struct stat file_stat;
     int stat_ret = ::stat(Filename.c_str(), &file_stat);
 
     if(stat_ret == -1 && errno != ENOENT)
-      return true;
+      return false;
 
+    // Clobber like this because the unexpanded call path would overwrite our return value as well.
     setReplacement(SI, ConstantInt::get(FT->getReturnType(), stat_ret));
+    clobberSyscallModLocations(F, SI);
+
     return true;
+
 
   }
 

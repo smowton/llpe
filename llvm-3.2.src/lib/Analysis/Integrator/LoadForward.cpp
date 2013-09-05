@@ -2813,6 +2813,62 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
 
 }
 
+bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
+
+  if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+
+    if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
+      return true;
+      
+    const LibCallFunctionInfo::LocationMRInfo *Details = 0;
+
+    if(FI->LocationDetails)
+      Details = FI->LocationDetails;
+    else if(FI->getLocationDetailsFor)
+      Details = FI->getLocationDetailsFor(ShadowValue(SI));
+
+    release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
+
+    for (unsigned i = 0; Details[i].Location; ++i) {
+
+      if(!(Details[i].MRInfo & AliasAnalysis::Mod))
+	continue;
+
+      ShadowValue ClobberV;
+      uint64_t ClobberSize = 0;
+      if(Details[i].Location->getLocation) {
+	Details[i].Location->getLocation(ShadowValue(SI), ClobberV, ClobberSize);
+      }
+      else {
+	ClobberV = SI->getCallArgOperand(Details[i].Location->argIndex);
+	ClobberSize = Details[i].Location->argSize;
+      }
+
+      if(ClobberV.isInval())
+	continue;
+
+      ImprovedValSetSingle ClobberSet;
+      getImprovedValSetSingle(ClobberV, ClobberSet);
+      // All currently annotated syscalls write scalar values.
+      ImprovedValSetSingle OD(ValSetTypeScalar, true);
+      executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI);
+
+    }
+
+    // TODO: introduce a category for functions that actually do this.
+    /*
+      if(GlobalIHP->yieldFunctions.count(F))
+      SI->parent->clobberGlobalObjects();
+    */
+
+    return true;
+
+  }
+
+  return false;
+
+}
+
 void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
   if(MemIntrinsic* MI = dyn_cast_inst<MemIntrinsic>(SI)) {
@@ -2877,7 +2933,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
       }
     }
 
-    // All unannotated calls return an unknown value:
+    // All annotated calls return an unknown value:
     if(SI->i.PB)
       deleteIV(SI->i.PB);
     SI->i.PB = newOverdefIVS();
@@ -2888,55 +2944,8 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
     // Otherwise do selective clobbering for annotated syscalls:
 
-    if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
-
-      if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
-	return;
-      
-      const LibCallFunctionInfo::LocationMRInfo *Details = 0;
-
-      if(FI->LocationDetails)
-	Details = FI->LocationDetails;
-      else if(FI->getLocationDetailsFor)
-	Details = FI->getLocationDetailsFor(ShadowValue(SI));
-
-      release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
-
-      for (unsigned i = 0; Details[i].Location; ++i) {
-
-	if(!(Details[i].MRInfo & AliasAnalysis::Mod))
-	  continue;
-
-	ShadowValue ClobberV;
-	uint64_t ClobberSize = 0;
-	if(Details[i].Location->getLocation) {
-	  Details[i].Location->getLocation(ShadowValue(SI), ClobberV, ClobberSize);
-	}
-	else {
-	  ClobberV = SI->getCallArgOperand(Details[i].Location->argIndex);
-	  ClobberSize = Details[i].Location->argSize;
-	}
-
-	if(ClobberV.isInval())
-	  continue;
-
-	ImprovedValSetSingle ClobberSet;
-	getImprovedValSetSingle(ClobberV, ClobberSet);
-	// All currently annotated syscalls write scalar values.
-	ImprovedValSetSingle OD(ValSetTypeScalar, true);
-	executeWriteInst(&ClobberV, ClobberSet, OD, ClobberSize, SI);
-
-      }
-
-      // TODO: introduce a category for functions that actually do this.
-      /*
-      if(GlobalIHP->yieldFunctions.count(F))
-	SI->parent->clobberGlobalObjects();
-      */
-
+    if(clobberSyscallModLocations(F, SI))
       return;
-
-    }
 
   }
   else {

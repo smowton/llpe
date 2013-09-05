@@ -996,7 +996,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	    
 	  Attributes Attrs = CallPAL.getParamAttributes(i + 1);
 	  if(Attrs.hasAttributes())
-	    AttributesVec.push_back(AttributeWithIndex::get(Args.size(), Attrs));
+	    AttributesVec.push_back(AttributeWithIndex::get(i + 1, Attrs));
 
 	  // (Except this bit, a clone of emitInst)
 	  ShadowValue op = I->getCallArgOperand(i);
@@ -1292,8 +1292,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
   Value* targetPtrSynth;
   ImprovedVal targetPtr;
   ShadowValue targetPtrOp = I->getCallArgOperand(0);
-  getBaseAndConstantOffset(targetPtrOp, targetPtr.V, targetPtr.Offset);
-  targetPtr.Offset += chunkBegin->first.first;
+  getBaseObject(targetPtrOp, targetPtr.V);
+  targetPtr.Offset = chunkBegin->first.first;
   synthCommittedPointer(0, targetType, targetPtr, emitBB, targetPtrSynth);
   
   if(chunkSize == 1) {
