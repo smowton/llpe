@@ -4,6 +4,7 @@
 #include "llvm/BasicBlock.h"
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/ADT/ValueMap.h"
@@ -1273,6 +1274,27 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 
 }
 
+static void emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* emitBB) {
+
+  Type* BytePtr = Type::getInt8PtrTy(emitBB->getContext());
+  Type* Int64Ty = Type::getInt64Ty(emitBB->getContext());
+  Constant* MemcpySize = ConstantInt::get(Int64Ty, Size);
+
+  Type *Tys[3] = {BytePtr, BytePtr, Int64Ty};
+  Function *MemCpyFn = Intrinsic::getDeclaration(emitBB->getParent()->getParent(),
+						 Intrinsic::memcpy, 
+						 ArrayRef<Type*>(Tys, 3));
+
+  Value *CallArgs[] = {
+    To, From, MemcpySize,
+    ConstantInt::get(Type::getInt32Ty(emitBB->getContext()), 1),
+    ConstantInt::get(Type::getInt1Ty(emitBB->getContext()), 0)
+  };
+	
+  CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+
+}
+
 void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd) {
 
   uint32_t chunkSize = std::distance(chunkBegin, chunkEnd);
@@ -1283,7 +1305,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
   // Create pointer that should be written through:
   Type* targetType;
-  if(chunkSize == 1)
+  if(chunkSize == 1 && GlobalAA->getTypeStoreSize(chunkBegin->second.Values[0].V.getType()) <= 8)
     targetType = PointerType::getUnqual(chunkBegin->second.Values[0].V.getType());
   else
     targetType = BytePtr;
@@ -1298,11 +1320,28 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
   
   if(chunkSize == 1) {
 
-    // Emit as simple store.
     ImprovedVal& IV = chunkBegin->second.Values[0];
     Value* newVal = trySynthVal(I, IV.V.getType(), chunkBegin->second.SetType, IV, emitBB);
-    new StoreInst(newVal, targetPtrSynth, emitBB);
+    uint64_t elSize = GlobalAA->getTypeStoreSize(newVal->getType());
 
+    if(elSize > 8) {
+
+      release_assert(isa<Constant>(newVal));
+
+      // Emit memcpy from single constant.
+      GlobalVariable* CopyFrom = new GlobalVariable(*(emitBB->getParent()->getParent()), newVal->getType(), 
+						    true, GlobalValue::InternalLinkage, cast<Constant>(newVal));
+      Constant* CopyFromPtr = ConstantExpr::getBitCast(CopyFrom, BytePtr);
+      emitMemcpyInst(targetPtrSynth, CopyFromPtr, elSize, emitBB);
+
+    }
+    else {
+
+      // Emit as simple store.
+      new StoreInst(newVal, targetPtrSynth, emitBB);
+
+    }
+      
   }
   else {
 
@@ -1326,21 +1365,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 					     true, GlobalValue::InternalLinkage, CS);
     Constant* GCSPtr = ConstantExpr::getBitCast(GCS, BytePtr);
 
-    Type* Int64Ty = Type::getInt64Ty(emitBB->getContext());
-    Constant* MemcpySize = ConstantInt::get(Int64Ty, lastOffset - chunkBegin->first.first);
-
-    Type *Tys[3] = {BytePtr, BytePtr, Int64Ty};
-    Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
-						   Intrinsic::memcpy, 
-						   ArrayRef<Type*>(Tys, 3));
-
-    Value *CallArgs[] = {
-      targetPtrSynth, GCSPtr, MemcpySize,
-      ConstantInt::get(Type::getInt32Ty(emitBB->getContext()), 1),
-      ConstantInt::get(Type::getInt1Ty(emitBB->getContext()), 0)
-    };
-	
-    CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+    emitMemcpyInst(targetPtrSynth, GCSPtr, lastOffset - chunkBegin->first.first, emitBB);
 
   }
 
