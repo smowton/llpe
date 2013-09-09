@@ -217,6 +217,7 @@ static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool c
     Len = cast<ConstantDataArray>(Cond.val)->getNumElements();
     break;
   case PathConditionTypeInt:
+  case PathConditionTypeFptrmem:
     release_assert(0 && "Bad path condition type");
     llvm_unreachable();
   }

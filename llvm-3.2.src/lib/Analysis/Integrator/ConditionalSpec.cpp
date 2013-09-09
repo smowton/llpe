@@ -490,7 +490,14 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
       CmpCall->setCallingConv(StrcmpFun->getCallingConv());
       resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, CmpCall, Constant::getNullValue(CmpCall->getType()), "");
 
+      break;
+
     }
+
+  case PathConditionTypeFptrmem:
+    
+    release_assert(0 && "Bad path condition type");
+    llvm_unreachable();
 
   }
 

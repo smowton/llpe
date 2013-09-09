@@ -272,6 +272,9 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
       case PathConditionTypeIntmem:
 	Out << "Intmem";
 	break;
+      case PathConditionTypeFptrmem:
+	release_assert(0 && "Bad path condition type");
+	llvm_unreachable();
       }
 
       Out << " PC: ";
@@ -285,7 +288,7 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
       }
       else {
 
-	Out << *it->val;
+	Out << itcache(ShadowValue(it->val), true);
 	
       }
 

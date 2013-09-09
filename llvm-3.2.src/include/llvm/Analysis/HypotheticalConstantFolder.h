@@ -128,7 +128,8 @@ enum PathConditionTypes {
   
   PathConditionTypeInt,
   PathConditionTypeString,
-  PathConditionTypeIntmem
+  PathConditionTypeIntmem,
+  PathConditionTypeFptrmem
 
 };
 

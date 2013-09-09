@@ -72,6 +72,7 @@ static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFptrmem("int-path-condition-fptrmem", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
@@ -2427,6 +2428,15 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 	  assumeC = Constant::getNullValue(ConstType);
 	break;
       }
+    case PathConditionTypeFptrmem:
+      {
+	assumeC = IA->F.getParent()->getFunction(assumeStr);
+	if(!assumeC) {
+	  errs() << "No such function: " << assumeStr << "\n";
+	  exit(1);
+	}
+	break;
+      }
     case PathConditionTypeString:
       {
 	GlobalVariable* NewGV = getStringArray(assumeStr, *IA->F.getParent(), /*addNull=*/true);
@@ -2661,7 +2671,8 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
   parsePathConditions(PathConditionsInt, rootIntPathConditions, PathConditionTypeInt, IA);
   parsePathConditions(PathConditionsString, rootStringPathConditions, PathConditionTypeString, IA);
-  parsePathConditions(PathConditionsIntmem, rootIntmemPathConditions, PathConditionTypeIntmem, IA);
+  parsePathConditions(PathConditionsIntmem, rootIntmemPathConditions, PathConditionTypeIntmem, IA);  
+  parsePathConditions(PathConditionsFptrmem, rootIntmemPathConditions, PathConditionTypeFptrmem, IA);
 
   for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
 	itend = PathConditionsFunc.end(); it != itend; ++it) {

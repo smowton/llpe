@@ -1017,7 +1017,7 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
 
       for(uint32_t i = 0, ilim = mergeToStore.size(); i != ilim; ++i) {
 
-	if(mergeToStore[i].isValid() && (i > mergeFromStore.size() || !mergeFromStore[i].isValid())) {
+	if(mergeToStore[i].isValid() && (i >= mergeFromStore.size() || !mergeFromStore[i].isValid())) {
 	  mergeToStore[i].dropReference();
 	  mergeToStore[i] = ChildType();
 	}
