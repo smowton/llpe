@@ -46,6 +46,8 @@ STATISTIC(NumUncacheNonLocalPtr,
 STATISTIC(NumCacheCompleteNonLocalPtr,
           "Number of block queries that were completely cached");
 
+static cl::opt<bool> MallocClobbers("mda-malloc-clobbers");
+
 // Limit for the number of instructions to scan in a block.
 // FIXME: Figure out what a sane value is for this.
 //        (500 is relatively insane.)
@@ -483,7 +485,7 @@ getPointerDependencyFrom(const AliasAnalysis::Location &MemLoc, bool isLoad,
     if (isa<AllocaInst>(Inst) || isNoAliasFn(Inst, TLI)) {
       const Value *AccessPtr = GetUnderlyingObject(MemLoc.Ptr, TD);
       
-      if (AccessPtr == Inst || AA->isMustAlias(Inst, AccessPtr))
+      if ((!MallocClobbers) && (AccessPtr == Inst || AA->isMustAlias(Inst, AccessPtr)))
         return MemDepResult::getDef(Inst);
       // Be conservative if the accessed pointer may alias the allocation.
       if (AA->alias(Inst, AccessPtr) != AliasAnalysis::NoAlias)
