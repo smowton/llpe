@@ -90,6 +90,7 @@ static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
 static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
 static cl::opt<bool> DumpDSE("int-dump-dse");
 static cl::opt<bool> DumpTL("int-dump-tl");
+static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2244,6 +2245,14 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     simpleVolatileLoads.insert(LI);
 
   }
+  
+  for(cl::list<std::string>::iterator it = ForceNoAliasArgs.begin(),
+	itend = ForceNoAliasArgs.end(); it != itend; ++it) {
+
+    uint32_t argIdx = (uint32_t)getInteger(*it, "int-force-noalias-arg parameter");
+    forceNoAliasArgs.insert(argIdx);
+    
+  }
 
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
@@ -2307,6 +2316,29 @@ static Type* getTypeAtOffset(Type* Ty, uint64_t Offset) {
 
 }
 
+BasicBlock* IntegrationHeuristicsPass::parsePCBlock(Function* fStack, std::string& bbName) {
+
+  if(bbName == "__globals__")
+    return 0;
+  else if(bbName == "__args__")
+    return (BasicBlock*)ULONG_MAX;
+  else
+    return findBlockRaw(fStack, bbName);
+  
+}
+
+int64_t IntegrationHeuristicsPass::parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr) {
+
+  if(!bb) {
+    GlobalVariable* GV = M->getGlobalVariable(instIndexStr, true);
+    release_assert(GV && "Bad global variable in path condition");
+    return (int64_t)getShadowGlobalIndex(GV);
+  }
+  else
+    return getInteger(instIndexStr, "Instruction index");
+
+}
+
 void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
 
   uint32_t newGVIndex = 0;
@@ -2350,24 +2382,8 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
     }
 
     Function* fStack = targetCallStack[fStackIdx].first->getParent();
-
-    BasicBlock* bb;
-    if(bbName == "__globals__")
-      bb = 0;
-    else if(bbName == "__args__")
-      bb = (BasicBlock*)ULONG_MAX;
-    else {
-      bb = findBlockRaw(fStack, bbName);
-    }
-
-    int64_t instIndex;
-    if(!bb) {
-      GlobalVariable* GV = IA->F.getParent()->getGlobalVariable(instIndexStr, true);
-      release_assert(GV && "Bad global variable in path condition");
-      instIndex = (int64_t)GlobalIHP->getShadowGlobalIndex(GV);
-    }
-    else
-      instIndex = getInteger(instIndexStr, "Instruction index");
+    BasicBlock* bb = parsePCBlock(fStack, bbName);
+    int64_t instIndex = parsePCInst(bb, IA->F.getParent(), instIndexStr);
    
     uint32_t assumeStackIdx = getInteger(assumeStackIdxStr, "Assume stack index");
     if(assumeStackIdx >= targetCallStack.size()) {
@@ -2567,8 +2583,22 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
       if(IVS->SetType == ValSetTypeOldOverdef) {
 
 	std::vector<Value*>& allocs = argAllocSites.back();
-	// This will leave argAllocSites empty on failure:
-	getAllocSites(A, allocs);
+
+	if(forceNoAliasArgs.count(i)) {
+
+	  // Not an allocation site, but doesn't matter for this purpose:
+	  // This will force us to conclude the argument doesn't alias globals
+	  // or any other arguments.
+	  allocs.push_back(A);
+
+	}
+	else {
+
+	  // This will leave argAllocSites empty on failure:
+	  getAllocSites(A, allocs);
+
+	}
+
 	if(!allocs.empty()) {
 
 	  IVS->SetType = ValSetTypePB;
@@ -2680,9 +2710,9 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
     std::string fStackIdxStr;
     std::string bbName;
     std::string calledName;
+    std::istringstream istr(*it);
 
     {
-      std::istringstream istr(*it);
       std::getline(istr, fStackIdxStr, ',');
       std::getline(istr, bbName, ',');
       std::getline(istr, calledName, ',');
@@ -2698,10 +2728,29 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
     Function* CallF = IA->F.getParent()->getFunction(calledName);
 
     FunctionType* FType = CallF->getFunctionType();
-    release_assert(FType->getNumParams() == 0 && "Only no-arg path functions supported at the moment");
 
     rootFuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF));
-    
+    PathFunc& newFunc = rootFuncPathConditions.back();
+
+    while(!istr.eof()) {
+
+      std::string argStackIdxStr;
+      std::string argBBStr;
+      std::string argIdxStr;
+      std::getline(istr, argStackIdxStr, ',');
+      std::getline(istr, argBBStr, ',');
+      std::getline(istr, argIdxStr, ',');
+
+      uint32_t argStackIdx = getInteger(argStackIdxStr, "Path function argument stack index");
+      Function* fStack = targetCallStack[argStackIdx].first->getParent();
+      BasicBlock* argBB = parsePCBlock(fStack, argBBStr);
+      int64_t argInstIdx = parsePCInst(argBB, IA->F.getParent(), argIdxStr);
+      newFunc.args.push_back(PathFuncArg(argStackIdx, argBB, argInstIdx));
+
+    }
+
+    release_assert(FType->getNumParams() == newFunc.args.size() && "Path function with wrong arg count");
+  
   }
 
 }

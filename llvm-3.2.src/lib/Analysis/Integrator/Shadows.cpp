@@ -460,12 +460,10 @@ void InlineAttempt::prepareShadows() {
   BBsOffset = 0;
 
   uint32_t shadowsSize;
-  if(isPathCondition)
-    shadowsSize = 0;
-  else if(Callers.size())
-    shadowsSize = Callers[0]->getNumArgOperands();
-  else
+  if(isPathCondition || !Callers.size())
     shadowsSize = F.arg_size();
+  else
+    shadowsSize = Callers[0]->getNumArgOperands();
 
   ShadowArg* argShadows = new ShadowArg[shadowsSize];
   this->argShadows = ImmutableArray<ShadowArg>(argShadows, shadowsSize);

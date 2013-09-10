@@ -149,12 +149,23 @@ PathCondition(uint32_t isi, BasicBlock* ibi, uint32_t ii, uint32_t fsi, BasicBlo
 
 };
 
+struct PathFuncArg {
+
+  uint32_t stackIdx;
+  BasicBlock* instBB;
+  uint32_t instIdx;
+
+PathFuncArg(uint32_t s, BasicBlock* b, uint32_t i) : stackIdx(s), instBB(b), instIdx(i) {}
+
+};
+
 struct PathFunc {
 
   uint32_t stackIdx;
   BasicBlock* BB;
   Function* F;
   InlineAttempt* IA;
+  SmallVector<PathFuncArg, 1> args;
 
 PathFunc(uint32_t f, BasicBlock* _BB, Function* _F) : stackIdx(f), BB(_BB), F(_F), IA(0) {}
 
@@ -230,6 +241,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::pair<LocStore, uint32_t>* argStores;
 
    std::vector<std::pair<BasicBlock*, uint32_t> > targetCallStack;
+
+   SmallSet<uint32_t, 4> forceNoAliasArgs;
 
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -371,6 +384,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    }
 
    uint32_t countPathConditionsForBlock(ShadowBB* BB);
+   BasicBlock* parsePCBlock(Function* fStack, std::string& bbName);
+   int64_t parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr);
 
 };
 
@@ -1656,6 +1671,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);
+  ShadowValue getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx);
   void addIgnoredBlock(std::string& name);
   virtual void addExtraTags(IntegratorTag* myTag);
 

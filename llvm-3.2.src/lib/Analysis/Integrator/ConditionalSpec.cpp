@@ -182,49 +182,45 @@ InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth
 
 }
 
+ShadowValue InlineAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx) {
+
+  if(!BB) {
+    
+    ShadowGV* GV = &(GlobalIHP->shadowGlobals[instIdx]);
+    return ShadowValue(GV);
+    
+  }
+  else if(BB == (BasicBlock*)ULONG_MAX) {
+
+    InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, stackIdx);
+    ShadowArg* ptr = &ptrIA->argShadows[instIdx];
+    return ShadowValue(ptr);
+
+  }
+  else {
+    
+    InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, stackIdx);
+    
+    uint32_t ptrBBIdx = findBlock(ptrIA->invarInfo, BB->getName());
+    ShadowBB* ptrBB = ptrIA->getBB(ptrBBIdx);
+    if(!ptrBB)
+      return ShadowValue();
+
+    ShadowInstruction* ptr = &(ptrBB->insts[instIdx]);
+    return ShadowValue(ptr);
+
+  }
+
+}
+
 void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB) {
 
   if(it->fromStackIdx == targetCallInfo->targetStackDepth && it->fromBB == BB->invar->BB) {
 
+    ShadowValue ptrSV = getPathConditionOperand(it->instStackIdx, it->instBB, it->instIdx);
     ImprovedValSetSingle writePtr;
-    ShadowValue ptrSV;
-
-    if(!it->instBB) {
-
-      ShadowGV* GV = &(GlobalIHP->shadowGlobals[it->instIdx]);
-      writePtr.set(ImprovedVal(ShadowValue(GV), 0), ValSetTypePB);
-
-    }
-    else if(it->instBB == (BasicBlock*)ULONG_MAX) {
-
-      InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, it->instStackIdx);
-      ShadowArg* ptr = &ptrIA->argShadows[it->instIdx];
-      ptrSV = ShadowValue(ptr);
-      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
-      if(!ptrIVS)
-	return;
-
-      writePtr = *ptrIVS;
-
-    }
-    else {
-
-      InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, it->instStackIdx);
-
-      uint32_t ptrBBIdx = findBlock(ptrIA->invarInfo, it->instBB->getName());
-      ShadowBB* ptrBB = ptrIA->getBB(ptrBBIdx);
-      if(!ptrBB)
-	return;
-
-      ShadowInstruction* ptr = &(ptrBB->insts[it->instIdx]);
-      ptrSV = ShadowValue(ptr);
-      ImprovedValSetSingle* ptrIVS = dyn_cast<ImprovedValSetSingle>(ptr->i.PB);
-      if(!ptrIVS)
-	return;
-
-      writePtr = *ptrIVS;
-
-    }
+    if(!getImprovedValSetSingle(ptrSV, writePtr))
+      return;
 
     for(uint32_t i = 0; i < writePtr.Values.size(); ++i) {
 
@@ -245,7 +241,7 @@ void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes con
       copyFromPointer.set(ImprovedVal(SGV, 0), ValSetTypePB);
       
       // Attribute the effect of the write to first instruction in block:
-      executeCopyInst(ptrSV.isInval() ? 0 : &ptrSV, writePtr, copyFromPointer, Size, &(BB->insts[0]));
+      executeCopyInst(ptrSV.isGV() ? 0 : &ptrSV, writePtr, copyFromPointer, Size, &(BB->insts[0]));
 
     }
     else {
@@ -293,11 +289,25 @@ void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 
       // Insert a model call that notionally occurs before the block begins.
       // Notionally its callsite is the first instruction in BB; this is probably not a call
-      // instruction, but since only no-arg functions are allowed it doesn't matter.
+      // instruction, but since its arguments are pushed in rather than pulled it doesn't matter.
 
       if(!it->IA) {
 	InlineAttempt* SymIA = new InlineAttempt(pass, *it->F, this->LI, &BB->insts[0], this->nesting_depth + 1, true);
 	it->IA = SymIA;
+      }
+
+      for(unsigned i = 0, ilim = it->args.size(); i != ilim; ++i) {
+
+	PathFuncArg& A = it->args[i];
+
+	ShadowArg* SArg = &(it->IA->argShadows[i]);
+	ShadowValue Op = getPathConditionOperand(A.stackIdx, A.instBB, A.instIdx);
+    
+	release_assert((!SArg->i.PB) && "Path condition functions shouldn't be reentrant");
+
+	copyImprovedVal(Op, SArg->i.PB);
+	noteIndirectUse(ShadowValue(SArg), SArg->i.PB);
+
       }
 
       it->IA->activeCaller = &BB->insts[0];
