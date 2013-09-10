@@ -2266,12 +2266,12 @@ void llvm::addHeapAlloc(ShadowInstruction* SI) {
 
 }
 
-void llvm::executeMallocInst(ShadowInstruction* SI) {
+static void executeMallocInst2(ShadowInstruction* SI, uint32_t param) {
 
   if(SI->store.store)
     return;
 
-  ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(0)));
+  ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(param)));
   Type* allocType = 0;
   if(AllocSize)
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
@@ -2281,6 +2281,13 @@ void llvm::executeMallocInst(ShadowInstruction* SI) {
 
   addHeapAlloc(SI);
   executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
+
+}
+
+void llvm::executeMallocLikeInst(ShadowInstruction* SI) {
+
+  Function* F = getCalledFunction(SI);
+  return executeMallocInst2(SI, GlobalIHP->allocatorFunctions[F]);
 
 }
 
@@ -2894,7 +2901,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	switch(it->second) {
 	
 	case SF_MALLOC:
-	  executeMallocInst(SI);
+	  executeMallocLikeInst(SI);
 	  break;
 	case SF_REALLOC:
 	  executeReallocInst(SI);

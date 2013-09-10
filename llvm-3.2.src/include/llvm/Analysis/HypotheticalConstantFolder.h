@@ -234,6 +234,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<PathFunc> rootFuncPathConditions;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
+   SmallDenseMap<Function*, uint32_t, 4> allocatorFunctions;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
@@ -1136,6 +1137,7 @@ protected:
   bool tryPromoteOpenCall(ShadowInstruction* CI);
   void tryPromoteAllCalls();
   bool tryResolveVFSCall(ShadowInstruction*);
+  bool executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename);
   WalkInstructionResult isVfsCallUsingFD(ShadowInstruction* VFSCall, ShadowInstruction* FD, bool ignoreClose);
   virtual void resolveReadCall(CallInst*, struct ReadFile);
   virtual void resolveSeekCall(CallInst*, struct SeekFile);
@@ -1831,7 +1833,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeVaCopyInst(ShadowInstruction* SI);
  void executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc);
  void executeAllocaInst(ShadowInstruction* SI);
- void executeMallocInst(ShadowInstruction* SI);
+ void executeMallocLikeInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI);
  void executeFreeInst(ShadowInstruction* SI);
  void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction*);

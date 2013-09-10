@@ -108,8 +108,6 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
   CallInst* CI = cast<CallInst>(SI->invar->I);
 
-
-  
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
     const FunctionType *FT = SysOpen->getFunctionType();
     if (FT->getNumParams() == 2 && FT->getReturnType()->isIntegerTy(32) &&
@@ -380,6 +378,24 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, vo
 
 }
 
+bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename) {
+
+  struct stat file_stat;
+  int stat_ret = ::stat(Filename.c_str(), &file_stat);
+
+  if(stat_ret == -1 && errno != ENOENT)
+    return false;
+
+  const FunctionType *FT = F->getFunctionType();
+
+  // Clobber like this because the unexpanded call path would overwrite our return value as well.
+  setReplacement(SI, ConstantInt::get(FT->getReturnType(), stat_ret));
+  clobberSyscallModLocations(F, SI);
+
+  return true;
+
+}
+
 // Return value: is this a VFS call (regardless of whether we resolved it successfully)
 bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
@@ -393,7 +409,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   
   if(!(F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
        F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat" ||
-       F->getName() == "isatty"))
+       F->getName() == "fstat" || F->getName() == "isatty"))
     return false;
 
   if(SI->i.PB)
@@ -418,19 +434,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
       LPDEBUG("Can't resolve stat call " << itcache(*CI) << " because its filename argument is unresolved\n");
       return false;
     }
-    
-    struct stat file_stat;
-    int stat_ret = ::stat(Filename.c_str(), &file_stat);
 
-    if(stat_ret == -1 && errno != ENOENT)
-      return false;
-
-    // Clobber like this because the unexpanded call path would overwrite our return value as well.
-    setReplacement(SI, ConstantInt::get(FT->getReturnType(), stat_ret));
-    clobberSyscallModLocations(F, SI);
-
-    return true;
-
+    return executeStatCall(SI, F, Filename);
 
   }
 
@@ -498,6 +503,11 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
     }
     // Else fall through to the walk phase.
+
+  }
+  else if(F->getName() == "fstat") {
+
+    return executeStatCall(SI, F, OS.Name);
 
   }
   else if(F->getName() == "close") {
