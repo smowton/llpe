@@ -3380,7 +3380,37 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
 
   }
   else {
-		
+
+    if((consumeVal.SetType == ValSetTypeScalar && consumeVal.Values.size() && otherVal.SetType == ValSetTypePB && otherVal.Values.size()) ||
+       (otherVal.SetType == ValSetTypeScalar && otherVal.Values.size() && consumeVal.SetType == ValSetTypePB && consumeVal.Values.size())) {
+
+      // Asymmetry to avoid altering the read-only otherVal (consumeVal is mutable).
+      if(consumeVal.onlyContainsZeroes()) {
+
+	Constant* newNull = Constant::getNullValue(otherVal.Values[0].V.getType());
+	if(newNull->getType()->isPointerTy())
+	  consumeVal.set(ImprovedVal(newNull, 0), ValSetTypePB);
+	else
+	  consumeVal.set(ImprovedVal(newNull), ValSetTypeScalar);
+
+	// Fall through to merge.
+
+      }
+      else if(otherVal.onlyContainsZeroes()) {
+
+	Constant* newNull = Constant::getNullValue(consumeVal.Values[0].V.getType());	
+	if(newNull->getType()->isPointerTy())
+	  consumeVal.mergeOne(ValSetTypePB, ImprovedVal(newNull, 0));
+	else
+	  consumeVal.mergeOne(ValSetTypeScalar, ImprovedVal(newNull));
+	return;
+
+      }
+
+      // Otherwise fall through to certain doom.
+
+    }
+	
     consumeVal.merge(otherVal);
 
   }

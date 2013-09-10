@@ -403,10 +403,19 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   }
 
+  bool onlyContainsZeroes() {
+
+    if(Values.size() == 1)
+      return Values[0].isNull();
+    else
+      return false;
+
+  }
+
   bool onlyContainsNulls() {
 
-    if(SetType == ValSetTypePB && Values.size() == 1)
-      return Values[0].isNull();
+    if(SetType == ValSetTypePB)
+      return onlyContainsZeroes();
     else
       return false;
     

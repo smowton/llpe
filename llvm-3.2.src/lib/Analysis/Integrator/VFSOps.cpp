@@ -386,11 +386,26 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
   if(stat_ret == -1 && errno != ENOENT)
     return false;
 
-  const FunctionType *FT = F->getFunctionType();
+  if(stat_ret == 0) {
 
-  // Clobber like this because the unexpanded call path would overwrite our return value as well.
+    // Populate stat structure at spec time:
+    Constant* Data = 
+      ConstantDataArray::get(SI->invar->I->getContext(), 
+			     ArrayRef<uint8_t>((uint8_t*)&file_stat, sizeof(struct stat)));
+    
+    ImprovedValSetSingle PtrSet;
+    ImprovedValSetSingle ValSet;
+    ShadowValue PtrOp = SI->getOperand(1);
+    
+    getImprovedValSetSingle(PtrOp, PtrSet);
+    ValSet.set(ImprovedVal(ShadowValue(Data)), ValSetTypeScalar);
+
+    executeWriteInst(&PtrOp, PtrSet, ValSet, sizeof(struct stat), SI);
+
+  }
+
+  const FunctionType *FT = F->getFunctionType();
   setReplacement(SI, ConstantInt::get(FT->getReturnType(), stat_ret));
-  clobberSyscallModLocations(F, SI);
 
   return true;
 
