@@ -86,6 +86,7 @@ namespace options {
   // For example, "generate-api-file" and "as"options are for the plugin
   // use only and will not be passed.
   static std::vector<std::string> extra;
+  static std::vector<std::string> preserve;
 
   static void process_plugin_option(const char* opt_)
   {
@@ -116,6 +117,9 @@ namespace options {
       } else {
         bc_path = path;
       }
+    } else if (opt.startswith("preserve-symbol=")) {
+      llvm::StringRef sym = opt.substr(strlen("preserve-symbol="));
+      preserve.push_back(sym);
     } else {
       // Save this option to pass to the code generator.
       extra.push_back(opt);
@@ -395,6 +399,13 @@ static ld_plugin_status all_symbols_read_hook(void) {
           api_file << I->syms[i].name << "\n";
       }
     }
+  }
+
+  for(std::vector<std::string>::iterator I = options::preserve.begin(),
+      Iend = options::preserve.end(); I != Iend; ++I) {
+
+    lto_codegen_add_must_preserve_symbol(code_gen, I->c_str());
+
   }
 
   if (options::generate_api_file)
