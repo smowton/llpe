@@ -179,6 +179,29 @@ struct SpecialLocationDescriptor {
 
 };
 
+struct PathConditions {
+
+  std::vector<PathCondition> IntPathConditions;
+  std::vector<PathCondition> StringPathConditions;
+  std::vector<PathCondition> IntmemPathConditions;
+  std::vector<PathFunc> FuncPathConditions;
+
+  void addForType(PathCondition newCond, PathConditionTypes Ty) {
+
+    switch(Ty) {
+    case PathConditionTypeInt:
+      IntPathConditions.push_back(newCond); break;
+    case PathConditionTypeIntmem:
+    case PathConditionTypeFptrmem:
+      IntmemPathConditions.push_back(newCond); break;
+    case PathConditionTypeString:
+      StringPathConditions.push_back(newCond); break;
+    }
+
+  }
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -228,10 +251,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, std::vector<InlineAttempt*> > IAsByFunction;
 
-   std::vector<PathCondition> rootIntPathConditions;
-   std::vector<PathCondition> rootStringPathConditions;
-   std::vector<PathCondition> rootIntmemPathConditions;
-   std::vector<PathFunc> rootFuncPathConditions;
+   PathConditions pathConditions;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, uint32_t, 4> allocatorFunctions;
@@ -292,7 +312,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void setParam(InlineAttempt* IA, long Idx, Constant* Val);
    void parseArgs(Function& F, std::vector<Constant*>&, uint32_t& argvIdx);
    void parseArgsPostCreation(InlineAttempt* IA);
-   void parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA);
+   void parsePathConditions(cl::list<std::string>& L, PathConditionTypes Ty, InlineAttempt* IA);
    void createSpecialLocations();
    void createPointerArguments(InlineAttempt*);
 
@@ -1224,6 +1244,7 @@ protected:
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
   bool blockLiveInAnyScope(ShadowBBInvar* BB);
+  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) = 0;
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
@@ -1427,7 +1448,8 @@ public:
   virtual bool commitsOutOfLine();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
-  virtual void popAllocas(OrdinaryLocalStore*);  
+  virtual void popAllocas(OrdinaryLocalStore*);
+  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
 
 };
 
@@ -1671,11 +1693,14 @@ class InlineAttempt : public IntegrationAttempt {
   void executeCall(uint32_t new_stack_depth);
   void releaseCallLatchStores();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
+  bool tryGetPathValueFrom(PathConditions& PC, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
+  void applyMemoryPathConditionsFrom(ShadowBB*, PathConditions&);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);
   ShadowValue getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx);
   void addIgnoredBlock(std::string& name);
   virtual void addExtraTags(IntegratorTag* myTag);
+  void addExtraTagsFrom(PathConditions&, IntegratorTag* myTag);
 
   // Conditional specialisation:
   void addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool skipFirst);
@@ -1690,6 +1715,7 @@ class InlineAttempt : public IntegrationAttempt {
   void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
   void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
   virtual SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
+  void emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& it);
   void markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);
@@ -1712,6 +1738,7 @@ class InlineAttempt : public IntegrationAttempt {
   void findTentativeLoads(bool commitDisabledHere, bool secondPass);
   void rerunTentativeLoads();
 
+  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
   
 };
 

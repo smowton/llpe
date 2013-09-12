@@ -118,6 +118,15 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
   
   ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
 
+  if(!ConstCondition) {
+    
+    std::pair<ValSetType, ImprovedVal> PathVal;
+
+    if(tryGetPathValue(Condition, SI->parent, PathVal))
+      ConstCondition = dyn_cast_val<ConstantInt>(PathVal.second.V);
+
+  }
+
   if(ConstCondition) {
 
     BasicBlock* takenTarget = 0;

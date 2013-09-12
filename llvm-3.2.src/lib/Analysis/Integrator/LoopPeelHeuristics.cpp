@@ -980,7 +980,7 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
   switch(V.t) {
   case SHADOWVAL_INST:
-    return isIdentifiedObject(V.u.I->invar->I);
+    return !!V.u.I->store.store;
   case SHADOWVAL_ARG:
     return V.u.A->IA->isRootMainCall();
   case SHADOWVAL_GV:
@@ -1165,20 +1165,30 @@ bool PeelAttempt::hasChildren() {
 
 }
 
+void InlineAttempt::addExtraTagsFrom(PathConditions& PC, IntegratorTag* myTag) {
+
+  for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
+	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
+
+    if(it->stackIdx == UINT_MAX || it->stackIdx == targetCallInfo->targetStackDepth) {
+
+      IntegratorTag* newTag = it->IA->createTag(myTag);
+      myTag->children.push_back(newTag);
+
+    }
+
+  }  
+
+}
+
 void IntegrationAttempt::addExtraTags(IntegratorTag* myTag) { }
 void InlineAttempt::addExtraTags(IntegratorTag* myTag) {
 
-  if(!Callers.empty())
-    return;
+  if(targetCallInfo)
+    addExtraTagsFrom(pass->pathConditions, myTag);
+  if(invarInfo->pathConditions)
+    addExtraTagsFrom(*invarInfo->pathConditions, myTag);
 
-  for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
-	itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
-
-    IntegratorTag* newTag = it->IA->createTag(myTag);
-    myTag->children.push_back(newTag);
-
-  }
-  
 }
 
 static uint32_t getTagBlockIdx(const IntegratorTag* t, IntegrationAttempt* Ctx) {
@@ -1843,6 +1853,14 @@ static int64_t getInteger(std::string& s, const char* desc) {
 
 }
 
+static bool tryGetInteger(std::string& s, int64_t& out) {
+
+  char* end;
+  out = strtoll(s.c_str(), &end, 10);
+  return !(s.empty() || *end);
+
+}
+
 uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, StringRef name) {
 
   for(uint32_t i = 0; i < SFI->BBs.size(); ++i) {
@@ -2369,7 +2387,7 @@ int64_t IntegrationHeuristicsPass::parsePCInst(BasicBlock* bb, Module* M, std::s
 
 }
 
-void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, std::vector<PathCondition>& Result, PathConditionTypes Ty, InlineAttempt* IA) {
+void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, PathConditionTypes Ty, InlineAttempt* IA) {
 
   uint32_t newGVIndex = 0;
   if(Ty == PathConditionTypeString)
@@ -2403,23 +2421,65 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
     }
 
-    uint32_t fStackIdx = getInteger(fStackIdxStr, "Stack index");
-    if(fStackIdx >= targetCallStack.size()) {
+    Function* fStack;
+
+    int64_t fStackIdx;
+    if(tryGetInteger(fStackIdxStr, fStackIdx)) {
       
-      errs() << "Bad stack index\n";
-      exit(1);
+      if(fStackIdx >= ((int64_t)targetCallStack.size())) {
+	
+	errs() << "Bad stack index\n";
+	exit(1);
+
+      }
+
+      fStack = targetCallStack[fStackIdx].first->getParent();
+
+    }
+    else {
+
+      fStack = IA->F.getParent()->getFunction(fStackIdxStr);
+      if(!fStack) {
+
+	errs() << "No function " << fStackIdxStr << "\n";
+	exit(1);
+
+      }
+
+      fStackIdx = UINT_MAX;
 
     }
 
-    Function* fStack = targetCallStack[fStackIdx].first->getParent();
     BasicBlock* bb = parsePCBlock(fStack, bbName);
     int64_t instIndex = parsePCInst(bb, IA->F.getParent(), instIndexStr);
    
-    uint32_t assumeStackIdx = getInteger(assumeStackIdxStr, "Assume stack index");
-    if(assumeStackIdx >= targetCallStack.size()) {
+    uint32_t assumeStackIdx;
+    Function* assumeF;
+    if(fStackIdx != UINT_MAX) {
 
-      errs() << "Bad stack index\n";
-      exit(1);
+      assumeStackIdx = getInteger(assumeStackIdxStr, "Assume stack index");     
+
+      if(assumeStackIdx >= targetCallStack.size()) {
+	
+	errs() << "Bad stack index\n";
+	exit(1);
+	
+      }
+
+      assumeF = targetCallStack[assumeStackIdx].first->getParent();
+
+    }
+    else {
+
+      if(assumeStackIdxStr != fStackIdxStr) {
+
+	errs() << "Non-stack path conditions must not make assumptions that cross function boundaries\n";
+	exit(1);
+	
+      }
+
+      assumeStackIdx = UINT_MAX;
+      assumeF = fStack;
 
     }
 
@@ -2430,7 +2490,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
 
     }
 
-    BasicBlock* assumeBB = findBlockRaw(targetCallStack[assumeStackIdx].first->getParent(), assumeBlock);
+    BasicBlock* assumeBB = findBlockRaw(assumeF, assumeBlock);
 
     uint64_t offset = 0;
     if(!offsetStr.empty())
@@ -2500,7 +2560,30 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, st
       llvm_unreachable();
     }
 
-    Result.push_back(PathCondition(fStackIdx, bb, (uint32_t)instIndex, assumeStackIdx, assumeBB, assumeC, offset));
+    PathCondition newCond((uint32_t)fStackIdx, 
+			  bb, 
+			  (uint32_t)instIndex, 
+			  assumeStackIdx, 
+			  assumeBB, 
+			  assumeC, 
+			  offset);
+
+    if(fStackIdx == UINT_MAX) {
+
+      // Path condition applies to all instances of some function -- attach it to the invarInfo
+      // for that function.
+
+      ShadowFunctionInvar* invarInfo = getFunctionInvarInfo(*fStack);
+      if(!invarInfo->pathConditions)
+	invarInfo->pathConditions = new PathConditions();
+      invarInfo->pathConditions->addForType(newCond, Ty);
+
+    }
+    else {
+
+      pathConditions.addForType(newCond, Ty);
+
+    }
 
   }
 
@@ -2729,10 +2812,10 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
   }
 
-  parsePathConditions(PathConditionsInt, rootIntPathConditions, PathConditionTypeInt, IA);
-  parsePathConditions(PathConditionsString, rootStringPathConditions, PathConditionTypeString, IA);
-  parsePathConditions(PathConditionsIntmem, rootIntmemPathConditions, PathConditionTypeIntmem, IA);  
-  parsePathConditions(PathConditionsFptrmem, rootIntmemPathConditions, PathConditionTypeFptrmem, IA);
+  parsePathConditions(PathConditionsInt, PathConditionTypeInt, IA);
+  parsePathConditions(PathConditionsString, PathConditionTypeString, IA);
+  parsePathConditions(PathConditionsIntmem, PathConditionTypeIntmem, IA);  
+  parsePathConditions(PathConditionsFptrmem, PathConditionTypeFptrmem, IA);
 
   for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
 	itend = PathConditionsFunc.end(); it != itend; ++it) {
@@ -2748,19 +2831,55 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
       std::getline(istr, calledName, ',');
     }
 
-    uint32_t fStackIdx = getInteger(fStackIdxStr, "Path function stack index");
-    if(fStackIdx >= targetCallStack.size()) {
-      errs() << "Bad stack index for path function\n";
-      exit(1);
+    int64_t fStackIdx;
+    Function* callerFunction;
+
+    if(tryGetInteger(fStackIdxStr, fStackIdx)) {
+
+      if(fStackIdx >= (int64_t)targetCallStack.size()) {
+	errs() << "Bad stack index for path function\n";
+	exit(1);
+      }
+
+      callerFunction = 0;
+
+    }
+    else {
+
+      callerFunction = IA->F.getParent()->getFunction(fStackIdxStr);
+      if(!callerFunction) {
+
+	errs() << "No such function " << fStackIdxStr << "\n";
+	exit(1);
+
+      }
+
+      fStackIdx = UINT_MAX;
+
     }
     
     BasicBlock* assumeBlock = findBlockRaw(targetCallStack[fStackIdx].first->getParent(), bbName);
     Function* CallF = IA->F.getParent()->getFunction(calledName);
 
     FunctionType* FType = CallF->getFunctionType();
+    PathConditions* PC;
 
-    rootFuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF));
-    PathFunc& newFunc = rootFuncPathConditions.back();
+    if(fStackIdx == UINT_MAX) {
+
+      ShadowFunctionInvar* SFI = getFunctionInvarInfo(*callerFunction);
+      if(!SFI->pathConditions)
+	SFI->pathConditions = new PathConditions();
+      PC = SFI->pathConditions;
+
+    }
+    else {
+
+      PC = &pathConditions;
+
+    }
+
+    PC->FuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF));
+    PathFunc& newFunc = PC->FuncPathConditions.back();
 
     while(!istr.eof()) {
 
@@ -2771,8 +2890,29 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
       std::getline(istr, argBBStr, ',');
       std::getline(istr, argIdxStr, ',');
 
-      uint32_t argStackIdx = getInteger(argStackIdxStr, "Path function argument stack index");
-      Function* fStack = targetCallStack[argStackIdx].first->getParent();
+      uint32_t argStackIdx;
+      Function* fStack;
+
+      if(fStackIdx == UINT_MAX) {
+
+	if(argStackIdxStr != fStackIdxStr) {
+
+	  errs() << "Non-stack path functions can only use local arguments\n";
+	  exit(1);
+
+	}
+
+	argStackIdx = UINT_MAX;
+	fStack = callerFunction;
+
+      }
+      else {
+
+	argStackIdx = getInteger(argStackIdxStr, "Path function argument stack index");
+	fStack = targetCallStack[argStackIdx].first->getParent();
+
+      }
+
       BasicBlock* argBB = parsePCBlock(fStack, argBBStr);
       int64_t argInstIdx = parsePCInst(argBB, IA->F.getParent(), argIdxStr);
       newFunc.args.push_back(PathFuncArg(argStackIdx, argBB, argInstIdx));

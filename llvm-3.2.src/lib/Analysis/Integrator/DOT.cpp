@@ -255,7 +255,7 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 	
 }
 
-static void printPathConditions(std::vector<PathCondition>& conds, PathConditionTypes t, raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+static void printPathConditionList(std::vector<PathCondition>& conds, PathConditionTypes t, raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
 
   for(std::vector<PathCondition>::iterator it = conds.begin(), itend = conds.end(); it != itend; ++it) {
 
@@ -327,6 +327,47 @@ static void printPathConditions(std::vector<PathCondition>& conds, PathCondition
 
 }
 
+static void printPathConditionsFrom(PathConditions& PC, raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+
+  // Mention if there are symbolic path conditions or functions here:
+  printPathConditionList(PC.IntPathConditions, PathConditionTypeInt, Out, BBI, BB);
+  printPathConditionList(PC.IntmemPathConditions, PathConditionTypeIntmem, Out, BBI, BB);
+  printPathConditionList(PC.StringPathConditions, PathConditionTypeString, Out, BBI, BB);
+
+  for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
+	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
+
+    if(it->BB == BBI->BB) {
+
+      Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  Call PC: ";
+      Out << it->F->getName();
+      Out << "</td></tr>\n";
+
+    }
+
+  }
+
+}
+
+void PeelIteration::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+
+  return;
+
+}
+
+void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+
+  if(!BB)
+    return;
+
+  if(targetCallInfo)
+    printPathConditionsFrom(pass->pathConditions, Out, BBI, BB);
+
+  if(invarInfo->pathConditions)
+    printPathConditionsFrom(*invarInfo->pathConditions, Out, BBI, BB);
+
+}
+
 void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief) {
 
   if(brief && !BB)
@@ -368,27 +409,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   bool isFunctionHeader = (!L) && (BBI->BB == &(F.getEntryBlock()));
 
-  if(BB && (!L) && BB->IA->getFunctionRoot()->targetCallInfo) {
-
-    // Mention if there are symbolic path conditions or functions here:
-    printPathConditions(pass->rootIntPathConditions, PathConditionTypeInt, Out, BBI, BB);
-    printPathConditions(pass->rootIntmemPathConditions, PathConditionTypeIntmem, Out, BBI, BB);
-    printPathConditions(pass->rootStringPathConditions, PathConditionTypeString, Out, BBI, BB);
-
-    for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
-	  itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
-
-      if(it->BB == BBI->BB) {
-
-	Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  Call PC: ";
-	Out << it->F->getName();
-	Out << "</td></tr>\n";
-
-      }
-
-    }
-
-  }
+  printPathConditions(Out, BBI, BB);
 
   size_t ValSize = BBI->BB->size();
   if(isFunctionHeader)

@@ -239,18 +239,24 @@ static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>
 
 }
 
+static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB* BB, bool contextEnabled) {
+
+  walkPathConditions(PathConditionTypeIntmem, PC.IntmemPathConditions, 
+		     contextEnabled, BB, stackIdx);
+  walkPathConditions(PathConditionTypeString, PC.StringPathConditions, 
+		     contextEnabled, BB, stackIdx);
+
+}
+
 static void walkPathConditions(ShadowBB* BB, bool contextEnabled) {
 
   InlineAttempt* IA = BB->IA->getFunctionRoot();
+  
+  if(IA->targetCallInfo)
+    walkPathConditionsIn(GlobalIHP->pathConditions, IA->targetCallInfo->targetStackDepth, BB, contextEnabled);
 
-  if(IA->targetCallInfo) {
-
-    walkPathConditions(PathConditionTypeIntmem, BB->IA->pass->rootIntmemPathConditions, 
-		       contextEnabled, BB, IA->targetCallInfo->targetStackDepth);
-    walkPathConditions(PathConditionTypeString, BB->IA->pass->rootStringPathConditions, 
-		       contextEnabled, BB, IA->targetCallInfo->targetStackDepth);
-
-  }
+  if(BB->IA->invarInfo->pathConditions)
+    walkPathConditionsIn(*BB->IA->invarInfo->pathConditions, UINT_MAX, BB, contextEnabled);
 
 }
 

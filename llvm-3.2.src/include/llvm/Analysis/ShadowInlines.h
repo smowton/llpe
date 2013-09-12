@@ -1170,12 +1170,18 @@ struct ShadowLoopInvar {
   
 };
 
+class PathConditions;
+
 struct ShadowFunctionInvar {
 
   ImmutableArray<ShadowBBInvar> BBs;
   ImmutableArray<ShadowArgInvar> Args;
   DenseMap<const Loop*, ShadowLoopInvar*> LInfo;
   int32_t frameSize;
+  
+  PathConditions* pathConditions;
+  
+ShadowFunctionInvar() : frameSize(0), pathConditions(0) {}
 
 };
 

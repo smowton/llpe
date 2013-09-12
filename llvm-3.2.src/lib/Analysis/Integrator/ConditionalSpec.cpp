@@ -110,20 +110,37 @@ bool PeelIteration::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pai
 
 bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
 
-  if(!targetCallInfo)
-    return false;
+  if(targetCallInfo) {
+   
+    if(tryGetPathValueFrom(pass->pathConditions, V, UserBlock, Result))
+      return true;
+
+  }
+
+  if(invarInfo->pathConditions) {
+
+    if(tryGetPathValueFrom(*invarInfo->pathConditions, V, UserBlock, Result))
+      return true;
+
+  }
+
+  return false;
+
+}
+
+bool InlineAttempt::tryGetPathValueFrom(PathConditions& PC, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
 
   ShadowInstruction* SI = V.getInst();
   ShadowArg* SA = V.getArg();
   if((!SI) && (!SA))
     return false;
 
-  for(std::vector<PathCondition>::iterator it = pass->rootIntPathConditions.begin(),
-	itend = pass->rootIntPathConditions.end(); it != itend; ++it) {
+  for(std::vector<PathCondition>::iterator it = PC.IntPathConditions.begin(),
+	itend = PC.IntPathConditions.end(); it != itend; ++it) {
 
     /* fromStackIdx must equal instStackIdx for this kind of condition */
 
-    if(it->instStackIdx == targetCallInfo->targetStackDepth) {
+    if(it->instStackIdx == UINT_MAX || it->instStackIdx == targetCallInfo->targetStackDepth) {
       
       bool match = false;
 
@@ -171,6 +188,9 @@ void PeelIteration::applyMemoryPathConditions(ShadowBB* BB) {
 
 InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth) {
 
+  if(depth == UINT_MAX)
+    return IA;
+
   release_assert(IA->targetCallInfo);
   if(IA->targetCallInfo->targetStackDepth == depth)
     return IA;
@@ -215,7 +235,10 @@ ShadowValue InlineAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock
 
 void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB) {
 
-  if(it->fromStackIdx == targetCallInfo->targetStackDepth && it->fromBB == BB->invar->BB) {
+  // UINT_MAX signifies a path condition that applies to all instances of this function.
+
+  if((it->fromStackIdx == UINT_MAX || it->fromStackIdx == targetCallInfo->targetStackDepth) && 
+     it->fromBB == BB->invar->BB) {
 
     ShadowValue ptrSV = getPathConditionOperand(it->instStackIdx, it->instBB, it->instIdx);
     ImprovedValSetSingle writePtr;
@@ -265,27 +288,35 @@ void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes con
 
 void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 
-  if(!targetCallInfo)
-    return;
+  if(targetCallInfo)
+    applyMemoryPathConditionsFrom(BB, pass->pathConditions);
 
-  for(std::vector<PathCondition>::iterator it = pass->rootStringPathConditions.begin(),
-	itend = pass->rootStringPathConditions.end(); it != itend; ++it) {
+  if(invarInfo->pathConditions)
+    applyMemoryPathConditionsFrom(BB, *invarInfo->pathConditions);
+
+}
+
+void InlineAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& PC) {
+
+  for(std::vector<PathCondition>::iterator it = PC.StringPathConditions.begin(),
+	itend = PC.StringPathConditions.end(); it != itend; ++it) {
 
     applyPathCondition(&*it, PathConditionTypeString, BB);
 
   }
 
-  for(std::vector<PathCondition>::iterator it = pass->rootIntmemPathConditions.begin(),
-	itend = pass->rootIntmemPathConditions.end(); it != itend; ++it) {  
+  for(std::vector<PathCondition>::iterator it = PC.IntmemPathConditions.begin(),
+	itend = PC.IntmemPathConditions.end(); it != itend; ++it) {  
 
     applyPathCondition(&*it, PathConditionTypeIntmem, BB);
 
   }
 
-  for(std::vector<PathFunc>::iterator it = pass->rootFuncPathConditions.begin(),
-	itend = pass->rootFuncPathConditions.end(); it != itend; ++it) {
+  for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
+	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
 
-    if(it->stackIdx == targetCallInfo->targetStackDepth && it->BB == BB->invar->BB) {
+    if((it->stackIdx == UINT_MAX || it->stackIdx == targetCallInfo->targetStackDepth) && 
+       it->BB == BB->invar->BB) {
 
       // Insert a model call that notionally occurs before the block begins.
       // Notionally its callsite is the first instruction in BB; this is probably not a call
@@ -381,18 +412,27 @@ static uint32_t countPathConditionsIn(BasicBlock* BB, uint32_t stackIdx, std::ve
 
 }
 
-uint32_t IntegrationHeuristicsPass::countPathConditionsForBlock(ShadowBB* BB) {
+static uint32_t countPathConditionsForBlockIn(ShadowBB* BB, uint32_t stackIdx, PathConditions& PCs) {
 
-  IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
-  if(!Info)
-    return 0;
-
-  uint32_t stackIdx = Info->targetStackDepth;
   BasicBlock* B = BB->invar->BB;
 
-  return countPathConditionsIn(B, stackIdx, rootIntPathConditions) +
-    countPathConditionsIn(B, stackIdx, rootStringPathConditions) +
-    countPathConditionsIn(B, stackIdx, rootIntmemPathConditions);
+  return countPathConditionsIn(B, stackIdx, PCs.IntPathConditions) +
+    countPathConditionsIn(B, stackIdx, PCs.StringPathConditions) +
+    countPathConditionsIn(B, stackIdx, PCs.IntmemPathConditions);  
+
+}
+
+uint32_t IntegrationHeuristicsPass::countPathConditionsForBlock(ShadowBB* BB) {
+
+  uint32_t total = 0;
+  if(BB->IA->invarInfo->pathConditions)
+    total = countPathConditionsForBlockIn(BB, UINT_MAX, *BB->IA->invarInfo->pathConditions);
+  
+  IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
+  if(Info)
+    total += countPathConditionsForBlockIn(BB, Info->targetStackDepth, pathConditions);
+
+  return total;
 
 }
 
@@ -420,7 +460,7 @@ ShadowValue InlineAttempt::getPathConditionSV(PathCondition& Cond) {
 
 void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
-  if(stackIdx != Cond.fromStackIdx || BB->invar->BB != Cond.fromBB)
+  if((stackIdx != UINT_MAX && stackIdx != Cond.fromStackIdx) || BB->invar->BB != Cond.fromBB)
     return;
 
   BasicBlock* emitBlock = (emitBlockIt++)->first;
@@ -532,17 +572,28 @@ SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator IntegrationAttempt::e
 
 }
 
+void InlineAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& it) {
+
+  emitPathConditionChecksIn(PC.IntPathConditions, PathConditionTypeInt, BB, stackIdx, it);
+  emitPathConditionChecksIn(PC.StringPathConditions, PathConditionTypeString, BB, stackIdx, it);
+  emitPathConditionChecksIn(PC.IntmemPathConditions, PathConditionTypeIntmem, BB, stackIdx, it); 
+
+}
+
 SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator InlineAttempt::emitPathConditionChecks(ShadowBB* BB) {
 
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it = BB->committedBlocks.begin();
 
   IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
-  if(!Info)
-    return it;
+  if(Info) {
 
-  emitPathConditionChecksIn(pass->rootIntPathConditions, PathConditionTypeInt, BB, Info->targetStackDepth, it);
-  emitPathConditionChecksIn(pass->rootStringPathConditions, PathConditionTypeString, BB, Info->targetStackDepth, it);
-  emitPathConditionChecksIn(pass->rootIntmemPathConditions, PathConditionTypeIntmem, BB, Info->targetStackDepth, it);
+    uint32_t stackIdx = Info->targetStackDepth;
+    emitPathConditionChecks2(BB, pass->pathConditions, stackIdx, it);
+
+  }
+
+  if(invarInfo->pathConditions)
+    emitPathConditionChecks2(BB, *invarInfo->pathConditions, UINT_MAX, it);
 
   return it;
   
