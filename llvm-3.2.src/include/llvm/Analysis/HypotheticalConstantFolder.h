@@ -664,11 +664,10 @@ struct OpenStatus {
 
   std::string Name;
   bool success;
-  bool FDEscapes;
   bool MayDelete;
 
-OpenStatus(std::string N, bool Success, bool Esc) : Name(N), success(Success), FDEscapes(Esc), MayDelete(false) { }
-OpenStatus() : Name(""), success(false), FDEscapes(false), MayDelete(false) {}
+OpenStatus(std::string N, bool Success) : Name(N), success(Success), MayDelete(false) { }
+OpenStatus() : Name(""), success(false), MayDelete(false) {}
 
 };
 

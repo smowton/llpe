@@ -1207,8 +1207,15 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
     }
 
     LPDEBUG(itcache(*I) << " now constant at " << itcache(*newConst) << "\n");
-    ImpType = ValSetTypeScalar;
-    Improved.V = ShadowValue(newConst);
+
+    if(isa<ConstantPointerNull>(newConst)) {
+      ImpType = ValSetTypePB;
+      Improved = ImprovedVal(ShadowValue(newConst), 0);
+    }
+    else{
+      ImpType = ValSetTypeScalar;
+      Improved.V = ShadowValue(newConst);
+    }
   }
   else {
     ImpType = ValSetTypeOverdef;

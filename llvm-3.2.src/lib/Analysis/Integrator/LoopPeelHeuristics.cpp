@@ -780,8 +780,8 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   if(PeelIteration* PI = getIteration(iter))
     return PI;
 
-  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
-    return 0;
+  //  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+  //    return 0;
   
   LPDEBUG("Peeling iteration " << iter << " of loop " << L->getHeader()->getName() << "\n");
 
@@ -2379,7 +2379,12 @@ int64_t IntegrationHeuristicsPass::parsePCInst(BasicBlock* bb, Module* M, std::s
 
   if(!bb) {
     GlobalVariable* GV = M->getGlobalVariable(instIndexStr, true);
-    release_assert(GV && "Bad global variable in path condition");
+    if(!GV) {
+
+      errs() << "No global variable " << instIndexStr << "\n";
+      exit(1);
+
+    }
     return (int64_t)getShadowGlobalIndex(GV);
   }
   else

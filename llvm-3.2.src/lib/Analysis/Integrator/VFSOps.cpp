@@ -8,6 +8,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/System/Path.h"
 #include "llvm/Support/CFG.h"
@@ -142,24 +143,8 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	    return true;
 	  }
 
-	  bool FDEscapes = false;
-	  for(Value::use_iterator UI = CI->use_begin(), UE = CI->use_end(); (!FDEscapes) && (UI != UE); ++UI) {
-
-	    if(Instruction* I = dyn_cast<Instruction>(*UI)) {
-
-	      if(I->mayWriteToMemory()) {
-		
-		LPDEBUG("Marking open call " << itcache(*CI) << " escaped due to user " << itcache(*I) << "\n");
-		FDEscapes = true;
-
-	      }
-
-	    }
-
-	  }
-	  
 	  bool exists = sys::Path(Filename).exists();
-	  forwardableOpenCalls[CI] = new OpenStatus(Filename, exists, FDEscapes);
+	  forwardableOpenCalls[CI] = new OpenStatus(Filename, exists);
 	  if(exists) {
 	    cast<ImprovedValSetSingle>(SI->i.PB)->set(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
@@ -319,7 +304,6 @@ static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
 
  // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
   
-  OpenStatus& OS = FD->parent->IA->getOpenStatus(cast_inst<CallInst>(FD));
   Function* calledF = getCalledFunction(SI);
 
   // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
@@ -350,18 +334,7 @@ static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
   else if(calledF && functionIsBlacklisted(calledF))
    return false;
   
-  if(OS.FDEscapes && ((!calledF) || !calledF->doesNotAccessMemory()))
-    return true;
-
-  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
-
-    ShadowValue ArgOp = SI->getCallArgOperand(i);
-    if(aliasesFD(ArgOp, FD) != AliasAnalysis::NoAlias)
-      return true;
-    
-  }
-
-  return false;
+  return true;
 
 }
 
@@ -372,6 +345,17 @@ bool FindVFSPredecessorWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
 }
 
 bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
+
+  // If we get to here and the call is a syscall then it doesn't alter the FD position.
+  if(Function* F = getCalledFunction(SI)) {
+
+    if(GlobalVFSAA->getFunctionInfo(F))
+      return false;
+
+    if(SpecialFunctionMap.count(F))
+      return false;
+
+  }
 
   uniqueIncomingOffset = -1;
   return true;

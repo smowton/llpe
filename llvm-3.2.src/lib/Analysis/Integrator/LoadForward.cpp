@@ -20,6 +20,17 @@
 
 using namespace llvm;
 
+static void checkIVSNull(ImprovedValSetSingle& IVS) {
+
+  for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
+
+    if(val_is<ConstantPointerNull>(IVS.Values[i].V))
+      release_assert(IVS.SetType == ValSetTypePB);
+
+  }
+
+}
+
 ImprovedValSetMulti::ImprovedValSetMulti(ShadowValue& V) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0) {
 
   AllocSize = V.getAllocSize();
@@ -3154,6 +3165,8 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
   if(!ValPB.isInitialised())
     ValPB.setOverdef();
 
+  checkIVSNull(ValPB);
+
   // Perform the store
 
   if(PtrSet.isWhollyUnknown()) {
@@ -3403,6 +3416,7 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
 	  consumeVal.mergeOne(ValSetTypePB, ImprovedVal(newNull, 0));
 	else
 	  consumeVal.mergeOne(ValSetTypeScalar, ImprovedVal(newNull));
+	checkIVSNull(consumeVal);
 	return;
 
       }
@@ -3414,6 +3428,8 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
     consumeVal.merge(otherVal);
 
   }
+
+  checkIVSNull(consumeVal);
 
 }
 
