@@ -102,7 +102,14 @@ bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* 
 }
 
 
-bool PeelIteration::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+bool IntegrationAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+
+  if(invarInfo->pathConditions) {
+
+    if(tryGetPathValueFrom(*invarInfo->pathConditions, UINT_MAX, V, UserBlock, Result))
+      return true;
+
+  }
 
   return false;
 
@@ -112,23 +119,16 @@ bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pai
 
   if(targetCallInfo) {
    
-    if(tryGetPathValueFrom(pass->pathConditions, V, UserBlock, Result))
+    if(tryGetPathValueFrom(pass->pathConditions, targetCallInfo->targetStackDepth, V, UserBlock, Result))
       return true;
 
   }
 
-  if(invarInfo->pathConditions) {
-
-    if(tryGetPathValueFrom(*invarInfo->pathConditions, V, UserBlock, Result))
-      return true;
-
-  }
-
-  return false;
+  return IntegrationAttempt::tryGetPathValue(V, UserBlock, Result);
 
 }
 
-bool InlineAttempt::tryGetPathValueFrom(PathConditions& PC, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStackDepth, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
 
   ShadowInstruction* SI = V.getInst();
   ShadowArg* SA = V.getArg();
@@ -140,7 +140,7 @@ bool InlineAttempt::tryGetPathValueFrom(PathConditions& PC, ShadowValue V, Shado
 
     /* fromStackIdx must equal instStackIdx for this kind of condition */
 
-    if(it->instStackIdx == UINT_MAX || it->instStackIdx == targetCallInfo->targetStackDepth) {
+    if(it->instStackIdx == myStackDepth) {
       
       bool match = false;
 
@@ -148,7 +148,7 @@ bool InlineAttempt::tryGetPathValueFrom(PathConditions& PC, ShadowValue V, Shado
 	 it->instBB == SI->parent->invar->BB &&
 	 it->instIdx == SI->invar->idx) {
 
-	if(DT->dominates(it->fromBB, UserBlock->invar->BB))
+	if(getFunctionRoot()->DT->dominates(it->fromBB, UserBlock->invar->BB))
 	  match = true;
 
       }
@@ -164,7 +164,7 @@ bool InlineAttempt::tryGetPathValueFrom(PathConditions& PC, ShadowValue V, Shado
 
 	// Make sure a failed version of the from-block and its successors is created:
 	uint32_t fromBlockIdx = findBlock(UserBlock->IA->invarInfo, it->fromBB);
-	markBlockAndSuccsFailed(fromBlockIdx, 0);
+	getFunctionRoot()->markBlockAndSuccsFailed(fromBlockIdx, 0);
 
 	Result.first = ValSetTypeScalar;
 	Result.second.V = it->val;

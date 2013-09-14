@@ -1102,7 +1102,8 @@ protected:
   bool tryEvaluateMultiInst(ShadowInstruction* I, ImprovedValSet*& NewPB);
   bool tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValSet*& NewIV);
   MultiCmpResult tryEvaluateMultiEq(ShadowInstruction* SI);
-  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) = 0;
+  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
+  bool tryGetPathValueFrom(PathConditions& PC, uint32_t stackDepth, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
 
   // CFG analysis:
 
@@ -1244,7 +1245,7 @@ protected:
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
   bool blockLiveInAnyScope(ShadowBBInvar* BB);
-  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) = 0;
+  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
@@ -1446,10 +1447,8 @@ public:
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   virtual bool commitsOutOfLine();
-  virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
   virtual void popAllocas(OrdinaryLocalStore*);
-  virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
 
 };
 
@@ -1693,7 +1692,6 @@ class InlineAttempt : public IntegrationAttempt {
   void executeCall(uint32_t new_stack_depth);
   void releaseCallLatchStores();
   virtual bool tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
-  bool tryGetPathValueFrom(PathConditions& PC, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual void applyMemoryPathConditions(ShadowBB*);
   void applyMemoryPathConditionsFrom(ShadowBB*, PathConditions&);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*);

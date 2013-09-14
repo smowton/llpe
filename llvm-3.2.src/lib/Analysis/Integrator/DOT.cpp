@@ -349,9 +349,10 @@ static void printPathConditionsFrom(PathConditions& PC, raw_ostream& Out, Shadow
 
 }
 
-void PeelIteration::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
+void IntegrationAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
 
-  return;
+  if(invarInfo->pathConditions)
+    printPathConditionsFrom(*invarInfo->pathConditions, Out, BBI, BB);
 
 }
 
@@ -363,8 +364,7 @@ void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, Sh
   if(targetCallInfo)
     printPathConditionsFrom(pass->pathConditions, Out, BBI, BB);
 
-  if(invarInfo->pathConditions)
-    printPathConditionsFrom(*invarInfo->pathConditions, Out, BBI, BB);
+  IntegrationAttempt::printPathConditions(Out, BBI, BB);
 
 }
 
