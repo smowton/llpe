@@ -513,16 +513,8 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 
     if(Value* V = LIPB.Values[i].V.getVal()) {
 
-      if(isa<ConstantPointerNull>(V)) {
-
-	Type* defType = LI->getType();
-	Constant* nullVal = Constant::getNullValue(defType);
-	std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	ImprovedValSetSingle NullPB(ResultIV.second, ResultIV.first);
-	NewPB->merge(NullPB);
+      if(isa<ConstantPointerNull>(V))
 	continue;
-
-      }
 
     }
 

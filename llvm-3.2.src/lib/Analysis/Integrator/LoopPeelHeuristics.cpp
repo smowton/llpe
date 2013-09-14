@@ -2847,7 +2847,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 	exit(1);
       }
 
-      callerFunction = 0;
+      callerFunction = targetCallStack[fStackIdx].first->getParent();
 
     }
     else {
@@ -2864,7 +2864,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
     }
     
-    BasicBlock* assumeBlock = findBlockRaw(targetCallStack[fStackIdx].first->getParent(), bbName);
+    BasicBlock* assumeBlock = findBlockRaw(callerFunction, bbName);
     Function* CallF = IA->F.getParent()->getFunction(calledName);
 
     FunctionType* FType = CallF->getFunctionType();
