@@ -371,6 +371,7 @@ static LibCallFunctionInfo VFSCallFunctions[] = {
   { "__pthread_mutex_unlock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
   { "pthread_setcanceltype", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg1AndErrnoMR, 0 },
   { "pthread_setcancelstate", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg1AndErrnoMR, 0 },
+  { "writev", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
   // Terminator
   { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
 

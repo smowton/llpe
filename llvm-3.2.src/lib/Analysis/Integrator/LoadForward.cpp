@@ -3086,13 +3086,14 @@ bool IntegrationAttempt::noteChildBarriers() {
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
-    if(!it->second->isTerminated())
-      continue;
+    bool terminated = it->second->isTerminated();
 
     for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
 	  iterend = it->second->Iterations.end(); iterit != iterend; ++iterit) {
 
-      if((*iterit)->noteChildBarriers() && barrierState == BARRIER_NONE)
+      // If the loop isn't terminated, don't taint parent contexts;
+      // the general instance will do that if appropriate.
+      if((*iterit)->noteChildBarriers() && barrierState == BARRIER_NONE && terminated)
 	barrierState = BARRIER_CHILD;
 
     }
