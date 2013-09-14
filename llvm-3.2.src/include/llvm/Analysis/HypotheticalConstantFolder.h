@@ -1133,7 +1133,8 @@ protected:
 
   // Load forwarding:
 
-  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedValSet*& Result, std::string* error);
+  bool tryResolveLoadFromConstant(ShadowInstruction*, ImprovedVal Ptr, ImprovedValSetSingle& Result);
+  bool tryResolveLoadFromVararg(ShadowInstruction* LoadI, ImprovedValSet*& Result);
   bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
   virtual void applyMemoryPathConditions(ShadowBB*) = 0;
@@ -1843,7 +1844,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
  void getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  Constant* valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType);
- void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSet*& Result);
+ void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
  Constant* getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType = 0);
  void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
  void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);

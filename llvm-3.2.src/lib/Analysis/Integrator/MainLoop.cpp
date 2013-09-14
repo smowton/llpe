@@ -202,7 +202,8 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
       // Take account of the number of live edges leaving the last iteration
       // when deciding which blocks are certain:
-      pendingEdges += LPA->Iterations.back()->pendingEdges;
+      // The -1 accounts for the header's incoming edge.
+      pendingEdges += (LPA->Iterations.back()->pendingEdges - 1);
       LPA->Iterations.back()->pendingEdges = 0;
 
     }

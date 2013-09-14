@@ -408,7 +408,7 @@ Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size
 
 }
 
-bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedValSet*& Result, std::string* error) {
+bool IntegrationAttempt::tryResolveLoadFromVararg(ShadowInstruction* LoadI, ImprovedValSet*& Result) {
 
   // A special case: loading from a symbolic vararg:
 
@@ -431,94 +431,39 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
   }
 
-  ShadowValue PtrBase;
-  int64_t PtrOffset;
+  return false;
 
-  if(getBaseAndConstantOffset(LoadI->getOperand(0), PtrBase, PtrOffset)) {
+}
 
-    if(ShadowGV* SGV = PtrBase.getGV()) {
+bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedVal Ptr, ImprovedValSetSingle& Result) {
 
-      GlobalVariable* GV = SGV->G;
+  // We already know Ptr has a known offset (i.e. Ptr.Offset != LLONG_OFFSET).
 
-      if(GV->isConstant()) {
+  if(ShadowGV* SGV = Ptr.V.getGV()) {
 
-	uint64_t LoadSize = GlobalAA->getTypeStoreSize(LoadI->getType());
-	Type* FromType = GV->getInitializer()->getType();
-	uint64_t FromSize = GlobalAA->getTypeStoreSize(FromType);
+    GlobalVariable* GV = SGV->G;
+    
+    if(GV->isConstant()) {
 
-	if(PtrOffset < 0 || PtrOffset + LoadSize > FromSize) {
-	  if(error)
-	    *error = "Const out of range";
-	  Result = newOverdefIVS();
-	  return true;
-	}
+      uint64_t LoadSize = GlobalAA->getTypeStoreSize(LoadI->getType());
+      Type* FromType = GV->getInitializer()->getType();
+      uint64_t FromSize = GlobalAA->getTypeStoreSize(FromType);
 
-	getConstSubVal(GV->getInitializer(), PtrOffset, LoadSize, LoadI->getType(), Result);
+      if(Ptr.Offset < 0 || Ptr.Offset + LoadSize > FromSize) {
+	Result.setOverdef();
 	return true;
-
       }
-
-    }
-
-  }
       
-  // Check for loads which are pointless to pursue further because they're known to be rooted on
-  // a constant global but we're uncertain what offset within that global we're looking for:
-
-  if(ShadowInstruction* SI = LoadI->getOperand(0).getInst()) {
-
-    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI->i.PB)) {
-
-      if(IVS->Values.size() > 0 && IVS->SetType == ValSetTypePB) {
-
-	bool foundNonNull = false;
-	bool foundNonConst = false;
-	for(unsigned i = 0; i < IVS->Values.size(); ++i) {
-
-	  Value* BaseV = IVS->Values[i].V.getVal();
-
-	  if(BaseV && isa<ConstantPointerNull>(BaseV))
-	    continue;
-
-	  foundNonNull = true;
-
-	  GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(BaseV);
-	  if((!GV) || !GV->isConstant())
-	    foundNonConst = true;
-
-	}
-
-	if(!foundNonNull) {
-
-	  // Suppose that loading from a known null returns a null result.
-	  // TODO: convert this to undef, and thus rationalise the multi-load path.
-	  Type* defType = LoadI->getType();
-	  Constant* nullVal = Constant::getNullValue(defType);
-	  std::pair<ValSetType, ImprovedVal> ResultIV = getValPB(nullVal);
-	  ImprovedValSetSingle* NewIVS = newIVS();
-	  Result = NewIVS;
-	  NewIVS->set(ResultIV.second, ResultIV.first);
-	  return true;
-
-	}
-	else if(!foundNonConst) {
-
-	  LPDEBUG("Load cannot presently be resolved, but is rooted on a constant global. Abandoning search\n");
-	  if(error)
-	    *error = "Const pointer vague";
-	  Result = newOverdefIVS();
-	  return true;
-
-	}
-
-      }
+      // getConstSubVal does the merge with Result.
+      getConstSubVal(GV->getInitializer(), Ptr.Offset, LoadSize, LoadI->getType(), Result);
+      return true;
 
     }
 
   }
 
   return false;
-
+  
 }
 
 static bool shouldMultiload(ImprovedValSetSingle& PB) {
@@ -567,6 +512,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
   for(uint32_t i = 0, ilim = LIPB.Values.size(); i != ilim && !NewPB->Overdef; ++i) {
 
     if(Value* V = LIPB.Values[i].V.getVal()) {
+
       if(isa<ConstantPointerNull>(V)) {
 
 	Type* defType = LI->getType();
@@ -577,7 +523,11 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 	continue;
 
       }
+
     }
+
+    if(LI->parent->IA->tryResolveLoadFromConstant(LI, LIPB.Values[i], *NewPB))
+      continue;
 
     if(!LI->parent->u.localStore->es.threadLocalObjects.count(LIPB.Values[i].V))
       LI->isThreadLocal = TLS_MUSTCHECK;
@@ -646,19 +596,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
   ImprovedValSetSingle ConstResult;
   std::auto_ptr<std::string> error(pass->verboseOverdef ? new std::string() : 0);
 
-  if(tryResolveLoadFromConstant(LI, NewPB, error.get())) {
-
-    LI->isThreadLocal = TLS_NEVERCHECK;
-
-    ImprovedValSetSingle* NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB);
-    if(NewIVS && NewIVS->Overdef && pass->verboseOverdef)
-      optimisticForwardStatus[LI->invar->I] = *error;
-    if(NewIVS)
-      return NewIVS->isInitialised();
-    else
-      return true;
-
-  }
+  if(tryResolveLoadFromVararg(LI, NewPB))
+    return true;
 
   bool ret;
 
@@ -1741,27 +1680,33 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
 
 }
 
-void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSet*& Result) {
+void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
 
   SmallVector<IVSRange, 4> subVals;
   getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
 
   if(subVals.size() != 1) {
+
     if(Constant* C = valsToConst(subVals, TargetSize, TargetType)) {
+
       std::pair<ValSetType, ImprovedVal> V = getValPB(C);
-      ImprovedValSetSingle* NewIVS = newIVS();
-      Result = NewIVS;
-      NewIVS->set(V.second, V.first);
+      Result.mergeOne(V.first, V.second);
+
     }
     else {
-      Result = newOverdefIVS();
+
+      Result.setOverdef();
+
     }
+
   }
   else {
-    ImprovedValSetSingle* NewIVS = copyIVS(&(subVals[0].second));
-    Result = NewIVS;
+
     if(TargetType)
-      NewIVS->coerceToType(TargetType, TargetSize, 0);
+      subVals[0].second.coerceToType(TargetType, TargetSize, 0);
+
+    Result.merge(subVals[0].second);
+
   }
 
 }

@@ -231,7 +231,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
   ShadowBB* BB = SI->parent;
   ShadowBBInvar* BBI = BB->invar;
-  
+
   for(uint32_t i = 0; i < BBI->succIdxs.size(); ++i) {
 
     if(!BB->succsAlive[i])
