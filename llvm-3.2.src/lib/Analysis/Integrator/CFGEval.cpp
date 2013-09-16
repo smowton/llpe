@@ -94,6 +94,31 @@ bool IntegrationAttempt::createEntryBlock() {
 
 }
 
+// Returns changed.
+static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
+
+  const unsigned NumSucc = TI->getNumSuccessors();
+  bool changed = false;
+
+  for (unsigned I = 0; I != NumSucc; ++I) {
+
+    BasicBlock* thisTarget = TI->getSuccessor(I);
+
+    if(thisTarget == Target) {
+
+      // Mark this edge alive
+      if(!BB->succsAlive[I])
+	changed = true;
+      BB->succsAlive[I] = true;
+
+    }
+
+  }
+
+  return changed;
+
+}
+
 // Return true on change.
 bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
@@ -127,6 +152,9 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
   }
 
+  TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
+  const unsigned NumSucc = TI->getNumSuccessors();
+
   if(ConstCondition) {
 
     BasicBlock* takenTarget = 0;
@@ -147,26 +175,7 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
       // We know where the instruction is going -- remove this block as a predecessor for its other targets.
       LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
 
-      TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
-
-      const unsigned NumSucc = TI->getNumSuccessors();
-
-      for (unsigned I = 0; I != NumSucc; ++I) {
-
-	BasicBlock* thisTarget = TI->getSuccessor(I);
-
-	if(thisTarget == takenTarget) {
-
-	  // Mark this edge alive
-	  if(!SI->parent->succsAlive[I])
-	    changed = true;
-	  SI->parent->succsAlive[I] = true;
-
-	}
-
-      }
-
-      return changed;
+      return setEdgeAlive(TI, SI->parent, takenTarget);
 
     }
     
@@ -174,9 +183,31 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
   }
 
+  SwitchInst* Switch;
+  ImprovedValSetSingle* IVS;
+
+  if((Switch = dyn_cast_inst<SwitchInst>(SI)) && 
+     (IVS = dyn_cast<ImprovedValSetSingle>(getIVSRef(Condition))) && 
+     IVS->SetType == ValSetTypeScalar && 
+     !IVS->Values.empty()) {
+
+    // A set of values feeding a switch. Set each corresponding edge alive.
+
+    bool changed = false;
+
+    for (unsigned i = 0, ilim = IVS->Values.size(); i != ilim; ++i) {
+
+      SwitchInst::CaseIt targetit = Switch->findCaseValue(cast<ConstantInt>(IVS->Values[i].V.getVal()));
+      BasicBlock* target = targetit.getCaseSuccessor();
+      changed |= setEdgeAlive(TI, SI->parent, target);
+
+    }
+
+    return changed;
+
+  }
+
   // Condition unknown -- set all successors alive.
-  TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
-  const unsigned NumSucc = TI->getNumSuccessors();
   for (unsigned I = 0; I != NumSucc; ++I) {
     
     // Mark outgoing edge alive

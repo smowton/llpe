@@ -480,7 +480,9 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
     if(Value* V = PB.Values[i].V.getVal()) {
       if(isa<ConstantPointerNull>(V))
-	continue;      
+	continue;
+      if(isa<UndefValue>(V))
+	continue;
     }
 
     if(PB.Values[i].Offset == LLONG_MAX)
@@ -513,7 +515,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 
     if(Value* V = LIPB.Values[i].V.getVal()) {
 
-      if(isa<ConstantPointerNull>(V))
+      if(isa<ConstantPointerNull>(V) || isa<UndefValue>(V))
 	continue;
 
     }
@@ -1201,7 +1203,15 @@ void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB
 
 }
 
-bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string* error) {
+// TODO: Discover problems without running the whole check twice.
+bool ImprovedValSetSingle::canCoerceToType(Type* Target, uint64_t TargetSize, std::string* error, bool allowImplicitPtrToInt) {
+
+  ImprovedValSetSingle Copy(*this);
+  return Copy.coerceToType(Target, TargetSize, error, allowImplicitPtrToInt);
+
+}
+
+bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::string* error, bool allowImplicitPtrToInt) {
 
   Type* Source = Values[0].V.getType();
   
@@ -1213,19 +1223,36 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
   // without modifying anything:
   if(allowTotalDefnImplicitCast(Source, Target))
     return true;
-  if(allowTotalDefnImplicitPtrToInt(Source, Target, GlobalTD))
+  if(allowImplicitPtrToInt && allowTotalDefnImplicitPtrToInt(Source, Target, GlobalTD))
     return true;
 
-  if(SetType != ValSetTypeScalar) {
+  bool mightWork = (SetType == ValSetTypeScalar || (SetType == ValSetTypePB && onlyContainsNulls()));
+
+  if(!mightWork) {
     if(error)
-      *error = "Non-scalar coercion";
+      *error = "Coercion of value without known bit pattern";
     return false;
   }
 
   // Finally reinterpret cast each member:
   for(uint32_t i = 0, iend = Values.size(); i != iend; ++i) {
 
-    PartialVal PV = PartialVal::getPartial(cast<Constant>(Values[i].V.getVal()), 0);
+    Constant* FromC = cast<Constant>(Values[i].V.getVal());
+    if(FromC->getType() == Target)
+      continue;
+
+    if(isa<UndefValue>(FromC)) {
+
+      Values[i].V.u.V = UndefValue::get(Target);
+      if(Target->isPointerTy())
+	SetType = ValSetTypePB;
+      else
+	SetType = ValSetTypeScalar;
+      continue;
+
+    }
+
+    PartialVal PV = PartialVal::getPartial(FromC, 0);
     if(!PV.convertToBytes(TargetSize, GlobalTD, error))
       return false;
 
@@ -3188,7 +3215,7 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
 	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
-
+	
 	checkStore(Store.store, it->V);
 
       }
@@ -3208,8 +3235,19 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
 	  if((!oldValSet.isWhollyUnknown()) && oldValSet.isInitialised()) {
 
-	    if(!ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0)) {
+	    if(ValPB.canCoerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0, false)) {
+
+	      ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0, false);
 	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldValSet.Values[0].V.getType()) << "\n");
+
+	    }
+	    else if((!ValPB.isWhollyUnknown()) && ValPB.Values.size() > 0 && oldValSet.canCoerceToType(ValPB.Values[0].V.getType(), PtrSize, 0, false)) {
+		
+	      oldValSet.coerceToType(ValPB.Values[0].V.getType(), PtrSize, 0, false);
+
+	    }
+	    else {
+	      ValPB.setOverdef();
 	    }
 
 	  }

@@ -1409,6 +1409,14 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
 
   }
 
+  if(isa<UndefValue>(FromC)) {
+
+    if(!Target)
+      Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+    return UndefValue::get(Target);
+
+  }
+
   uint64_t StartE, StartOff, EndE, EndOff;
   bool mightWork = false;
 

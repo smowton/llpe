@@ -633,6 +633,22 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
 
 }
 
+static bool isIDOrConst(ShadowValue& op) {
+
+  if(isGlobalIdentifiedObject(op))
+    return true;
+
+  if(val_is<ConstantPointerNull>(op))
+    return true;
+
+  if(ConstantExpr* CE = dyn_cast_val<ConstantExpr>(op))
+    return CE->getOpcode() == Instruction::IntToPtr && isa<Constant>(CE->getOperand(0));
+
+  return false;
+
+}
+
+
 // Return value as above: true for "we've handled it" and false for "try constant folding"
 bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
@@ -682,11 +698,6 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
 
   }
 
-  // Only instructions that ultimately refer to pointers from here on
-
-  if(Ops[0].first != ValSetTypePB || Ops[1].first != ValSetTypePB)
-    return false;
-
   // 2. Comparison of pointers with a common base:
 
   if(op0 == op1) {
@@ -709,7 +720,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   // 3. Restricted comparison of pointers with a differing base: we can compare for equality only
   // as we don't know memory layout at this stage.
 
-  if(isGlobalIdentifiedObject(op0) && isGlobalIdentifiedObject(op1) && op0 != op1) {
+  if(isIDOrConst(op0) && isIDOrConst(op1) && op0 != op1) {
 
     // This works regardless of the pointers' offset values.
 

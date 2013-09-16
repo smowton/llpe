@@ -480,6 +480,14 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
       if(!L->contains(getBBInvar(i)->naturalScope))
 	break;
+
+      if(i == LInfo->headerIdx) {
+
+	release_assert(pendingEdges && "Decrementing pendingEdges below zero");
+	// Drop the preheader->header or latch->header edge.
+	--pendingEdges;
+
+      }
       
       anyChange |= analyseBlock(i, true, true, i == LInfo->headerIdx, L);
 
