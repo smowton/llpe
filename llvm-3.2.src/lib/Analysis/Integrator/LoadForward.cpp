@@ -2241,12 +2241,16 @@ void llvm::addHeapAlloc(ShadowInstruction* SI) {
 
 }
 
-static void executeMallocInst2(ShadowInstruction* SI, uint32_t param) {
+static void executeMallocInst2(ShadowInstruction* SI, AllocatorFn& param) {
 
   if(SI->store.store)
     return;
 
-  ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(param)));
+  ConstantInt* AllocSize;
+  if(param.isConstantSize)
+    AllocSize = param.allocSize;
+  else
+    AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(param.sizeArg)));
   Type* allocType = 0;
   if(AllocSize)
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
@@ -2256,7 +2260,7 @@ static void executeMallocInst2(ShadowInstruction* SI, uint32_t param) {
 
   addHeapAlloc(SI);
   executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
-
+  
 }
 
 void llvm::executeMallocLikeInst(ShadowInstruction* SI) {

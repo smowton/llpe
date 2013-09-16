@@ -91,7 +91,8 @@ static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::Zer
 static cl::opt<bool> DumpDSE("int-dump-dse");
 static cl::opt<bool> DumpTL("int-dump-tl");
 static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
-static cl::list<std::string> Allocators("int-allocator-fn", cl::ZeroOrMore);
+static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
+static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2285,8 +2286,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     
   }
 
-  for(cl::list<std::string>::iterator it = Allocators.begin(),
-	itend = Allocators.end(); it != itend; ++it) {
+  for(cl::list<std::string>::iterator it = VarAllocators.begin(),
+	itend = VarAllocators.end(); it != itend; ++it) {
 
     std::string fName, idxStr;
 
@@ -2304,12 +2305,38 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     uint32_t sizeParam = getInteger(idxStr, "int-allocator-fn second param");
 
-    allocatorFunctions[allocF] = sizeParam;
+    allocatorFunctions[allocF] = AllocatorFn::getVariableSize(sizeParam);
     SpecialFunctionMap[allocF] = SF_MALLOC;
 
   }
 
-  allocatorFunctions[F.getParent()->getFunction("malloc")] = 0;
+  for(cl::list<std::string>::iterator it = ConstAllocators.begin(),
+	itend = ConstAllocators.end(); it != itend; ++it) {
+
+    std::string fName, sizeStr;
+
+    std::istringstream istr(*it);
+    std::getline(istr, fName, ',');
+    std::getline(istr, sizeStr, ',');
+
+    Function* allocF = F.getParent()->getFunction(fName);
+    if(!allocF) {
+
+      errs() << "-int-allocator-fn-const: must specify a function\n";
+      exit(1);
+
+    }
+
+    uint32_t size = getInteger(sizeStr, "int-allocator-fn-const second param");
+
+    IntegerType* I32 = Type::getInt32Ty(F.getContext());
+
+    allocatorFunctions[allocF] = AllocatorFn::getConstantSize(ConstantInt::get(I32, size));
+    SpecialFunctionMap[allocF] = SF_MALLOC;
+
+  }
+
+  allocatorFunctions[F.getParent()->getFunction("malloc")] = AllocatorFn::getVariableSize(0);
 
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;

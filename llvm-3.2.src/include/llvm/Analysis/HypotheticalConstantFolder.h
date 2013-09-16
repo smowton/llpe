@@ -202,6 +202,29 @@ struct PathConditions {
 
 };
 
+struct AllocatorFn {
+
+  bool isConstantSize;
+  union {
+    uint32_t sizeArg;
+    ConstantInt* allocSize;
+  };
+  
+AllocatorFn() : isConstantSize(false), allocSize(0) {}
+AllocatorFn(uint32_t S) : isConstantSize(false), sizeArg(S) {}
+AllocatorFn(ConstantInt* C) : isConstantSize(true), allocSize(C) {}
+
+  static AllocatorFn getConstantSize(ConstantInt* size) {
+    return AllocatorFn(size);
+  }
+  static AllocatorFn getVariableSize(uint32_t arg) {
+    return AllocatorFn(arg);
+  }
+
+};
+
+
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -254,7 +277,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    PathConditions pathConditions;
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
-   SmallDenseMap<Function*, uint32_t, 4> allocatorFunctions;
+   SmallDenseMap<Function*, AllocatorFn, 4> allocatorFunctions;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
