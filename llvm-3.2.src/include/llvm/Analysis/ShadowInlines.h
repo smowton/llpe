@@ -1097,6 +1097,17 @@ typedef MergeBlockVisitor<LocStore, OrdinaryStoreExtraState> OrdinaryMerger;
 typedef MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState> DSEMerger;
 typedef MergeBlockVisitor<TLMapPointer, TLStoreExtraState> TLMerger;
 
+struct CommittedBlock {
+
+  BasicBlock* specBlock;
+  BasicBlock* breakBlock;
+  uint32_t startIndex;
+
+CommittedBlock() : specBlock(0), breakBlock(0), startIndex(UINT_MAX) {}
+CommittedBlock(BasicBlock* SB, BasicBlock* BB, uint32_t i) : specBlock(SB), breakBlock(BB), startIndex(i) {}
+
+};
+
 struct ShadowBB {
 
   IntegrationAttempt* IA;
@@ -1111,7 +1122,7 @@ struct ShadowBB {
     TLLocalStore* tlStore;
   } u;
 
-  SmallVector<std::pair<BasicBlock*, uint32_t>, 1> committedBlocks;
+  SmallVector<CommittedBlock, 1> committedBlocks;
   
   bool useSpecialVarargMerge;
   bool inAnyLoop;
@@ -1147,7 +1158,7 @@ struct ShadowBB {
   void clobberMayAliasOldObjects();
   void clobberGlobalObjects();
   void clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose);
-  BasicBlock* getCommittedBlockAt(uint32_t);
+  BasicBlock* getCommittedBreakBlockAt(uint32_t);
   DSEMapPointer* getWritableDSEStore(ShadowValue O);
   TLMapPointer* getWritableTLStore(ShadowValue O);
 

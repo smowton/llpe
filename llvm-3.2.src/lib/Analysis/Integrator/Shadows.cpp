@@ -755,15 +755,15 @@ bool ShadowValue::objectAvailableFrom(IntegrationAttempt* OtherIA) {
   
 }
 
-BasicBlock* ShadowBB::getCommittedBlockAt(uint32_t idx) {
+BasicBlock* ShadowBB::getCommittedBreakBlockAt(uint32_t idx) {
 
   for(uint32_t i = 0, ilim = committedBlocks.size(); i != ilim; ++i) {
 
-    std::pair<BasicBlock*, uint32_t>& Block = committedBlocks[i];
-    if(Block.second <= idx) {
+    CommittedBlock& Block = committedBlocks[i];
+    if(Block.startIndex <= idx) {
 
-      if(i + 1 == ilim || committedBlocks[i + 1].second > idx)
-	return Block.first;
+      if(i + 1 == ilim || committedBlocks[i + 1].startIndex > idx)
+	return Block.breakBlock;
 
     }
 

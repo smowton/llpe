@@ -315,6 +315,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool verboseOverdef;
    bool enableSharing;
    bool verboseSharing;
+   bool verbosePCs;
 
    DenseSet<ShadowInstruction*> barrierInstructions;
 
@@ -1319,9 +1320,9 @@ protected:
   void fixupHeaderPHIs(ShadowBB* BB);
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  void emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB);
+  void emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  bool synthCommittedPointer(ShadowValue I, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBB);
+  bool synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
   bool canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV);
   bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
@@ -1330,7 +1331,7 @@ protected:
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
   Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
-  void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBB);
+  void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
 
@@ -1347,6 +1348,7 @@ protected:
 
   void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
   bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
+  bool hasLiveIgnoredEdges(ShadowBB*);
   virtual void initFailedBlockCommit();
   uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
@@ -1359,15 +1361,15 @@ protected:
   virtual void populateFailedHeaderPHIs(const Loop*);
   Value* emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB);
   Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
-  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowBB* BB);
+  SmallVector<CommittedBlock, 1>::iterator emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowBB* BB);
   Value* emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB);
-  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowInstruction* SI);
-  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
+  SmallVector<CommittedBlock, 1>::iterator emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowInstruction* SI);
+  SmallVector<CommittedBlock, 1>::iterator emitPathConditionChecks(ShadowBB* BB);
   ShadowValue getPathConditionSV(uint32_t instStackIdx, BasicBlock* instBB, uint32_t instIdx);
   ShadowValue getPathConditionSV(PathCondition& Cond);
-  void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
-  void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt);
-  void emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& it);
+  void emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt);
+  void emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt);
+  void emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& it);
   bool hasSpecialisedCompanion(ShadowBBInvar* BBI);
   void gatherPathConditionEdges(uint32_t bbIdx, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>* preds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* IApreds);
   virtual void noteAsExpectedChecks(ShadowBB* BB);
@@ -1857,8 +1859,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  Function* getCalledFunction(ShadowInstruction*);
 
- bool edgeIsDead(ShadowBB* BB1, ShadowBBInvar* BB2I);
-
  int64_t getSpilledVarargAfter(ShadowInstruction* CI, int64_t OldArg);
 
  bool blockCertainlyExecutes(ShadowBB*);
@@ -1943,6 +1943,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  
  void releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB);
  void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
+ void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out);
+ void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
 

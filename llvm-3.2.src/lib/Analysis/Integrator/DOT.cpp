@@ -255,6 +255,67 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 	
 }
 
+void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out) {
+
+  switch(t) {
+  case PathConditionTypeInt:
+    Out << "Int";
+    break;
+  case PathConditionTypeString:
+    Out << "String";
+    break;
+  case PathConditionTypeIntmem:
+    Out << "Intmem";
+    break;
+  case PathConditionTypeFptrmem:
+    release_assert(0 && "Bad path condition type");
+    llvm_unreachable();
+  }
+
+  Out << " PC: ";
+
+  if(t == PathConditionTypeString) {
+
+    GlobalVariable* GV = cast<GlobalVariable>(PC.val);
+    ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
+    Out << "\"" << CDA->getAsCString() << "\"";
+
+  }
+  else {
+
+    Out << itcache(ShadowValue(PC.val), true);
+	
+  }
+
+  if(!PC.instBB) {
+
+    ShadowGV* GV = &GlobalIHP->shadowGlobals[PC.instIdx];
+    Out << " -&gt; " << itcache(GV);
+
+  }
+  else if(PC.instBB == (BasicBlock*)ULONG_MAX) {
+
+    IntegrationAttempt* ArgIA = getIAWithTargetStackDepth(BB->IA->getFunctionRoot(), PC.instStackIdx);
+
+    Function::arg_iterator AI = ArgIA->F.arg_begin();
+    std::advance(AI, PC.instIdx);
+    Out << " -&gt; " << itcache((Argument*)AI, true);
+
+  }
+  else {
+	
+    BasicBlock::iterator BI = PC.instBB->begin();
+    std::advance(BI, PC.instIdx);
+
+    Out << " -&gt; " << PC.instBB->getName() << " / " << itcache((Instruction*)BI, true);
+
+  }
+
+  if(PC.offset != 0)
+    Out << " + " << PC.offset;
+
+}
+
 static void printPathConditionList(std::vector<PathCondition>& conds, PathConditionTypes t, raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB) {
 
   for(std::vector<PathCondition>::iterator it = conds.begin(), itend = conds.end(); it != itend; ++it) {
@@ -262,62 +323,8 @@ static void printPathConditionList(std::vector<PathCondition>& conds, PathCondit
     if(it->fromBB == BBI->BB) {
 
       Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  ";
-      switch(t) {
-      case PathConditionTypeInt:
-	Out << "Int";
-	break;
-      case PathConditionTypeString:
-	Out << "String";
-	break;
-      case PathConditionTypeIntmem:
-	Out << "Intmem";
-	break;
-      case PathConditionTypeFptrmem:
-	release_assert(0 && "Bad path condition type");
-	llvm_unreachable();
-      }
 
-      Out << " PC: ";
-
-      if(t == PathConditionTypeString) {
-
-	GlobalVariable* GV = cast<GlobalVariable>(it->val);
-	ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
-	Out << "\"" << CDA->getAsCString() << "\"";
-
-      }
-      else {
-
-	Out << itcache(ShadowValue(it->val), true);
-	
-      }
-
-      if(!it->instBB) {
-
-	ShadowGV* GV = &GlobalIHP->shadowGlobals[it->instIdx];
-	Out << " -&gt; " << itcache(GV);
-
-      }
-      else if(it->instBB == (BasicBlock*)ULONG_MAX) {
-
-	IntegrationAttempt* ArgIA = getIAWithTargetStackDepth(BB->IA->getFunctionRoot(), it->instStackIdx);
-
-	Function::arg_iterator AI = ArgIA->F.arg_begin();
-	std::advance(AI, it->instIdx);
-	Out << " -&gt; " << itcache((Argument*)AI, true);
-
-      }
-      else {
-	
-	BasicBlock::iterator BI = it->instBB->begin();
-	std::advance(BI, it->instIdx);
-
-	Out << " -&gt; " << it->instBB->getName() << " / " << itcache((Instruction*)BI, true);
-
-      }
-
-      if(it->offset != 0)
-	Out << " + " << it->offset;
+      printPathCondition(*it, t, BB, Out);
 
       Out << "</td></tr>\n";
 

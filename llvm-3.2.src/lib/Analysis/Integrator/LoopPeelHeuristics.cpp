@@ -93,6 +93,7 @@ static cl::opt<bool> DumpTL("int-dump-tl");
 static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
 static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
 static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
+static cl::opt<bool>VerbosePathConditions("int-verbose-path-conditions");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2342,6 +2343,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->enableSharing = EnableFunctionSharing;
   this->verboseSharing = VerboseFunctionSharing;
   this->useDSA = UseDSA;
+  this->verbosePCs = VerbosePathConditions;
 
 }
 

@@ -536,12 +536,13 @@ ShadowValue IntegrationAttempt::getPathConditionSV(PathCondition& Cond) {
 
 }
 
-void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
+void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt) {
 
   if((stackIdx != UINT_MAX && stackIdx != Cond.fromStackIdx) || BB->invar->BB != Cond.fromBB)
     return;
 
-  BasicBlock* emitBlock = (emitBlockIt++)->first;
+  CommittedBlock& emitCB = *(emitBlockIt++);
+  BasicBlock* emitBlock = emitCB.specBlock;
 
   Instruction* resultInst = 0;
   Value* testRoot = getCommittedValue(getPathConditionSV(Cond));
@@ -632,18 +633,40 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
   // resultInst is a boolean indicating if the path condition matched.
   // Branch to the next specialised block on pass, or the first non-specialised block otherwise.
 
-  BranchInst::Create(emitBlockIt->first, getFunctionRoot()->failedBlocks[BB->invar->idx].front().first, resultInst, emitBlock);
+  // If breakBlock != specBlock then we should emit a diagnostic message that is printed when breaking
+  // from specialised to unspecialised code this way.
+
+  BasicBlock* failTarget = getFunctionRoot()->failedBlocks[BB->invar->idx].front().first;
+
+  if(emitCB.specBlock != emitCB.breakBlock) {
+
+    std::string msg;
+    {
+      raw_string_ostream RSO(msg);
+      RSO << "Failed path condition ";
+      printPathCondition(Cond, Ty, BB, RSO);
+      RSO << " in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber;
+    }
+
+    emitRuntimePrint(emitCB.breakBlock, msg, 0);
+
+    BranchInst::Create(failTarget, emitCB.breakBlock);
+    failTarget = emitCB.breakBlock;
+    
+  }
+  
+  BranchInst::Create(emitBlockIt->specBlock, failTarget, resultInst, emitBlock);
 
 }
 
-void IntegrationAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
+void IntegrationAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt) {
 
   for(std::vector<PathCondition>::iterator it = Conds.begin(), itend = Conds.end(); it != itend; ++it)
     emitPathConditionCheck(*it, Ty, BB, stackIdx, emitBlockIt);
 
 }
 
-void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
+void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt) {
 
   emitPathConditionChecksIn(PC.IntPathConditions, PathConditionTypeInt, BB, stackIdx, emitBlockIt);
   emitPathConditionChecksIn(PC.StringPathConditions, PathConditionTypeString, BB, stackIdx, emitBlockIt);
@@ -655,7 +678,8 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
     if(stackIdx != it->stackIdx || BB->invar->BB != it->BB)
       continue;
 
-    BasicBlock* emitBlock = (emitBlockIt++)->first;
+    CommittedBlock& emitCB = *(emitBlockIt++);
+    BasicBlock* emitBlock = emitCB.specBlock;
 
     Value* verifyArgs[it->args.size()];
     
@@ -674,17 +698,35 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
 
     // The verify function returns zero if we're okay to continue into specialised code.
     Value* VCond = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, VCall, Constant::getNullValue(VCall->getType()), "verifycheck");
+
+    BasicBlock* failTarget = getFunctionRoot()->failedBlocks[BB->invar->idx].front().first;
+
+    if(emitCB.specBlock != emitCB.breakBlock) {
+
+      std::string msg;
+      {
+	raw_string_ostream RSO(msg);
+	RSO << "Failed path function " << it->VerifyF->getName() << " in block " << 
+	  BB->invar->BB->getName() << " / " << BB->IA->SeqNumber << ". Return code: %d";
+      }
+
+      emitRuntimePrint(emitCB.breakBlock, msg, VCall);
+
+      BranchInst::Create(failTarget, emitCB.breakBlock);
+      failTarget = emitCB.breakBlock;
+    
+    }
     
     // Branch to next check or to failed block.
-    BranchInst::Create(emitBlockIt->first, getFunctionRoot()->failedBlocks[BB->invar->idx].front().first, VCond, emitBlock);
+    BranchInst::Create(emitBlockIt->specBlock, failTarget, VCond, emitBlock);
 
   }
 
 }
 
-SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) {
+SmallVector<CommittedBlock, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) {
 
-  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it = BB->committedBlocks.begin();
+  SmallVector<CommittedBlock, 1>::iterator it = BB->committedBlocks.begin();
 
   IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
   if(Info) {
@@ -708,6 +750,20 @@ BasicBlock::iterator InlineAttempt::skipMergePHIs(BasicBlock::iterator it) {
     ++it;
 
   return it;
+
+}
+
+bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
+
+  for(uint32_t i = 0, ilim = BB->invar->succIdxs.size(); i != ilim; ++i) {
+
+    if(shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i])) &&
+       !edgeIsDead(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
+      return true;
+
+  }
+
+  return false;
 
 }
 
@@ -812,7 +868,7 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
   if(fallThrough || requiresRuntimeCheck(ShadowValue(SI))) {
 
-    edges.push_back(std::make_pair(BB->getCommittedBlockAt(instIdx), this));
+    edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
     added = true;
     
   }
@@ -895,12 +951,12 @@ void IntegrationAttempt::gatherPathConditionEdges(uint32_t bbIdx, uint32_t instI
     for(uint32_t i = 0, ilim = pass->countPathConditionsAtBlockStart(BB->invar, this); i != ilim; ++i) {
 
       // Assert block starts at offset 0, as with all PC test blocks.
-      release_assert(BB->committedBlocks[i].second == 0);
+      release_assert(BB->committedBlocks[i].startIndex == 0);
 
       if(preds)
-	preds->push_back(std::make_pair(PCVal, BB->committedBlocks[i].first));
+	preds->push_back(std::make_pair(PCVal, BB->committedBlocks[i].breakBlock));
       else if(IAPreds)
-	IAPreds->push_back(std::make_pair(BB->committedBlocks[i].first, this));
+	IAPreds->push_back(std::make_pair(BB->committedBlocks[i].breakBlock, this));
       
     }
 
@@ -964,7 +1020,7 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
       BasicBlock* specPred;
       if(isSpecToUnspecEdge(predBlockIdx, BBIdx))
-	specPred = getBB(predBlockIdx)->committedBlocks.back().first;
+	specPred = getBB(predBlockIdx)->committedBlocks.back().breakBlock;
       else
 	specPred = 0;
 
@@ -1300,7 +1356,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	    uint32_t pred = thisBBI->predIdxs[j];
 
 	    if(isSpecToUnspecEdge(pred, thisBlockIdx))
-	      specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().first, this));
+	      specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().breakBlock, this));
 
 	  }
 
@@ -1740,7 +1796,7 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
   if(!PredBB)
     return;
 
-  BasicBlock* pred = PredBB->getCommittedBlockAt(predIdx);
+  BasicBlock* pred = PredBB->getCommittedBreakBlockAt(predIdx);
   Value* committedVal = getCommittedValue(ShadowValue(SI));
 
   preds.push_back(std::make_pair(committedVal, pred));
@@ -1784,7 +1840,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
   if(fallThrough || requiresRuntimeCheck(SI)) {
 
     ShadowBB* PredBB = getBB(*predBlock);
-    BasicBlock* pred = PredBB->getCommittedBlockAt(predIdx);
+    BasicBlock* pred = PredBB->getCommittedBreakBlockAt(predIdx);
     Value* committedVal = getCommittedValue(ShadowValue(&InstBB->insts[instIdx]));
     preds.push_back(std::make_pair(committedVal, pred));
     
@@ -2036,10 +2092,11 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
 
 }
 
-SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator
-IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowBB* BB) {
+SmallVector<CommittedBlock, 1>::iterator
+IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowBB* BB) {
 
-  BasicBlock* emitBB = (emitIt++)->first;
+  CommittedBlock& emitCB = *(emitIt++);
+  BasicBlock* emitBB = emitCB.specBlock;
   Value* prevCheck = 0;
 
   uint32_t i, ilim;
@@ -2056,9 +2113,24 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<std::pair<BasicBlock*, uint32_
 
   }
 
-  BasicBlock* successTarget = emitIt->first;
+  BasicBlock* successTarget = emitIt->specBlock;
   // i is the index of the first non-PHI at this point.
   BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, i);
+
+  if(emitCB.specBlock != emitCB.breakBlock) {
+
+    std::string msg;
+    {
+      raw_string_ostream RSO(msg);
+      RSO << "Failed exit phi checks in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber;
+    }
+    
+    emitRuntimePrint(emitCB.breakBlock, msg, 0);
+
+    BranchInst::Create(failTarget, emitCB.breakBlock);
+    failTarget = emitCB.breakBlock;
+    
+  }
 
   BranchInst::Create(successTarget, failTarget, prevCheck, emitBB); 
 
@@ -2111,10 +2183,11 @@ Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* em
 
 }
 
-SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator
-IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitIt, ShadowInstruction* SI) {
+SmallVector<CommittedBlock, 1>::iterator
+IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowInstruction* SI) {
 
-  BasicBlock* emitBB = (emitIt++)->first;
+  CommittedBlock& emitCB = *(emitIt++);
+  BasicBlock* emitBB = emitCB.specBlock;
   Value* Check;
 
   if(inst_is<MemTransferInst>(SI))
@@ -2122,11 +2195,66 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<std::pair<BasicBlock*, uin
   else
     Check = emitAsExpectedCheck(SI, emitBB);
     
-  BasicBlock* successTarget = emitIt->first;
+  BasicBlock* successTarget = emitIt->specBlock;
   BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(SI->parent->invar->idx, SI->invar->idx + 1);
+
+  if(emitCB.specBlock != emitCB.breakBlock) {
+
+    std::string msg;
+    {
+      raw_string_ostream RSO(msg);
+      RSO << "Failed checking instruction " << itcache(SI) << " in " << SI->parent->invar->BB->getName() << " / " << SI->parent->IA->SeqNumber;
+    }
+    
+    emitRuntimePrint(emitCB.breakBlock, msg, 0);
+
+    BranchInst::Create(failTarget, emitCB.breakBlock);
+    failTarget = emitCB.breakBlock;
+    
+  }
 
   BranchInst::Create(successTarget, failTarget, Check, emitBB);
 
   return emitIt;
 
+}
+
+void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* param) {
+
+  Type* CharPtr = Type::getInt8PtrTy(emitBB->getContext());
+  Module* M = emitBB->getParent()->getParent();
+
+  static Constant* Printf = 0;
+  if(!Printf) {
+
+    Printf = M->getFunction("printf");
+    if(!Printf) {
+
+      errs() << "Warning: couldn't find a printf function for debug printing, will need to link against libc\n";
+
+      Type* Int32 = Type::getInt32Ty(emitBB->getContext());
+      FunctionType* PrintfTy = FunctionType::get(Int32, ArrayRef<Type*>(CharPtr), /*vararg=*/true);
+
+      Printf = M->getOrInsertFunction("printf", PrintfTy);
+    
+    }
+
+  }
+    
+  uint32_t nParams = param ? 2 : 1;
+  Value* args[nParams];
+
+  Constant* messageArray = ConstantDataArray::getString(emitBB->getContext(), message, true);
+  GlobalVariable* messageGlobal = new GlobalVariable(*(emitBB->getParent()->getParent()), 
+						     messageArray->getType(), true,
+						     GlobalValue::InternalLinkage, messageArray);
+  Constant* castMessage = ConstantExpr::getBitCast(messageGlobal, CharPtr);
+
+  
+  args[0] = castMessage;
+  if(param)
+    args[1] = param;
+
+  CallInst::Create(Printf, ArrayRef<Value*>(args, nParams), "", emitBB);
+  
 }
