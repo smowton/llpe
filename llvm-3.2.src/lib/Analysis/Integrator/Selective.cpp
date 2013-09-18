@@ -167,7 +167,7 @@ void PeelAttempt::setEnabled(bool en) {
 // rather than being inlined everywhere as usual.
 bool InlineAttempt::commitsOutOfLine() {
 
-  return F.isVarArg() || isShared();
+  return isRootMainCall() || F.isVarArg() || isShared();
 
 }
 
