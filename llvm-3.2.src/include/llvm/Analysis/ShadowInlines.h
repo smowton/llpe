@@ -803,6 +803,7 @@ struct ShadowInstruction {
   SmallVector<IVSRange, 4>* memcpyValues;
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
   ThreadLocalState isThreadLocal;
+  bool needsAsExpectedCheck;
 
   LocStore store;
   uint64_t storeSize;

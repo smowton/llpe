@@ -292,23 +292,18 @@ static bool _willBeReplacedOrDeleted(ShadowValue V) {
 
   if(_willBeDeleted(V))
     return true;
-  if(mayBeReplaced(V)) {
 
-    ShadowValue Base;
-    if(getBaseObject(V, Base)) {
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V));
+  if(!IVS)
+    return false;
 
-      if(Base.getCtx() && !Base.objectAvailableFrom(V.getCtx()))
-	return false;
-      if(Base.getInst() && Base.getInst() == V.getInst())
-	return false;
+  if(IVS->Values.size() != 1)
+    return false;
 
-    }
-
-    return true;
-
-  }
+  if(!V.getCtx()->canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
+    return false;
   
-  return false;
+  return true;
 
 }
 

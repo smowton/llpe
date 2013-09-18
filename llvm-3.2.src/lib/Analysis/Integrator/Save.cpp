@@ -247,7 +247,7 @@ void IntegrationAttempt::commitCFG() {
       CF->getBasicBlockList().push_back(firstNewBlock);
       
     // Create extra empty blocks for each path condition that's effective here:
-    uint32_t nCondsHere = pass->countPathConditionsForBlock(BB);
+    uint32_t nCondsHere = pass->countPathConditionsAtBlockStart(BB->invar, BB->IA);
     for(uint32_t k = 0; k < nCondsHere; ++k) {
 
       BasicBlock* newBlock = 
@@ -1551,7 +1551,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 	  }
 
-	  populateFailedBlock(i + BBsOffset, emptyVec.begin(), emptyVec.end());
+	  populateFailedBlock(i + BBsOffset);
 	  ++i;
 
 	}
@@ -1597,7 +1597,6 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
     // Synthesise path condition checks, using a successive emitBB for each one:
     SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator emitBlockIt = emitPathConditionChecks(BB);
-    SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathConditionLimit = emitBlockIt;
 
     // If the PHI nodes are loop exit PHIs that need their values checking, emit the check.
     if(j != 0) {
@@ -1620,7 +1619,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
     }
 
-    populateFailedBlock(i + BBsOffset, BB->committedBlocks.begin(), pathConditionLimit);
+    populateFailedBlock(i + BBsOffset);
 
   }
 

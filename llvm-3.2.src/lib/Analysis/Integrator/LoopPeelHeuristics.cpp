@@ -2864,12 +2864,21 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
     std::string fStackIdxStr;
     std::string bbName;
     std::string calledName;
+    std::string verifyName;
     std::istringstream istr(*it);
 
     {
       std::getline(istr, fStackIdxStr, ',');
       std::getline(istr, bbName, ',');
       std::getline(istr, calledName, ',');
+      std::getline(istr, verifyName, ',');
+    }
+
+    if(fStackIdxStr.empty() || bbName.empty() || calledName.empty() || verifyName.empty()) {
+
+      errs() << "-int-path-condition-func usage: context-function,context-block,path-function,verify-function" << "\n";
+      exit(1);
+
     }
 
     int64_t fStackIdx;
@@ -2901,6 +2910,28 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
     
     BasicBlock* assumeBlock = findBlockRaw(callerFunction, bbName);
     Function* CallF = IA->F.getParent()->getFunction(calledName);
+    Function* VerifyF = IA->F.getParent()->getFunction(verifyName);
+
+    if(!CallF) {
+      
+      errs() << "No such function " << calledName << "\n";
+      exit(1);
+
+    }
+    
+    if(!VerifyF) {
+
+      errs() << "No such function " << verifyName << "\n";
+      exit(1);
+
+    }
+
+    if(!VerifyF->getFunctionType()->getReturnType()->isIntegerTy()) {
+
+      errs() << "Verification functions must return an integer\n";
+      exit(1);
+
+    }
 
     FunctionType* FType = CallF->getFunctionType();
     PathConditions* PC;
@@ -2919,7 +2950,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
     }
 
-    PC->FuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF));
+    PC->FuncPathConditions.push_back(PathFunc(fStackIdx, assumeBlock, CallF, VerifyF));
     PathFunc& newFunc = PC->FuncPathConditions.back();
 
     while(!istr.eof()) {

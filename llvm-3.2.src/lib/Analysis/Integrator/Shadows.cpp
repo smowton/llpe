@@ -564,6 +564,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].isThreadLocal = TLS_MUSTCHECK;
     insts[i].storeSize = 0;
     insts[i].allocIdx = INT_MAX;
+    insts[i].needsAsExpectedCheck = false;
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
   newBB->useSpecialVarargMerge = false;
@@ -742,6 +743,8 @@ bool ShadowValue::objectAvailableFrom(IntegrationAttempt* OtherIA) {
   case SHADOWVAL_ARG:
     return u.A->IA->allocasAvailableFrom(OtherIA);
   case SHADOWVAL_INST:
+    if(OtherIA->getFunctionRoot()->isPathCondition)
+      return false;
     if(inst_is<AllocaInst>(u.I))
       return u.I->parent->IA->allocasAvailableFrom(OtherIA);
     return u.I->parent->IA->heapObjectsAvailableFrom(OtherIA);

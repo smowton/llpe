@@ -331,6 +331,7 @@ static void printPathConditionsFrom(PathConditions& PC, raw_ostream& Out, Shadow
 
   // Mention if there are symbolic path conditions or functions here:
   printPathConditionList(PC.IntPathConditions, PathConditionTypeInt, Out, BBI, BB);
+  printPathConditionList(PC.AsDefIntPathConditions, PathConditionTypeInt, Out, BBI, BB);
   printPathConditionList(PC.IntmemPathConditions, PathConditionTypeIntmem, Out, BBI, BB);
   printPathConditionList(PC.StringPathConditions, PathConditionTypeString, Out, BBI, BB);
 

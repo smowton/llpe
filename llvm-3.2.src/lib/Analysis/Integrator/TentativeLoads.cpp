@@ -821,7 +821,12 @@ void IntegrationAttempt::countTentativeInstructions() {
 
       ShadowInstruction* SI = &BB->insts[j];
 
-      if(requiresRuntimeCheck2(ShadowValue(SI)))
+      // This should count only instructions that are checked because their result might be
+      // invalidated by the concurrent action of other threads in the same address space.
+      // Instructions with SI->needsAsExpectedCheck set are checked to implement a path condition
+      // and so should not be included in the count.
+      
+      if(requiresRuntimeCheck2(ShadowValue(SI)) && !SI->needsAsExpectedCheck)
 	++checkedInstructionsHere;
 
     }
@@ -936,6 +941,12 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
   // This indicates a member of a disabled loop that hasn't been analysed.
   if(!V.u.I->i.PB)
     return false;
+
+  {
+    ShadowInstruction* SI;
+    if((SI = V.getInst()) && SI->needsAsExpectedCheck)
+      return true;
+  }
 
   if(val_is<LoadInst>(V) || val_is<MemTransferInst>(V)) {
     

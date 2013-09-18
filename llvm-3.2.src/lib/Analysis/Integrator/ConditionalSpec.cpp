@@ -101,12 +101,11 @@ bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* 
 
 }
 
-
-bool IntegrationAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+bool IntegrationAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef) {
 
   if(invarInfo->pathConditions) {
 
-    if(tryGetPathValueFrom(*invarInfo->pathConditions, UINT_MAX, V, UserBlock, Result))
+    if(tryGetPathValueFrom(*invarInfo->pathConditions, UINT_MAX, V, UserBlock, Result, asDef))
       return true;
 
   }
@@ -115,28 +114,41 @@ bool IntegrationAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std
 
 }
 
-bool InlineAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+bool InlineAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef) {
 
   if(targetCallInfo) {
    
-    if(tryGetPathValueFrom(pass->pathConditions, targetCallInfo->targetStackDepth, V, UserBlock, Result))
+    if(tryGetPathValueFrom(pass->pathConditions, targetCallInfo->targetStackDepth, V, UserBlock, Result, asDef))
       return true;
 
   }
 
-  return IntegrationAttempt::tryGetPathValue(V, UserBlock, Result);
+  return IntegrationAttempt::tryGetPathValue2(V, UserBlock, Result, asDef);
 
 }
 
-bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStackDepth, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+bool IntegrationAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+
+  return tryGetPathValue2(V, UserBlock, Result, false);
+
+}
+
+bool IntegrationAttempt::tryGetAsDefPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
+
+  return tryGetPathValue2(V, UserBlock, Result, true);
+
+}
+
+bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStackDepth, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef) {
 
   ShadowInstruction* SI = V.getInst();
   ShadowArg* SA = V.getArg();
   if((!SI) && (!SA))
     return false;
 
-  for(std::vector<PathCondition>::iterator it = PC.IntPathConditions.begin(),
-	itend = PC.IntPathConditions.end(); it != itend; ++it) {
+  std::vector<PathCondition>& PCs = asDef ? PC.AsDefIntPathConditions : PC.IntPathConditions;
+
+  for(std::vector<PathCondition>::iterator it = PCs.begin(), itend = PCs.end(); it != itend; ++it) {
 
     /* fromStackIdx must equal instStackIdx for this kind of condition */
 
@@ -180,12 +192,6 @@ bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStac
 
 }
 
-void PeelIteration::applyMemoryPathConditions(ShadowBB* BB) {
-  
-  return;
-
-}
-
 InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth) {
 
   if(depth == UINT_MAX)
@@ -202,7 +208,7 @@ InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth
 
 }
 
-ShadowValue InlineAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx) {
+ShadowValue IntegrationAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx) {
 
   if(!BB) {
     
@@ -210,35 +216,33 @@ ShadowValue InlineAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock
     return ShadowValue(GV);
     
   }
-  else if(BB == (BasicBlock*)ULONG_MAX) {
 
-    InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, stackIdx);
-    ShadowArg* ptr = &ptrIA->argShadows[instIdx];
+  IntegrationAttempt* ptrIA;
+  if(stackIdx == UINT_MAX)
+    ptrIA = this;
+  else
+    ptrIA = getIAWithTargetStackDepth(getFunctionRoot(), stackIdx);
+  
+  if(BB == (BasicBlock*)ULONG_MAX) {
+
+    ShadowArg* ptr = &ptrIA->getFunctionRoot()->argShadows[instIdx];
     return ShadowValue(ptr);
 
   }
   else {
     
-    InlineAttempt* ptrIA = getIAWithTargetStackDepth(this, stackIdx);
-    
     uint32_t ptrBBIdx = findBlock(ptrIA->invarInfo, BB->getName());
-    ShadowBB* ptrBB = ptrIA->getBB(ptrBBIdx);
-    if(!ptrBB)
-      return ShadowValue();
-
-    ShadowInstruction* ptr = &(ptrBB->insts[instIdx]);
-    return ShadowValue(ptr);
+    return ShadowValue(ptrIA->getInst(ptrBBIdx, instIdx));
 
   }
 
 }
 
-void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB) {
+void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB, uint32_t targetStackDepth) {
 
   // UINT_MAX signifies a path condition that applies to all instances of this function.
 
-  if((it->fromStackIdx == UINT_MAX || it->fromStackIdx == targetCallInfo->targetStackDepth) && 
-     it->fromBB == BB->invar->BB) {
+  if(it->fromStackIdx == targetStackDepth && it->fromBB == BB->invar->BB) {
 
     ShadowValue ptrSV = getPathConditionOperand(it->instStackIdx, it->instBB, it->instIdx);
     ImprovedValSetSingle writePtr;
@@ -280,43 +284,82 @@ void InlineAttempt::applyPathCondition(PathCondition* it, PathConditionTypes con
     }
 
     // Make sure a failed version of this block and its successors is created:
-    markBlockAndSuccsFailed(BB->invar->idx, 0);
+    getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
 
   }
+
+}
+
+void IntegrationAttempt::noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<PathCondition>& PCs, uint32_t stackIdx) {
+
+  for(std::vector<PathCondition>::iterator it = PCs.begin(), itend = PCs.end(); it != itend; ++it) {
+
+    if(it->fromStackIdx == stackIdx && it->fromBB == BB->invar->BB) {
+
+      release_assert(it->fromStackIdx == it->instStackIdx && it->fromBB == it->instBB);
+
+      // This flag indicates the path condition should be checked on definition, rather than
+      // at the top of the block as for conditions that don't always apply.
+      BB->insts[it->instIdx].needsAsExpectedCheck = true;
+      
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::noteAsExpectedChecks(ShadowBB* BB) {
+
+  if(invarInfo->pathConditions)
+    noteAsExpectedChecksFrom(BB, invarInfo->pathConditions->AsDefIntPathConditions, UINT_MAX);
+
+}
+
+void InlineAttempt::noteAsExpectedChecks(ShadowBB* BB) {
+
+  if(targetCallInfo)
+    noteAsExpectedChecksFrom(BB, pass->pathConditions.AsDefIntPathConditions, targetCallInfo->targetStackDepth);
+
+  IntegrationAttempt::noteAsExpectedChecks(BB);
+
+}
+
+void IntegrationAttempt::applyMemoryPathConditions(ShadowBB* BB) {
+  
+  if(invarInfo->pathConditions)
+    applyMemoryPathConditionsFrom(BB, *invarInfo->pathConditions, UINT_MAX);
 
 }
 
 void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
 
   if(targetCallInfo)
-    applyMemoryPathConditionsFrom(BB, pass->pathConditions);
+    applyMemoryPathConditionsFrom(BB, pass->pathConditions, targetCallInfo->targetStackDepth);
 
-  if(invarInfo->pathConditions)
-    applyMemoryPathConditionsFrom(BB, *invarInfo->pathConditions);
+  IntegrationAttempt::applyMemoryPathConditions(BB);
 
 }
 
-void InlineAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& PC) {
+void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& PC, uint32_t targetStackDepth) {
 
   for(std::vector<PathCondition>::iterator it = PC.StringPathConditions.begin(),
 	itend = PC.StringPathConditions.end(); it != itend; ++it) {
 
-    applyPathCondition(&*it, PathConditionTypeString, BB);
+    applyPathCondition(&*it, PathConditionTypeString, BB, targetStackDepth);
 
   }
 
   for(std::vector<PathCondition>::iterator it = PC.IntmemPathConditions.begin(),
 	itend = PC.IntmemPathConditions.end(); it != itend; ++it) {  
 
-    applyPathCondition(&*it, PathConditionTypeIntmem, BB);
+    applyPathCondition(&*it, PathConditionTypeIntmem, BB, targetStackDepth);
 
   }
 
   for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
 	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
 
-    if((it->stackIdx == UINT_MAX || it->stackIdx == targetCallInfo->targetStackDepth) && 
-       it->BB == BB->invar->BB) {
+    if(it->stackIdx == targetStackDepth && it->BB == BB->invar->BB) {
 
       // Insert a model call that notionally occurs before the block begins.
       // Notionally its callsite is the first instruction in BB; this is probably not a call
@@ -345,6 +388,9 @@ void InlineAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& 
       it->IA->analyseNoArgs(false, false, stack_depth);
 
       doCallStoreMerge(BB, it->IA);
+
+      // Make sure a failed version of this block and its successors is created:
+      getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
 
     }
 
@@ -400,7 +446,13 @@ struct matchesFromIdx {
 
   BasicBlock* BB;
   uint32_t stackIdx;
-  bool operator()(PathCondition& C) { return C.fromBB == BB && C.fromStackIdx == stackIdx; }
+
+  bool operator()(PathCondition& C) { 
+
+    return C.fromBB == BB && C.fromStackIdx == stackIdx; 
+
+  }
+
   matchesFromIdx(BasicBlock* _BB, uint32_t si) : BB(_BB), stackIdx(si) {}
 
 };
@@ -412,53 +464,79 @@ static uint32_t countPathConditionsIn(BasicBlock* BB, uint32_t stackIdx, std::ve
 
 }
 
-static uint32_t countPathConditionsForBlockIn(ShadowBB* BB, uint32_t stackIdx, PathConditions& PCs) {
+static uint32_t countPathConditionsAtBlockStartIn(ShadowBBInvar* BB, uint32_t stackIdx, PathConditions& PCs) {
 
-  BasicBlock* B = BB->invar->BB;
+  BasicBlock* B = BB->BB;
 
-  return countPathConditionsIn(B, stackIdx, PCs.IntPathConditions) +
+  uint32_t nPCs = countPathConditionsIn(B, stackIdx, PCs.IntPathConditions) +
     countPathConditionsIn(B, stackIdx, PCs.StringPathConditions) +
-    countPathConditionsIn(B, stackIdx, PCs.IntmemPathConditions);  
+    countPathConditionsIn(B, stackIdx, PCs.IntmemPathConditions);
 
+  for(std::vector<PathFunc>::iterator it = PCs.FuncPathConditions.begin(),
+	itend = PCs.FuncPathConditions.end(); it != itend; ++it) {
+
+    if(it->stackIdx == stackIdx && it->BB == BB->BB)
+      ++nPCs;
+
+  }
+  
+  return nPCs;
+  
 }
 
-uint32_t IntegrationHeuristicsPass::countPathConditionsForBlock(ShadowBB* BB) {
+uint32_t IntegrationHeuristicsPass::countPathConditionsAtBlockStart(ShadowBBInvar* BB, IntegrationAttempt* IA) {
+
+  // Returns the number of path conditions that will be checked /before the start of BB/.
+  // This does not include conditions listed in AsDefIntPathConditions which are checked
+  // as the instruction becomes defined (hence the name), in the midst of the block.
 
   uint32_t total = 0;
-  if(BB->IA->invarInfo->pathConditions)
-    total = countPathConditionsForBlockIn(BB, UINT_MAX, *BB->IA->invarInfo->pathConditions);
+  if(IA->invarInfo->pathConditions)
+    total = countPathConditionsAtBlockStartIn(BB, UINT_MAX, *IA->invarInfo->pathConditions);
   
-  IATargetInfo* Info = BB->IA->getFunctionRoot()->targetCallInfo;
+  IATargetInfo* Info = IA->getFunctionRoot()->targetCallInfo;
   if(Info)
-    total += countPathConditionsForBlockIn(BB, Info->targetStackDepth, pathConditions);
+    total += countPathConditionsAtBlockStartIn(BB, Info->targetStackDepth, pathConditions);
 
   return total;
 
 }
 
-ShadowValue InlineAttempt::getPathConditionSV(PathCondition& Cond) {
+ShadowValue IntegrationAttempt::getPathConditionSV(uint32_t instStackIdx, BasicBlock* instBB, uint32_t instIdx) {
 
-  if(!Cond.instBB) {
+  if(!instBB) {
    
-    return ShadowValue(&pass->shadowGlobals[Cond.instIdx]);
+    return ShadowValue(&pass->shadowGlobals[instIdx]);
     
   }
   else {
 
-    InlineAttempt* testCtx = getIAWithTargetStackDepth(this, Cond.instStackIdx);
-    
-    if(Cond.instBB == (BasicBlock*)ULONG_MAX)
-      return ShadowValue(&testCtx->argShadows[Cond.instIdx]);
+    IntegrationAttempt* testCtx;
+    if(instStackIdx == UINT_MAX) {
+      testCtx = this;
+    }
     else {
-      uint32_t blockIdx = findBlock(testCtx->invarInfo, Cond.instBB);
-      return ShadowValue(&testCtx->getBB(blockIdx)->insts[Cond.instIdx]);
+      testCtx = getIAWithTargetStackDepth(getFunctionRoot(), instStackIdx);
+    }
+    
+    if(instBB == (BasicBlock*)ULONG_MAX)
+      return ShadowValue(&testCtx->getFunctionRoot()->argShadows[instIdx]);
+    else {
+      uint32_t blockIdx = findBlock(testCtx->invarInfo, instBB);
+      return ShadowValue(testCtx->getInst(blockIdx, instIdx));
     }
 
   }
 
 }
 
-void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
+ShadowValue IntegrationAttempt::getPathConditionSV(PathCondition& Cond) {
+
+  return getPathConditionSV(Cond.instStackIdx, Cond.instBB, Cond.instIdx);
+
+}
+
+void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
   if((stackIdx != UINT_MAX && stackIdx != Cond.fromStackIdx) || BB->invar->BB != Cond.fromBB)
     return;
@@ -554,33 +632,57 @@ void InlineAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTyp
   // resultInst is a boolean indicating if the path condition matched.
   // Branch to the next specialised block on pass, or the first non-specialised block otherwise.
 
-  BranchInst::Create(emitBlockIt->first, failedBlocks[BB->invar->idx].front().first, resultInst, emitBlock);
+  BranchInst::Create(emitBlockIt->first, getFunctionRoot()->failedBlocks[BB->invar->idx].front().first, resultInst, emitBlock);
 
 }
 
-void InlineAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
+void IntegrationAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& Conds, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
   for(std::vector<PathCondition>::iterator it = Conds.begin(), itend = Conds.end(); it != itend; ++it)
     emitPathConditionCheck(*it, Ty, BB, stackIdx, emitBlockIt);
 
 }
 
-SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) { 
+void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& emitBlockIt) {
 
-  // No path conditions within loops at the moment.
-  return BB->committedBlocks.begin();
+  emitPathConditionChecksIn(PC.IntPathConditions, PathConditionTypeInt, BB, stackIdx, emitBlockIt);
+  emitPathConditionChecksIn(PC.StringPathConditions, PathConditionTypeString, BB, stackIdx, emitBlockIt);
+  emitPathConditionChecksIn(PC.IntmemPathConditions, PathConditionTypeIntmem, BB, stackIdx, emitBlockIt);
+
+  for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(), 
+	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
+
+    if(stackIdx != it->stackIdx || BB->invar->BB != it->BB)
+      continue;
+
+    BasicBlock* emitBlock = (emitBlockIt++)->first;
+
+    Value* verifyArgs[it->args.size()];
+    
+    // Call the verify function at runtime with arguments corresponding to those which were
+    // passed to the path function during specialisation.
+
+    uint32_t i = 0;
+    for(SmallVector<PathFuncArg, 1>::iterator argit = it->args.begin(),
+	  argend = it->args.end(); argit != argend; ++argit, ++i) {
+
+      verifyArgs[i] = getCommittedValue(getPathConditionSV(argit->stackIdx, argit->instBB, argit->instIdx));
+      
+    }
+
+    Value* VCall = CallInst::Create(it->VerifyF, ArrayRef<Value*>(verifyArgs, it->args.size()), "verifycall", emitBlock);
+
+    // The verify function returns zero if we're okay to continue into specialised code.
+    Value* VCond = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, VCall, Constant::getNullValue(VCall->getType()), "verifycheck");
+    
+    // Branch to next check or to failed block.
+    BranchInst::Create(emitBlockIt->first, getFunctionRoot()->failedBlocks[BB->invar->idx].front().first, VCond, emitBlock);
+
+  }
 
 }
 
-void InlineAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator& it) {
-
-  emitPathConditionChecksIn(PC.IntPathConditions, PathConditionTypeInt, BB, stackIdx, it);
-  emitPathConditionChecksIn(PC.StringPathConditions, PathConditionTypeString, BB, stackIdx, it);
-  emitPathConditionChecksIn(PC.IntmemPathConditions, PathConditionTypeIntmem, BB, stackIdx, it); 
-
-}
-
-SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator InlineAttempt::emitPathConditionChecks(ShadowBB* BB) {
+SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) {
 
   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it = BB->committedBlocks.begin();
 
@@ -613,7 +715,7 @@ bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
 
   if(targetCallInfo && !targetCallInfo->mayReachTarget.count(BBIdx)) {  
 
-    if(predBlockIdx != targetCallInfo->targetCallBlock && targetCallInfo->mayReachTarget.count(predBlockIdx) && blocksReachableOnFailure.count(predBlockIdx)) {
+    if(predBlockIdx != targetCallInfo->targetCallBlock && targetCallInfo->mayReachTarget.count(predBlockIdx)) {
       
       if(!edgeIsDead(getBBInvar(predBlockIdx), getBBInvar(BBIdx)))
 	return true;
@@ -769,7 +871,44 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
 
 }
 
-BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCPredsEnd) {
+void IntegrationAttempt::gatherPathConditionEdges(uint32_t bbIdx, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>* preds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* IAPreds) {
+
+  ShadowBBInvar* BBI = getBBInvar(bbIdx);
+  PeelAttempt* LPA;
+
+  if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope)) &&
+     (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) &&
+     LPA->isTerminated() && LPA->isEnabled()) {
+
+    for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
+      LPA->Iterations[i]->gatherPathConditionEdges(bbIdx, instIdx, preds, IAPreds);
+
+  }
+  else {
+
+    ShadowBB* BB = getBB(bbIdx);
+    if(!BB)
+      return;
+
+    Value* PCVal = getCommittedValue(ShadowValue(&BB->insts[instIdx]));
+
+    for(uint32_t i = 0, ilim = pass->countPathConditionsAtBlockStart(BB->invar, this); i != ilim; ++i) {
+
+      // Assert block starts at offset 0, as with all PC test blocks.
+      release_assert(BB->committedBlocks[i].second == 0);
+
+      if(preds)
+	preds->push_back(std::make_pair(PCVal, BB->committedBlocks[i].first));
+      else if(IAPreds)
+	IAPreds->push_back(std::make_pair(BB->committedBlocks[i].first, this));
+      
+    }
+
+  }
+
+}
+
+BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx) {
 
   // Create PHI nodes for this unspecialised block, starting at BI.
   // Cases:
@@ -785,8 +924,6 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
   // called this way regarding blocks accessible from within a loop, whose headers are not merge points.
 
   ShadowBBInvar* BBI = getBBInvar(BBIdx);
-  ShadowBB* SBB = getBB(BBIdx);
-
   uint32_t instIdx = 0;
 
   // If BBI is a loop header, skip the latch predecessor for the time being and we'll come back to it
@@ -859,20 +996,9 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
     }
 
-    // If any edges from tests exist, consume the companion of this PHI node, which has already
-    // selected an appropriate specialised value.
-
-    Value* PCVal = 0;
-    if(PCPredsBegin != PCPredsEnd) {
-
-      release_assert(SBB);
-      PCVal = getCommittedValue(ShadowValue(&SBB->insts[instIdx]));
-	  
-    }
-
-    for(SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator PCIt = PCPredsBegin; 
-	PCIt != PCPredsEnd; ++PCIt)
-      newPreds.push_back(std::make_pair(PCVal, PCIt->first));
+    // Gather incoming path condition edges and values: these either come from this context
+    // or from loop iterations above it.
+    gatherPathConditionEdges(BBIdx, instIdx, &newPreds, 0);
 
     // Clear node:
     for(uint32_t i = PN->getNumIncomingValues(); i > 0; --i)
@@ -1016,6 +1142,11 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
     Instruction* thisBlockInst;
     bool instDefined = false;
 
+    // This is set when we're dealing with a header PHI,
+    // and serves to prevent attempts to merge the latch->header value
+    // before it is created.
+    std::pair<BasicBlock*, Instruction*> headerPred;
+
     if(i != 0) {
 
       // Top of block: merge the value if the block is a spec-to-unspec
@@ -1025,8 +1156,6 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // If this is a loop header, check whether there are any break edges in the loop. If not,
       // we can simply set all such blocks to use the same definition as the preheader; if there are,
       // we must create an incomplete header phi and complete it after exiting.
-
-      bool skipSubBlock = false;
 
       const Loop* currentLoop = loopStack.back();
       if(currentLoop != thisBBI->naturalScope) {
@@ -1040,13 +1169,18 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  release_assert(OrigSI.parent->idx <= LInfo->preheaderIdx);
 	  release_assert(OrigSI.parent->idx + predBlocks.size() >= LInfo->latchIdx);
 
-	  // Are there any breaks in the loop body? These can only be due to instruction checks
-	  // not path conditions or can't-reach-target conditions.
+	  // Are there any breaks in the loop body? These can be due to instruction checks
+	  // or path conditions but not can't-reach-target conditions.
 
 	  bool loopHasBreaks = false;
 	  for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j) {
 
+	    // Block is broken into pieces due to a mid-block check?
 	    if(failedBlocks[j].size() > 1)
+	      loopHasBreaks = true;
+
+	    // Will there be incoming edges from specialised code due to path conditions?
+	    else if(pass->countPathConditionsAtBlockStart(thisBBI, this))
 	      loopHasBreaks = true;
 
 	  }
@@ -1076,19 +1210,11 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  else {
 
 	    // Otherwise create a phi that doesn't merge the latch edge and complete it later.
-	    // Since this is top-of-block within a loop, this can currently only merge unspecialised
-	    // values from the preheader and latch, so just create phi [preheader].
-	    // This will need to change if path conditions become possible here.
-
-	    BasicBlock* insertBlock = failedBlocks[thisBlockIdx].front().first;
-	    SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
-	    SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
-	    unspecPreds.push_back(std::make_pair(failedBlocks[LInfo->preheaderIdx].back().first, PreheaderInst));
-
-	    thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
-	    ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+	    headerPred = std::make_pair(failedBlocks[LInfo->preheaderIdx].back().first, PreheaderInst);
 	    loopStack.push_back(thisBBI->naturalScope);
-	    skipSubBlock = true;
+
+	    // Fall through to ordinary treatment of the first subblock, where headerPred being set
+	    // will override the usual merge-from-unspecialised-predecessors logic.
 
 	  }
 
@@ -1096,7 +1222,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	else {
 
 	  // Left one or more loops, complete the corresponding header PHIs.
-	  // As noted above this just means adding a pred for the latch.
+	  // All predecessor kinds apart from the latch->header unspecialised edge
+	  // are already accounted for.
 
 	  while(thisBBI->naturalScope != loopStack.back()) {
 
@@ -1118,72 +1245,79 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	}
 
       }
+      
+      // Create a PHI merge at the top of this block if (a) there are unspec->spec edges
+      // due to ignored blocks, (b) there are path condition breaks to top of block,
+      // or (c) unspecialised predecessor blocks are using different versions of the 
+      // instruction in question. Also always insert a merge at the loop header if we
+      // get to here, as some disagreement is sure to arise between the preheader->header
+      // and latch->header edges.
 
       BasicBlock* insertBlock = failedBlocks[thisBlockIdx].front().first;
 
-      // This only skips when we've just entered a loop and created to a header phi.
-      // In this case we move on to process subblocks.
-      if(!skipSubBlock) {
+      // Cases (a) and (b).
 
-	uint32_t nCondsHere;
-	ShadowBB* thisBB = getBB(thisBlockIdx);
+      uint32_t nCondsHere = pass->countPathConditionsAtBlockStart(thisBBI, this);
+      bool isSpecToUnspec = isSimpleMergeBlock(thisBlockIdx);
 
-	if(thisBB)
-	  nCondsHere = pass->countPathConditionsForBlock(thisBB);
-	else
-	  nCondsHere = 0;
+      bool shouldMergeHere = nCondsHere != 0 || isSpecToUnspec || headerPred.first != 0;
 
-	bool isSpecToUnspec = isSimpleMergeBlock(thisBlockIdx);
+      if(!shouldMergeHere) {
 
-	bool shouldMergeHere = nCondsHere != 0 || isSpecToUnspec;
-	if(!shouldMergeHere) {
+	// Case (c): do predecesors disagree about which version of the instruction they're using?
 
-	  Instruction* UniqueIncoming = 0;
-	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	Instruction* UniqueIncoming = 0;
+	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
 
-	    uint32_t predRelIdx = thisBBI->predIdxs[j] - OrigSI.parent->idx;
-	    release_assert(predRelIdx < predBlocks.size());
-	    Instruction* predInst = predBlocks[predRelIdx].first;
-	    release_assert(predInst);
-	    if(!UniqueIncoming)
-	      UniqueIncoming = predInst;
-	    else if(UniqueIncoming != predInst) {
-	      UniqueIncoming = 0;
-	      break;
-	    }
-
-	  }
-
+	  uint32_t predRelIdx = thisBBI->predIdxs[j] - OrigSI.parent->idx;
+	  release_assert(predRelIdx < predBlocks.size());
+	  Instruction* predInst = predBlocks[predRelIdx].first;
+	  release_assert(predInst);
 	  if(!UniqueIncoming)
-	    shouldMergeHere = true;
+	    UniqueIncoming = predInst;
+	  else if(UniqueIncoming != predInst) {
+	    UniqueIncoming = 0;
+	    break;
+	  }
 
 	}
 
-	if(shouldMergeHere) {
+	if(!UniqueIncoming)
+	  shouldMergeHere = true;
 
-	  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
-	  SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
+      }
 
-	  if(isSpecToUnspec) {
+      if(shouldMergeHere) {
 
-	    // Some specialised predecessors branch straight to unspec code.
-	    for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
+	SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
 
-	      uint32_t pred = thisBBI->predIdxs[j];
+	if(isSpecToUnspec) {
 
-	      if(isSpecToUnspecEdge(pred, thisBlockIdx))
-		specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().first, this));
+	  // Some specialised predecessors branch straight to unspec code.
+	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
 
-	    }
+	    uint32_t pred = thisBBI->predIdxs[j];
 
-	  }
-	  if(nCondsHere) {
-
-	    // The first n specialised blocks are specialised predecessors.
-	    for(uint32_t k = 0, klim = nCondsHere; k != klim; ++k)
-	      specPreds.push_back(std::make_pair(thisBB->committedBlocks[k].first, this));
+	    if(isSpecToUnspecEdge(pred, thisBlockIdx))
+	      specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().first, this));
 
 	  }
+
+	}
+	if(nCondsHere) {
+
+	  // Adds to specPreds for each loop iteration that can break here:
+	  gatherPathConditionEdges(thisBlockIdx, 0, 0, &specPreds);
+
+	}
+
+	if(headerPred.first) {
+
+	  unspecPreds.push_back(headerPred);
+
+	}
+	else {
 
 	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
 
@@ -1193,18 +1327,18 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 	  }
 
-	  // Further subdivisions of this block should use the new PHI
-	  thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
-	  ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
-	
 	}
-	else {
-	
-	  // Further subdivisions of this block should use the same value as our predecessors
-	  // The preds necessarily match so just use the first.
-	  thisBlockInst = predBlocks[thisBBI->predIdxs[0] - OrigSI.parent->idx].first;
 
-	}
+	// Further subdivisions of this block should use the new PHI
+	thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
+	ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+	
+      }
+      else {
+	
+	// Further subdivisions of this block should use the same value as our predecessors
+	// The preds necessarily match so just use the first.
+	thisBlockInst = predBlocks[thisBBI->predIdxs[0] - OrigSI.parent->idx].first;
 
       }
 
@@ -1428,7 +1562,7 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
   BasicBlock* CommitBB = failedBlocks[i].front().first;
   BasicBlock::iterator BI = skipMergePHIs(CommitBB->begin());
-  BasicBlock::iterator PostPHIBI = commitFailedPHIs(CommitBB, BI, i, failedBlocks[i].begin(), failedBlocks[i].begin());
+  BasicBlock::iterator PostPHIBI = commitFailedPHIs(CommitBB, BI, i);
  
   remapFailedBlock(PostPHIBI, CommitBB, i, std::distance(BI, PostPHIBI), false);
 
@@ -1702,9 +1836,9 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
 
 }
 
-void IntegrationAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) { }
+void IntegrationAttempt::populateFailedBlock(uint32_t idx) { }
 
-void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondBegin, SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator pathCondEnd) {
+void InlineAttempt::populateFailedBlock(uint32_t idx) {
   
   if(failedBlocks[idx].empty())
     return;
@@ -1722,7 +1856,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
     // These inserted / augmented PHIs cannot draw from loop iterations above us,
     // as loop iterations only make mid-block breaks due to failing tests.
     BasicBlock::iterator BI = skipMergePHIs(it->first->begin());
-    BasicBlock::iterator PostPHIBI = commitFailedPHIs(it->first, BI, idx, pathCondBegin, pathCondEnd);
+    BasicBlock::iterator PostPHIBI = commitFailedPHIs(it->first, BI, idx);
 
     remapFailedBlock(PostPHIBI, it->first, idx, std::distance(BI, PostPHIBI), it != lastit);
 
@@ -1770,7 +1904,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx, SmallVector<std::pair<Basi
 	for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator specit = specPreds.begin(),
 	      specend = specPreds.end(); specit != specend; ++specit) {
 	  release_assert(specit->first);
-	  NewPN->addIncoming(specit->first, specit->second);
+	  NewPN->addIncoming(getValAsType(specit->first, failedI->getType(), specit->second->getTerminator()), 
+			     specit->second);
 	}
 
 	if(it != failedBlocks[idx].begin()) {

@@ -234,13 +234,17 @@ bool IntegrationAttempt::getMergeValue(SmallVector<ShadowValue, 4>& Vals, Improv
 ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) {
 
   PHINode* PN = cast_inst<PHINode>(SI);
-  // PHI node operands go value, block, value, block, so 2*value index = operand index.
+
+  // Careful here: this function is used during commit when loop structure can be temporarily
+  // disrupted by cloning blocks (e.g. one might branch to the header pending remapping,
+  // knocking out the preheader).
 
   if(iterationCount == 0) {
 
     LPDEBUG("Pulling PHI value from preheader\n");
     // Can just use normal getOperand/replacement here.
-    int predIdx = PN->getBasicBlockIndex(L->getLoopPreheader());
+    ShadowBBInvar* PHBBI = getBBInvar(parentPA->invarInfo->preheaderIdx);
+    int predIdx = PN->getBasicBlockIndex(PHBBI->BB);
     assert(predIdx >= 0 && "Failed to find preheader block");
     return SI->getOperand(predIdx);
 
@@ -248,7 +252,8 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
   else {
 
     LPDEBUG("Pulling PHI value from previous iteration latch\n");
-    int predIdx = PN->getBasicBlockIndex(L->getLoopLatch());
+    ShadowBBInvar* LBBI = getBBInvar(parentPA->invarInfo->latchIdx);
+    int predIdx = PN->getBasicBlockIndex(LBBI->BB);
     assert(predIdx >= 0 && "Failed to find latch block");
     // Find equivalent instruction in previous iteration:
     IntegrationAttempt* prevIter = parentPA->getIteration(iterationCount - 1);
@@ -1956,6 +1961,21 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
     return false;
 
   release_assert(NewPBValid);
+
+  // Check if there is a path condition defining the instruction,
+  // as opposed to one defining an /argument/, which is checked elsewhere.
+  {
+
+    ImprovedValSetSingle* NewIVS;
+    if((NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) && NewIVS->isWhollyUnknown()) {
+
+      std::pair<ValSetType, ImprovedVal> PathVal;
+      if(tryGetAsDefPathValue(V, SI->parent, PathVal))
+	NewIVS->set(PathVal.second, PathVal.first);
+
+    }
+
+  }
 
   if((!OldPBValid) || !IVsEqualShallow(OldPB, NewPB)) {
 

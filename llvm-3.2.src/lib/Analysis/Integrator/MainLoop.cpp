@@ -233,6 +233,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   }
 
   applyMemoryPathConditions(BB);
+  noteAsExpectedChecks(BB);
 
   LFV3(errs() << nestingIndent() << "Start block " << BB->invar->BB->getName() << " store " << BB->u.localStore << " refcount " << BB->u.localStore->refCount << "\n");
 

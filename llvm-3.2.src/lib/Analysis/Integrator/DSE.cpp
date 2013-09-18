@@ -675,7 +675,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     }
 
-    if(pass->countPathConditionsForBlock(BB)) {
+    if(pass->countPathConditionsAtBlockStart(BB->invar, BB->IA)) {
       
       // Reaches a path condition check, where unspecialised code might use this value.
       setAllNeeded(BB->u.dseStore);
