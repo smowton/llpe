@@ -255,8 +255,10 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 	
 }
 
-void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out) {
+void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped) {
 
+  const char* arrow = HTMLEscaped ? " -&gt; " : " -> ";
+  
   switch(t) {
   case PathConditionTypeInt:
     Out << "Int";
@@ -290,7 +292,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
   if(!PC.instBB) {
 
     ShadowGV* GV = &GlobalIHP->shadowGlobals[PC.instIdx];
-    Out << " -&gt; " << itcache(GV);
+    Out << arrow << itcache(GV);
 
   }
   else if(PC.instBB == (BasicBlock*)ULONG_MAX) {
@@ -299,7 +301,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
 
     Function::arg_iterator AI = ArgIA->F.arg_begin();
     std::advance(AI, PC.instIdx);
-    Out << " -&gt; " << itcache((Argument*)AI, true);
+    Out << arrow << itcache((Argument*)AI, true);
 
   }
   else {
@@ -307,7 +309,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
     BasicBlock::iterator BI = PC.instBB->begin();
     std::advance(BI, PC.instIdx);
 
-    Out << " -&gt; " << PC.instBB->getName() << " / " << itcache((Instruction*)BI, true);
+    Out << arrow << PC.instBB->getName() << " / " << itcache((Instruction*)BI, true);
 
   }
 
@@ -324,7 +326,7 @@ static void printPathConditionList(std::vector<PathCondition>& conds, PathCondit
 
       Out << "<tr><td colspan=\"2\" border=\"0\" align=\"left\">  ";
 
-      printPathCondition(*it, t, BB, Out);
+      printPathCondition(*it, t, BB, Out, true);
 
       Out << "</td></tr>\n";
 

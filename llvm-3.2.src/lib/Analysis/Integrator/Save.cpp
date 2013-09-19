@@ -739,6 +739,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	  RSO << "Successfully exiting specialised function " << F.getName() << "\n";
 	}
 
+	escapePercent(msg);
 	emitRuntimePrint(emitBB, msg, 0);
 
       }
@@ -883,9 +884,10 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       std::string msg;
       {
 	raw_string_ostream RSO(msg);
-	RSO << "Left via an ignored edge, to block " << breakBlock->getName();
+	RSO << "Left via an ignored edge, to block " << breakBlock->getName() << "\n";
       }
 
+      escapePercent(msg);
       emitRuntimePrint(breakBlock, msg, 0);
 
       if(breakSuccessors.size() == 1) {
@@ -1798,6 +1800,7 @@ void IntegrationAttempt::commitInstructions() {
       RSO << "Entering specialised function " << F.getName() << "\n";
     }
 
+    escapePercent(msg);
     emitRuntimePrint(BBs[0]->committedBlocks[0].specBlock, msg, 0);
 
   }

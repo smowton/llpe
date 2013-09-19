@@ -644,10 +644,11 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
     {
       raw_string_ostream RSO(msg);
       RSO << "Failed path condition ";
-      printPathCondition(Cond, Ty, BB, RSO);
-      RSO << " in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber;
+      printPathCondition(Cond, Ty, BB, RSO, /* HTML escaped = */ false);
+      RSO << " in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber << "\n";
     }
 
+    escapePercent(msg);
     emitRuntimePrint(emitCB.breakBlock, msg, 0);
 
     BranchInst::Create(failTarget, emitCB.breakBlock);
@@ -707,10 +708,18 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
       {
 	raw_string_ostream RSO(msg);
 	RSO << "Failed path function " << it->VerifyF->getName() << " in block " << 
-	  BB->invar->BB->getName() << " / " << BB->IA->SeqNumber << ". Return code: %d";
+	  BB->invar->BB->getName() << " / " << BB->IA->SeqNumber << ". Return code: ";
       }
 
-      emitRuntimePrint(emitCB.breakBlock, msg, VCall);
+      escapePercent(msg);
+
+      std::string pasted;
+      {
+	raw_string_ostream RSO(pasted);
+	RSO << msg << "%d\n";
+      }
+
+      emitRuntimePrint(emitCB.breakBlock, pasted, VCall);
 
       BranchInst::Create(failTarget, emitCB.breakBlock);
       failTarget = emitCB.breakBlock;
@@ -2122,9 +2131,10 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator e
     std::string msg;
     {
       raw_string_ostream RSO(msg);
-      RSO << "Failed exit phi checks in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber;
+      RSO << "Failed exit phi checks in block " << BB->invar->BB->getName() << " / " << BB->IA->SeqNumber << "\n";
     }
     
+    escapePercent(msg);
     emitRuntimePrint(emitCB.breakBlock, msg, 0);
 
     BranchInst::Create(failTarget, emitCB.breakBlock);
@@ -2203,9 +2213,10 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterat
     std::string msg;
     {
       raw_string_ostream RSO(msg);
-      RSO << "Failed checking instruction " << itcache(SI) << " in " << SI->parent->invar->BB->getName() << " / " << SI->parent->IA->SeqNumber;
+      RSO << "Failed checking instruction " << itcache(SI) << " in " << SI->parent->invar->BB->getName() << " / " << SI->parent->IA->SeqNumber << "\n";
     }
     
+    escapePercent(msg);
     emitRuntimePrint(emitCB.breakBlock, msg, 0);
 
     BranchInst::Create(failTarget, emitCB.breakBlock);
@@ -2216,6 +2227,24 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterat
   BranchInst::Create(successTarget, failTarget, Check, emitBB);
 
   return emitIt;
+
+}
+
+void llvm::escapePercent(std::string& msg) {
+
+  // Replace % with %% throughout msg.
+  
+  size_t pos = 0;
+  while(pos < msg.size()) {
+
+    pos = msg.find("%", pos);
+    if(pos == std::string::npos)
+      break;
+
+    msg.insert(pos, "%");
+    pos += 2;
+
+  }
 
 }
 

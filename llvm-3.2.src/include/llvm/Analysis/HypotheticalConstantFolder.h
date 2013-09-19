@@ -1943,8 +1943,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  
  void releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB);
  void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
- void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out);
+ void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped);
  void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param);
+ void escapePercent(std::string&);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
 
