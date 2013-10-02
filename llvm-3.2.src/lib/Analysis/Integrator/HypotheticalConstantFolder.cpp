@@ -655,7 +655,7 @@ static bool isIDOrConst(ShadowValue& op) {
 
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, bool* needsAsExpectedCheck) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
@@ -674,6 +674,15 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   bool op0Fun = (op0C && isa<Function>(op0C->stripPointerCasts()));
   bool op1Fun = (op1C && isa<Function>(op1C->stripPointerCasts()));
 
+  bool op0UGO = isGlobalIdentifiedObject(op0);
+  bool op1UGO = isGlobalIdentifiedObject(op1);
+
+  bool comparingHeapPointer = false;
+  if(op0UGO && val_is<CallInst>(op0))
+    comparingHeapPointer = true;
+  else if(op1UGO && val_is<CallInst>(op1))
+    comparingHeapPointer = true;
+
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
   // against an integer null. The code for case 1 works for these; all other cases require that both
   // values resolved to pointers.
@@ -687,18 +696,22 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0.getType()->isPointerTy() && (isGlobalIdentifiedObject(op0) || op0Fun))
+  else if(op0.getType()->isPointerTy() && (op0UGO || op0Fun))
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1.getType()->isPointerTy() && (isGlobalIdentifiedObject(op1) || op1Fun))
+  else if(op1.getType()->isPointerTy() && (op1UGO || op1Fun))
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
     
     ImpType = ValSetTypeScalar;
     Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
+
+    if(comparingHeapPointer && needsAsExpectedCheck)
+      (*needsAsExpectedCheck) = true;
+
     return true;   
 
   }
@@ -989,7 +1002,8 @@ namespace llvm {
 
 void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
-					   ValSetType& ImpType, ImprovedVal& Improved) {
+					   ValSetType& ImpType, ImprovedVal& Improved,
+					   bool* needsAsExpectedCheck) {
   
   Instruction* I = SI->invar->I;
 
@@ -1028,7 +1042,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
     if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
       return;
-    if(inst_is<ICmpInst>(SI) && tryFoldPointerCmp(SI, Ops, ImpType, Improved))
+    if(inst_is<ICmpInst>(SI) && tryFoldPointerCmp(SI, Ops, ImpType, Improved, needsAsExpectedCheck))
       return;
     if(tryFoldNonConstCmp(SI, Ops, ImpType, Improved))
       return;
@@ -1264,7 +1278,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
     ValSetType ThisVST;
     ImprovedVal ThisV;
-    tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+    tryEvaluateResult(SI, Ops, ThisVST, ThisV, &SI->needsAsExpectedCheck);
     if(ThisVST == ValSetTypeUnknown)
       return false;
     else if(ThisVST == ValSetTypeOverdef) {
@@ -1419,7 +1433,7 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
       ValSetType ThisVST;
       ImprovedVal ThisV;
       Ops[1] = std::make_pair(it.val().SetType, it.val().Values[i]);
-      tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+      tryEvaluateResult(SI, Ops, ThisVST, ThisV, 0);
       if(ThisVST != ValSetTypeScalar) {
 	MCRHere = MCRMAYBE;
 	break;
@@ -1744,7 +1758,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	      ValSetType ThisVST;
 	      ImprovedVal ThisV;
 	      Ops[1] = std::make_pair(ValSetTypeScalar, it.val().Values[i]);
-	      tryEvaluateResult(SI, Ops, ThisVST, ThisV);
+	      tryEvaluateResult(SI, Ops, ThisVST, ThisV, 0);
 	      if(ThisVST != ValSetTypeScalar) {
 		newIVS.setOverdef();
 		break;

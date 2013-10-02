@@ -290,6 +290,13 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
 
 }
 
+void llvm::clearAsExpectedChecks(ShadowBB* BB) {
+
+  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i)
+    BB->insts[i].needsAsExpectedCheck = false;
+
+}
+
 void IntegrationAttempt::noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<PathCondition>& PCs, uint32_t stackIdx) {
 
   for(std::vector<PathCondition>::iterator it = PCs.begin(), itend = PCs.end(); it != itend; ++it) {

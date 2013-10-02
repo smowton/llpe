@@ -29,6 +29,8 @@
 
 using namespace llvm;
 
+int debugDOT = 0;
+
 bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
   bool anyChange = false;
@@ -232,7 +234,12 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   }
 
+  // As-expected checks may also be noted duirng analyseBlockInstructions:
+  // they are cleared each time around because the flag might not make sense anymore if the instruction's
+  // operands have degraded to the point that the instruction will no longer be resolved.
+
   applyMemoryPathConditions(BB);
+  clearAsExpectedChecks(BB);
   noteAsExpectedChecks(BB);
 
   LFV3(errs() << nestingIndent() << "Start block " << BB->invar->BB->getName() << " store " << BB->u.localStore << " refcount " << BB->u.localStore->refCount << "\n");
@@ -435,9 +442,16 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 	      itend = LInfo->exitEdges.end(); it != itend; ++it) {
 
 	  ShadowBB* BB = getBB(it->first);
+
 	  if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second))) {
+
 	    LFV3(errs() << "Drop exit edge " << BB->invar->BB->getName() << " -> " << getBBInvar(it->second)->BB->getName() << " with store " << BB->u.localStore << "\n");
 	    BB->u.localStore->dropReference();
+
+	    // Drop a pendingEdges count at the same time, for the same reason:
+	    release_assert(pendingEdges && "Reducing pending edges below zero");
+	    --pendingEdges;
+
 	  }
 
 	}
@@ -489,7 +503,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 	--pendingEdges;
 
       }
-      
+
       anyChange |= analyseBlock(i, true, true, i == LInfo->headerIdx, L);
 
     }

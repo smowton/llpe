@@ -292,7 +292,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
   if(!PC.instBB) {
 
     ShadowGV* GV = &GlobalIHP->shadowGlobals[PC.instIdx];
-    Out << arrow << itcache(GV);
+    Out << arrow << itcache(GV, true);
 
   }
   else if(PC.instBB == (BasicBlock*)ULONG_MAX) {

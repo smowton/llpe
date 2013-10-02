@@ -2270,12 +2270,14 @@ void llvm::executeMallocLikeInst(ShadowInstruction* SI) {
 
 }
 
-void llvm::executeFreeInst(ShadowInstruction* SI) {
+void llvm::executeFreeInst(ShadowInstruction* SI, Function* FreeF) {
 
-  ShadowInstruction* FreedPtr = SI->getCallArgOperand(0).getInst();
+  DeallocatorFn& De = GlobalIHP->deallocatorFunctions[FreeF];
+
+  ShadowInstruction* FreedPtr = SI->getCallArgOperand(De.arg).getInst();
   if(!FreedPtr)
     return;
-
+  
   ImprovedValSetSingle* FreedIVS = dyn_cast_or_null<ImprovedValSetSingle>(FreedPtr->i.PB);
   if(!FreedIVS)
     return;
@@ -2332,7 +2334,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
   executeCopyInst(0, ThisInst, SrcPtrSet, CopySize, SI);
   // Release the realloc'd location.
-  executeFreeInst(SI);
+  executeFreeInst(SI, getCalledFunction(SI));
 
 }
 
@@ -2813,6 +2815,9 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
     else if(FI->getLocationDetailsFor)
       Details = FI->getLocationDetailsFor(ShadowValue(SI));
 
+    if(!Details)
+      return false;
+
     release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
 
     for (unsigned i = 0; Details[i].Location; ++i) {
@@ -2886,7 +2891,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	  executeReallocInst(SI);
 	  break;
 	case SF_FREE:
-	  executeFreeInst(SI);
+	  executeFreeInst(SI, F);
 	  break;
 	case SF_VASTART:
 	  executeVaStartInst(SI);

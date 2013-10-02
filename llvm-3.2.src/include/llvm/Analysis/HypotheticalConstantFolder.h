@@ -234,7 +234,14 @@ AllocatorFn(ConstantInt* C) : isConstantSize(true), allocSize(C) {}
 
 };
 
+struct DeallocatorFn {
 
+  uint32_t arg;
+
+DeallocatorFn() : arg(UINT_MAX) {}
+DeallocatorFn(uint32_t a) : arg(a) {}
+
+};
 
 class IntegrationHeuristicsPass : public ModulePass {
 
@@ -289,6 +296,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, AllocatorFn, 4> allocatorFunctions;
+   SmallDenseMap<Function*, DeallocatorFn, 4> deallocatorFunctions;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
@@ -1123,10 +1131,11 @@ protected:
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   void tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
-			 ValSetType& ImpType, ImprovedVal& Improved);
+			 ValSetType& ImpType, ImprovedVal& Improved,
+			 bool* needsAsExpectedCheck);
   bool tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
+  bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, bool* needsAsExpectedCheck);
   bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0, bool readFromNonTerminatedLoop = false);
@@ -1899,7 +1908,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeAllocaInst(ShadowInstruction* SI);
  void executeMallocLikeInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI);
- void executeFreeInst(ShadowInstruction* SI);
+ void executeFreeInst(ShadowInstruction* SI, Function*);
  void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction*);
  void executeVaStartInst(ShadowInstruction* SI);
  void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
@@ -1946,6 +1955,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped);
  void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param);
  void escapePercent(std::string&);
+
+ void clearAsExpectedChecks(ShadowBB*);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
 

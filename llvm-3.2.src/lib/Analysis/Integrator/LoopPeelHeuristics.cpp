@@ -2290,11 +2290,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   for(cl::list<std::string>::iterator it = VarAllocators.begin(),
 	itend = VarAllocators.end(); it != itend; ++it) {
 
-    std::string fName, idxStr;
+    std::string fName, idxStr, freeName, freeIdxStr;
 
     std::istringstream istr(*it);
     std::getline(istr, fName, ',');
     std::getline(istr, idxStr, ',');
+    std::getline(istr, freeName, ',');
+    std::getline(istr, freeIdxStr, ',');
 
     Function* allocF = F.getParent()->getFunction(fName);
     if(!allocF) {
@@ -2309,16 +2311,34 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     allocatorFunctions[allocF] = AllocatorFn::getVariableSize(sizeParam);
     SpecialFunctionMap[allocF] = SF_MALLOC;
 
+    if(!freeName.empty()) {
+
+      Function* freeF = F.getParent()->getFunction(freeName);
+      if(!freeF) {
+
+	errs() << "-int-allocator-fn: bad release function " << freeName << "\n";
+	exit(1);
+
+      }
+      
+      uint32_t releaseArg = getInteger(freeIdxStr, "int-allocator-fn fourth param");
+      deallocatorFunctions[freeF] = DeallocatorFn(releaseArg);
+      SpecialFunctionMap[freeF] = SF_FREE;
+
+    }
+
   }
 
   for(cl::list<std::string>::iterator it = ConstAllocators.begin(),
 	itend = ConstAllocators.end(); it != itend; ++it) {
 
-    std::string fName, sizeStr;
+    std::string fName, sizeStr, freeName, freeIdxStr;;
 
     std::istringstream istr(*it);
     std::getline(istr, fName, ',');
     std::getline(istr, sizeStr, ',');
+    std::getline(istr, freeName, ',');
+    std::getline(istr, freeIdxStr, ',');
 
     Function* allocF = F.getParent()->getFunction(fName);
     if(!allocF) {
@@ -2335,9 +2355,30 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     allocatorFunctions[allocF] = AllocatorFn::getConstantSize(ConstantInt::get(I32, size));
     SpecialFunctionMap[allocF] = SF_MALLOC;
 
+    if(!freeName.empty()) {
+
+      Function* freeF = F.getParent()->getFunction(freeName);
+      if(!freeF) {
+
+	errs() << "-int-allocator-fn: bad release function " << freeName << "\n";
+	exit(1);
+
+      }
+
+      uint32_t releaseArg = getInteger(freeIdxStr, "int-allocator-fn fourth param");
+      deallocatorFunctions[freeF] = DeallocatorFn(releaseArg);
+      SpecialFunctionMap[freeF] = SF_FREE;
+
+    }
+
   }
 
-  allocatorFunctions[F.getParent()->getFunction("malloc")] = AllocatorFn::getVariableSize(0);
+  if(Function* libcMalloc = F.getParent()->getFunction("malloc"))
+    allocatorFunctions[libcMalloc] = AllocatorFn::getVariableSize(0);
+  if(Function* libcFree = F.getParent()->getFunction("free"))
+    deallocatorFunctions[libcFree] = DeallocatorFn(0);
+  if(Function* libcRealloc = F.getParent()->getFunction("realloc"))
+    deallocatorFunctions[libcRealloc] = DeallocatorFn(0);
 
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
