@@ -655,7 +655,7 @@ static bool isIDOrConst(ShadowValue& op) {
 
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, bool* needsAsExpectedCheck) {
+bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned* needsRuntimeCheck) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
@@ -709,8 +709,8 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
     ImpType = ValSetTypeScalar;
     Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
 
-    if(comparingHeapPointer && needsAsExpectedCheck)
-      (*needsAsExpectedCheck) = true;
+    if(comparingHeapPointer && needsRuntimeCheck)
+      (*needsRuntimeCheck) = RUNTIME_CHECK_AS_EXPECTED;
 
     return true;   
 
@@ -1003,7 +1003,7 @@ namespace llvm {
 void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
 					   ValSetType& ImpType, ImprovedVal& Improved,
-					   bool* needsAsExpectedCheck) {
+					   unsigned* needsRuntimeCheck) {
   
   Instruction* I = SI->invar->I;
 
@@ -1042,7 +1042,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
     if(tryFoldOpenCmp(SI, Ops, ImpType, Improved))
       return;
-    if(inst_is<ICmpInst>(SI) && tryFoldPointerCmp(SI, Ops, ImpType, Improved, needsAsExpectedCheck))
+    if(inst_is<ICmpInst>(SI) && tryFoldPointerCmp(SI, Ops, ImpType, Improved, needsRuntimeCheck))
       return;
     if(tryFoldNonConstCmp(SI, Ops, ImpType, Improved))
       return;
@@ -1278,7 +1278,7 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
     ValSetType ThisVST;
     ImprovedVal ThisV;
-    tryEvaluateResult(SI, Ops, ThisVST, ThisV, &SI->needsAsExpectedCheck);
+    tryEvaluateResult(SI, Ops, ThisVST, ThisV, &SI->needsRuntimeCheck);
     if(ThisVST == ValSetTypeUnknown)
       return false;
     else if(ThisVST == ValSetTypeOverdef) {

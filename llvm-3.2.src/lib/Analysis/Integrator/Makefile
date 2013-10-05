@@ -12,3 +12,4 @@ LOADABLE_MODULE = 1
 include $(LEVEL)/Makefile.common
 
 CFLAGS = $(CFLAGS) -I $(LEVEL)/../release_32/include
+LIBS += -lcrypto

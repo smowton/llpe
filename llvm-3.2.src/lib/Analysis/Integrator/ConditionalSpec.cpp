@@ -293,7 +293,7 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
 void llvm::clearAsExpectedChecks(ShadowBB* BB) {
 
   for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i)
-    BB->insts[i].needsAsExpectedCheck = false;
+    BB->insts[i].needsRuntimeCheck = RUNTIME_CHECK_NONE;
 
 }
 
@@ -307,7 +307,7 @@ void IntegrationAttempt::noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<Path
 
       // This flag indicates the path condition should be checked on definition, rather than
       // at the top of the block as for conditions that don't always apply.
-      BB->insts[it->instIdx].needsAsExpectedCheck = true;
+      BB->insts[it->instIdx].needsRuntimeCheck = RUNTIME_CHECK_AS_EXPECTED;
       
     }
 
@@ -882,7 +882,12 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
   }
 
-  if(fallThrough || requiresRuntimeCheck(ShadowValue(SI))) {
+  // Does this IA break at this instruction?
+  // It does if this instruction requires an as-expected check ("requiresRuntimeCheck"), 
+  // OR if the NEXT instruction requires a special check.
+  if(fallThrough || 
+     requiresRuntimeCheck(ShadowValue(SI), false) || 
+     (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)) {
 
     edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
     added = true;
@@ -934,7 +939,7 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
     // and unspec incoming paths.
 
     ShadowInstruction* specI = getInst(blockIdx, instIdx);
-    if(!specI)
+    if((!specI) || !specI->committedVal)
       return 0;
     else
       return getCommittedValue(ShadowValue(specI));
@@ -1512,12 +1517,12 @@ bool IntegrationAttempt::hasSpecialisedCompanion(ShadowBBInvar* BBI) {
 
 }
 
-void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, uint32_t instIdx, bool skipTerm) {
+void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t idx, uint32_t instIdx, bool skipTestedInst, bool skipTerm) {
 
   // Map each instruction operand to the most local PHI translation of the target instruction,
   // or if that doesn't exist the specialised version.
 
-  // If this block is a non-final subblock (i.e. skipTerm is true) then skip creating
+  // If skipTestedInst is true then skip creating
   // PHI forwards of the second-to-last instruction (i.e. the instruction before the terminator)
   // as that will be special-cased in populateFailedBlock at the start of the next subblock.
 
@@ -1525,9 +1530,13 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
   Instruction* testedInst;
   if(skipTerm) {
     --BE;
-    --BE;
-    testedInst = BE;
-    ++BE;
+    if(skipTestedInst) {
+      --BE;
+      testedInst = BE;
+      ++BE;
+    }
+    else
+      testedInst = 0;
   }
   else
     testedInst = 0;
@@ -1636,7 +1645,7 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
   BasicBlock::iterator BI = skipMergePHIs(CommitBB->begin());
   BasicBlock::iterator PostPHIBI = commitFailedPHIs(CommitBB, BI, i);
  
-  remapFailedBlock(PostPHIBI, CommitBB, i, std::distance(BI, PostPHIBI), false);
+  remapFailedBlock(PostPHIBI, CommitBB, i, std::distance(BI, PostPHIBI), false, false);
 
 }
 
@@ -1667,13 +1676,24 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
       InlineAttempt* IA;
       if((IA = getInlineAttempt(SI)) && IA->isEnabled() && IA->hasFailedReturnPath())
 	splitInsts[i] = true;
-      else if(requiresRuntimeCheck(ShadowValue(SI))) {
+      else if(requiresRuntimeCheck(ShadowValue(SI), true)) {
 
 	// Check exit PHIs as a block:
 	if(i + 1 != ilim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[i+1]))
 	  continue;
 
-	splitInsts[i] = true;
+	// Special checks require a split BEFORE the block:
+	if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+
+	  if(i != 0)
+	    splitInsts[i - 1] = true;
+
+	}
+	else {
+	  
+	  splitInsts[i] = true;
+
+	}
 
       }
 
@@ -1805,7 +1825,7 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
 
   // If we're called from a context that has loop predecessors then the
   // value may only be checked on some iterations:
-  if(!requiresRuntimeCheck(ShadowValue(SI)))
+  if(!requiresRuntimeCheck(ShadowValue(SI), true))
     return;
 
   ShadowBB* PredBB = getBB(*predBlock);
@@ -1853,7 +1873,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
       preds.push_back(std::make_pair(IA->failedReturnPHI, IA->failedReturnBlock));
 
   }
-  if(fallThrough || requiresRuntimeCheck(SI)) {
+  if(fallThrough || requiresRuntimeCheck(SI, true)) {
 
     ShadowBB* PredBB = getBB(*predBlock);
     BasicBlock* pred = PredBB->getCommittedBreakBlockAt(predIdx);
@@ -1908,6 +1928,56 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
 
 }
 
+bool IntegrationAttempt::instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx) {
+
+  ShadowBBInvar* BBI = getBBInvar(blockIdx);
+  
+  if(L != BBI->naturalScope && ((!L) || L->contains(BBI->naturalScope))) {
+
+    PeelAttempt* LPA;
+    if((LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) &&
+       LPA->isTerminated() && LPA->isEnabled()) {
+      
+      for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
+	if(LPA->Iterations[i]->instAsExpectedTest(blockIdx, instIdx))
+	  return true;
+
+      return false;
+
+    }
+
+  }
+
+  if(ShadowBB* BB = getBB(*BBI)) {
+
+    if(requiresRuntimeCheck(ShadowValue(&BB->insts[instIdx]), false))
+      return true;
+
+  }
+
+  return false;
+
+}
+
+// Return true if the subblock 'it' ends because of an instruction-as-expected test.
+bool IntegrationAttempt::subblockEndsWithAsExpectedTest(uint32_t idx,
+							SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
+							SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit) {
+
+  if(it == lastit)
+    return false;
+
+  // I *think* it's inconceivable that the same instruction should terminate a subblock in different loop iterations
+  // for different reasons... so simply return true if this block boundary exists in some iteration and it's
+  // a test as expected.
+
+  ++it;
+  uint32_t instIdx = it->second - 1;
+
+  return instAsExpectedTest(idx, instIdx);
+
+}
+
 void IntegrationAttempt::populateFailedBlock(uint32_t idx) { }
 
 void InlineAttempt::populateFailedBlock(uint32_t idx) {
@@ -1930,7 +2000,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
     BasicBlock::iterator BI = skipMergePHIs(it->first->begin());
     BasicBlock::iterator PostPHIBI = commitFailedPHIs(it->first, BI, idx);
 
-    remapFailedBlock(PostPHIBI, it->first, idx, std::distance(BI, PostPHIBI), it != lastit);
+    bool endsWithAsExpected = subblockEndsWithAsExpectedTest(idx, it, lastit);
+    remapFailedBlock(PostPHIBI, it->first, idx, std::distance(BI, PostPHIBI), endsWithAsExpected, it != lastit);
 
     ++it;
 
@@ -2007,7 +2078,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
     std::advance(BI, insertedPHIs);
 
     // Remap the normal instructions
-    remapFailedBlock(BI, it->first, idx, it->second, it != lastit);
+    bool endsWithAsExpected = subblockEndsWithAsExpectedTest(idx, it, lastit);
+    remapFailedBlock(BI, it->first, idx, it->second, endsWithAsExpected, it != lastit);
 
   }
   

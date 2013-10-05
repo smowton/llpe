@@ -785,11 +785,11 @@ void InlineAttempt::rerunTentativeLoads() {
 
 // Our main interface to other passes:
 
-bool llvm::requiresRuntimeCheck(ShadowValue V) {
+bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
 
   if(!V.isInst())
     return false;
-  return V.u.I->parent->IA->requiresRuntimeCheck2(V);
+  return V.u.I->parent->IA->requiresRuntimeCheck2(V, includeSpecialChecks);
 
 }
 
@@ -823,10 +823,10 @@ void IntegrationAttempt::countTentativeInstructions() {
 
       // This should count only instructions that are checked because their result might be
       // invalidated by the concurrent action of other threads in the same address space.
-      // Instructions with SI->needsAsExpectedCheck set are checked to implement a path condition
-      // and so should not be included in the count.
+      // Instructions with SI->needsRuntimeCheck set are checked to implement a path condition
+      // or other check and so should not be included in the count.
       
-      if(requiresRuntimeCheck2(ShadowValue(SI)) && !SI->needsAsExpectedCheck)
+      if(requiresRuntimeCheck2(ShadowValue(SI), false) && SI->needsRuntimeCheck == RUNTIME_CHECK_NONE)
 	++checkedInstructionsHere;
 
     }
@@ -933,7 +933,7 @@ bool IntegrationAttempt::containsTentativeLoads() {
 
 }
 
-bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
+bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks) {
 
   if(V.getType()->isVoidTy())
     return false;
@@ -944,7 +944,9 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V) {
 
   {
     ShadowInstruction* SI;
-    if((SI = V.getInst()) && SI->needsAsExpectedCheck)
+    if((SI = V.getInst()) && SI->needsRuntimeCheck == RUNTIME_CHECK_AS_EXPECTED)
+      return true;
+    if(SI && includeSpecialChecks && SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
       return true;
   }
 
@@ -1017,7 +1019,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
       ShadowInstruction* SI = &BB->insts[j];
       InlineAttempt* IA;
 
-      if(requiresRuntimeCheck2(ShadowValue(SI))) {
+      if(requiresRuntimeCheck2(ShadowValue(SI), true)) {
 
 	// Treat tested exit PHIs as a block.
 	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))

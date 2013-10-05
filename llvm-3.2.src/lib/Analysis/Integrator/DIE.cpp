@@ -282,7 +282,7 @@ static bool _willBeDeleted(ShadowValue V) {
 
 bool llvm::willBeDeleted(ShadowValue V) {
 
-  if(requiresRuntimeCheck(V))
+  if(requiresRuntimeCheck(V, false))
     return false;
   return _willBeDeleted(V);
 
@@ -309,7 +309,7 @@ static bool _willBeReplacedOrDeleted(ShadowValue V) {
 
 bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
-  if(requiresRuntimeCheck(V))
+  if(requiresRuntimeCheck(V, false))
     return false;
   return _willBeReplacedOrDeleted(V);
 
@@ -317,7 +317,7 @@ bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
 bool llvm::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
-  if(requiresRuntimeCheck(V))
+  if(requiresRuntimeCheck(V, false))
     return false;
 
   if(_willBeDeleted(V))
@@ -471,7 +471,7 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
   }
   else {
 
-    if(requiresRuntimeCheck(V))
+    if(requiresRuntimeCheck(V, false))
       return false;
 
     // At the moment only FDs and allocations have indirect users like this.

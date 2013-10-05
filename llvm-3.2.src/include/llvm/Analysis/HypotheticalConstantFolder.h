@@ -325,6 +325,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool verboseSharing;
    bool verbosePCs;
 
+   Function* llioPreludeFn;
+   std::string llioConfigFile;
+   std::vector<std::string> llioDependentFiles;
+
    DenseSet<ShadowInstruction*> barrierInstructions;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
@@ -450,6 +454,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    uint32_t countPathConditionsAtBlockStart(ShadowBBInvar* BB, IntegrationAttempt* IA);
    BasicBlock* parsePCBlock(Function* fStack, std::string& bbName);
    int64_t parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr);
+   void writeLliowdConfig();
 
 };
 
@@ -1132,10 +1137,10 @@ protected:
   void tryEvaluateResult(ShadowInstruction* SI, 
 			 std::pair<ValSetType, ImprovedVal>* Ops, 
 			 ValSetType& ImpType, ImprovedVal& Improved,
-			 bool* needsAsExpectedCheck);
+			 unsigned* needsRuntimeCheck);
   bool tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
-  bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, bool* needsAsExpectedCheck);
+  bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned* needsRuntimeCheck);
   bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   void getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs = 0, bool readFromNonTerminatedLoop = false);
@@ -1328,7 +1333,7 @@ protected:
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   void fixupHeaderPHIs(ShadowBB* BB);
   void emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
-  bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
+  bool emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   void emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB);
@@ -1383,6 +1388,11 @@ protected:
   void gatherPathConditionEdges(uint32_t bbIdx, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>* preds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* IApreds);
   virtual void noteAsExpectedChecks(ShadowBB* BB);
   void noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<PathCondition>& PCs, uint32_t stackIdx);
+  bool requiresBreakCode(ShadowInstruction*);
+  bool subblockEndsWithAsExpectedTest(uint32_t idx,
+				      SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
+				      SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit);
+  bool instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx);
 
   // Tentative load determination
   
@@ -1391,7 +1401,7 @@ protected:
   ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
   void findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
   void resetTentativeLoads();
-  bool requiresRuntimeCheck2(ShadowValue V);
+  bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
 
@@ -1772,7 +1782,7 @@ class InlineAttempt : public IntegrationAttempt {
   Value* tryGetLocalFailedValue(Value* V, BasicBlock*);
   Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* BB);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
-  void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTerm);
+  void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTestedInst, bool skipTerm);
   virtual void commitSimpleFailedBlock(uint32_t i);
   virtual void popAllocas(OrdinaryLocalStore*);
   virtual void createFailedBlock(uint32_t idx);
@@ -1947,7 +1957,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void valueEscaped(ShadowValue, ShadowBB*);
  void intersectSets(DenseSet<ShadowValue>* Target, MutableArrayRef<DenseSet<ShadowValue>* > Merge);
 
- bool requiresRuntimeCheck(ShadowValue V);
+ bool requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks);
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
  
  void releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB);
@@ -1957,6 +1967,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void escapePercent(std::string&);
 
  void clearAsExpectedChecks(ShadowBB*);
+ void noteLLIODependency(std::string&);
 
  const GlobalValue* getUnderlyingGlobal(const GlobalValue* V);
 

@@ -792,6 +792,10 @@ enum ThreadLocalState {
 
 };
 
+#define RUNTIME_CHECK_NONE 0
+#define RUNTIME_CHECK_AS_EXPECTED 1
+#define RUNTIME_CHECK_SPECIAL 2
+
 struct ShadowInstruction {
 
   ShadowBB* parent;
@@ -803,7 +807,7 @@ struct ShadowInstruction {
   SmallVector<IVSRange, 4>* memcpyValues;
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
   ThreadLocalState isThreadLocal;
-  bool needsAsExpectedCheck;
+  unsigned needsRuntimeCheck;
 
   LocStore store;
   uint64_t storeSize;

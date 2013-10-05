@@ -694,7 +694,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
       // This will be a branch to unspecialised code in the output program;
       // assume store is needed if it is live over this point.
-      if(requiresRuntimeCheck(ShadowValue(I))) {
+      if(requiresRuntimeCheck(ShadowValue(I), true)) {
 
 	setAllNeeded(BB->u.dseStore);
 	BB->u.dseStore = BB->u.dseStore->getEmptyMap();	

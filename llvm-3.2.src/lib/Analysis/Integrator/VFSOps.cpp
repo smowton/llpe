@@ -362,6 +362,16 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, vo
 
 }
 
+void llvm::noteLLIODependency(std::string& Filename) {
+  
+  std::vector<std::string>::iterator findit = 
+    std::find(GlobalIHP->llioDependentFiles.begin(), GlobalIHP->llioDependentFiles.end(), Filename);
+
+  if(findit == GlobalIHP->llioDependentFiles.end())
+    GlobalIHP->llioDependentFiles.push_back(Filename);
+  
+}
+
 bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename) {
 
   struct stat file_stat;
@@ -369,6 +379,9 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
 
   if(stat_ret == -1 && errno != ENOENT)
     return false;
+
+  noteLLIODependency(Filename);
+  SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
 
   if(stat_ret == 0) {
 
@@ -558,6 +571,9 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     setReplacement(SI, ConstantInt::get(Type::getInt64Ty(CI->getContext()), cBytes));
 
     executeReadInst(SI, OS, Walk.uniqueIncomingOffset, cBytes);
+
+    noteLLIODependency(OS.Name);
+    SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
 
   }
   else {

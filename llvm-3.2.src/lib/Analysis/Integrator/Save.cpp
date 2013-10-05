@@ -183,6 +183,14 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
 }
 
+// Return true if it will be necessary to insert code on the path leading from specialised to unspecialised code.
+bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
+
+  return SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
+    resolvedReadCalls.count(cast<CallInst>(SI->invar->I));
+
+}
+
 void IntegrationAttempt::commitCFG() {
 
   SaveProgress();
@@ -268,7 +276,24 @@ void IntegrationAttempt::commitCFG() {
 
     }
 
-    // Determine if we need to create more BBs because of call inlining:
+    // Create one extra top block if there's a special check at the beginning
+    if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+
+      if(pass->verbosePCs || requiresBreakCode(&BB->insts[0])) {
+
+	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".break", CF);
+	BB->committedBlocks.back().breakBlock = breakBlock;
+
+      }
+
+      BasicBlock* newBlock =
+	BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".vfscheck", CF);	
+
+      BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
+
+    }
+     
+    // Determine if we need to create more BBs because of call inlining, instruction checks and so on.
 
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
@@ -342,11 +367,33 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
+      // If we need a check *before* this instruction (at the moment only true if it's a read or stat
+      // call that will require an inline check) then add a break.
+      if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+
+	if(j != 0) {
+
+	  if(pass->verbosePCs || requiresBreakCode(SI)) {
+
+	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".vfsbreak", CF);
+	    BB->committedBlocks.back().breakBlock = breakBlock;
+
+	  }
+
+	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".vfspass", CF);
+	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j));
+
+	}
+
+      }
+
       // If we have a disabled call, exit phi for a disabled loop, or tentative load
       // then insert a break for a check.
       // This path also handles path conditions that are checked as they are defined,
       // rather than at the top of a block that may be remote from the definition site.
-      if(requiresRuntimeCheck(SI)) {
+      // And in just a little more mission creep, special checks that are inserted for VFS
+      // operations.
+      if(requiresRuntimeCheck(SI, false)) {
 
 	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
@@ -390,13 +437,17 @@ Value* llvm::getCommittedValue(ShadowValue SV) {
     break;
   }
 
-  release_assert((!willBeDeleted(SV)) && "Instruction depends on deleted value");
-
   switch(SV.t) {
-  case SHADOWVAL_INST:
-    return SV.u.I->committedVal;
+  case SHADOWVAL_INST: 
+    {
+      release_assert(SV.u.I->committedVal && "Instruction depends on uncommitted instruction");
+      return SV.u.I->committedVal;
+    }
   case SHADOWVAL_ARG:
-    return SV.u.A->committedVal;
+    {
+      release_assert(SV.u.A->committedVal && "Instruction depends on uncommitted instruction");
+      return SV.u.A->committedVal;
+    }
   default:
     release_assert(0 && "Bad SV type");
     llvm_unreachable();
@@ -925,7 +976,26 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 }
 
-bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
+static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
+
+  LLVMContext& Context = FD->getContext();
+
+  Type* Int64Ty = IntegerType::get(Context, 64);
+  Constant* NewOffset = ConstantInt::get(Int64Ty, Offset);
+  Type* Int32Ty = IntegerType::get(Context, 32);
+  Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
+
+  Constant* SeekFn = emitBB->getParent()->getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
+
+  Value* CallArgs[] = { FD, NewOffset, SeekSet };
+
+  CallInst::Create(SeekFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
+
+}
+
+bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBBIter) {
+
+  BasicBlock* emitBB = emitBBIter->specBlock;
 
   CallInst* CI = cast_inst<CallInst>(I);
 
@@ -933,10 +1003,59 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
     DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
     if(it != resolvedReadCalls.end()) {
       
+      LLVMContext& Context = CI->getContext();
+
+      // Emit a check that file specialisations are still admissible:
+      // (TODO: avoid these more often)
+      Type* Int32Ty = IntegerType::get(Context, 32);
+      Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+      Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
+      
+      Constant* Zero32 = Constant::getNullValue(Int32Ty);
+      Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
+      
+      BasicBlock* breakBlock = emitBBIter->breakBlock;
+
+      // Seek to the right position in the break block:
+      emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
+		 it->second.incomingOffset, breakBlock);
+      
+      // Print failure notice if building a verbose specialisation:
+      if(pass->verbosePCs) {
+	
+	std::string message;
+	{
+	  raw_string_ostream RSO(message);
+	  RSO << "Denied permission to use specialised files reading " << it->second.openArg->Name << " in " << emitBB->getName() << "\n";
+	}
+	
+	emitRuntimePrint(breakBlock, message, 0);
+	
+      }
+      
+      ++emitBBIter;
+
+      // Branch to the real read instruction on failure:
+      BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
+      BasicBlock* successTarget = emitBBIter->specBlock;
+      
+      BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
+      BranchInst::Create(failTarget, breakBlock);
+      
+      // Emit the rest of the read implementation in the next specialised block:
+      emitBB = successTarget;
+
+      // Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
+      // used without an intervening SEEK_SET)
+      if(it->second.needsSeek) {
+	
+	emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
+		   it->second.incomingOffset + it->second.readSize, emitBB);
+	  
+      }
+
       if(it->second.readSize > 0 && !(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
-
-	LLVMContext& Context = CI->getContext();
-
+	
 	// Create a memcpy from a constant, since someone is still using the read data.
 	std::vector<Constant*> constBytes;
 	std::string errors;
@@ -978,23 +1097,6 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 	};
 	
 	CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
-
-	// Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
-	// used without an intervening SEEK_SET)
-	if(it->second.needsSeek) {
-
-	  Type* Int64Ty = IntegerType::get(Context, 64);
-	  Constant* NewOffset = ConstantInt::get(Int64Ty, it->second.incomingOffset + it->second.readSize);
-	  Type* Int32Ty = IntegerType::get(Context, 32);
-	  Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
-
-	  Constant* SeekFn = F.getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
-
-	  Value* CallArgs[] = {getCommittedValue(I->getCallArgOperand(0)) /* The FD */, NewOffset, SeekSet};
-
-	  CallInst::Create(SeekFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
-	  
-	}
 	
       }
 
@@ -1049,6 +1151,49 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
     }
 
+  }
+
+  Function* CalledF = getCalledFunction(I);
+
+  if(I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
+     (CalledF->getName() == "stat" || CalledF->getName() == "fstat")) {
+
+    LLVMContext& Context = emitBB->getContext();
+
+    // Emit an lliowd_ok check, and if it fails branch to the real stat instruction.
+    Type* Int32Ty = IntegerType::get(Context, 32);
+    Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+    Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
+	
+    Constant* Zero32 = Constant::getNullValue(Int32Ty);
+    Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
+
+    BasicBlock* breakBlock = emitBBIter->breakBlock;
+
+    // Print failure notice if building a verbose specialisation:
+    if(pass->verbosePCs) {
+
+      std::string message;
+      {
+	raw_string_ostream RSO(message);
+	RSO << "Denied permission to use specialised files on (f)stat in " << emitBB->getName() << "\n";
+      }
+
+      emitRuntimePrint(breakBlock, message, 0);
+
+    }
+	
+    ++emitBBIter;
+
+    // Branch to the real read instruction on failure:
+    BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
+    BasicBlock* successTarget = emitBBIter->specBlock;
+    
+    BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
+    BranchInst::Create(failTarget, breakBlock);
+
+    return true;
+    
   }
 
   return false;
@@ -1220,7 +1365,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
   }
   
-  if(emitVFSCall(BB, I, emitBB))
+  if(emitVFSCall(BB, I, emitBBIter))
     return;
 
   // Unexpanded call, emit it as a normal instruction.
@@ -1607,10 +1752,19 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
     // Else fall through to fill in a committed value:
   }
 
-  if(willBeDeleted(ShadowValue(I)) && !inst_is<TerminatorInst>(I))
+  // Return instruction "dead" status means it won't be used -- but we must synthesise something
+  // if this is an out-of-line commit.
+  // Read instruction "dead" status means its memory writes are useless, but its return value
+  // is still perhaps used.
+  
+  if(willBeDeleted(ShadowValue(I)) 
+     && (!inst_is<TerminatorInst>(I)) 
+     && (!resolvedReadCalls.count(cast<CallInst>(I->invar->I))))
     return;
 
-  if(!requiresRuntimeCheck(I)) {
+  // The second parameter specifies this doesn't catch instructions that requires custom checks
+  // such as VFS operations.
+  if(!requiresRuntimeCheck(I, false)) {
 
     Value* V;
     if(trySynthInst(I, emitBB->specBlock, V)) {
@@ -1733,7 +1887,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     if(j != 0) {
 
       ShadowInstruction* prevSI = &BB->insts[j-1];
-      if(inst_is<PHINode>(prevSI) && requiresRuntimeCheck(ShadowValue(prevSI)))
+      if(inst_is<PHINode>(prevSI) && requiresRuntimeCheck(ShadowValue(prevSI), false))
 	emitBlockIt = emitExitPHIChecks(emitBlockIt, BB);
 
     }
@@ -1745,7 +1899,10 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
       I->committedVal = 0;
       emitOrSynthInst(I, BB, emitBlockIt);
 
-      if(requiresRuntimeCheck(ShadowValue(I)))
+      // This only emits "check as expected" checks: simple comparisons that ensure a value
+      // determined during specialisation matches the real value.
+      // VFS ops (and perhaps others to come) produce special checks.
+      if(requiresRuntimeCheck(ShadowValue(I), false))
 	emitBlockIt = emitOrdinaryInstCheck(emitBlockIt, I);
 
     }
@@ -1792,7 +1949,7 @@ void IntegrationAttempt::commitInstructions() {
 
   SaveProgress();
   
-  if(getFunctionRoot()->isRootMainCall() && pass->verbosePCs) {
+  if(this == getFunctionRoot() && getFunctionRoot()->isRootMainCall() && pass->verbosePCs) {
 
     std::string msg;
     {

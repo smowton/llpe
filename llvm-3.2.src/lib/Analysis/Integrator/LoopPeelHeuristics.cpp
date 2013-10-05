@@ -49,6 +49,11 @@
 
 #include <stdlib.h>
 
+#include <openssl/sha.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 using namespace llvm;
 
 char IntegrationHeuristicsPass::ID = 0;
@@ -94,6 +99,8 @@ static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroO
 static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
 static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
 static cl::opt<bool>VerbosePathConditions("int-verbose-path-conditions");
+static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
+static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1603,6 +1610,129 @@ namespace llvm {
 
 }
 
+static bool getFileSha1(std::string& Filename, unsigned char* hash) {
+
+  SHA_CTX hashctx;
+  if(!SHA1_Init(&hashctx)) {
+
+    errs() << "SHA1_Init\n";
+    return false;
+
+  }
+	
+  int filefd = open(Filename.c_str(), O_RDONLY);
+  if(filefd == -1) {
+	  
+    errs() << "Cannot open " << Filename << "\n";
+    return false;
+
+  }
+	
+  char readbuf[4096];
+  int thisread;
+
+  while((thisread = read(filefd, readbuf, 4096)) > 0) {
+
+    if(!SHA1_Update(&hashctx, readbuf, thisread)) {
+
+      errs() << "SHA1_Update\n";
+      return false;
+
+    }
+
+  }
+
+  if(thisread == -1) {
+
+    errs() << "Read failed for " << Filename << "\n";
+    close(filefd);
+    return false;
+
+  }
+
+  if(!SHA1_Final(hash, &hashctx)) {
+
+    errs() << "SHA1_Final\n";
+    close(filefd);
+    return false;;
+
+  }
+
+  close(filefd);
+  return true;
+
+}
+
+static time_t getFileMtime(std::string& filename) {
+
+  struct stat st;
+  int ret = ::stat(filename.c_str(), &st);
+  if(ret == -1) {
+
+    errs() << "Failed to stat " << filename << "\n";
+    return 0;
+
+  }
+
+  return st.st_mtime;
+  
+}
+
+void IntegrationHeuristicsPass::writeLliowdConfig() {
+
+  raw_ostream* Outp;
+  std::auto_ptr<raw_fd_ostream> Fdp;
+
+  if(llioConfigFile.empty()) {
+
+    errs() << "No config file specified, writing to stdout\n";
+    Outp = &outs();
+
+  }
+  else {
+
+    std::string openerror;
+    Fdp.reset(new raw_fd_ostream(llioConfigFile.c_str(), openerror));
+    if(openerror.size()) {
+
+      errs() << "Failed to open " << llioConfigFile << ", using stdout\n";
+      Fdp.reset();
+      Outp = &outs();
+
+    }
+    else {
+
+      Outp = Fdp.get();
+
+    }
+
+  }
+
+  raw_ostream& Out = *Outp;
+
+  for(std::vector<std::string>::iterator it = llioDependentFiles.begin(),
+	itend = llioDependentFiles.end(); it != itend; ++it) {
+
+    Out << "\t" << *it << " " << getFileMtime(*it) << " ";
+
+    unsigned char hash[SHA_DIGEST_LENGTH];
+
+    if(getFileSha1(*it, hash)) {
+
+      for(int i = 0; i < SHA_DIGEST_LENGTH; ++i) {
+
+	Out.write_hex(hash[i]);
+
+      }
+
+      Out << "\n";
+
+    }
+
+  }
+
+}
+
 void IntegrationHeuristicsPass::commit() {
 
   RootIA->addCheckpointFailedBlocks();
@@ -1635,8 +1765,22 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->commitCFG();
   RootIA->commitArgsAndInstructions();
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
-  // Also exchange names so that external users will use this new version:
 
+  Function* writePreludeFn;
+
+  if(llioDependentFiles.empty())
+    writePreludeFn = 0;
+  else {
+
+    writePreludeFn = llioPreludeFn;
+    if(llioPreludeFn == &RootIA->F)
+      writePreludeFn = RootIA->CommitF;
+
+    writeLliowdConfig();
+
+  }
+
+  // Also exchange names so that external users will use this new version:
   std::string oldFName;
   {
     raw_string_ostream RSO(oldFName);
@@ -1645,6 +1789,20 @@ void IntegrationHeuristicsPass::commit() {
 
   RootIA->CommitF->takeName(&(RootIA->F));
   RootIA->F.setName(oldFName);
+
+  // Add an lliowd_init() prelude to the beginning of the requested function:
+  if(writePreludeFn) {
+
+    BasicBlock& preludeBlock = writePreludeFn->getEntryBlock();
+    BasicBlock::iterator it = preludeBlock.begin();
+    while(it != preludeBlock.end() && isa<AllocaInst>(it))
+      ++it;
+
+    Type* Void = Type::getVoidTy(writePreludeFn->getContext());
+    Constant* WDInit = writePreludeFn->getParent()->getOrInsertFunction("lliowd_init", Void, NULL);
+    CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+
+  }
 
   errs() << "\n";
 
@@ -2385,6 +2543,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->verboseSharing = VerboseFunctionSharing;
   this->useDSA = UseDSA;
   this->verbosePCs = VerbosePathConditions;
+
+  if(Function* preludeFn = F.getParent()->getFunction(LLIOPreludeFn))
+    this->llioPreludeFn = preludeFn;
+  else
+    this->llioPreludeFn = &F;
+
+  this->llioConfigFile = LLIOConfFile;
 
 }
 
