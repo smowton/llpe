@@ -232,7 +232,7 @@ static void parse_config(const char* confname) {
 
       if(hashstr.size() != SHA_DIGEST_LENGTH * 2) {
 
-	cerr << hashstr << " wrong length\n";
+	cerr << hashstr << " wrong length (expected " << (SHA_DIGEST_LENGTH * 2) << ", got " << hashstr.size() << ")\n";
 	exit(1);
 
       }

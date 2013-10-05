@@ -40,6 +40,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/Support/FileSystem.h"
 
 #include "dsa/DataStructure.h"
 
@@ -1713,7 +1714,15 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
   for(std::vector<std::string>::iterator it = llioDependentFiles.begin(),
 	itend = llioDependentFiles.end(); it != itend; ++it) {
 
-    Out << "\t" << *it << " " << getFileMtime(*it) << " ";
+    SmallVector<char, 256> relPath;
+    for(unsigned i = 0, ilim = it->size(); i != ilim; ++i)
+      relPath.push_back((*it)[i]);
+
+    llvm::sys::fs::make_absolute(relPath);
+
+    StringRef printPath(relPath.data(), relPath.size());
+
+    Out << "\t" << printPath << " " << getFileMtime(*it) << " ";
 
     unsigned char hash[SHA_DIGEST_LENGTH];
 
@@ -1721,6 +1730,8 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
 
       for(int i = 0; i < SHA_DIGEST_LENGTH; ++i) {
 
+	if(hash[i]/16 == 0)
+	  Out << '0';
 	Out.write_hex(hash[i]);
 
       }

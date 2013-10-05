@@ -1019,13 +1019,19 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
       ShadowInstruction* SI = &BB->insts[j];
       InlineAttempt* IA;
 
-      if(requiresRuntimeCheck2(ShadowValue(SI), true)) {
+      if(requiresRuntimeCheck2(ShadowValue(SI), false)) {
 
 	// Treat tested exit PHIs as a block.
 	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
 
 	getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+
+      }
+      else if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+
+	// Special checks *precede* the instruction
+	getFunctionRoot()->markBlockAndSuccsFailed(i, j);
 
       }
       else if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {

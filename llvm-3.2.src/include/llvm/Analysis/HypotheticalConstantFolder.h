@@ -1389,10 +1389,10 @@ protected:
   virtual void noteAsExpectedChecks(ShadowBB* BB);
   void noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<PathCondition>& PCs, uint32_t stackIdx);
   bool requiresBreakCode(ShadowInstruction*);
-  bool subblockEndsWithAsExpectedTest(uint32_t idx,
-				      SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
-				      SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit);
-  bool instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx);
+  bool subblockEndsWithSpecialTest(uint32_t idx,
+				   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
+				   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit);
+  bool instSpecialTest(uint32_t blockIdx, uint32_t instIdx);
 
   // Tentative load determination
   

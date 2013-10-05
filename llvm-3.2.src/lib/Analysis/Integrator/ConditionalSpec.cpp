@@ -1928,7 +1928,7 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
 
 }
 
-bool IntegrationAttempt::instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx) {
+bool IntegrationAttempt::instSpecialTest(uint32_t blockIdx, uint32_t instIdx) {
 
   ShadowBBInvar* BBI = getBBInvar(blockIdx);
   
@@ -1939,7 +1939,7 @@ bool IntegrationAttempt::instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx)
        LPA->isTerminated() && LPA->isEnabled()) {
       
       for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-	if(LPA->Iterations[i]->instAsExpectedTest(blockIdx, instIdx))
+	if(LPA->Iterations[i]->instSpecialTest(blockIdx, instIdx))
 	  return true;
 
       return false;
@@ -1950,7 +1950,7 @@ bool IntegrationAttempt::instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx)
 
   if(ShadowBB* BB = getBB(*BBI)) {
 
-    if(requiresRuntimeCheck(ShadowValue(&BB->insts[instIdx]), false))
+    if(BB->insts[instIdx].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
       return true;
 
   }
@@ -1960,21 +1960,21 @@ bool IntegrationAttempt::instAsExpectedTest(uint32_t blockIdx, uint32_t instIdx)
 }
 
 // Return true if the subblock 'it' ends because of an instruction-as-expected test.
-bool IntegrationAttempt::subblockEndsWithAsExpectedTest(uint32_t idx,
-							SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
-							SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit) {
+bool IntegrationAttempt::subblockEndsWithSpecialTest(uint32_t idx,
+						     SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
+						     SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit) {
 
   if(it == lastit)
     return false;
 
   // I *think* it's inconceivable that the same instruction should terminate a subblock in different loop iterations
   // for different reasons... so simply return true if this block boundary exists in some iteration and it's
-  // a test as expected.
+  // a special test.
 
   ++it;
   uint32_t instIdx = it->second - 1;
 
-  return instAsExpectedTest(idx, instIdx);
+  return instSpecialTest(idx, instIdx);
 
 }
 
@@ -2000,8 +2000,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
     BasicBlock::iterator BI = skipMergePHIs(it->first->begin());
     BasicBlock::iterator PostPHIBI = commitFailedPHIs(it->first, BI, idx);
 
-    bool endsWithAsExpected = subblockEndsWithAsExpectedTest(idx, it, lastit);
-    remapFailedBlock(PostPHIBI, it->first, idx, std::distance(BI, PostPHIBI), endsWithAsExpected, it != lastit);
+    bool endsWithSpecial = subblockEndsWithSpecialTest(idx, it, lastit);
+    remapFailedBlock(PostPHIBI, it->first, idx, std::distance(BI, PostPHIBI), !endsWithSpecial, it != lastit);
 
     ++it;
 
@@ -2078,8 +2078,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
     std::advance(BI, insertedPHIs);
 
     // Remap the normal instructions
-    bool endsWithAsExpected = subblockEndsWithAsExpectedTest(idx, it, lastit);
-    remapFailedBlock(BI, it->first, idx, it->second, endsWithAsExpected, it != lastit);
+    bool endsWithSpecial = subblockEndsWithSpecialTest(idx, it, lastit);
+    remapFailedBlock(BI, it->first, idx, it->second, !endsWithSpecial, it != lastit);
 
   }
   

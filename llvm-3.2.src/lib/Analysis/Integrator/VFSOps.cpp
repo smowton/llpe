@@ -355,6 +355,9 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, vo
     if(SpecialFunctionMap.count(F))
       return false;
 
+    if(GlobalIHP->specialLocations.count(F))
+      return false;
+
   }
 
   uniqueIncomingOffset = -1;
