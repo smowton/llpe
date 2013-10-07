@@ -367,7 +367,7 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
-      // If we need a check *before* this instruction (at the moment only true if it's a read or stat
+      // If we need a check *before* this instruction (at the moment only true if it's a read 
       // call that will require an inline check) then add a break.
       if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
 
@@ -391,8 +391,6 @@ void IntegrationAttempt::commitCFG() {
       // then insert a break for a check.
       // This path also handles path conditions that are checked as they are defined,
       // rather than at the top of a block that may be remote from the definition site.
-      // And in just a little more mission creep, special checks that are inserted for VFS
-      // operations.
       if(requiresRuntimeCheck(SI, false)) {
 
 	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
@@ -1168,7 +1166,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
     Constant* Zero32 = Constant::getNullValue(Int32Ty);
     Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
 
-    BasicBlock* breakBlock = emitBBIter->breakBlock;
+    BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
 
     // Print failure notice if building a verbose specialisation:
     if(pass->verbosePCs) {
@@ -1179,18 +1177,19 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	RSO << "Denied permission to use specialised files on (f)stat in " << emitBB->getName() << "\n";
       }
 
-      emitRuntimePrint(breakBlock, message, 0);
+      emitRuntimePrint(emitBBIter->breakBlock, message, 0);
+
+      BranchInst::Create(failTarget, emitBBIter->breakBlock);
+      failTarget = emitBBIter->breakBlock;
 
     }
 	
     ++emitBBIter;
 
     // Branch to the real read instruction on failure:
-    BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
     BasicBlock* successTarget = emitBBIter->specBlock;
     
-    BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
-    BranchInst::Create(failTarget, breakBlock);
+    BranchInst::Create(failTarget, successTarget, CheckTest, emitBB);
 
     return true;
     

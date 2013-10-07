@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
     struct spec_program* prog = findprog(exebuf);
     if(!prog) {
 
-      cerr << "No such program " << pathbuf << "\n";
+      cerr << "No such program " << exebuf << "\n";
       close(connfd);
       continue;
 

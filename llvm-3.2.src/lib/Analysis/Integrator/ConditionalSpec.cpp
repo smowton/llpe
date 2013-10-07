@@ -1204,8 +1204,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
   // new loop variants and their header phis must be created incomplete and finished on completion.
   // Start it off containing the definition loop, which will never be popped.
   
-  SmallVector<const Loop*, 4> loopStack;
-  loopStack.push_back(OrigSI.parent->naturalScope);
+  SmallVector<std::pair<const Loop*, PHINode*>, 4> loopStack;
+  loopStack.push_back(std::make_pair(OrigSI.parent->naturalScope, (PHINode*)0));
 
   for(uint32_t i = 0, ilim = predBlocks.size(); i != ilim; ++i) {
 
@@ -1234,7 +1234,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // we can simply set all such blocks to use the same definition as the preheader; if there are,
       // we must create an incomplete header phi and complete it after exiting.
 
-      const Loop* currentLoop = loopStack.back();
+      const Loop* currentLoop = loopStack.back().first;
       if(currentLoop != thisBBI->naturalScope) {
 
 	if((!currentLoop) || currentLoop->contains(thisBBI->naturalScope)) {
@@ -1288,7 +1288,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 	    // Otherwise create a phi that doesn't merge the latch edge and complete it later.
 	    headerPred = std::make_pair(failedBlocks[LInfo->preheaderIdx].back().first, PreheaderInst);
-	    loopStack.push_back(thisBBI->naturalScope);
+	    loopStack.push_back(std::make_pair(thisBBI->naturalScope, (PHINode*)0));
 
 	    // Fall through to ordinary treatment of the first subblock, where headerPred being set
 	    // will override the usual merge-from-unspecialised-predecessors logic.
@@ -1302,16 +1302,16 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  // All predecessor kinds apart from the latch->header unspecialised edge
 	  // are already accounted for.
 
-	  while(thisBBI->naturalScope != loopStack.back()) {
+	  while(thisBBI->naturalScope != loopStack.back().first) {
 
-	    const Loop* exitLoop = loopStack.back();
+	    const Loop* exitLoop = loopStack.back().first;
+	    PHINode* PN = loopStack.back().second;
 	    loopStack.pop_back();
 	    // Lowest level loop should never be popped.
 	    release_assert(loopStack.size());
 
 	    ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
 
-	    PHINode* PN = cast<PHINode>(predBlocks[LInfo->headerIdx - OrigSI.parent->idx].first);
 	    PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
 			    failedBlocks[LInfo->latchIdx].back().first);
 
@@ -1409,6 +1409,12 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	// Further subdivisions of this block should use the new PHI
 	thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
 	ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
+
+	if(headerPred.first) {
+
+	  loopStack.back().second = cast<PHINode>(thisBlockInst);
+
+	}
 	
       }
       else {
@@ -1478,16 +1484,16 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
   // If there are loops that exit exactly as this value goes out of scope, finish their headers.
 
-  while(OrigSI.parent->naturalScope != loopStack.back()) {
+  while(OrigSI.parent->naturalScope != loopStack.back().first) {
 
-    const Loop* exitLoop = loopStack.back();
+    const Loop* exitLoop = loopStack.back().first;
+    PHINode* PN = loopStack.back().second;
     loopStack.pop_back();
     // Lowest level loop should never be popped.
     release_assert(loopStack.size());
-    
+
     ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
     
-    PHINode* PN = cast<PHINode>(predBlocks[LInfo->headerIdx - OrigSI.parent->idx].first);
     PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
 		    failedBlocks[LInfo->latchIdx].back().first);
 
@@ -1821,6 +1827,9 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
   }
 
   ShadowBB* InstBB = getBB(*instBlock);
+  if(!InstBB)
+    return;
+
   ShadowInstruction* SI = &InstBB->insts[instIdx];
 
   // If we're called from a context that has loop predecessors then the
