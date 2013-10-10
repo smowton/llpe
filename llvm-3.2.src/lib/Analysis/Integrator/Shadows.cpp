@@ -560,6 +560,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
     insts[i].allocIdx = -1;
+    insts[i].allocVague = false;
     insts[i].memcpyValues = 0;
     insts[i].isThreadLocal = TLS_MUSTCHECK;
     insts[i].storeSize = 0;

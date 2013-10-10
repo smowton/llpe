@@ -2206,12 +2206,29 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
 }
 
+static void markVagueAllocation(ShadowInstruction* SI) {
+
+  SI->allocVague = true;
+  //errs() << "Allocation " << itcache(SI) << " in " << SI->parent->IA->SeqNumber << " vague\n";
+
+}
+
 void llvm::executeAllocaInst(ShadowInstruction* SI) {
 
   // If the store is already initialised this must represent the general case of an allocation
   // within a loop or recursive call.
-  if(SI->store.store)
+
+  // Don't mark allocas vague unless they occur within a function-local loop:
+  // because they are deallocated on function exit, a pointer always refers to the latest
+  // version of this instruction.
+  // Compare a malloc in a similar situation: if we have while(dyn) { f(); } where f() calls malloc,
+  // that object may refer to any f in the unbounded loop, not just the most recent call.
+
+  if(SI->store.store) {
+    if(SI->parent->invar->naturalScope != 0)
+      markVagueAllocation(SI);
     return;
+  }
 
   AllocaInst* AI = cast_inst<AllocaInst>(SI);
   Type* allocType = AI->getAllocatedType();
@@ -2243,8 +2260,10 @@ void llvm::addHeapAlloc(ShadowInstruction* SI) {
 
 static void executeMallocInst2(ShadowInstruction* SI, AllocatorFn& param) {
 
-  if(SI->store.store)
+  if(SI->store.store) {
+    markVagueAllocation(SI);
     return;
+  }
 
   ConstantInt* AllocSize;
   if(param.isConstantSize)
@@ -2309,6 +2328,11 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
     addHeapAlloc(SI);
     executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
+
+  }
+  else {
+
+    markVagueAllocation(SI);
 
   }
 
@@ -3132,6 +3156,27 @@ bool IntegrationAttempt::noteChildBarriers() {
 
 }
 
+static bool isVagueAllocation(ShadowValue V) {
+
+  switch(V.t) {
+
+  case SHADOWVAL_ARG:
+  case SHADOWVAL_OTHER:
+  case SHADOWVAL_GV:
+    // Always single objects, or non-object pointers such as nulls.
+    return false;
+
+  case SHADOWVAL_INST:
+    return V.u.I->allocVague;
+    
+  default:
+    llvm_unreachable("Bad SV type in isVagueAllocation");
+    return false;
+
+  }
+
+}
+
 void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction* WriteSI) {
 
   ShadowBB* StoreBB = WriteSI->parent;
@@ -3198,7 +3243,9 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
     }
 
   }
-  else if(PtrSet.Values.size() == 1 && PtrSet.Values[0].Offset != LLONG_MAX) {
+  else if(PtrSet.Values.size() == 1 && 
+	  PtrSet.Values[0].Offset != LLONG_MAX && 
+	  !isVagueAllocation(PtrSet.Values[0].V)) {
 
     LFV3(errs() << "Write through certain pointer\n");
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.

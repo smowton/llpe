@@ -812,6 +812,7 @@ struct ShadowInstruction {
   LocStore store;
   uint64_t storeSize;
   int32_t allocIdx;
+  bool allocVague;
 
   void initTypeSpecificData();
 
