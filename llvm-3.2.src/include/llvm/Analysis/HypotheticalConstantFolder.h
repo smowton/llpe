@@ -307,6 +307,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallSet<uint32_t, 4> forceNoAliasArgs;
 
+   SmallVector<Function*, 4> commitFunctions;
+
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
@@ -455,6 +457,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    BasicBlock* parsePCBlock(Function* fStack, std::string& bbName);
    int64_t parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr);
    void writeLliowdConfig();
+
+   void postCommitOptimise();
+   void postCommitOptimiseF(Function* F);
 
 };
 

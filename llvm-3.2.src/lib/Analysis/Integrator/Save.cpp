@@ -172,6 +172,8 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
   Function* NewF = Function::Create(NewFType, LT, Name, F->getParent());
 
+  GlobalIHP->commitFunctions.push_back(NewF);
+
   Function::arg_iterator DestI = NewF->arg_begin();
   for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
        I != E; ++I, ++DestI)
@@ -1997,3 +1999,4 @@ void IntegrationAttempt::commitInstructions() {
   commitLoopInstructions(L, i);
 
 }
+

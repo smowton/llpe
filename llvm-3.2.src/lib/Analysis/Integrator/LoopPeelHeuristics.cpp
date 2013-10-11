@@ -1775,6 +1775,8 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
   RootIA->commitArgsAndInstructions();
+  errs() << "\n";
+  postCommitOptimise();
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
 
   Function* writePreludeFn;
