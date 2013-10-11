@@ -1453,6 +1453,14 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
 
 }
 
+namespace llvm {
+
+  Type* FindElementAtOffset(Type *Ty, int64_t Offset,
+			    SmallVectorImpl<Value*> &NewIndices,
+			    DataLayout* TD);
+
+}
+
 bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
 
   if(!canSynthPointer(I, IV))
@@ -1460,7 +1468,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
   ShadowValue Base = IV.V;
   int64_t Offset = IV.Offset;
-
+  
   Type* Int8Ptr = Type::getInt8PtrTy(emitBB->getContext());
 
   if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
@@ -1474,6 +1482,35 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     Value* BaseI = getCommittedValue(Base);
     release_assert(BaseI && "Synthing pointer atop uncommitted allocation");
 
+    // Try a few tricks to get the right pointer without using an i8 cast:
+    
+    // 1. Correct offset already?
+    if(Offset == 0) {
+      
+      if(BaseI->getType() == targetType)
+	Result = BaseI;
+      else
+	Result = CastInst::CreatePointerCast(BaseI, targetType, "synthcast", emitBB);
+      return true;
+
+    }
+
+    // 2. Pointer to an array or struct with a member at the right offset?
+    SmallVector<Value*, 4> GEPIdxs;
+    Type* InTy = BaseI->getType();
+    release_assert(isa<PointerType>(InTy));
+    InTy = cast<PointerType>(InTy)->getElementType();
+    if(Type* ElTy = FindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
+
+      Result = GetElementPtrInst::Create(BaseI, GEPIdxs, "synthgep", emitBB);
+      if((!isa<PointerType>(targetType)) || ElTy != cast<PointerType>(targetType)->getElementType())
+	Result = CastInst::CreatePointerCast(Result, targetType, "synthcastback", emitBB);
+      return true;
+
+    }
+
+    // OK, use i8 offset.
+
     // Get byte ptr:
     Value* CastI;
     if(BaseI->getType() != Int8Ptr)
@@ -1482,13 +1519,8 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
       CastI = BaseI;
 
     // Offset:
-    Value* OffsetI;
-    if(Offset == 0)
-      OffsetI = CastI;
-    else {
-      Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
-      OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
-    }
+    Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
+    Value* OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
 
     // Cast back:
     if(targetType == Int8Ptr) {

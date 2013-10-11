@@ -734,12 +734,21 @@ Instruction *InstCombiner::FoldOpIntoPhi(Instruction &I) {
   return ReplaceInstUsesWith(I, NewPN);
 }
 
+namespace llvm {
+
+  Type* FindElementAtOffset(Type *Ty, int64_t Offset,
+			    SmallVectorImpl<Value*> &NewIndices,
+			    DataLayout* TD);
+
+}
+
 /// FindElementAtOffset - Given a type and a constant offset, determine whether
 /// or not there is a sequence of GEP indices into the type that will land us at
 /// the specified offset.  If so, fill them into NewIndices and return the
 /// resultant element type, otherwise return null.
-Type *InstCombiner::FindElementAtOffset(Type *Ty, int64_t Offset,
-                                          SmallVectorImpl<Value*> &NewIndices) {
+Type* llvm::FindElementAtOffset(Type *Ty, int64_t Offset,
+				SmallVectorImpl<Value*> &NewIndices,
+				DataLayout* TD) {
   if (!TD) return 0;
   if (!Ty->isSized()) return 0;
 
@@ -793,6 +802,14 @@ Type *InstCombiner::FindElementAtOffset(Type *Ty, int64_t Offset,
   }
 
   return Ty;
+
+}
+
+Type* InstCombiner::FindElementAtOffset(Type *Ty, int64_t Offset,
+					SmallVectorImpl<Value*> &NewIndices) {
+
+  return llvm::FindElementAtOffset(Ty, Offset, NewIndices, TD);
+
 }
 
 static bool shouldMergeGEPs(GEPOperator &GEP, GEPOperator &Src) {
