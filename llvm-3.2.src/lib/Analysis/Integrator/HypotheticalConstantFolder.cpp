@@ -653,6 +653,42 @@ static bool isIDOrConst(ShadowValue& op) {
 
 }
 
+static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
+
+  // For now, only deal with the common case that a heap object is allocated
+  // and immediately tested in the same basic block.
+  // If this situation is apparent, only that test needs to be checked at runtime;
+  // if it can't, all heap pointer checks need repeating.
+
+  // I know V is a heap allocation, therefore a call instruction.
+  ShadowInstruction* I = V.getInst();
+  ShadowBB* BB = I->parent;
+
+  // This test is in the allocation block?
+  if(TestI->parent == BB)
+    return false;
+
+  // Look for a comparison against null that follows the allocation:
+  for(uint32_t i = I->invar->idx + 1, ilim = BB->insts.size(); i != ilim; ++i) {
+
+    ShadowInstruction* ThisI = &BB->insts[i];
+    if(inst_is<ICmpInst>(ThisI)) {
+
+      ShadowValue Op0 = ThisI->getOperand(0);
+      ShadowValue Op1 = ThisI->getOperand(1);
+
+      if((val_is<ConstantPointerNull>(Op0) && Op1.isInst() && Op1.getInst() == I) ||
+	 (val_is<ConstantPointerNull>(Op1) && Op0.isInst() && Op0.getInst() == I))
+	return true;
+      
+    }
+
+  }
+
+  errs() << "Heap allocation " << itcache(V) << " does not appear to be locally tested and so all null comparisons will be checked\n";
+  return false;
+
+}
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
 bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned* needsRuntimeCheck) {
@@ -709,8 +745,14 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
     ImpType = ValSetTypeScalar;
     Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
 
-    if(comparingHeapPointer && needsRuntimeCheck)
-      (*needsRuntimeCheck) = RUNTIME_CHECK_AS_EXPECTED;
+    if(comparingHeapPointer && needsRuntimeCheck) {
+
+      ShadowValue& heapOp = op0Arg == zero ? op1 : op0;
+
+      if(!heapPointerAlreadyTested(heapOp, SI))
+	(*needsRuntimeCheck) = RUNTIME_CHECK_AS_EXPECTED;
+
+    }
 
     return true;   
 

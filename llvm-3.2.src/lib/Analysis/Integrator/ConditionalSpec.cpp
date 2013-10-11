@@ -870,24 +870,22 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
   ShadowInstruction* SI = &BB->insts[instIdx];
   InlineAttempt* IA;
-  bool fallThrough = false;
 
   if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
-    if(IA->failedReturnBlock)
+    if(IA->failedReturnBlock) {
       edges.push_back(std::make_pair(IA->failedReturnBlock, this));
-    else 
-      fallThrough = true;
-    added = true;
+      added = true;
+    }
 
   }
 
   // Does this IA break at this instruction?
   // It does if this instruction requires an as-expected check ("requiresRuntimeCheck"), 
   // OR if the NEXT instruction requires a special check.
-  if(fallThrough || 
-     requiresRuntimeCheck(ShadowValue(SI), false) || 
-     (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)) {
+  if((!added) && 
+     (requiresRuntimeCheck(ShadowValue(SI), false) || 
+      (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL))) {
 
     edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
     added = true;
@@ -1132,7 +1130,7 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<std::pair<BasicBlock*, Instruction*>, 4>& unspecPreds, BasicBlock* InsertBB) {
 
   PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, "clonemerge", InsertBB->begin());
-
+  
   for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = specPreds.begin(), itend = specPreds.end(); it != itend; ++it) {
 
     BasicBlock* PredBB = it->first;
@@ -1140,7 +1138,7 @@ static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair
 			     PredBB->getTerminator());
     release_assert(Op);
     NewNode->addIncoming(Op, PredBB);
-      
+
   }
 
   for(SmallVector<std::pair<BasicBlock*, Instruction*>, 4>::iterator it = unspecPreds.begin(), itend = unspecPreds.end(); it != itend; ++it) {
