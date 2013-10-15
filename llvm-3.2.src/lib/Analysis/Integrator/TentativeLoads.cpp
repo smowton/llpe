@@ -239,24 +239,48 @@ static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>
 
 }
 
-static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB* BB, bool contextEnabled) {
+static void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
+
+  TLMerger V(false);
+  IA->visitLiveReturnBlocks(V);
+  V.doMerge();
+  
+  BB->u.tlStore = V.newMap;
+
+}
+
+static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB* BB, bool contextEnabled, bool secondPass) {
 
   walkPathConditions(PathConditionTypeIntmem, PC.IntmemPathConditions, 
 		     contextEnabled, BB, stackIdx);
   walkPathConditions(PathConditionTypeString, PC.StringPathConditions, 
 		     contextEnabled, BB, stackIdx);
 
+  for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
+	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
+
+    if(it->stackIdx != stackIdx)
+      continue;
+    
+    it->IA->BBs[0]->u.tlStore = BB->u.tlStore;
+    // Path conditions can be treated like committed code, as the user is responsible for checking
+    // their applicability.
+    it->IA->findTentativeLoads(/* commitDisabledHere = */false, secondPass);
+    doTLCallMerge(BB, it->IA);
+    
+  }
+
 }
 
-static void walkPathConditions(ShadowBB* BB, bool contextEnabled) {
+static void walkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass) {
 
   InlineAttempt* IA = BB->IA->getFunctionRoot();
   
   if(IA->targetCallInfo)
-    walkPathConditionsIn(GlobalIHP->pathConditions, IA->targetCallInfo->targetStackDepth, BB, contextEnabled);
+    walkPathConditionsIn(GlobalIHP->pathConditions, IA->targetCallInfo->targetStackDepth, BB, contextEnabled, secondPass);
 
   if(BB->IA->invarInfo->pathConditions)
-    walkPathConditionsIn(*BB->IA->invarInfo->pathConditions, UINT_MAX, BB, contextEnabled);
+    walkPathConditionsIn(*BB->IA->invarInfo->pathConditions, UINT_MAX, BB, contextEnabled, secondPass);
 
 }
 
@@ -298,7 +322,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
-  else if(inst_is<CallInst>(SI)) {
+  else if(CallInst* CallI = dyn_cast_inst<CallInst>(SI)) {
 
     if(inst_is<MemSetInst>(SI)) {
 
@@ -343,8 +367,41 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 	}
 
       }
-      else if((!F) || GlobalIHP->yieldFunctions.count(F))
-	markAllObjectsTentative(SI->parent);
+      else if((!F) || GlobalIHP->yieldFunctions.count(F)) {
+
+	if(GlobalIHP->pessimisticLocks.count(CallI)) {
+
+	  // Pessimistic locks clobber at specialisation time;
+	  // no runtime checking required.
+	  return;
+
+	}
+	
+	SmallDenseMap<CallInst*, std::vector<GlobalVariable*>, 4>::iterator findit =
+	  GlobalIHP->lockDomains.find(CallI);
+
+	if(findit != GlobalIHP->lockDomains.end()) {
+
+	  for(std::vector<GlobalVariable*>::iterator it = findit->second.begin(),
+		itend = findit->second.end(); it != itend; ++it) {
+
+	    ShadowGV* SGV = &GlobalIHP->shadowGlobals[GlobalIHP->getShadowGlobalIndex(*it)];
+	    ShadowValue SV(SGV);
+	    TLMapPointer* TLObj = SI->parent->getWritableTLStore(SV);
+	    // Mark whole object tentative:
+	    TLObj->M->clear();
+
+	  }
+
+	}
+	else {
+
+	  // No explicit domain given; clobbers everything.
+	  markAllObjectsTentative(SI->parent);
+
+	}
+
+      }
 
     }
 
@@ -541,16 +598,6 @@ static void doTLStoreMerge(ShadowBB* BB) {
 
 }
 
-static void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
-
-  TLMerger V(false);
-  IA->visitLiveReturnBlocks(V);
-  V.doMerge();
-  
-  BB->u.tlStore = V.newMap;
-
-}
-
 void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass) {
 
   if(isRootMainCall()) {
@@ -646,7 +693,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
     }
 
-    walkPathConditions(BB, !commitDisabledHere);
+    walkPathConditions(BB, !commitDisabledHere, secondPass);
 
     bool brokeOnUnreachableCall = false;
 

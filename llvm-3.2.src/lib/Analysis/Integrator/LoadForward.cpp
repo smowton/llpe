@@ -2870,6 +2870,42 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
     }
 
+    CallInst * CI;
+    if((CI = dyn_cast_inst<CallInst>(SI)) && GlobalIHP->pessimisticLocks.count(CI)) {
+
+      // A pessimistic lock clobbers the domain over which it operates.
+      // If one is specified, clobber those objects; otherwise just return false
+      // to clobber everything.
+      // Optimistic locks have no effect here and are accounted for in the
+      // tentative loads phase.
+
+      SmallDenseMap<CallInst*, std::vector<GlobalVariable*>, 4>::iterator findit =
+	GlobalIHP->lockDomains.find(CI);
+      if(findit != GlobalIHP->lockDomains.end()) {
+
+	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+
+	for(std::vector<GlobalVariable*>::iterator it = findit->second.begin(),
+	      itend = findit->second.end(); it != itend; ++it) {
+
+	  ShadowGV* SGV = &GlobalIHP->shadowGlobals[GlobalIHP->getShadowGlobalIndex(*it)];
+	  ShadowValue ClobberV(SGV);
+	  ImprovedValSetSingle ClobberIVS;
+	  ClobberIVS.set(ImprovedVal(ClobberV, LLONG_MAX), ValSetTypePB);
+	  executeWriteInst(0, ClobberIVS, OD, AliasAnalysis::UnknownSize, SI);
+
+	}
+
+      }
+      else {
+
+	// Clobber all objects.
+	return false;
+
+      }
+
+    }
+
     // TODO: introduce a category for functions that actually do this.
     /*
       if(GlobalIHP->yieldFunctions.count(F))

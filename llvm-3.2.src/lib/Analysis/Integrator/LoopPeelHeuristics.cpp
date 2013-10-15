@@ -94,6 +94,8 @@ static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore
 static cl::opt<bool> UseDSA("int-use-dsa");
 static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
 static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
+static cl::list<std::string> LockDomains("int-lock-domain", cl::ZeroOrMore);
+static cl::list<std::string> PessimisticLocks("int-pessimistic-lock", cl::ZeroOrMore);
 static cl::opt<bool> DumpDSE("int-dump-dse");
 static cl::opt<bool> DumpTL("int-dump-tl");
 static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
@@ -2447,6 +2449,84 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     }
 
     simpleVolatileLoads.insert(LI);
+
+  }
+
+  for(cl::list<std::string>::iterator it = LockDomains.begin(),
+	itend = LockDomains.end(); it != itend; ++it) {
+
+    Function* LockF;
+    BasicBlock* BB;
+    uint64_t Offset;
+
+    // TODO here: add a better specification of lock domain than just a list of globals!
+
+    size_t pos = 0;
+    for(uint32_t i = 0; i < 3; ++i) {
+
+      pos = it->find(',', pos);
+      if(pos == std::string::npos) {
+	errs() << "int-lock-domain: usage: lockf,lockblock,lockoffset,global1,...,globaln\n";
+	exit(1);
+      }
+      ++pos;
+
+    }
+
+    std::string FBI(*it, 0, pos - 1);
+
+    parseFBI("int-lock-domain", FBI, *(F.getParent()), LockF, BB, Offset);
+    BasicBlock::iterator BI = BB->begin();
+    std::advance(BI, Offset);
+    CallInst* CI = dyn_cast<CallInst>(BI);
+    
+    if(!CI) {
+      errs() << "int-lock-domain: " << *it << " does not denote a call\n";
+      exit(1);
+    }
+
+    std::vector<GlobalVariable*>& thisDomain = lockDomains[CI];
+
+    std::string globals(*it, pos);
+
+    std::istringstream istr(globals);
+    while(!istr.eof()) {
+      
+      std::string thisGlobal;
+      std::getline(istr, thisGlobal, ',');
+      if(thisGlobal.empty())
+	continue;
+      GlobalVariable* GV = F.getParent()->getGlobalVariable(thisGlobal, true);
+      if(!GV) {
+
+	errs() << "Global not found: " << thisGlobal << "\n";
+	exit(1);
+
+      }
+      thisDomain.push_back(GV);
+
+    }
+
+  }
+
+  for(cl::list<std::string>::iterator it = PessimisticLocks.begin(),
+	itend = PessimisticLocks.end(); it != itend; ++it) {
+
+    Function* LockF;
+    BasicBlock* BB;
+    uint64_t Offset;
+
+    parseFBI("int-pessimistic-lock", *it, *(F.getParent()), LockF, BB, Offset);
+    BasicBlock::iterator BI = BB->begin();
+    std::advance(BI, Offset);
+    CallInst* CI = dyn_cast<CallInst>(BI);
+    
+    if(!CI) {
+      errs() << "int-pessimistic-lock: " << *it << " does not denote a call\n";
+      exit(1);
+    }
+
+    pessimisticLocks.insert(CI);
 
   }
   

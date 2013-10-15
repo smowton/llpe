@@ -309,6 +309,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    SmallVector<Function*, 4> commitFunctions;
 
+   SmallDenseMap<CallInst*, std::vector<GlobalVariable*>, 4> lockDomains;
+   SmallSet<CallInst*, 4> pessimisticLocks;
+
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
