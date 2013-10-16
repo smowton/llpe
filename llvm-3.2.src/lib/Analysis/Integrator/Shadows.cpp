@@ -559,12 +559,8 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
   for(uint32_t i = 0, ilim = newBB->invar->insts.size(); i != ilim; ++i) {
     insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
-    insts[i].allocIdx = -1;
-    insts[i].allocVague = false;
     insts[i].memcpyValues = 0;
     insts[i].isThreadLocal = TLS_MUSTCHECK;
-    insts[i].storeSize = 0;
-    insts[i].allocIdx = INT_MAX;
     insts[i].needsRuntimeCheck = RUNTIME_CHECK_NONE;
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());

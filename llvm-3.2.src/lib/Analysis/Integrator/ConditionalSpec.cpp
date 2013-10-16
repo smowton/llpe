@@ -965,7 +965,11 @@ void IntegrationAttempt::gatherPathConditionEdges(uint32_t bbIdx, uint32_t instI
     if(!BB)
       return;
 
-    Value* PCVal = getCommittedValue(ShadowValue(&BB->insts[instIdx]));
+    Value* PCVal;
+    if(preds)
+      PCVal = getCommittedValue(ShadowValue(&BB->insts[instIdx]));
+    else
+      PCVal = 0;
 
     for(uint32_t i = 0, ilim = pass->countPathConditionsAtBlockStart(BB->invar, this); i != ilim; ++i) {
 

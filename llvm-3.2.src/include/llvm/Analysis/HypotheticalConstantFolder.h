@@ -335,6 +335,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<CallInst*, std::vector<GlobalVariable*>, 4> lockDomains;
    SmallSet<CallInst*, 4> pessimisticLocks;
 
+   DenseMap<ShadowInstruction*, AllocData> allocations;
+
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
@@ -619,8 +621,7 @@ inline LocStore& ShadowValue::getBaseStore() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    release_assert(u.I->store.store && "getBaseStore on instruction without one");
-    return u.I->store;
+    return u.I->getAllocData()->store;
   case SHADOWVAL_GV:
     return u.GV->store;
   case SHADOWVAL_OTHER:
@@ -1049,7 +1050,7 @@ protected:
   uint32_t checkedInstructionsChildren;
 
   BarrierState yieldState;
-   
+
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
     LI(_LI),

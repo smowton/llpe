@@ -784,6 +784,15 @@ LocStore(const LocStore& other) : store(other.store) {}
 
 };
 
+struct AllocData {
+
+  LocStore store;
+  uint64_t storeSize;
+  int32_t allocIdx;
+  bool allocVague;
+
+};
+
 enum ThreadLocalState {
 
   TLS_MUSTCHECK, /* instruction might have been clobbered by other threads; check at runtime */
@@ -808,11 +817,6 @@ struct ShadowInstruction {
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
   ThreadLocalState isThreadLocal;
   unsigned needsRuntimeCheck;
-
-  LocStore store;
-  uint64_t storeSize;
-  int32_t allocIdx;
-  bool allocVague;
 
   void initTypeSpecificData();
 
@@ -846,6 +850,8 @@ struct ShadowInstruction {
 
   bool resolved();
   bool isCopyInst();
+
+  AllocData* getAllocData();
 
 };
 

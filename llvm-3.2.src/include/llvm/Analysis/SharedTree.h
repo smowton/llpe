@@ -658,7 +658,7 @@ ChildType* LocalStoreMap<ChildType, ExtraState>::getOrCreateStoreFor(ShadowValue
 
     std::vector<ChildType>& frameMap = getWritableFrame(frameNo);
     frames[frameNo]->empty = false;
-    int32_t framePos = V.u.I->allocIdx;
+    int32_t framePos = V.u.I->getAllocData()->allocIdx;
     release_assert(framePos >= 0 && "Stack entry without an index?");
     if(frameMap.size() <= (uint32_t)framePos)
       frameMap.resize(framePos + 1);
@@ -682,7 +682,7 @@ template<class ChildType, class ExtraState> ChildType* LocalStoreMap<ChildType, 
   else {
 
     std::vector<ChildType>& frame = frames[frameNo]->store;
-    uint32_t frameIdx = V.u.I->allocIdx;
+    uint32_t frameIdx = V.u.I->getAllocData()->allocIdx;
     if(frame.size() <= frameIdx)
       return 0;
 

@@ -748,7 +748,7 @@ int32_t ShadowValue::getHeapKey() {
   switch(t) {
 
   case SHADOWVAL_INST:
-    return u.I->allocIdx;
+    return u.I->getAllocData()->allocIdx;
   case SHADOWVAL_GV:
     return u.GV->allocIdx;
   case SHADOWVAL_OTHER:
@@ -771,8 +771,7 @@ uint64_t ShadowValue::getAllocSize() {
 
   switch(t) {
   case SHADOWVAL_INST:
-    release_assert(u.I->store.store && "getAllocSize on instruction without store");
-    return u.I->storeSize;
+    return u.I->getAllocData()->storeSize;
   case SHADOWVAL_GV:
     return u.GV->storeSize;
   case SHADOWVAL_OTHER:
@@ -2156,10 +2155,12 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
 
 void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc) {
 
+  // On entering the store should have been created to assign an allocation index, but not initialised.
+  release_assert(GlobalIHP->allocations.count(SI) && (!GlobalIHP->allocations[SI].store.store) && "Allocation already initialised?");
+
   // Represent the store by a big undef value at the start, or if !AllocType (implying AllocSize
   // == ULONG_MAX, unknown size), start with a big Overdef.
-  release_assert((!SI->store.store) && "Allocation already initialised?");
-
+ 
   ImprovedValSetSingle* initVal;
 
   if(AllocType) {
@@ -2170,6 +2171,8 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   else {
     initVal = new ImprovedValSetSingle(ValSetTypeUnknown, true);
   }
+  
+  AllocData& baseStore = GlobalIHP->allocations[SI];
 
   if(trackAlloc || SI->parent->u.localStore->allOthersClobbered) {
 
@@ -2179,8 +2182,8 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
     // Insert the initialiser if objects are default clobbered, too.
 
-    SI->store.store = new ImprovedValSetSingle(ValSetTypeDeallocated, false);
-   
+    baseStore.store = new ImprovedValSetSingle(ValSetTypeDeallocated, false);
+    
     ShadowValue AllocSV(SI);
     LocStore& localStore = SI->parent->getWritableStoreFor(AllocSV, 0, AllocSize, /* willWriteSingle = */ true);
     localStore.store->dropReference();
@@ -2188,12 +2191,14 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
   }
   else {
-
-    SI->store.store = initVal;
+    
+    baseStore.store = initVal;
 
   }
 
-  SI->storeSize = AllocSize;
+  baseStore.storeSize = AllocSize;
+  // baseStore.allocIdx was already set by our caller.
+  baseStore.allocVague = false;
 
   // Note that the new object is unreachable from old objects, thread-local and unescaped.
   SI->parent->u.localStore = SI->parent->u.localStore->getWritableFrameList();
@@ -2209,7 +2214,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
 
 static void markVagueAllocation(ShadowInstruction* SI) {
 
-  SI->allocVague = true;
+  SI->getAllocData()->allocVague = true;
   //errs() << "Allocation " << itcache(SI) << " in " << SI->parent->IA->SeqNumber << " vague\n";
 
 }
@@ -2224,8 +2229,8 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   // version of this instruction.
   // Compare a malloc in a similar situation: if we have while(dyn) { f(); } where f() calls malloc,
   // that object may refer to any f in the unbounded loop, not just the most recent call.
-
-  if(SI->store.store) {
+  
+  if(GlobalIHP->allocations.count(SI)) {
     if(SI->parent->invar->naturalScope != 0)
       markVagueAllocation(SI);
     return;
@@ -2234,34 +2239,34 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   AllocaInst* AI = cast_inst<AllocaInst>(SI);
   Type* allocType = AI->getAllocatedType();
 
-  InlineAttempt* parentIA = SI->parent->IA->getFunctionRoot();
-  SI->allocIdx = parentIA->localAllocas.size();
-  parentIA->localAllocas.push_back(SI);
- 
   if(AI->isArrayAllocation()) {
 
     ConstantInt* N = cast_or_null<ConstantInt>(getConstReplacement(AI->getArraySize()));
     if(!N) 
-     allocType = 0;
+      allocType = 0;
     else
       allocType = ArrayType::get(allocType, N->getLimitedValue());
 
   }
 
+  InlineAttempt* parentIA = SI->parent->IA->getFunctionRoot();
+  GlobalIHP->allocations[SI].allocIdx = parentIA->localAllocas.size();
+  parentIA->localAllocas.push_back(SI);
+  
   executeAllocInst(SI, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX, false);
 
 }
 
 void llvm::addHeapAlloc(ShadowInstruction* SI) {
 
-  SI->allocIdx = GlobalIHP->heap.size();
+  GlobalIHP->allocations[SI].allocIdx = GlobalIHP->heap.size();
   GlobalIHP->heap.push_back(ShadowValue(SI));
 
 }
 
 static void executeMallocInst2(ShadowInstruction* SI, AllocatorFn& param) {
 
-  if(SI->store.store) {
+  if(GlobalIHP->allocations.count(SI)) {
     markVagueAllocation(SI);
     return;
   }
@@ -2275,8 +2280,7 @@ static void executeMallocInst2(ShadowInstruction* SI, AllocatorFn& param) {
   if(AllocSize)
     allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
 
-  if(!SI->store.store)
-    SI->parent->IA->noteMalloc(SI);
+  SI->parent->IA->noteMalloc(SI);
 
   addHeapAlloc(SI);
   executeAllocInst(SI, allocType, AllocSize ? AllocSize->getLimitedValue() : ULONG_MAX, true);
@@ -2317,8 +2321,8 @@ void llvm::executeFreeInst(ShadowInstruction* SI, Function* FreeF) {
 
 void llvm::executeReallocInst(ShadowInstruction* SI) {
 
-  if(!SI->store.store) {
-
+  if(!GlobalIHP->allocations.count(SI)) {
+    
     // Only alloc the first time; always carry out the copy implied by realloc.
     ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(1)));
     Type* allocType = 0;
@@ -3199,7 +3203,7 @@ static bool isVagueAllocation(ShadowValue V) {
     return false;
 
   case SHADOWVAL_INST:
-    return V.u.I->allocVague;
+    return V.u.I->getAllocData()->allocVague;
     
   default:
     llvm_unreachable("Bad SV type in isVagueAllocation");
@@ -3881,7 +3885,7 @@ void llvm::commitFrameToBase(SharedStoreMap<LocStore, OrdinaryStoreExtraState>* 
     if(!it->store)
       continue;
 
-    LocStore& baseStore = Map->IA->getAllocaWithIdx(i)->store;
+    LocStore& baseStore = Map->IA->getAllocaWithIdx(i)->getAllocData()->store;
     baseStore.store->dropReference();
     baseStore = *it;
     baseStore.store = baseStore.store->getReadableCopy();
@@ -4106,3 +4110,11 @@ bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
   return parent->ctxContains(IA);
 
 }
+
+AllocData* ShadowInstruction::getAllocData() {
+
+  release_assert(GlobalIHP->allocations.count(this));
+  return &GlobalIHP->allocations[this];
+
+}
+

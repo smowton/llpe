@@ -993,7 +993,7 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
   switch(V.t) {
   case SHADOWVAL_INST:
-    return !!V.u.I->store.store;
+    return GlobalIHP->allocations.count(V.u.I);
   case SHADOWVAL_ARG:
     return V.u.A->IA->isRootMainCall();
   case SHADOWVAL_GV:
