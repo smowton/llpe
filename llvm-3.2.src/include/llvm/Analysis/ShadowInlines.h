@@ -820,7 +820,7 @@ struct ShadowInstruction {
     return invar->operandIdxs.size();
   }
 
-  virtual ShadowValue getOperand(uint32_t i);
+  ShadowValue getOperand(uint32_t i);
 
   ShadowValue getOperandFromEnd(uint32_t i) {
     return getOperand(invar->operandIdxs.size() - i);

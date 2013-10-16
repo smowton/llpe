@@ -43,15 +43,6 @@ namespace {
       return MayAlias;
     }
 
-    virtual AliasResult aliasHypothetical(ShadowValue V1, uint64_t V1Size, const MDNode*,
-					  ShadowValue V2, uint64_t V2Size, const MDNode*,
-					  bool usePBKnowledge = true) {
-
-      return MayAlias;
-
-    }
-
-
     virtual ModRefBehavior getModRefBehavior(ImmutableCallSite CS) {
       return UnknownModRefBehavior;
     }

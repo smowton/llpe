@@ -254,8 +254,6 @@ Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
 }
 
-#define LFV3(x) do {} while(0);
-
 void ImprovedValSetSingle::dropReference() {
 
   // Singles can never be shared
@@ -364,6 +362,5 @@ namespace llvm {
 DataLayout* llvm::GlobalTD;
 AliasAnalysis* llvm::GlobalAA;
 TargetLibraryInfo* llvm::GlobalTLI;
-VFSCallAliasAnalysis* llvm::GlobalVFSAA;
 EQTDDataStructures* llvm::GlobalDSA;
 IntegrationHeuristicsPass* llvm::GlobalIHP;

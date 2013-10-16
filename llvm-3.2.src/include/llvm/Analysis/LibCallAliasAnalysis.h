@@ -15,7 +15,6 @@
 #define LLVM_ANALYSIS_LIBCALL_AA_H
 
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/LibCallSemantics.h"
 #include "llvm/Pass.h"
 
 namespace llvm {
@@ -23,31 +22,33 @@ namespace llvm {
   struct LibCallFunctionInfo;
   
   /// LibCallAliasAnalysis - Alias analysis driven from LibCallInfo.
-  struct LibCallAliasAnalysis : public ModulePass, public AliasAnalysis {
+  struct LibCallAliasAnalysis : public FunctionPass, public AliasAnalysis {
     static char ID; // Class identification
     
     LibCallInfo *LCI;
     
     explicit LibCallAliasAnalysis(LibCallInfo *LC = 0)
-        : ModulePass(ID), LCI(LC) {
+        : FunctionPass(ID), LCI(LC) {
       initializeLibCallAliasAnalysisPass(*PassRegistry::getPassRegistry());
     }
     explicit LibCallAliasAnalysis(char &ID, LibCallInfo *LC)
-        : ModulePass(ID), LCI(LC) {
+        : FunctionPass(ID), LCI(LC) {
       initializeLibCallAliasAnalysisPass(*PassRegistry::getPassRegistry());
     }
     ~LibCallAliasAnalysis();
     
-    virtual ModRefResult getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode*, bool usePBKnowledge = true, int64_t POffset = LLONG_MAX, IntAAProxy* AACB = 0);
+    ModRefResult getModRefInfo(ImmutableCallSite CS,
+                               const Location &Loc);
     
-    virtual ModRefResult get2CSModRefInfo(ShadowValue CS1, ShadowValue CS2, bool usePBKnowledge = true) {
+    ModRefResult getModRefInfo(ImmutableCallSite CS1,
+                               ImmutableCallSite CS2) {
       // TODO: Could compare two direct calls against each other if we cared to.
-      return AliasAnalysis::get2CSModRefInfo(CS1, CS2, usePBKnowledge);
+      return AliasAnalysis::getModRefInfo(CS1, CS2);
     }
     
     virtual void getAnalysisUsage(AnalysisUsage &AU) const;
     
-    virtual bool runOnModule(Module&) {
+    virtual bool runOnFunction(Function &F) {
       InitializeAliasAnalysis(this);                 // set up super class
       return false;
     }
@@ -61,17 +62,11 @@ namespace llvm {
         return (AliasAnalysis*)this;
       return this;
     }
-
-    virtual LibCallLocationInfo::LocResult isLocation(const LibCallLocationInfo& LCI, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-      return LibCallLocationInfo::Unknown;
-    }
-
+    
   private:
     ModRefResult AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
-				       ShadowValue CS,
-                                       ShadowValue P, uint64_t Size, const MDNode*,
-				       bool usePBKnowledge, int64_t, IntAAProxy*);
-
+                                       ImmutableCallSite CS,
+                                       const Location &Loc);
   };
 }  // End of llvm namespace
 

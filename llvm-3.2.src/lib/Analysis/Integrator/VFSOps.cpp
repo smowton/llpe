@@ -8,7 +8,6 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/System/Path.h"
 #include "llvm/Support/CFG.h"
@@ -349,7 +348,7 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, vo
   // If we get to here and the call is a syscall then it doesn't alter the FD position.
   if(Function* F = getCalledFunction(SI)) {
 
-    if(GlobalVFSAA->getFunctionInfo(F))
+    if(GlobalIHP->getMRInfo(F))
       return false;
 
     if(SpecialFunctionMap.count(F))

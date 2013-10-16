@@ -2,7 +2,6 @@
 // only taking into account that we've been computing a probable flow through the program.
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Analysis/VFSCallModRef.h"
 
 #include "llvm/Instructions.h"
 #include "llvm/BasicBlock.h"
@@ -809,11 +808,11 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	    // in VFSCallModRef are /worst/ case write assumptions used for clobbering,
 	    // whereas here we need /conservative/ always-overwrites information.
 
-	    const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F);
+	    const IHPFunctionInfo* FI = GlobalIHP->getMRInfo(F);
 
 	    if(FI) {
 
-	      if(FI->UniversalBehavior == llvm::AliasAnalysis::NoModRef)
+	      if(FI->NoModRef)
 		continue;
 
 	      FunctionType* FType = F->getFunctionType();

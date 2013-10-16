@@ -23,7 +23,7 @@ char LibCallAliasAnalysis::ID = 0;
 INITIALIZE_AG_PASS(LibCallAliasAnalysis, AliasAnalysis, "libcall-aa",
                    "LibCall Alias Analysis", false, true, false)
 
-ModulePass *llvm::createLibCallAliasAnalysisPass(LibCallInfo *LCI) {
+FunctionPass *llvm::createLibCallAliasAnalysisPass(LibCallInfo *LCI) {
   return new LibCallAliasAnalysis(LCI);
 }
 
@@ -43,10 +43,8 @@ void LibCallAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 /// vs the specified pointer/size.
 AliasAnalysis::ModRefResult
 LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
-					    ShadowValue CS, ShadowValue P,
-					    uint64_t Size, const MDNode* PInfo,
-					    bool usePBKnowledge,
-					    int64_t POffset, IntAAProxy* AACB) {
+                                            ImmutableCallSite CS,
+                                            const Location &Loc) {
   // If we have a function, check to see what kind of mod/ref effects it
   // has.  Start by including any info globally known about the function.
   AliasAnalysis::ModRefResult MRInfo = FI->UniversalBehavior;
@@ -55,12 +53,7 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   // If that didn't tell us that the function is 'readnone', check to see
   // if we have detailed info and if 'P' is any of the locations we know
   // about.
-  const LibCallFunctionInfo::LocationMRInfo *Details = 0;
-  
-  if(FI->LocationDetails)
-    Details = FI->LocationDetails;
-  else if(FI->getLocationDetailsFor)
-    Details = FI->getLocationDetailsFor(CS);
+  const LibCallFunctionInfo::LocationMRInfo *Details = FI->LocationDetails;
   if (Details == 0)
     return MRInfo;
   
@@ -70,9 +63,10 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   // 
   if (FI->DetailsType == LibCallFunctionInfo::DoesNot) {
     // Find out if the pointer refers to a known location.
-    for (unsigned i = 0; Details[i].Location; ++i) {
-   
-      LibCallLocationInfo::LocResult Res = isLocation(*(Details[i].Location), CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
+    for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
+      const LibCallLocationInfo &LocInfo =
+      LCI->getLocationInfo(Details[i].LocationID);
+      LibCallLocationInfo::LocResult Res = LocInfo.isLocation(CS, Loc);
       if (Res != LibCallLocationInfo::Yes) continue;
       
       // If we find a match against a location that we 'do not' interact with,
@@ -89,46 +83,55 @@ LibCallAliasAnalysis::AnalyzeLibCallDetails(const LibCallFunctionInfo *FI,
   assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
   
   // Find out if the pointer refers to a known location.
-  MRInfo = NoModRef;
-  for (unsigned i = 0; Details[i].Location && MRInfo != ModRef; ++i) {
-    LibCallLocationInfo::LocResult Res = isLocation(*(Details[i].Location), CS, P, Size, PInfo, usePBKnowledge, POffset, AACB);
+  bool NoneMatch = true;
+  for (unsigned i = 0; Details[i].LocationID != ~0U; ++i) {
+    const LibCallLocationInfo &LocInfo =
+    LCI->getLocationInfo(Details[i].LocationID);
+    LibCallLocationInfo::LocResult Res = LocInfo.isLocation(CS, Loc);
     if (Res == LibCallLocationInfo::No) continue;
     
     // If we don't know if this pointer points to the location, then we have to
     // assume it might alias in some case.
-    MRInfo = ModRefResult(MRInfo | Details[i].MRInfo);
+    if (Res == LibCallLocationInfo::Unknown) {
+      NoneMatch = false;
+      continue;
+    }
+    
+    // If we know that this pointer definitely is pointing into the location,
+    // merge in this information.
+    return ModRefResult(MRInfo & Details[i].MRInfo);
   }
   
-  return MRInfo;
-}
-
-static Function* getValCalledFunction(ShadowValue V) {
+  // If we found that the pointer is guaranteed to not match any of the
+  // locations in our 'DoesOnly' rule, then we know that the pointer must point
+  // to some other location.  Since the libcall doesn't mod/ref any other
+  // locations, return NoModRef.
+  if (NoneMatch)
+    return NoModRef;
   
-  if(ShadowInstruction* SI = V.getInst())
-    return getCalledFunction(SI);
-  else
-    return const_cast<Function*>(ImmutableCallSite(cast<Instruction>(V.getVal())).getCalledFunction());
-
+  // Otherwise, return any other info gained so far.
+  return MRInfo;
 }
 
 // getModRefInfo - Check to see if the specified callsite can clobber the
 // specified memory object.
 //
 AliasAnalysis::ModRefResult
-LibCallAliasAnalysis::getCSModRefInfo(ShadowValue CS, ShadowValue P, uint64_t Size, const MDNode* PInfo, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
+LibCallAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
+                                    const Location &Loc) {
   ModRefResult MRInfo = ModRef;
   
   // If this is a direct call to a function that LCI knows about, get the
   // information about the runtime function.
   if (LCI) {
-    if (Function *F = getValCalledFunction(CS)) {
+    if (const Function *F = CS.getCalledFunction()) {
       if (const LibCallFunctionInfo *FI = LCI->getFunctionInfo(F)) {
-        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, P, Size, PInfo, usePBKnowledge, POffset, AACB));
+        MRInfo = ModRefResult(MRInfo & AnalyzeLibCallDetails(FI, CS, Loc));
         if (MRInfo == NoModRef) return NoModRef;
       }
     }
   }
   
   // The AliasAnalysis base class has some smarts, lets use them.
-  return (ModRefResult)(MRInfo & AliasAnalysis::getCSModRefInfo(CS, P, Size, PInfo, usePBKnowledge, POffset, AACB));
+  return (ModRefResult)(MRInfo | AliasAnalysis::getModRefInfo(CS, Loc));
 }

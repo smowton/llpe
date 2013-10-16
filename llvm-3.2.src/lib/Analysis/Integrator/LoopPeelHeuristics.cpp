@@ -33,7 +33,6 @@
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/PHITransAddr.h"
-#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/DataLayout.h"
 #include "llvm/Support/CFG.h"
@@ -2084,6 +2083,8 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
+  errs() << sizeof(ShadowInstruction) << ", " << sizeof(ShadowBB) << "\n";
+
   this->mallocAlignment = MallocAlignment;
   
   if(EnvFileAndIdx != "") {
@@ -3317,7 +3318,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
-  GlobalVFSAA = &getAnalysis<VFSCallAliasAnalysis>();
   GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
   if(UseDSA) {
     errs() << "Loading DSA...";
@@ -3325,6 +3325,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "done\n";
   }
   GlobalIHP = this;
+  initMRInfo(&M);
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
 
@@ -3472,7 +3473,6 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   else {
     AU.addRequiredID(BAAInfo->getTypeInfo());
   }
-  AU.addRequired<VFSCallAliasAnalysis>();
   if(UseDSA)
     AU.addRequired<EQTDDataStructures>();
   //AU.setPreservesAll();

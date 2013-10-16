@@ -19,9 +19,6 @@
 
 namespace llvm {
 
-  class IntegrationAttempt;
-  class IntAAProxy;
-
   /// LibCallLocationInfo - This struct describes a set of memory locations that
   /// are accessed by libcalls.  Identification of a location is doing with a
   /// simple callback function.
@@ -50,9 +47,8 @@ namespace llvm {
     enum LocResult {
       Yes, No, Unknown
     };
-    void (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t& LocSize);
-    uint64_t argIndex;
-    uint64_t argSize;
+    LocResult (*isLocation)(ImmutableCallSite CS,
+                            const AliasAnalysis::Location &Loc);
   };
   
   /// LibCallFunctionInfo - Each record in the array of FunctionInfo structs
@@ -80,8 +76,8 @@ namespace llvm {
     /// LocationMRInfo - This pair captures info about whether a specific
     /// location is modified or referenced by a libcall.
     struct LocationMRInfo {
-      /// This location, or null to signify end of list
-      LibCallLocationInfo* Location;
+      /// LocationID - ID # of the accessed location or ~0U for array end.
+      unsigned LocationID;
       /// MRInfo - Mod/Ref info for this location.
       AliasAnalysis::ModRefResult MRInfo;
     };
@@ -121,9 +117,6 @@ namespace llvm {
     /// If this pointer is null, no details are known.
     ///
     const LocationMRInfo *LocationDetails;
-
-    const LocationMRInfo* (*getLocationDetailsFor)(ShadowValue);
-
   };
   
   
@@ -145,7 +138,7 @@ namespace llvm {
     //===------------------------------------------------------------------===//
     
     /// getLocationInfo - Return information about the specified LocationID.
-    //const LibCallLocationInfo &getLocationInfo(unsigned LocID) const;
+    const LibCallLocationInfo &getLocationInfo(unsigned LocID) const;
     
     
     /// getFunctionInfo - Return the LibCallFunctionInfo object corresponding to
@@ -159,14 +152,14 @@ namespace llvm {
     
     /// getLocationInfo - Return descriptors for the locations referenced by
     /// this set of libcalls.
+    virtual unsigned getLocationInfo(const LibCallLocationInfo *&Array) const {
+      return 0;
+    }
     
     /// getFunctionInfoArray - Return an array of descriptors that describe the
     /// set of libcalls represented by this LibCallInfo object.  This array is
     /// terminated by an entry with a NULL name.
     virtual const LibCallFunctionInfo *getFunctionInfoArray() const = 0;
-
-    virtual LibCallLocationInfo::LocResult isLocation(const LibCallLocationInfo&, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) = 0;
-
   };
 
 } // end namespace llvm

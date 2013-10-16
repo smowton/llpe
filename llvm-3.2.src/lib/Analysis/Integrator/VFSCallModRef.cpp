@@ -1,13 +1,10 @@
 
-#include <llvm/Analysis/VFSCallModRef.h>
-
 #include <llvm/Module.h>
 #include <llvm/Function.h>
 #include <llvm/Constants.h>
 
-#include <llvm/Analysis/AliasAnalysis.h>
-#include <llvm/Analysis/LibCallSemantics.h>
 #include <llvm/Analysis/HypotheticalConstantFolder.h>
+#include "llvm/Analysis/AliasAnalysis.h"
 
 // For various structures and constants:
 #include <termios.h>
@@ -20,50 +17,6 @@
 #include <sys/resource.h>
 
 using namespace llvm;
-
-VFSCallAliasAnalysis::VFSCallAliasAnalysis() : LibCallAliasAnalysis(ID, new VFSCallModRef()) {
-  //initializeBasicAliasAnalysisPass(*PassRegistry::getPassRegistry());
-}
-
-const LibCallFunctionInfo* VFSCallAliasAnalysis::getFunctionInfo(Function* F) {
-  
-  return LCI->getFunctionInfo(F);
-
-}
-
-static LibCallLocationInfo::LocResult aliasCheckAsLCI(ShadowValue Ptr1, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size, bool usePBKnowledge, int64_t Ptr1Offset, IntAAProxy* AACB) {
-
-  SVAAResult AR;
-  if(Ptr1Offset != LLONG_MAX)
-    AR = tryResolveImprovedValSetSingles(Ptr1, Ptr1Offset, Ptr1Size, Ptr2, Ptr2Size, true);
-  else
-    AR = aliasSVs(Ptr1, Ptr1Size, Ptr2, Ptr2Size, usePBKnowledge);
-
-  switch(AR) {
-  case SVMustAlias:
-    return LibCallLocationInfo::Yes;
-  case SVNoAlias:
-    return LibCallLocationInfo::No;
-  default:
-    return LibCallLocationInfo::Unknown;
-  }
-
-}
-
-LibCallLocationInfo::LocResult VFSCallModRef::isLocation(const LibCallLocationInfo& LCI, ShadowValue CS, ShadowValue Ptr, uint64_t Size, const MDNode* PtrTag, bool usePBKnowledge, int64_t POffset, IntAAProxy* AACB) {
-
-  ShadowValue CSPtr;
-  uint64_t CSPtrSize;
-  if(!LCI.getLocation) {
-    CSPtr = getValArgOperand(CS, LCI.argIndex);
-    CSPtrSize = LCI.argSize;
-  }
-  else {
-    LCI.getLocation(CS, CSPtr, CSPtrSize);
-  }
-  return aliasCheckAsLCI(Ptr, Size, CSPtr, CSPtrSize, usePBKnowledge, POffset, AACB);
-
-}
 
 static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
@@ -109,186 +62,175 @@ static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 }
 
 // Plain parameters:
-struct LibCallLocationInfo locArg0 = { 0, 0, AliasAnalysis::UnknownSize };
-struct LibCallLocationInfo locArg1 = { 0, 1, AliasAnalysis::UnknownSize };
-struct LibCallLocationInfo locArg2 = { 0, 2, AliasAnalysis::UnknownSize };
+struct IHPLocationInfo locArg0 = { 0, 0, AliasAnalysis::UnknownSize };
+struct IHPLocationInfo locArg1 = { 0, 1, AliasAnalysis::UnknownSize };
+struct IHPLocationInfo locArg2 = { 0, 2, AliasAnalysis::UnknownSize };
 
 // Sized parameters:
-struct LibCallLocationInfo locTermios = { 0, 2, sizeof(struct termios) };
-struct LibCallLocationInfo locTimespecArg1 = { 0, 1, sizeof(struct timespec) };
-struct LibCallLocationInfo locSockaddrArg4 = { 0, 4, sizeof(struct sockaddr) };
-struct LibCallLocationInfo locSocklenArg2 = { 0, 2, sizeof(socklen_t) };
-struct LibCallLocationInfo locSocklenArg5 = { 0, 5, sizeof(socklen_t) };
-struct LibCallLocationInfo locRlimitArg1 = { 0, 1, sizeof(struct rlimit) };
-struct LibCallLocationInfo locVaListArg0 = { 0, 0, 24 };
+struct IHPLocationInfo locTermios = { 0, 2, sizeof(struct termios) };
+struct IHPLocationInfo locTimespecArg1 = { 0, 1, sizeof(struct timespec) };
+struct IHPLocationInfo locSockaddrArg4 = { 0, 4, sizeof(struct sockaddr) };
+struct IHPLocationInfo locSocklenArg2 = { 0, 2, sizeof(socklen_t) };
+struct IHPLocationInfo locSocklenArg5 = { 0, 5, sizeof(socklen_t) };
+struct IHPLocationInfo locRlimitArg1 = { 0, 1, sizeof(struct rlimit) };
+struct IHPLocationInfo locVaListArg0 = { 0, 0, 24 };
 
 // Call-dependent parameters
-struct LibCallLocationInfo locReturnVal = { isReturnVal, 0, 0 };
-struct LibCallLocationInfo locPollFds = { isPollFds, 0, 0 };
-struct LibCallLocationInfo locReadBuf = { isReadBuf, 0, 0 };
-struct LibCallLocationInfo locRecvfromBuffer = { isRecvfromBuffer, 0, 0 };
+struct IHPLocationInfo locReturnVal = { isReturnVal, 0, 0 };
+struct IHPLocationInfo locPollFds = { isPollFds, 0, 0 };
+struct IHPLocationInfo locReadBuf = { isReadBuf, 0, 0 };
+struct IHPLocationInfo locRecvfromBuffer = { isRecvfromBuffer, 0, 0 };
 
 // Globals
-struct LibCallLocationInfo locErrno = { isErrno, 0, 0 };
+struct IHPLocationInfo locErrno = { isErrno, 0, 0 };
 
 // Begin function descriptions
 
-static LibCallFunctionInfo::LocationMRInfo JustErrno[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo JustErrno[] = {
+  { &locErrno },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo ReadMR[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { &locReadBuf, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo ReadMR[] = {
+  { &locErrno },
+  { &locReadBuf },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo ReallocMR[] = {
-  { &locArg0, AliasAnalysis::Mod },
-  { &locReturnVal, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo ReallocMR[] = {
+  { &locArg0 },
+  { &locReturnVal },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo MallocMR[] = {
-  { &locReturnVal, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo MallocMR[] = {
+  { &locReturnVal },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo TCGETSMR[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { &locTermios, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo TCGETSMR[] = {
+  { &locErrno },
+  { &locTermios },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo Arg1AndErrnoMR[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo Arg1AndErrnoMR[] = {
+  { &locErrno },
+  { &locArg1 },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo GettimeofdayMR[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg0, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo GettimeofdayMR[] = {
+  { &locErrno },
+  { &locArg0 },
+  { &locArg1 },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo Arg0AndErrnoMR[] = {
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg0, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+static IHPLocationMRInfo Arg0AndErrnoMR[] = {
+  { &locErrno },
+  { &locArg0 },
+  { 0 }
 };
 
-static LibCallFunctionInfo::LocationMRInfo VAStartMR[] = {
+static IHPLocationMRInfo VAStartMR[] = {
 
-  { &locVaListArg0, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo VACopyMR[] = {
-
-  { &locVaListArg0, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Ref },
-  { 0, AliasAnalysis::ModRef }
+  { &locVaListArg0 },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo WriteMR[] = {
+static IHPLocationMRInfo VACopyMR[] = {
 
-  { &locArg1, AliasAnalysis::Ref },
-  { &locErrno, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo StatMR[] = {
-
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg0, AliasAnalysis::Ref },
-  { &locArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locVaListArg0 },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo SigactionMR[] = {
+static IHPLocationMRInfo StatMR[] = {
 
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Ref },
-  { &locArg2, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo AcceptMR[] = {
-
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Mod },
-  { &locSocklenArg2, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locErrno },
+  { &locArg1 },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo PollMR[] = {
+static IHPLocationMRInfo SigactionMR[] = {
 
-  { &locErrno, AliasAnalysis::Mod },
-  { &locPollFds, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo NanosleepMR[] = {
-
-  { &locErrno, AliasAnalysis::Mod },
-  { &locTimespecArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locErrno },
+  { &locArg2 },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo RecvfromMR[] = {
+static IHPLocationMRInfo AcceptMR[] = {
 
-  { &locErrno, AliasAnalysis::Mod },
-  { &locRecvfromBuffer, AliasAnalysis::Mod },
-  { &locSockaddrArg4, AliasAnalysis::Mod },
-  { &locSocklenArg5, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo RlimitMR[] = {
-
-  { &locErrno, AliasAnalysis::Mod },
-  { &locRlimitArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locErrno },
+  { &locArg1 },
+  { &locSocklenArg2 },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo SigprocmaskMR[] = {
+static IHPLocationMRInfo PollMR[] = {
 
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg2, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
-
-};
-
-static LibCallFunctionInfo::LocationMRInfo DirentsMR[] = {
-
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg1, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locErrno },
+  { &locPollFds },
+  { 0 }
 
 };
 
-static LibCallFunctionInfo::LocationMRInfo UnameMR[] = {
+static IHPLocationMRInfo NanosleepMR[] = {
 
-  { &locErrno, AliasAnalysis::Mod },
-  { &locArg0, AliasAnalysis::Mod },
-  { 0, AliasAnalysis::ModRef }
+  { &locErrno },
+  { &locTimespecArg1 },
+  { 0 }
 
 };
 
-static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
+static IHPLocationMRInfo RecvfromMR[] = {
+
+  { &locErrno },
+  { &locRecvfromBuffer },
+  { &locSockaddrArg4 },
+  { &locSocklenArg5 },
+  { 0 }
+
+};
+
+static IHPLocationMRInfo RlimitMR[] = {
+
+  { &locErrno },
+  { &locRlimitArg1 },
+  { 0 }
+
+};
+
+static IHPLocationMRInfo SigprocmaskMR[] = {
+
+  { &locErrno },
+  { &locArg2 },
+  { 0 }
+
+};
+
+static IHPLocationMRInfo DirentsMR[] = {
+
+  { &locErrno },
+  { &locArg1 },
+  { 0 }
+
+};
+
+static IHPLocationMRInfo UnameMR[] = {
+
+  { &locErrno },
+  { &locArg0 },
+  { 0 }
+
+};
+
+static const IHPLocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
   if(ConstantInt* C = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)))) {
 
@@ -303,97 +245,97 @@ static const LibCallFunctionInfo::LocationMRInfo* getIoctlLocDetails(ShadowValue
 
 }
 
-static LibCallFunctionInfo VFSCallFunctions[] = {
+static IHPFunctionInfo VFSCallFunctions[] = {
 
-  { "open", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "read", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReadMR, 0 },
-  { "lseek", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "llseek", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "lseek64", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "close", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "free", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "malloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, MallocMR, 0 },
-  { "realloc", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, ReallocMR, 0 },
-  { "ioctl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, getIoctlLocDetails },
-  { "clock_gettime", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg1AndErrnoMR, 0 },
-  { "gettimeofday", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, GettimeofdayMR, 0 },
-  { "time", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
-  { "llvm.va_start", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, VAStartMR, 0 },
-  { "llvm.va_copy", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, VACopyMR, 0 },
-  { "llvm.va_end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
-  { "llvm.lifetime.start", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
-  { "llvm.lifetime.end", AliasAnalysis::NoModRef, LibCallFunctionInfo::DoesOnly, 0, 0 },
-  { "write", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, WriteMR, 0 },
-  { "__libc_fcntl", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "__fcntl_nocancel", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "posix_fadvise", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "stat", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StatMR, 0 },
-  { "fstat", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, StatMR, 0 },
-  { "isatty", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, JustErrno, 0},
-  { "__libc_sigaction", AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, SigactionMR, 0 },
-  { "socket", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "bind", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "listen", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "setsockopt", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "__libc_accept", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, AcceptMR, 0 },
-  { "poll", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, PollMR, 0 },
-  { "shutdown", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "__libc_nanosleep", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, NanosleepMR, 0 },
-  { "mkdir", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "rmdir", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "rename", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "setuid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "getuid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "geteuid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "setgid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "getgid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "getegid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "closedir", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "opendir", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "getsockname", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "__libc_recvfrom", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, RecvfromMR, 0 },
-  { "__libc_sendto", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "mmap", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "munmap", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "mremap", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "clock_getres", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, NanosleepMR, 0 },
-  { "getrlimit", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, RlimitMR, 0 },
-  { "sigprocmask", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, SigprocmaskMR, 0 },
-  { "unlink", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "__getdents64", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, DirentsMR, 0 },
-  { "brk", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "getpid", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "kill", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
-  { "uname", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, UnameMR, 0 },
-  { "__pthread_mutex_init", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
-  { "__pthread_mutex_lock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
-  { "__pthread_mutex_trylock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },  
-  { "__pthread_mutex_unlock", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg0AndErrnoMR, 0 },
-  { "pthread_setcanceltype", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg1AndErrnoMR, 0 },
-  { "pthread_setcancelstate", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, Arg1AndErrnoMR, 0 },
-  { "writev", AliasAnalysis::Mod, LibCallFunctionInfo::DoesOnly, JustErrno, 0 },
+  { "open", false, JustErrno, 0 },
+  { "read", false, ReadMR, 0 },
+  { "lseek", false, JustErrno, 0 },
+  { "llseek", false, JustErrno, 0 },
+  { "lseek64", false, JustErrno, 0 },
+  { "close", false, JustErrno, 0 },
+  { "free", false, JustErrno, 0 },
+  { "malloc", false, MallocMR, 0 },
+  { "realloc", false, ReallocMR, 0 },
+  { "ioctl", false, 0, getIoctlLocDetails },
+  { "clock_gettime", false, Arg1AndErrnoMR, 0 },
+  { "gettimeofday", false, GettimeofdayMR, 0 },
+  { "time", false, Arg0AndErrnoMR, 0 },
+  { "llvm.va_start", false, VAStartMR, 0 },
+  { "llvm.va_copy", false, VACopyMR, 0 },
+  { "llvm.va_end", true, 0, 0 },
+  { "llvm.lifetime.start", true, 0, 0 },
+  { "llvm.lifetime.end", true, 0, 0 },
+  { "write", false, JustErrno, 0 },
+  { "__libc_fcntl", false, JustErrno, 0 },
+  { "__fcntl_nocancel", false, JustErrno, 0 },
+  { "posix_fadvise", false, JustErrno, 0 },
+  { "stat", false, StatMR, 0 },
+  { "fstat", false, StatMR, 0 },
+  { "isatty", false, JustErrno, 0},
+  { "__libc_sigaction", false, SigactionMR, 0 },
+  { "socket", false, JustErrno, 0 },
+  { "bind", false, JustErrno, 0 },
+  { "listen", false, JustErrno, 0 },
+  { "setsockopt", false, JustErrno, 0 },
+  { "__libc_accept", false, AcceptMR, 0 },
+  { "poll", false, PollMR, 0 },
+  { "shutdown", false, JustErrno, 0 },
+  { "__libc_nanosleep", false, NanosleepMR, 0 },
+  { "mkdir", false, JustErrno, 0 },
+  { "rmdir", false, JustErrno, 0 },
+  { "rename", false, JustErrno, 0 },
+  { "setuid", false, JustErrno, 0 },
+  { "getuid", false, JustErrno, 0 },
+  { "geteuid", false, JustErrno, 0 },
+  { "setgid", false, JustErrno, 0 },
+  { "getgid", false, JustErrno, 0 },
+  { "getegid", false, JustErrno, 0 },
+  { "closedir", false, JustErrno, 0 },
+  { "opendir", false, JustErrno, 0 },
+  { "getsockname", false, JustErrno, 0 },
+  { "__libc_recvfrom", false, RecvfromMR, 0 },
+  { "__libc_sendto", false, JustErrno, 0 },
+  { "mmap", false, JustErrno, 0 },
+  { "munmap", false, JustErrno, 0 },
+  { "mremap", false, JustErrno, 0 },
+  { "clock_getres", false, NanosleepMR, 0 },
+  { "getrlimit", false, RlimitMR, 0 },
+  { "sigprocmask", false, SigprocmaskMR, 0 },
+  { "unlink", false, JustErrno, 0 },
+  { "__getdents64", false, DirentsMR, 0 },
+  { "brk", false, JustErrno, 0 },
+  { "getpid", false, JustErrno, 0 },
+  { "kill", false, JustErrno, 0 },
+  { "uname", false, UnameMR, 0 },
+  { "__pthread_mutex_init", false, Arg0AndErrnoMR, 0 },
+  { "__pthread_mutex_lock", false, Arg0AndErrnoMR, 0 },
+  { "__pthread_mutex_trylock", false, Arg0AndErrnoMR, 0 },  
+  { "__pthread_mutex_unlock", false, Arg0AndErrnoMR, 0 },
+  { "pthread_setcanceltype", false, Arg1AndErrnoMR, 0 },
+  { "pthread_setcancelstate", false, Arg1AndErrnoMR, 0 },
+  { "writev", false, JustErrno, 0 },
   // Terminator
-  { 0, AliasAnalysis::ModRef, LibCallFunctionInfo::DoesOnly, 0, 0 }
+  { 0, false, 0, 0 }
 
 };
 
-/// getFunctionInfoArray - Return an array of descriptors that describe the
-/// set of libcalls represented by this LibCallInfo object.  This array is
-/// terminated by an entry with a NULL name.
-const LibCallFunctionInfo* VFSCallModRef::getFunctionInfoArray() const {
+void IntegrationHeuristicsPass::initMRInfo(Module* M) {
 
-  return VFSCallFunctions;
+  for(uint32_t i = 0; VFSCallFunctions[i].Name; ++i) {
 
-}
+    Function* F = M->getFunction(VFSCallFunctions[i].Name);
+    functionMRInfo[F] = VFSCallFunctions[i];
 
-ModulePass *createVFSCallAliasAnalysisPass() {
-
-  return new VFSCallAliasAnalysis();
+  }
 
 }
 
-// Register this pass...
-char VFSCallAliasAnalysis::ID = 0;
+IHPFunctionInfo* IntegrationHeuristicsPass::getMRInfo(Function* F) {
 
-static RegisterPass<VFSCallAliasAnalysis> X1("vfscall-aa", "VFS Call Alias Analysis", false /* Only looks at CFG */, true /* Analysis Pass */);
-static RegisterAGBase X2("vfscall-aa", &AliasAnalysis::ID, &VFSCallAliasAnalysis::ID);
+  DenseMap<Function*, IHPFunctionInfo>::iterator findit = functionMRInfo.find(F);
+  if(findit == functionMRInfo.end())
+    return 0;
+  else
+    return &findit->second;
+  
+}

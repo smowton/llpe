@@ -72,7 +72,6 @@ class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
 class TargetLibraryInfo;
-class VFSCallAliasAnalysis;
 class EQTDDataStructures;
 class ShadowBB;
 
@@ -87,7 +86,6 @@ inline void release_assert_fail(const char* str) {
 
 extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
-extern VFSCallAliasAnalysis* GlobalVFSAA;
 extern TargetLibraryInfo* GlobalTLI;
 extern EQTDDataStructures* GlobalDSA;
 extern IntegrationHeuristicsPass* GlobalIHP;
@@ -243,6 +241,29 @@ DeallocatorFn(uint32_t a) : arg(a) {}
 
 };
 
+struct IHPLocationInfo {
+  
+  void (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t& LocSize);
+  uint64_t argIndex;
+  uint64_t argSize;
+
+};
+
+struct IHPLocationMRInfo {
+
+  IHPLocationInfo* Location;
+
+};
+
+struct IHPFunctionInfo {
+
+  const char* Name;
+  bool NoModRef;
+  const IHPLocationMRInfo *LocationDetails;
+  const IHPLocationMRInfo* (*getLocationDetailsFor)(ShadowValue);
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -270,6 +291,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
 
    DenseMap<GlobalVariable*, uint64_t> shadowGlobalsIdx;
+
+   DenseMap<Function*, IHPFunctionInfo> functionMRInfo;
 
    bool cacheDisabled;
 
@@ -463,6 +486,9 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void postCommitOptimise();
    void postCommitOptimiseF(Function* F);
+
+   void initMRInfo(Module*);
+   IHPFunctionInfo* getMRInfo(Function*);
 
 };
 
@@ -1870,7 +1896,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    SVMustAlias
  };
 
- SVAAResult aliasSVs(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
  SVAAResult tryResolveImprovedValSetSingles(ImprovedValSetSingle& PB1, uint64_t V1Size, ImprovedValSetSingle& PB2, uint64_t V2Size, bool usePBKnowledge);
  SVAAResult tryResolveImprovedValSetSingles(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
  SVAAResult tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);

@@ -1,4 +1,6 @@
 
+#include "llvm/Analysis/HypotheticalConstantFolder.h"
+
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Instructions.h"
@@ -8,7 +10,6 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/VFSCallModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 
@@ -2827,12 +2828,12 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
 
 bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
-  if(const LibCallFunctionInfo* FI = GlobalVFSAA->getFunctionInfo(F)) {
+  if(const IHPFunctionInfo* FI = GlobalIHP->getMRInfo(F)) {
 
-    if(!(FI->UniversalBehavior & llvm::AliasAnalysis::Mod))
+    if(FI->NoModRef)
       return true;
       
-    const LibCallFunctionInfo::LocationMRInfo *Details = 0;
+    const IHPLocationMRInfo *Details = 0;
 
     if(FI->LocationDetails)
       Details = FI->LocationDetails;
@@ -2842,12 +2843,7 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
     if(!Details)
       return false;
 
-    release_assert(FI->DetailsType == LibCallFunctionInfo::DoesOnly);
-
     for (unsigned i = 0; Details[i].Location; ++i) {
-
-      if(!(Details[i].MRInfo & AliasAnalysis::Mod))
-	continue;
 
       ShadowValue ClobberV;
       uint64_t ClobberSize = 0;
@@ -4051,24 +4047,6 @@ void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
   }
 
   CallerBB->u.localStore = V.newMap;
-
-}
-
-SVAAResult llvm::aliasSVs(ShadowValue V1, uint64_t V1Size,
-			  ShadowValue V2, uint64_t V2Size,
-			  bool usePBKnowledge) {
-  
-  SVAAResult Alias = tryResolveImprovedValSetSingles(V1, V1Size, V2, V2Size, usePBKnowledge);
-  if(Alias != SVMayAlias)
-    return Alias;
-
-  switch(GlobalAA->aliasHypothetical(V1, V1Size, V1.getTBAATag(), V2, V2Size, V2.getTBAATag(), usePBKnowledge)) {
-  case AliasAnalysis::NoAlias: return SVNoAlias;
-  case AliasAnalysis::MustAlias: return SVMustAlias;
-  case AliasAnalysis::MayAlias: return SVMayAlias;
-  case AliasAnalysis::PartialAlias: return SVPartialAlias;
-  default: release_assert(0); return SVMayAlias;
-  }
 
 }
 
