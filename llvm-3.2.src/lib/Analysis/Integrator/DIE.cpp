@@ -114,6 +114,13 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, VisitorCont
 	Visitor.visit(PI->getInst(I));
 
       }
+      else if(parentPA->isTerminated()) {
+
+	// The instruction would be used by the next iteration,
+	// but there is no such iteration, so it is unused.
+	return true;
+
+      }
       else {
 
 	Visitor.notifyUsersMissed();
