@@ -135,6 +135,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     registeredSharable = false;
     active = false;
     instructionsCommitted = false;
+    emittedAlloca = false;
     CommitF = 0;
     targetCallInfo = 0;
     DT = pass->DTs[&F];

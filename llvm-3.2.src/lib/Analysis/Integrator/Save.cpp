@@ -1209,14 +1209,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
     if(IA->isEnabled()) {
 
-      CallInst* SavedPtr = 0;
-
       if(!IA->commitsOutOfLine()) {
-
-	// Save the current stack pointer (for scoped allocas)
-	Module *M = emitBB->getParent()->getParent();
-	Function *StackSave = Intrinsic::getDeclaration(M, Intrinsic::stacksave);
-	SavedPtr = CallInst::Create(StackSave, "savedstack", emitBB);		
 
 	// Branch from the current write BB to the call's entry block:
 	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
@@ -1341,14 +1334,30 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
     
       if(!IA->commitsOutOfLine()) {
 
-	Module *M = emitBB->getParent()->getParent();
-	Function *StackRestore=Intrinsic::getDeclaration(M,Intrinsic::stackrestore);
+	if(IA->emittedAlloca) {
 
-	CallInst::Create(StackRestore, SavedPtr, "", IA->returnBlock);
+	  // If the residual, inline function allocates stack memory, bound its lifetime
+	  // with stacksave/restore.
 
-	if(IA->failedReturnBlock) {
-	  CallInst::Create(StackRestore, SavedPtr, "", IA->failedReturnBlock->getFirstNonPHI());
-	  (*getFunctionRoot()->failedBlockMap)[SavedPtr] = SavedPtr;
+	  Module *M = emitBB->getParent()->getParent();
+
+	  Function *StackSave = Intrinsic::getDeclaration(M, Intrinsic::stacksave);
+	  Function *StackRestore=Intrinsic::getDeclaration(M, Intrinsic::stackrestore);
+
+	  // Save on entry
+	  BasicBlock* FunctionEntry = IA->getCommittedEntryBlock();
+	  BasicBlock* FunctionPred = FunctionEntry->getSinglePredecessor();
+	  release_assert(FunctionPred && "No unique entry to inlined function?");
+	  CallInst* SavedPtr = CallInst::Create(StackSave, "savedstack", FunctionPred->getTerminator());
+
+	  // Restore on successful return
+	  CallInst::Create(StackRestore, SavedPtr, "", IA->returnBlock);
+
+	  // Restore on failed 
+	  if(IA->failedReturnBlock) {
+	    CallInst::Create(StackRestore, SavedPtr, "", IA->failedReturnBlock->getFirstNonPHI());
+	    (*getFunctionRoot()->failedBlockMap)[SavedPtr] = SavedPtr;
+	  }
 
 	}
 
@@ -1380,6 +1389,9 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   Instruction* newI = I->invar->I->clone();
   I->committedVal = newI;
   emitBB->getInstList().push_back(cast<Instruction>(newI));
+
+  if(isa<AllocaInst>(newI))
+    getFunctionRoot()->emittedAlloca = true;
 
   // Normal instruction: no BB arguments, and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {

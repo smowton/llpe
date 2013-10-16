@@ -1658,6 +1658,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool registeredSharable;
   bool active;
   bool instructionsCommitted;
+  bool emittedAlloca;
 
   bool isModel;
   bool isPathCondition;
