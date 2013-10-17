@@ -463,12 +463,13 @@ ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, Shad
 
   // memcpyValues is unpopulated if the copy didn't "work" during specialisation,
   // so there is nothing to check.
-  if((!SI.memcpyValues) || (!SI.memcpyValues->size()))
+  DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> >::iterator findit = GlobalIHP->memcpyValues.find(&SI);
+  if(findit == GlobalIHP->memcpyValues.end() || !findit->second.size())
     return TLS_NEVERCHECK;
 
   // Check each concrete value that was successfully read during information prop
-  for(SmallVector<IVSRange, 4>::iterator it = SI.memcpyValues->begin(),
-	itend = SI.memcpyValues->end(); it != itend; ++it) {
+  for(SmallVector<IVSRange, 4>::iterator it = findit->second.begin(),
+	itend = findit->second.end(); it != itend; ++it) {
 
     if(it->second.isWhollyUnknown())
       continue;

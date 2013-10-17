@@ -1771,7 +1771,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
 bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
 
-  if(!I->memcpyValues)
+  if(!GlobalIHP->memcpyValues.count(I))
     return false;
 
   // Can we describe the target?
@@ -1784,9 +1784,11 @@ bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
       return false;
   }
   
+  SmallVector<IVSRange, 4>& Vals = GlobalIHP->memcpyValues[I];
+
   // Can we describe all the copied values?
-  for(SmallVector<IVSRange, 4>::iterator it = I->memcpyValues->begin(),
-	itend = I->memcpyValues->end(); it != itend; ++it) {
+  for(SmallVector<IVSRange, 4>::iterator it = Vals.begin(),
+	itend = Vals.end(); it != itend; ++it) {
 
     if(it->second.isWhollyUnknown() || it->second.Values.size() != 1)
       return false;
@@ -1809,10 +1811,12 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   // The method: for consecutive scalars or pointers-to-globals, synthesise a packed struct and
   // memcpy from it. For non-constant pointers and FDs, produce stores.
 
-  SmallVector<IVSRange, 4>::iterator chunkBegin = I->memcpyValues->begin();
+  SmallVector<IVSRange, 4>& Vals = GlobalIHP->memcpyValues[I];
 
-  for(SmallVector<IVSRange, 4>::iterator it = I->memcpyValues->begin(),
-	itend = I->memcpyValues->end(); it != itend; ++it) {
+  SmallVector<IVSRange, 4>::iterator chunkBegin = Vals.begin();
+
+  for(SmallVector<IVSRange, 4>::iterator it = Vals.begin(),
+	itend = Vals.end(); it != itend; ++it) {
 
     if(it->second.SetType == ValSetTypeScalar || 
        (it->second.SetType == ValSetTypePB && it->second.Values[0].V.isGV())) {
@@ -1839,7 +1843,7 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   }
 
   // Emit the rest if any.
-  emitChunk(I, emitBB, chunkBegin, I->memcpyValues->end());
+  emitChunk(I, emitBB, chunkBegin, Vals.end());
 
   return true;
 

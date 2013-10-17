@@ -811,8 +811,6 @@ struct ShadowInstruction {
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
   Value* committedVal;
-  // Of a successful copy instruction, records the values read.
-  SmallVector<IVSRange, 4>* memcpyValues;
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
   ThreadLocalState isThreadLocal;
   unsigned needsRuntimeCheck;

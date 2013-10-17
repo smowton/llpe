@@ -336,7 +336,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<CallInst*, 4> pessimisticLocks;
 
    DenseMap<ShadowInstruction*, AllocData> allocations;
+   // Of an allocation or FD, record instructions that may use it in the emitted program.
    DenseMap<ShadowInstruction*, std::vector<ShadowValue> > indirectDIEUsers;
+   // Of a successful copy instruction, records the values read.
+   DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> > memcpyValues;
   
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);

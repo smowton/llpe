@@ -2282,7 +2282,7 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator e
 
 Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB) {
 
-  release_assert(SI->memcpyValues && SI->memcpyValues->size() && "memcpyValues not set for checked copy?");
+  release_assert(GlobalIHP->memcpyValues.count(SI) && GlobalIHP->memcpyValues[SI].size() && "memcpyValues not set for checked copy?");
 
   Value* prevCheck = 0;
   Value* writtenPtr = getCommittedValue(SI->getOperand(0));
@@ -2295,8 +2295,9 @@ Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* em
 
   uint64_t ptrOffset = cast<ImprovedValSetSingle>(SI->i.PB)->Values[0].Offset;
 
-  for(SmallVector<IVSRange, 4>::iterator it = SI->memcpyValues->begin(), 
-	itend = SI->memcpyValues->end(); it != itend; ++it) {
+  SmallVector<IVSRange, 4>& Vals = GlobalIHP->memcpyValues[SI];
+
+  for(SmallVector<IVSRange, 4>::iterator it = Vals.begin(), itend = Vals.end(); it != itend; ++it) {
 
     if(it->second.Values.size() == 0)
       continue;

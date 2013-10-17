@@ -2410,8 +2410,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
 
   LFV3(errs() << "Start copy inst\n");
 
-  if(CopySI->memcpyValues)
-    CopySI->memcpyValues->clear();
+  GlobalIHP->memcpyValues.erase(CopySI);
 
   // No need to check the copy instruction is as expected in any of the coming failure cases.
   CopySI->isThreadLocal = TLS_NEVERCHECK;
@@ -2475,10 +2474,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
     BB->u.localStore->es.threadLocalObjects.count(SrcPtrSet.Values[0].V) ? 
     TLS_NEVERCHECK : TLS_MUSTCHECK;
 
-  if(!CopySI->memcpyValues)
-    CopySI->memcpyValues = new SmallVector<IVSRange, 4>();
-
-  SmallVector<IVSRange, 4>& copyValues = *(CopySI->memcpyValues);
+  SmallVector<IVSRange, 4>& copyValues = GlobalIHP->memcpyValues[CopySI];
 
   readValRangeMulti(SrcPtrSet.Values[0].V, SrcPtrSet.Values[0].Offset, Size, BB, copyValues);
 
