@@ -1399,6 +1399,7 @@ protected:
   bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
   bool hasLiveIgnoredEdges(ShadowBB*);
   virtual void initFailedBlockCommit();
+  virtual void finishFailedBlockCommit();
   uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
   virtual void commitSimpleFailedBlock(uint32_t i);
@@ -1809,6 +1810,7 @@ class InlineAttempt : public IntegrationAttempt {
   void getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets);
   bool hasFailedReturnPath();
   virtual void initFailedBlockCommit();
+  virtual void finishFailedBlockCommit();
   void markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
   bool isSimpleMergeBlock(uint32_t i);

@@ -2086,5 +2086,8 @@ void IntegrationAttempt::commitInstructions() {
   uint32_t i = 0;
   commitLoopInstructions(L, i);
 
+  // This should be the last reference to the failed block maps here: deallocate.
+  finishFailedBlockCommit();
+
 }
 

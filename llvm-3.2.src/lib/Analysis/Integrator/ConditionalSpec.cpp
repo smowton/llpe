@@ -7,6 +7,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
@@ -444,10 +445,25 @@ void IntegrationAttempt::initFailedBlockCommit() {}
 
 void InlineAttempt::initFailedBlockCommit() {
 
+  // We won't need PHIForwards or ForwardingPHIs until the instruction commit phase;
+  // they will remain 0-sized and unallocated until then.
+  // failedBlockMap only needs to hold a little more than one entry per failed block here.
+  // Add a fudge factor to (a) avoid resizes to 64 and (b) account for path condition splits.
+
   failedBlocks.resize(nBBs);
-  failedBlockMap = new ValueToValueMapTy();
+  failedBlockMap = new ValueToValueMapTy(NextPowerOf2((blocksReachableOnFailure.size() * 3) - 1));
   PHIForwards = new DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>();
   ForwardingPHIs = new DenseSet<PHINode*>();
+
+}
+
+void IntegrationAttempt::finishFailedBlockCommit() {}
+
+void InlineAttempt::finishFailedBlockCommit() {
+
+  delete failedBlockMap; failedBlockMap = 0;
+  delete PHIForwards; PHIForwards = 0;
+  delete ForwardingPHIs; ForwardingPHIs = 0;
 
 }
 
