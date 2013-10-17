@@ -450,6 +450,14 @@ void InlineAttempt::initFailedBlockCommit() {
   // failedBlockMap only needs to hold a little more than one entry per failed block here.
   // Add a fudge factor to (a) avoid resizes to 64 and (b) account for path condition splits.
 
+  // If there aren't any failed blocks, we don't need any of these!
+  if(blocksReachableOnFailure.empty()) {
+    failedBlockMap = 0;
+    PHIForwards = 0;
+    ForwardingPHIs = 0;
+    return; 
+  }
+
   failedBlocks.resize(nBBs);
   failedBlockMap = new ValueToValueMapTy(NextPowerOf2((blocksReachableOnFailure.size() * 3) - 1));
   PHIForwards = new DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>();
@@ -1662,7 +1670,7 @@ void IntegrationAttempt::commitSimpleFailedBlock(uint32_t i) { }
 
 void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
-  if(failedBlocks[i].empty())
+  if(failedBlocks.empty() || failedBlocks[i].empty())
     return;
 
   release_assert(failedBlocks[i].size() == 1 && "commitSimpleFailedBlock with a split block?");
@@ -1933,7 +1941,7 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
   // Add the latch predecessor to each header phi.
   ShadowLoopInvar* LInfo = invarInfo->LInfo[PopulateL];
 
-  if(failedBlocks[LInfo->headerIdx].empty())
+  if(failedBlocks.empty() || failedBlocks[LInfo->headerIdx].empty())
     return;
 
   ShadowBBInvar* headerBBI = getBBInvar(LInfo->headerIdx);
@@ -2024,7 +2032,7 @@ void IntegrationAttempt::populateFailedBlock(uint32_t idx) { }
 
 void InlineAttempt::populateFailedBlock(uint32_t idx) {
   
-  if(failedBlocks[idx].empty())
+  if(failedBlocks.empty() || failedBlocks[idx].empty())
     return;
 
   ShadowBBInvar* BBI = getBBInvar(idx);
