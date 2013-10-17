@@ -336,7 +336,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<CallInst*, 4> pessimisticLocks;
 
    DenseMap<ShadowInstruction*, AllocData> allocations;
-
+   DenseMap<ShadowInstruction*, std::vector<ShadowValue> > indirectDIEUsers;
+  
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);

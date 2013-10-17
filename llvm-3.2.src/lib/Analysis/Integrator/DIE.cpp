@@ -488,21 +488,29 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
     // but will do in the final committed program. Check that each is dead:
     if(ShadowInstruction* I = V.getInst()) {
 
-      for(uint32_t i = 0; i < I->indirectDIEUsers.size(); ++i) {
+      DenseMap<ShadowInstruction*, std::vector<ShadowValue> >::iterator findit = 
+	GlobalIHP->indirectDIEUsers.find(I);
+      if(findit != GlobalIHP->indirectDIEUsers.end()) {
 
-	if(!willBeDeleted(I->indirectDIEUsers[i])) {
+	std::vector<ShadowValue>& Users = findit->second;
 
-	  if(verbose) {
-	    errs() << itcache(V) << " used by " << itcache(I->indirectDIEUsers[i]);
-	    if(IntegrationAttempt* IA = I->indirectDIEUsers[i].getCtx()) {
+	for(uint32_t i = 0; i < Users.size(); ++i) {
 
-	      errs() << " in context " << IA->SeqNumber;
+	  if(!willBeDeleted(Users[i])) {
 
+	    if(verbose) {
+	      errs() << itcache(V) << " used by " << itcache(Users[i]);
+	      if(IntegrationAttempt* IA = Users[i].getCtx()) {
+
+		errs() << " in context " << IA->SeqNumber;
+
+	      }
+	      errs() << "\n";
 	    }
-	    errs() << "\n";
-	  }
 
-	  return false;
+	    return false;
+
+	  }
 
 	}
 

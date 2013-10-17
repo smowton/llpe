@@ -810,7 +810,6 @@ struct ShadowInstruction {
   ShadowBB* parent;
   ShadowInstructionInvar* invar;
   InstArgImprovement i;
-  SmallVector<ShadowValue, 1> indirectDIEUsers;
   Value* committedVal;
   // Of a successful copy instruction, records the values read.
   SmallVector<IVSRange, 4>* memcpyValues;

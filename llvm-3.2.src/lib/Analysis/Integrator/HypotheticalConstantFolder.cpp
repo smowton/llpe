@@ -1965,11 +1965,12 @@ void llvm::releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB) {
     ImprovedValSetSingle* OldIVS = cast<ImprovedValSetSingle>(OldPB);
     if(ShadowInstruction* Used = OldIVS->Values[0].V.getInst()) {
 	
-      SmallVector<ShadowValue, 1>::iterator findit = 
-	std::find(Used->indirectDIEUsers.begin(), Used->indirectDIEUsers.end(), V);
-      if(findit != Used->indirectDIEUsers.end())
-	Used->indirectDIEUsers.erase(findit);
+      std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[Used];
 
+      std::vector<ShadowValue>::iterator findit = std::find(Users.begin(), Users.end(), V);
+      if(findit != Users.end())
+	Users.erase(findit);
+      
     }
 
   }
@@ -1983,9 +1984,10 @@ void llvm::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
     ImprovedValSetSingle* NewIVS = cast<ImprovedValSetSingle>(NewPB);
     if(ShadowInstruction* WillUse = NewIVS->Values[0].V.getInst()) {
 
-      if(std::find(WillUse->indirectDIEUsers.begin(), WillUse->indirectDIEUsers.end(), V) 
-	 == WillUse->indirectDIEUsers.end())
-	WillUse->indirectDIEUsers.push_back(V);
+      std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[WillUse];
+      
+      if(std::find(Users.begin(), Users.end(), V) == Users.end())
+	Users.push_back(V);
 
     }
       
