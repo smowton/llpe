@@ -831,7 +831,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     if(!IA->returnBlock) {
 
       Value* retVal;
-      if((!F.getFunctionType()->getReturnType()->isVoidTy()) && I->i.dieStatus != INSTSTATUS_ALIVE)
+      if((!F.getFunctionType()->getReturnType()->isVoidTy()) && I->dieStatus != INSTSTATUS_ALIVE)
 	retVal = UndefValue::get(F.getReturnType());
       else if(F.getFunctionType()->getReturnType()->isVoidTy())
 	retVal = 0;
@@ -879,7 +879,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       // Branch to the exit block
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
-      if(IA->returnPHI && I->i.dieStatus == INSTSTATUS_ALIVE) {
+      if(IA->returnPHI && I->dieStatus == INSTSTATUS_ALIVE) {
 	Value* PHIVal = getValAsType(getCommittedValue(I->getOperand(0)), F.getFunctionType()->getReturnType(), BI);
 	IA->returnPHI->addIncoming(PHIVal, BB->committedBlocks.back().specBlock);
       }
@@ -1130,7 +1130,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  
       }
 
-      if(it->second.readSize > 0 && !(I->i.dieStatus & INSTSTATUS_UNUSED_WRITER)) {
+      if(it->second.readSize > 0 && !(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 	
 	// Create a memcpy from a constant, since someone is still using the read data.
 	std::vector<Constant*> constBytes;
@@ -1200,7 +1200,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
     DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
     if(it != forwardableOpenCalls.end()) {
-      if(it->second->success && I->i.dieStatus == INSTSTATUS_ALIVE) {
+      if(it->second->success && I->dieStatus == INSTSTATUS_ALIVE) {
 
 	emitInst(BB, I, emitBB);
 
@@ -1217,7 +1217,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
     if(it != resolvedCloseCalls.end()) {
 
       if(it->second.MayDelete && it->second.openArg->MayDelete) {
-	if(it->second.openInst->i.dieStatus == INSTSTATUS_DEAD)
+	if(it->second.openInst->dieStatus == INSTSTATUS_DEAD)
 	  return true;
       }
 
@@ -2050,7 +2050,7 @@ void InlineAttempt::commitArgsAndInstructions() {
   for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
     ShadowArg* SA = &(argShadows[i]);
-    if(SA->i.dieStatus != INSTSTATUS_ALIVE)
+    if(SA->dieStatus != INSTSTATUS_ALIVE)
       continue;
 
     if(Constant* C = getConstReplacement(SA)) {

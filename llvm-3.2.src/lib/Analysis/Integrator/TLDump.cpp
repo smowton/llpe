@@ -75,7 +75,7 @@ namespace llvm {
       for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
 	ShadowInstruction* SI = &BB->insts[j];
-	errs() << IA->SeqNumber << " / " << itcache(SI) << ": " << SI->i.dieStatus << "\n";
+	errs() << IA->SeqNumber << " / " << itcache(SI) << ": " << SI->dieStatus << "\n";
 
 	if(InlineAttempt* Child = IA->getInlineAttempt(SI))
 	  DSEDump(Child);

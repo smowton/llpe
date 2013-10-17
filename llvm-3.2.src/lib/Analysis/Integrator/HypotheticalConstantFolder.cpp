@@ -691,7 +691,7 @@ static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
 }
 
 // Return value as above: true for "we've handled it" and false for "try constant folding"
-bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned* needsRuntimeCheck) {
+bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned char* needsRuntimeCheck) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
 
@@ -1045,7 +1045,7 @@ namespace llvm {
 void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
 					   ValSetType& ImpType, ImprovedVal& Improved,
-					   unsigned* needsRuntimeCheck) {
+					   unsigned char* needsRuntimeCheck) {
   
   Instruction* I = SI->invar->I;
 

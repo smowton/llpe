@@ -35,7 +35,7 @@ static void DSEProgress() {
 
 static void DSEInstructionDead(ShadowInstruction* SI) {
 
-  SI->i.dieStatus |= INSTSTATUS_UNUSED_WRITER;
+  SI->dieStatus |= INSTSTATUS_UNUSED_WRITER;
 
 }
 

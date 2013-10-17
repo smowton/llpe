@@ -273,10 +273,10 @@ static bool _willBeDeleted(ShadowValue V) {
   uint32_t dieStatus;
 
   if(ShadowInstruction* SI = V.getInst()) {
-    dieStatus = SI->i.dieStatus;
+    dieStatus = SI->dieStatus;
   }
   else if(ShadowArg* SA = V.getArg()) {
-    dieStatus = SA->i.dieStatus;
+    dieStatus = SA->dieStatus;
   }
   else {
     return false;
@@ -455,7 +455,7 @@ bool InlineAttempt::isOwnCallUnused() {
     for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
 	  itend = Callers.end(); it != itend; ++it) {
 
-      if((*it)->i.dieStatus == INSTSTATUS_ALIVE)
+      if((*it)->dieStatus == INSTSTATUS_ALIVE)
 	return false;
 
     }
@@ -561,7 +561,7 @@ void InlineAttempt::runDIE() {
     if(Callers.empty() && SA->invar->A->hasNoAliasAttr())
       continue;
     if(valueIsDead(ShadowValue(SA))) {
-      SA->i.dieStatus |= INSTSTATUS_DEAD;
+      SA->dieStatus |= INSTSTATUS_DEAD;
     }
   }
 
@@ -611,7 +611,7 @@ void IntegrationAttempt::runDIE() {
       if(inst_is<CallInst>(SI)) {
 
 	if((!delOrConst) && valueIsDead(ShadowValue(SI)))
-	  SI->i.dieStatus |= INSTSTATUS_DEAD; 
+	  SI->dieStatus |= INSTSTATUS_DEAD; 
 
 	if(InlineAttempt* IA = getInlineAttempt(SI)) {
 
@@ -629,7 +629,7 @@ void IntegrationAttempt::runDIE() {
 	  continue;
 
 	if(valueIsDead(ShadowValue(SI)))
-	  SI->i.dieStatus |= INSTSTATUS_DEAD;
+	  SI->dieStatus |= INSTSTATUS_DEAD;
 
       }
 

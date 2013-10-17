@@ -472,13 +472,15 @@ void InlineAttempt::prepareShadows() {
 
     argShadows[i].invar = &(invarInfo->Args[i]);
     argShadows[i].IA = this;
-
+    argShadows[i].dieStatus = 0;
+    
   }
 
   for(; i != shadowsSize; ++i) {
 
     argShadows[i].invar = 0;
     argShadows[i].IA = this;
+    argShadows[i].dieStatus = 0;
     
   }
 
@@ -559,6 +561,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
   for(uint32_t i = 0, ilim = newBB->invar->insts.size(); i != ilim; ++i) {
     insts[i].invar = &(newBB->invar->insts[i]);
     insts[i].parent = newBB;
+    insts[i].dieStatus = 0;
     insts[i].isThreadLocal = TLS_MUSTCHECK;
     insts[i].needsRuntimeCheck = RUNTIME_CHECK_NONE;
   }

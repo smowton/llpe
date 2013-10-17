@@ -730,9 +730,8 @@ template<class X> inline X* cast_inst(ShadowInstructionInvar* SII) {
 struct InstArgImprovement {
 
   ImprovedValSet* PB;
-  uint32_t dieStatus;
 
-InstArgImprovement() : PB(0), dieStatus(INSTSTATUS_ALIVE) { }
+InstArgImprovement() : PB(0) { }
 
 };
 
@@ -812,8 +811,9 @@ struct ShadowInstruction {
   InstArgImprovement i;
   Value* committedVal;
   // Of a load, memcpy or realloc, is there no need to check for thread interference?
-  ThreadLocalState isThreadLocal;
-  unsigned needsRuntimeCheck;
+  unsigned char isThreadLocal;
+  unsigned char needsRuntimeCheck;
+  unsigned char dieStatus;
 
   void initTypeSpecificData();
 
@@ -886,6 +886,7 @@ struct ShadowArg {
   InlineAttempt* IA;
   InstArgImprovement i;  
   Value* committedVal;
+  unsigned char dieStatus;
 
   Type* getType() {
     return invar->A->getType();

@@ -740,7 +740,7 @@ bool IntegrationAttempt::VFSCallWillUseFD(const Instruction* I) {
     DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.find(CI);
     if(it != resolvedCloseCalls.end())
       return !(it->second.MayDelete && it->second.openArg->MayDelete && 
-	       it->second.openInst->i.dieStatus == INSTSTATUS_DEAD);
+	       it->second.openInst->dieStatus == INSTSTATUS_DEAD);
   }
 
   return true;
@@ -770,7 +770,7 @@ bool IntegrationAttempt::isUnusedReadCall(ShadowInstruction* CI) {
   DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(cast<CallInst>(CI->invar->I));
   if(it != resolvedReadCalls.end()) {
 
-    return CI->i.dieStatus & INSTSTATUS_UNUSED_WRITER || !it->second.readSize;
+    return CI->dieStatus & INSTSTATUS_UNUSED_WRITER || !it->second.readSize;
 
   }
 

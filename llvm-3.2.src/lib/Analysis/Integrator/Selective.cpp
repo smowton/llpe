@@ -12,7 +12,7 @@ using namespace llvm;
 void InlineAttempt::resetDeadArgsAndInstructions() {
 
   for(uint32_t i = 0; i < F.arg_size(); ++i)
-    argShadows[i].i.dieStatus = INSTSTATUS_ALIVE;
+    argShadows[i].dieStatus = INSTSTATUS_ALIVE;
 
   resetDeadInstructions();
 
@@ -29,7 +29,7 @@ void IntegrationAttempt::resetDeadInstructions() {
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* I = &(BB->insts[j]);
-      I->i.dieStatus = INSTSTATUS_ALIVE;
+      I->dieStatus = INSTSTATUS_ALIVE;
 
     }
 

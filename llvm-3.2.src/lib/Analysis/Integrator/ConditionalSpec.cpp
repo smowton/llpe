@@ -2169,7 +2169,7 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
     else {
 
       Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
-      assert(thisVal && "Couldn't synthesise value for check?");
+      release_assert(thisVal && "Couldn't synthesise value for check?");
 
       if(thisVal->getType()->isFloatingPointTy())
 	newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, VerboseNames ? "check" : "");
