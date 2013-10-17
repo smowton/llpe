@@ -10,6 +10,8 @@
 
 using namespace llvm;
 
+extern cl::opt<bool> VerboseNames;
+
 // Functions relating to conditional specialisation
 // (that is, situations where the specialiser assumes some condition, specialises according to it,
 //  and at commit time must synthesise duplicate successor blocks: specialised, and unmodified).
@@ -567,7 +569,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
       if(testRoot->getType() != Int8Ptr) {
 	release_assert(CastInst::isCastable(testRoot->getType(), Int8Ptr));
 	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
-	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, "testcast", emitBlock);
+	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, VerboseNames ? "testcast" : "", emitBlock);
       }
 
       Value* offConst = ConstantInt::get(Type::getInt64Ty(LLC), Cond.offset);
@@ -616,13 +618,13 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
       
       if(testRoot->getType() != Int8Ptr) {
 	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
-	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, "testcast", emitBlock);
+	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, VerboseNames ? "testcast" : "", emitBlock);
       }
       
       Value* CondCast = ConstantExpr::getBitCast(Cond.val, Int8Ptr);
 	
       Value* StrcmpArgs[2] = { CondCast, testRoot };
-      CallInst* CmpCall = CallInst::Create(StrcmpFun, ArrayRef<Value*>(StrcmpArgs, 2), "assume_test", emitBlock);
+      CallInst* CmpCall = CallInst::Create(StrcmpFun, ArrayRef<Value*>(StrcmpArgs, 2), VerboseNames ? "assume_test" : "", emitBlock);
       CmpCall->setCallingConv(StrcmpFun->getCallingConv());
       resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, CmpCall, Constant::getNullValue(CmpCall->getType()), "");
 
@@ -702,10 +704,10 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
       
     }
 
-    Value* VCall = CallInst::Create(it->VerifyF, ArrayRef<Value*>(verifyArgs, it->args.size()), "verifycall", emitBlock);
+    Value* VCall = CallInst::Create(it->VerifyF, ArrayRef<Value*>(verifyArgs, it->args.size()), VerboseNames ? "verifycall" : "", emitBlock);
 
     // The verify function returns zero if we're okay to continue into specialised code.
-    Value* VCond = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, VCall, Constant::getNullValue(VCall->getType()), "verifycheck");
+    Value* VCond = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, VCall, Constant::getNullValue(VCall->getType()), VerboseNames ? "verifycheck" : "");
 
     BasicBlock* failTarget = getFunctionRoot()->failedBlocks[BB->invar->idx].front().first;
 
@@ -1133,7 +1135,7 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 
 static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<std::pair<BasicBlock*, Instruction*>, 4>& unspecPreds, BasicBlock* InsertBB) {
 
-  PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, "clonemerge", InsertBB->begin());
+  PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, VerboseNames ? "clonemerge" : "", InsertBB->begin());
   
   for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = specPreds.begin(), itend = specPreds.end(); it != itend; ++it) {
 
@@ -1595,7 +1597,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	  Type* normalRet = Ret->getType();
 	  Constant* undefRet = UndefValue::get(normalRet);
 	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, FailFlag, NULL);
-	  Ret = InsertValueInst::Create(aggTemplate, Ret, 0, "fail_ret", RI);
+	  Ret = InsertValueInst::Create(aggTemplate, Ret, 0, VerboseNames ? "fail_ret" : "", RI);
 
 	}
 	
@@ -1718,7 +1720,7 @@ static BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
 				       uint32_t startIdx) {
 
   BasicBlock *NewBB = BasicBlock::Create(BB->getContext(), "", F);
-  if (BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
+  if (VerboseNames && BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
 
   // Loop over all instructions, and copy them over.
   BasicBlock::const_iterator II = BB->begin();
@@ -1749,13 +1751,19 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
 
   ShadowBBInvar* BBI = getBBInvar(idx);
   BasicBlock* NewBB = CloneBasicBlockFrom(BBI->BB, *failedBlockMap, "", CommitF, createFailedBlockFrom);
-  std::string newName;
-  {
-    raw_string_ostream RSO(newName);
-    RSO << getCommittedBlockPrefix() << BBI->BB->getName() << " (failed)";
+
+  if(VerboseNames) {
+
+    std::string newName;
+    {
+      raw_string_ostream RSO(newName);
+      RSO << getCommittedBlockPrefix() << BBI->BB->getName() << " (failed)";
+    }
+
+    NewBB->setName(newName);
+
   }
 
-  NewBB->setName(newName);
   failedBlocks[idx].push_back(std::make_pair(NewBB, createFailedBlockFrom));
   (*failedBlockMap)[BBI->BB] = NewBB;
 
@@ -1778,8 +1786,15 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       uint32_t instsToSplit = std::min((i+1) - createFailedBlockFrom, instsSinceLastSplit + 1);
       BasicBlock::iterator splitIterator = toSplit->begin();
       std::advance(splitIterator, instsToSplit);
+
+      Twine SplitName;
+      if(VerboseNames)
+	SplitName = toSplit->getName() + ".checksplit";
+      else
+	SplitName = "";
+
       BasicBlock* splitBlock = 
-	toSplit->splitBasicBlock(splitIterator, toSplit->getName() + ".checksplit");
+	toSplit->splitBasicBlock(splitIterator, SplitName);
       failedBlocks[idx].push_back(std::make_pair(splitBlock, i + 1));
 
       instsSinceLastSplit = 0;
@@ -2054,7 +2069,8 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
 
 	++insertedPHIs;
 
-	PHINode* NewPN =  makePHI(failedI->getType(), "spec-unspec-merge", it->first);
+	Twine PhiName;
+	PHINode* NewPN =  makePHI(failedI->getType(), VerboseNames ? "spec-unspec-merge" : "", it->first);
 	for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator specit = specPreds.begin(),
 	      specend = specPreds.end(); specit != specend; ++specit) {
 	  release_assert(specit->first);
@@ -2119,9 +2135,11 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
       Value* Limit = trySynthVal(0, realInst->getType(), IVS->SetType, LimitVal, emitBB);
       release_assert(Base && "Couldn't synth limit");
      
-      Value* BaseCheck = new ICmpInst(*emitBB, CmpInst::ICMP_UGE, realInst, Base, "checkbase");
-      Value* LimitCheck = new ICmpInst(*emitBB, CmpInst::ICMP_ULT, realInst, Limit, "checklimit");
-      newCheck = BinaryOperator::CreateAnd(BaseCheck, LimitCheck, "qptrcheck", emitBB);
+      Value* BaseCheck = new ICmpInst(*emitBB, CmpInst::ICMP_UGE, 
+				      realInst, Base, VerboseNames ? "checkbase" : "");
+      Value* LimitCheck = new ICmpInst(*emitBB, CmpInst::ICMP_ULT, 
+				       realInst, Limit, VerboseNames ? "checklimit" : "");
+      newCheck = BinaryOperator::CreateAnd(BaseCheck, LimitCheck, VerboseNames ? "qptrcheck" : "", emitBB);
       
     }
     else {
@@ -2130,9 +2148,9 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
       assert(thisVal && "Couldn't synthesise value for check?");
 
       if(thisVal->getType()->isFloatingPointTy())
-	newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, "check");
+	newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, VerboseNames ? "check" : "");
       else
-	newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, "check");
+	newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, VerboseNames ? "check" : "");
 
     }
 

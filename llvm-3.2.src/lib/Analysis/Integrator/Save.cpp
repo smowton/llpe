@@ -11,6 +11,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/CommandLine.h"
 
 #include "../../VMCore/LLVMContextImpl.h"
 
@@ -18,6 +19,8 @@
 #include <stdlib.h>
 
 using namespace llvm;
+
+cl::opt<bool> VerboseNames("int-verbose-names");
 
 static uint32_t SaveProgressN = 0;
 const uint32_t SaveProgressLimit = 1000;
@@ -243,7 +246,7 @@ void IntegrationAttempt::commitCFG() {
     currentLoop = BB->invar->naturalScope;
     
     std::string Name;
-    {
+    if(VerboseNames) {
       raw_string_ostream RSO(Name);
       RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
@@ -266,13 +269,24 @@ void IntegrationAttempt::commitCFG() {
 	// The previous block will contain a path condition check: give it a break block that will
 	// sit on the edge from specialised to unspecialised code.
 
-	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".break", CF);
+	Twine BlockName;
+	if(VerboseNames)
+	  BlockName = BB->invar->BB->getName() + ".break";
+	else
+	  BlockName = "";
+	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BlockName, CF);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
 
+      Twine CondName;
+      if(VerboseNames)
+	CondName = BB->invar->BB->getName() + ".pathcond";
+      else
+	CondName = "";
+
       BasicBlock* newBlock = 
-	BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".pathcond", CF);
+	BasicBlock::Create(F.getContext(), CondName, CF);
 
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
 
@@ -282,14 +296,26 @@ void IntegrationAttempt::commitCFG() {
     if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
 
       if(pass->verbosePCs || requiresBreakCode(&BB->insts[0])) {
+	
+	Twine BreakName;
+	if(VerboseNames)
+	  BreakName = BB->invar->BB->getName() + ".break";
+	else
+	  BreakName = "";
 
-	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".break", CF);
+	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
 
+      Twine CheckName;
+      if(VerboseNames)
+	CheckName = BB->invar->BB->getName() + ".vfscheck";
+      else
+	CheckName = "";
+
       BasicBlock* newBlock =
-	BasicBlock::Create(F.getContext(), BB->invar->BB->getName() + ".vfscheck", CF);	
+	BasicBlock::Create(F.getContext(), CheckName, CF);	
 
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
 
@@ -306,21 +332,35 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(IA->isEnabled()) {
 
-	    std::string Pref = IA->getCommittedBlockPrefix();
+	    std::string Pref;
+	    if(VerboseNames)
+	      Pref = IA->getCommittedBlockPrefix();
 
 	    if(!IA->commitsOutOfLine()) {
 
 	      // Split the specialised block:
+	      
+	      Twine ExitName;
+	      if(VerboseNames)
+		ExitName = StringRef(Pref) + "callexit";
+	      else
+		ExitName = "";
 
 	      IA->returnBlock = 
-		BasicBlock::Create(F.getContext(), StringRef(Pref) + "callexit", CF);
+		BasicBlock::Create(F.getContext(), ExitName, CF);
 	      BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
 	      IA->CommitF = CF;
 
 	      // Direct the call to the appropriate fail block:
 	      if(IA->hasFailedReturnPath()) {
-		
-		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), "prereturn", CF);
+
+		Twine PreName;
+		if(VerboseNames)
+		  PreName = "prereturn";
+		else
+		  PreName = "";
+
+		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), PreName, CF);
 		IA->failedReturnBlock = preReturn;
 		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
 		BranchInst::Create(targetBlock, preReturn);
@@ -353,7 +393,13 @@ void IntegrationAttempt::commitCFG() {
 	      // Requires a break afterwards if the target function might branch onto a failed path.
 	      if(IA->hasFailedReturnPath()) {
 
-		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), StringRef(Pref) + "OOL callexit", CF);
+		Twine RetName;
+		if(VerboseNames)
+		  RetName = StringRef(Pref) + "OOL callexit";
+		else
+		  RetName = "";
+
+		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), RetName, CF);
 		BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
 
 	      }
@@ -377,12 +423,24 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(pass->verbosePCs || requiresBreakCode(SI)) {
 
-	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".vfsbreak", CF);
+	    Twine BreakName;
+	    if(VerboseNames)
+	      BreakName = StringRef(Name) + ".vfsbreak";
+	    else
+	      BreakName = "";
+
+	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
 	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	  }
 
-	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".vfspass", CF);
+	  Twine PassName;
+	  if(VerboseNames)
+	    PassName = StringRef(Name) + ".vfspass";
+	  else
+	    PassName = "";
+
+	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), PassName, CF);
 	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j));
 
 	}
@@ -400,13 +458,25 @@ void IntegrationAttempt::commitCFG() {
 
 	if(pass->verbosePCs) {
 	
+	  Twine BreakName;
+	  if(VerboseNames)
+	    BreakName = StringRef(Name) + ".tlbreak";
+	  else
+	    BreakName = "";
+
 	  // The previous block will break due to a tentative load. Give it a break block.
-	  BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".tlbreak", CF);
+	  BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
 	  BB->committedBlocks.back().breakBlock = breakBlock;
 
 	}
 
-	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), StringRef(Name) + ".checkpass", CF);
+	Twine PassName;
+	if(VerboseNames)
+	  PassName = StringRef(Name) + ".checkpass";
+	else
+	  PassName = "";
+
+	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), PassName, CF);
 	BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j+1));
 
       }
@@ -417,8 +487,14 @@ void IntegrationAttempt::commitCFG() {
     // Make a break block for that purpose.
     if(pass->verbosePCs && hasLiveIgnoredEdges(BB)) {
 
+      Twine BreakName;
+      if(VerboseNames)
+	BreakName = StringRef(Name) + ".directbreak";
+      else
+	BreakName = "";
+
       BB->committedBlocks.back().breakBlock = 
-	BasicBlock::Create(F.getContext(), StringRef(Name) + ".directbreak", CF);
+	BasicBlock::Create(F.getContext(), BreakName, CF);
 
     }
 
@@ -605,7 +681,7 @@ Value* llvm::getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
 
   release_assert(CastInst::isCastable(V->getType(), Ty) && "Bad cast in commit stage");
   Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
-  return CastInst::Create(Op, V, Ty, "speccast", insertAtEnd);
+  return CastInst::Create(Op, V, Ty, VerboseNames ? "speccast" : "", insertAtEnd);
 
 }
 PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
@@ -635,7 +711,7 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
     ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
 
     PHINode* NewPN;
-    I->committedVal = NewPN = makePHI(I->invar->I->getType(), "header", emitBB);
+    I->committedVal = NewPN = makePHI(I->invar->I->getType(), VerboseNames ? "header" : "", emitBB);
     ShadowBB* SourceBB;
 
     if(iterationCount == 0) {
@@ -776,7 +852,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	  Type* normalRet = retType->getElementType(0);
 	  Constant* undefRet = UndefValue::get(normalRet);
 	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, retFlag, NULL);
-	  retVal = InsertValueInst::Create(aggTemplate, retVal, 0, "success_ret", emitBB);
+	  retVal = InsertValueInst::Create(aggTemplate, retVal, 0, VerboseNames ? "success_ret" : "", emitBB);
 
 	}
 
@@ -874,7 +950,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	if(markUnreachable) {
 
 	  // Create an unreachable BB to branch to:
-	  BasicBlock* UBB = BasicBlock::Create(emitBB->getContext(), "LoopAssumeSink", emitBB->getParent());
+	  BasicBlock* UBB = BasicBlock::Create(emitBB->getContext(), VerboseNames ? "LoopAssumeSink" : "", emitBB->getParent());
 	  new UnreachableInst(UBB->getContext(), UBB);
 	  newTerm->setOperand(i, UBB);
 
@@ -1088,7 +1164,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 						       ArrayRef<Type*>(Tys, 3));
 	Value *ReadBuffer = getCommittedValue(I->getCallArgOperand(1));
 	release_assert(ReadBuffer && "Committing read atop dead buffer?");
-	Value *DestCast = new BitCastInst(getCommittedValue(I->getCallArgOperand(1)), VoidPtrTy, "readcast", emitBB);
+	Value *DestCast = new BitCastInst(getCommittedValue(I->getCallArgOperand(1)), VoidPtrTy, VerboseNames ? "readcast" : "", emitBB);
 
 	Value *CallArgs[] = {
 	  DestCast, CopySource, MemcpySize,
@@ -1163,7 +1239,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
     // Emit an lliowd_ok check, and if it fails branch to the real stat instruction.
     Type* Int32Ty = IntegerType::get(Context, 32);
     Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
-    Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
+    Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), VerboseNames ? "readcheck" : "", emitBB);
 	
     Constant* Zero32 = Constant::getNullValue(Int32Ty);
     Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
@@ -1222,7 +1298,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	
 	if(createRetPHI) {
 	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
-						    "retval", IA->returnBlock);
+						    VerboseNames ? "retval" : "", IA->returnBlock);
 	}
 	else {
 	  I->committedVal = 0;
@@ -1231,7 +1307,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	if(IA->hasFailedReturnPath() && isNonVoid) {
 	  IA->failedReturnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
-					"failedretval", IA->failedReturnBlock);
+					VerboseNames ? "failedretval" : "", IA->failedReturnBlock);
 	}
 	else {
 	  IA->failedReturnPHI = 0;
@@ -1313,8 +1389,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  }
 	  else {
 
-	    CallFailed = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(1), "retfailflag", emitBB);
-	    I->committedVal = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(0), "ret", emitBB);
+	    CallFailed = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(1), VerboseNames ? "retfailflag" : "", emitBB);
+	    I->committedVal = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(0), VerboseNames ? "ret" : "", emitBB);
 	    
 	  }
 
@@ -1348,7 +1424,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  BasicBlock* FunctionEntry = IA->getCommittedEntryBlock();
 	  BasicBlock* FunctionPred = FunctionEntry->getSinglePredecessor();
 	  release_assert(FunctionPred && "No unique entry to inlined function?");
-	  CallInst* SavedPtr = CallInst::Create(StackSave, "savedstack", FunctionPred->getTerminator());
+	  CallInst* SavedPtr = CallInst::Create(StackSave, VerboseNames ? "savedstack" : "", FunctionPred->getTerminator());
 
 	  // Restore on successful return
 	  CallInst::Create(StackRestore, SavedPtr, "", IA->returnBlock);
@@ -1504,7 +1580,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
       if(BaseI->getType() == targetType)
 	Result = BaseI;
       else
-	Result = CastInst::CreatePointerCast(BaseI, targetType, "synthcast", emitBB);
+	Result = CastInst::CreatePointerCast(BaseI, targetType, VerboseNames ? "synthcast" : "", emitBB);
       return true;
 
     }
@@ -1516,9 +1592,9 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     InTy = cast<PointerType>(InTy)->getElementType();
     if(Type* ElTy = FindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
 
-      Result = GetElementPtrInst::Create(BaseI, GEPIdxs, "synthgep", emitBB);
+      Result = GetElementPtrInst::Create(BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
       if((!isa<PointerType>(targetType)) || ElTy != cast<PointerType>(targetType)->getElementType())
-	Result = CastInst::CreatePointerCast(Result, targetType, "synthcastback", emitBB);
+	Result = CastInst::CreatePointerCast(Result, targetType, VerboseNames ? "synthcastback" : "", emitBB);
       return true;
 
     }
@@ -1528,20 +1604,20 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     // Get byte ptr:
     Value* CastI;
     if(BaseI->getType() != Int8Ptr)
-      CastI = new BitCastInst(BaseI, Int8Ptr, "synthcast", emitBB);
+      CastI = new BitCastInst(BaseI, Int8Ptr, VerboseNames ? "synthcast" : "", emitBB);
     else
       CastI = BaseI;
 
     // Offset:
     Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
-    Value* OffsetI = GetElementPtrInst::Create(CastI, OffsetC, "synthgep", emitBB);
+    Value* OffsetI = GetElementPtrInst::Create(CastI, OffsetC, VerboseNames ? "synthgep" : "", emitBB);
 
     // Cast back:
     if(targetType == Int8Ptr) {
       Result = (OffsetI);
     }
     else {
-      Result = (CastInst::CreatePointerCast(OffsetI, targetType, "synthcastback", emitBB));
+      Result = (CastInst::CreatePointerCast(OffsetI, targetType, VerboseNames ? "synthcastback" : "", emitBB));
     }
 
   }
