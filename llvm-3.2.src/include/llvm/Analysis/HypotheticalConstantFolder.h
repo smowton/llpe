@@ -496,6 +496,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void initMRInfo(Module*);
    IHPFunctionInfo* getMRInfo(Function*);
 
+   void releaseStoreMemory();
+
 };
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:

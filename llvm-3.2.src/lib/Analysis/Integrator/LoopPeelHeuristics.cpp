@@ -2083,7 +2083,7 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
-  errs() << sizeof(ShadowInstruction) << ", " << sizeof(ShadowBB) << "\n";
+  errs() << sizeof(ShadowInstruction) << ", " << sizeof(ShadowBB) << ", " << sizeof(IntegrationAttempt) << ", " << sizeof(InlineAttempt) << ", " << sizeof(PeelIteration) << "\n";
 
   this->mallocAlignment = MallocAlignment;
   
@@ -3312,6 +3312,31 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
 
 }
 
+void IntegrationHeuristicsPass::releaseStoreMemory() {
+
+  // Release base stores maintained for each instruction.
+
+  uint32_t releasedSingles = 0;
+  uint32_t releasedMultis = 0;
+  uint32_t retainedMultis = 0;
+
+  for(DenseMap<ShadowInstruction*, AllocData>::iterator it = allocations.begin(),
+	itend = allocations.end(); it != itend; ++it) {
+
+    release_assert(it->second.store.store);
+    if(isa<ImprovedValSetSingle>(it->second.store.store))
+      ++releasedSingles;
+    else if(cast<ImprovedValSetMulti>(it->second.store.store)->MapRefCount)
+      ++releasedMultis;
+    else
+      ++retainedMultis;
+    it->second.store.store->dropReference();
+    it->second.store.store = 0;
+
+  }
+
+}
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   TD = getAnalysisIfAvailable<DataLayout>();
@@ -3412,6 +3437,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   errs() << "Interpreting";
   IA->analyse();
+  releaseStoreMemory();
   errs() << "\n";
 
   // Function sharing is now decided, and hence the graph structure, so create
