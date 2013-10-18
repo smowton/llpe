@@ -601,14 +601,6 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
       }
 
-      if(CallInst* CI = dyn_cast<CallInst>(BI)) {
-	if(BB) {
-	  DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.find(&(BB->insts[i]));
-	  if(it == inlineChildren.end())
-	    unexploredCalls.push_back(CI);
-	}
-      }
-
     }
 
   }
@@ -639,8 +631,6 @@ void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
   DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(LoopI);
 
   if(it == peelChildren.end()) {
-
-    unexploredLoops.push_back(LoopI);
 
     for(uint32_t i = invarInfo->LInfo[LoopI]->headerIdx; i < invarInfo->BBs.size(); ++i) {
       ShadowBBInvar* BBI = getBBInvar(i);
@@ -685,8 +675,6 @@ void PeelAttempt::collectStats() {
 
 void IntegrationAttempt::collectStats() {
 
-  unexploredCalls.clear();
-  unexploredLoops.clear();
   improvedInstructions = 0;
   improvableInstructions = 0;
   improvableInstructionsIncludingLoops = 0;

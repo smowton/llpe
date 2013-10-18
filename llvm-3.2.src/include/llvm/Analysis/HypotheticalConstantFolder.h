@@ -989,8 +989,6 @@ protected:
   int improvableInstructionsIncludingLoops;
   int improvedInstructions;
   int64_t residualInstructions;
-  SmallVector<CallInst*, 4> unexploredCalls;
-  SmallVector<const Loop*, 4> unexploredLoops;
 
   DenseMap<LoadInst*, std::string> normalLFFailures;
 

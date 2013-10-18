@@ -1099,18 +1099,6 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   OS << nestingIndent();
   printHeader(OS);
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
-  if(unexploredLoops.size()) {
-    OS << nestingIndent() << "Unexplored loops:\n";
-    for(SmallVector<const Loop*, 4>::const_iterator it = unexploredLoops.begin(), it2 = unexploredLoops.end(); it != it2; ++it) {
-      OS << nestingIndent() << "  " << (*it)->getHeader()->getName() << "\n";
-    }
-  }
-  if(unexploredCalls.size()) {
-    OS << nestingIndent() << "Unexplored calls:\n";
-    for(SmallVector<CallInst*, 4>::const_iterator it = unexploredCalls.begin(), it2 = unexploredCalls.end(); it != it2; ++it) {
-      OS << nestingIndent() << itcache(**it) << "\n";
-    }
-  }
 
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
     it->second->print(OS);
