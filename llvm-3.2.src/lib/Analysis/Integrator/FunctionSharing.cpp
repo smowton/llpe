@@ -8,14 +8,14 @@ using namespace llvm;
 
 void InlineAttempt::clearExternalDependencies() {
 
-  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = externalDependencies.begin(), 
-	it2 = externalDependencies.end(); it != it2; ++it) {
+  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = sharing->externalDependencies.begin(), 
+	it2 = sharing->externalDependencies.end(); it != it2; ++it) {
 
     it->second->dropReference();
     
   }
    
-  externalDependencies.clear();
+  sharing->externalDependencies.clear();
 
 }
 
@@ -25,14 +25,19 @@ void InlineAttempt::sharingInit() {
 
   if(pass->enableSharing) {
 
-    storeAtEntry = BBs[0]->u.localStore;
-    storeAtEntry->refCount++;
+    if(!sharing)
+      sharing = new SharingState();
+
+    sharing->storeAtEntry = BBs[0]->u.localStore;
+    sharing->storeAtEntry->refCount++;
 
     clearExternalDependencies();
 
   }
   else {
-    storeAtEntry = 0;
+
+    sharing = 0;
+
   }
 
 }
@@ -48,8 +53,8 @@ void InlineAttempt::dumpSharingState() {
 
     errs() << "\n";
 
-    for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = externalDependencies.begin(),
-	  itend = externalDependencies.end(); it != itend; ++it) {
+    for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = sharing->externalDependencies.begin(),
+	  itend = sharing->externalDependencies.end(); it != itend; ++it) {
 
       errs() << itcache(it->first) << ": ";
       it->second->print(errs(), true);
@@ -70,14 +75,14 @@ void InlineAttempt::sharingCleanup() {
   if(!pass->enableSharing)
     return;
 
-  if(storeAtEntry)
-    storeAtEntry->dropReference();
+  if(sharing->storeAtEntry)
+    sharing->storeAtEntry->dropReference();
 
   SmallVector<ShadowInstruction*, 4> toRemove;
 
   // Eliminate escaping mallocs that are known to be freed, both as dependencies and escapes.
-  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = escapingMallocs.begin(),
-	itend = escapingMallocs.end(); it != itend; ++it) {
+  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = sharing->escapingMallocs.begin(),
+	itend = sharing->escapingMallocs.end(); it != itend; ++it) {
 
     ShadowInstruction* Alloc = *it;
     bool mayEscape = false;
@@ -125,11 +130,11 @@ void InlineAttempt::sharingCleanup() {
 
     }
 
-    escapingMallocs.erase(*it);
-    DenseMap<ShadowValue, ImprovedValSet*>::iterator findit = externalDependencies.find(ShadowValue(*it));
-    if(findit != externalDependencies.end()) {
+    sharing->escapingMallocs.erase(*it);
+    DenseMap<ShadowValue, ImprovedValSet*>::iterator findit = sharing->externalDependencies.find(ShadowValue(*it));
+    if(findit != sharing->externalDependencies.end()) {
       findit->second->dropReference();
-      externalDependencies.erase(findit);
+      sharing->externalDependencies.erase(findit);
     }
 
   }
@@ -171,7 +176,7 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
 
   }
 
-  std::pair<DenseMap<ShadowValue, ImprovedValSet*>::iterator, bool> it = Root->externalDependencies.insert(std::make_pair<ShadowValue, ImprovedValSet*>(V, 0));
+  std::pair<DenseMap<ShadowValue, ImprovedValSet*>::iterator, bool> it = Root->sharing->externalDependencies.insert(std::make_pair<ShadowValue, ImprovedValSet*>(V, 0));
 
   // Already registered?
   if(!it.second)
@@ -180,7 +185,7 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
   // When sharing is enabled the base store is only used for initialisers. Therefore
   // this must be the most up-to-date value at function entry.
 
-  LocStore* saveStore = Root->storeAtEntry->getReadableStoreFor(V);
+  LocStore* saveStore = Root->sharing->storeAtEntry->getReadableStoreFor(V);
   if(!saveStore)
     saveStore = &(V.getBaseStore());
 
@@ -195,7 +200,7 @@ void IntegrationAttempt::noteMalloc(ShadowInstruction* SI) {
 
   InlineAttempt* Root = getFunctionRoot();
   
-  Root->escapingMallocs.insert(SI);
+  Root->sharing->escapingMallocs.insert(SI);
 
 }
 
@@ -207,8 +212,8 @@ void IntegrationAttempt::mergeChildDependencies(InlineAttempt* ChildIA) {
   if(ChildIA->hasVFSOps)
     noteVFSOp();
 
-  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = ChildIA->externalDependencies.begin(),
-	it2 = ChildIA->externalDependencies.end(); it != it2; ++it) {
+  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = ChildIA->sharing->externalDependencies.begin(),
+	it2 = ChildIA->sharing->externalDependencies.end(); it != it2; ++it) {
 
     // Note this might record a different dependency to our child if this function or a sibling
     // has altered a relevant location since we entered this function.
@@ -216,8 +221,8 @@ void IntegrationAttempt::mergeChildDependencies(InlineAttempt* ChildIA) {
       
   }
     
-  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = ChildIA->escapingMallocs.begin(),
-	itend = ChildIA->escapingMallocs.end(); it != itend; ++it) {
+  for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = ChildIA->sharing->escapingMallocs.begin(),
+	itend = ChildIA->sharing->escapingMallocs.end(); it != itend; ++it) {
     
     noteMalloc(*it);
 
@@ -251,8 +256,8 @@ bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
   // TODO: consider using deep equality test here if we find too many false negatives due to 
   // e.g. identical structures being produced by different means leading to different representations.
 
-  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = externalDependencies.begin(),
-	itend = externalDependencies.end(); it != itend; ++it) {
+  for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = sharing->externalDependencies.begin(),
+	itend = sharing->externalDependencies.end(); it != itend; ++it) {
 
     // Note that if function sharing is enabled the base store is only used to represent initialisers
     // in order to facilitate creating a copy of the store at function entry.

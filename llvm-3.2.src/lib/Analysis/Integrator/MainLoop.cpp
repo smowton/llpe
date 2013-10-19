@@ -399,7 +399,7 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 
   if(LInfo) {
     // Release the latch store that the header will not use again:
-    if(latchStoresRetained.erase(L)) {
+    if(pass->latchStoresRetained.erase(std::make_pair(this, L))) {
       ShadowBB* LBB = getBB(LInfo->latchIdx);
       release_assert("Releasing store from dead latch?");
       LBB->u.localStore->dropReference();
@@ -458,7 +458,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
       }
 
-      if(latchStoresRetained.count(L)) {
+      if(pass->latchStoresRetained.count(std::make_pair(this, L))) {
 	release_assert(LBB && "Latch store retained but latch block dead?");
 	// We've analysed this loop before -- we must be under analysis as a nested loop.
 	// If our latch edge lives we should use its store ref, which was saved last time around.
@@ -538,7 +538,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
   else {
 
     if(thisLatchAlive)
-      latchStoresRetained.insert(L);
+      pass->latchStoresRetained.insert(std::make_pair(this, L));
 
   }
 
@@ -568,7 +568,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
 
   // If this context had a retained latch store from previous instances
   // we don't need it anymore, drop now.
-  if(latchStoresRetained.erase(ThisL)) {
+  if(pass->latchStoresRetained.erase(std::make_pair(this, ThisL))) {
 
     ShadowBB* LBB = getBB(LInfo->latchIdx);
     release_assert(LBB && "Executed loop with retained latch, but not available?");

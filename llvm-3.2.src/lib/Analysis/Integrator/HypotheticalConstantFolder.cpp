@@ -99,26 +99,6 @@ bool PeelIteration::isOptimisticPeel() {
 
 }
 
-void IntegrationAttempt::markContextDead() {
-
-  contextIsDead = true;
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
-    it->second->markContextDead();
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
-      it->second->Iterations[i]->markContextDead();
-
-  }
-
-
-}
-
 bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB) {
 
   // The case for a resolved select instruction has already been handled.

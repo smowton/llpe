@@ -47,11 +47,14 @@ void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool
 
 void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
 
-  SmallDenseMap<uint32_t, uint32_t>::iterator it = blocksReachableOnFailure.find(idx);
-  if(it != blocksReachableOnFailure.end() && it->second <= instIdx)
+  if(!blocksReachableOnFailure)
+    blocksReachableOnFailure = new SmallDenseMap<uint32_t, uint32_t, 8>();
+
+  SmallDenseMap<uint32_t, uint32_t>::iterator it = blocksReachableOnFailure->find(idx);
+  if(it != blocksReachableOnFailure->end() && it->second <= instIdx)
     return;
 
-  blocksReachableOnFailure[idx] = instIdx;
+  (*blocksReachableOnFailure)[idx] = instIdx;
 
   ShadowBBInvar* BBI = getBBInvar(idx);
   for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim; ++i)
@@ -430,7 +433,7 @@ bool InlineAttempt::hasFailedReturnPath() {
     if(!isa<ReturnInst>(BBI->BB->getTerminator()))
       continue;
 
-    if(blocksReachableOnFailure.count(i))
+    if(blocksReachableOnFailure && blocksReachableOnFailure->count(i))
       return true;
 
   }
@@ -451,7 +454,7 @@ void InlineAttempt::initFailedBlockCommit() {
   // Add a fudge factor to (a) avoid resizes to 64 and (b) account for path condition splits.
 
   // If there aren't any failed blocks, we don't need any of these!
-  if(blocksReachableOnFailure.empty()) {
+  if(!blocksReachableOnFailure) {
     failedBlockMap = 0;
     PHIForwards = 0;
     ForwardingPHIs = 0;
@@ -459,7 +462,7 @@ void InlineAttempt::initFailedBlockCommit() {
   }
 
   failedBlocks.resize(nBBs);
-  failedBlockMap = new ValueToValueMapTy(NextPowerOf2((blocksReachableOnFailure.size() * 3) - 1));
+  failedBlockMap = new ValueToValueMapTy(NextPowerOf2((blocksReachableOnFailure->size() * 3) - 1));
   PHIForwards = new DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>();
   ForwardingPHIs = new DenseSet<PHINode*>();
 
@@ -1767,8 +1770,11 @@ void IntegrationAttempt::createFailedBlock(uint32_t idx) {}
 
 void InlineAttempt::createFailedBlock(uint32_t idx) {
 
-  SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = blocksReachableOnFailure.find(idx);
-  if(it == blocksReachableOnFailure.end())
+  if(!blocksReachableOnFailure)
+    return;
+
+  SmallDenseMap<uint32_t, uint32_t, 8>::iterator it = blocksReachableOnFailure->find(idx);
+  if(it == blocksReachableOnFailure->end())
     return;
 
   uint32_t createFailedBlockFrom = it->second;

@@ -418,6 +418,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseSet<ShadowInstruction*> barrierInstructions;
 
+   DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -988,12 +990,6 @@ protected:
   int improvedInstructions;
   int64_t residualInstructions;
 
-  bool commitStarted;
-  // The LoopInfo belonging to the function which is being specialised
-  LoopInfo* MasterLI;
-
-  bool contextTaintedByVarargs;
-
   std::string nestingIndent() const;
 
  public:
@@ -1017,15 +1013,11 @@ protected:
 
   ShadowFunctionInvar* invarInfo;
 
-  bool contextIsDead;
-
   int64_t totalIntegrationGoodness;
   int64_t nDependentLoads;
 
   DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
-
-  SmallPtrSet<const Loop*, 8> latchStoresRetained;
 
   uint32_t pendingEdges;
 
@@ -1043,14 +1035,11 @@ protected:
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
-    commitStarted(false),
-    contextTaintedByVarargs(false),
     nesting_depth(depth),
     stack_depth(sdepth),
     pass(Pass),
     F(_F),
     L(_L),
-    contextIsDead(false),
     totalIntegrationGoodness(0),
     nDependentLoads(0),
     inlineChildren(1),
@@ -1624,6 +1613,16 @@ IATargetInfo(uint32_t tCB, uint32_t tCI, uint32_t tSD) :
 
 };
 
+struct SharingState {
+
+  OrdinaryLocalStore* storeAtEntry;
+  DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
+  SmallPtrSet<ShadowInstruction*, 4> escapingMallocs;
+
+SharingState() : storeAtEntry(0) { }
+
+};
+
 class InlineAttempt : public IntegrationAttempt { 
 
  public:
@@ -1648,24 +1647,21 @@ class InlineAttempt : public IntegrationAttempt {
     return localAllocas[i];
   }
 
-  OrdinaryLocalStore* storeAtEntry;
-  DenseMap<ShadowValue, ImprovedValSet*> externalDependencies;
-  SmallPtrSet<ShadowInstruction*, 4> escapingMallocs;
-  bool hasVFSOps;
-  bool registeredSharable;
-  bool active;
-  bool instructionsCommitted;
-  bool emittedAlloca;
-
-  bool isModel;
-  bool isPathCondition;
-
-  bool enabled;
+  bool hasVFSOps : 1;
+  bool registeredSharable : 1;
+  bool active : 1;
+  bool instructionsCommitted : 1;
+  bool emittedAlloca : 1;
+  bool isModel : 1;
+  bool isPathCondition : 1;
+  bool enabled : 1;
 
   IATargetInfo* targetCallInfo;
 
+  SharingState* sharing;
+
   DominatorTree* DT;
-  SmallDenseMap<uint32_t, uint32_t, 8> blocksReachableOnFailure;
+  SmallDenseMap<uint32_t, uint32_t, 8>* blocksReachableOnFailure;
   std::vector<SmallVector<std::pair<BasicBlock*, uint32_t>, 1> > failedBlocks;
   ValueToValueMapTy* failedBlockMap;
   // Indexes from CLONED instruction/block to replacement PHI node to use in that block.
@@ -1673,7 +1669,7 @@ class InlineAttempt : public IntegrationAttempt {
   DenseSet<PHINode*>* ForwardingPHIs;
 
   bool isUnsharable() {
-    return hasVFSOps || isModel || (!escapingMallocs.empty()) || Callers.empty();
+    return hasVFSOps || isModel || (sharing && !sharing->escapingMallocs.empty()) || Callers.empty();
   }
   
   bool isShared() {

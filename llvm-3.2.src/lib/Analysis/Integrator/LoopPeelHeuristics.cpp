@@ -121,15 +121,16 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
 
     SeqNumber = Pass->getSeq();
 
+    sharing = 0;
     enabled = true;
     isModel = false;
     isPathCondition = pathCond;
-    storeAtEntry = 0;
     hasVFSOps = false;
     registeredSharable = false;
     active = false;
     instructionsCommitted = false;
     emittedAlloca = false;
+    blocksReachableOnFailure = 0;
     CommitF = 0;
     targetCallInfo = 0;
     DT = pass->DTs[&F];

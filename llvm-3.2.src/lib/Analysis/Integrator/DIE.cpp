@@ -205,7 +205,8 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor)
   if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INSTRUCTION_IDX)
     return;
 
-  if(getFunctionRoot()->blocksReachableOnFailure.count(User.blockIdx)) {
+  if(getFunctionRoot()->blocksReachableOnFailure && 
+     getFunctionRoot()->blocksReachableOnFailure->count(User.blockIdx)) {
     Visitor.notifyUsersMissed();
     return;
   }
