@@ -1270,10 +1270,6 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
 
   errs() << ind(indent);
   describeBrief(errs());
-  errs() << ": "
-	 << "foc " << forwardableOpenCalls.size()
-	 << " rrc " << resolvedReadCalls.size() << " rsc " << resolvedSeekCalls.size()
-	 << " rcc " << resolvedCloseCalls.size() << "\n";
 
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
     II->second->dumpMemoryUsage(indent+2);

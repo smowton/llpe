@@ -192,7 +192,7 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
   return SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
-    resolvedReadCalls.count(cast<CallInst>(SI->invar->I));
+    pass->resolvedReadCalls.count(SI);
 
 }
 
@@ -1076,8 +1076,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
   CallInst* CI = cast_inst<CallInst>(I);
 
   {
-    DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-    if(it != resolvedReadCalls.end()) {
+    DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(I);
+    if(it != pass->resolvedReadCalls.end()) {
       
       LLVMContext& Context = CI->getContext();
 
@@ -1184,8 +1184,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   {
     
-    DenseMap<CallInst*, SeekFile>::iterator it = resolvedSeekCalls.find(CI);
-    if(it != resolvedSeekCalls.end()) {
+    DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(I);
+    if(it != pass->resolvedSeekCalls.end()) {
 
       if(!it->second.MayDelete)
 	emitInst(BB, I, emitBB);
@@ -1198,8 +1198,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   {
 
-    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
-    if(it != forwardableOpenCalls.end()) {
+    DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(I);
+    if(it != pass->forwardableOpenCalls.end()) {
       if(it->second->success && I->dieStatus == INSTSTATUS_ALIVE) {
 
 	emitInst(BB, I, emitBB);
@@ -1213,8 +1213,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   {
     
-    DenseMap<CallInst*, CloseFile>::iterator it = resolvedCloseCalls.find(CI);
-    if(it != resolvedCloseCalls.end()) {
+    DenseMap<ShadowInstruction*, CloseFile>::iterator it = pass->resolvedCloseCalls.find(I);
+    if(it != pass->resolvedCloseCalls.end()) {
 
       if(it->second.MayDelete && it->second.openArg->MayDelete) {
 	if(it->second.openInst->dieStatus == INSTSTATUS_DEAD)
@@ -1884,7 +1884,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
   
   if(willBeDeleted(ShadowValue(I)) 
      && (!inst_is<TerminatorInst>(I)) 
-     && (!resolvedReadCalls.count(cast<CallInst>(I->invar->I))))
+     && (!pass->resolvedReadCalls.count(I)))
     return;
 
   // The second parameter specifies this doesn't catch instructions that requires custom checks

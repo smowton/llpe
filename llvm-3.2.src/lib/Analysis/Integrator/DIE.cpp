@@ -66,11 +66,11 @@ static bool isAllocationInstruction(ShadowValue V) {
 
 bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
-  if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+  if(inst_is<CallInst>(I)) {
 
     if(getInlineAttempt(I))
       return true;
-    if(forwardableOpenCalls.count(CI))
+    if(pass->forwardableOpenCalls.count(I))
       return true;
     if(isAllocationInstruction(ShadowValue(I)))
        return true;
@@ -357,9 +357,9 @@ public:
     CallInst* CI;
     if((CI = dyn_cast_inst<CallInst>(UserI)) && !isa<MemIntrinsic>(CI)) {
 
-      if(UserI->parent->IA->isResolvedVFSCall(CI)) {
+      if(UserI->parent->IA->isResolvedVFSCall(UserI)) {
 
-	if(V == UserI->getCallArgOperand(0) && !UserI->parent->IA->VFSCallWillUseFD(CI))
+	if(V == UserI->getCallArgOperand(0) && !UserI->parent->IA->VFSCallWillUseFD(UserI))
 	  return;
 	
 	// The buffer argument isn't needed if the read call will be deleted.

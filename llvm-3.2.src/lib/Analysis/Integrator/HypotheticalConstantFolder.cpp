@@ -62,12 +62,6 @@ namespace llvm {
 
 }
 
-bool IntegrationAttempt::openCallSucceeds(Value* V) {
-
-  return forwardableOpenCalls[cast<CallInst>(V)]->success;
-
-}
-
 bool PeelAttempt::allNonFinalIterationsDoNotExit() {
 
   for(unsigned i = 0; i < Iterations.size() - 1; ++i) {

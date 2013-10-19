@@ -343,7 +343,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
       Function* F = getCalledFunction(SI);
       DenseMap<Function*, specialfunctions>::iterator findit;
-      if(ReadFile* RF = SI->parent->IA->tryGetReadFile(cast_inst<CallInst>(SI))) {
+      if(ReadFile* RF = SI->parent->IA->tryGetReadFile(SI)) {
 
 	markGoodBytes(SI->getCallArgOperand(1), RF->readSize, contextEnabled, SI->parent);
 

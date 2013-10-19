@@ -264,6 +264,52 @@ struct IHPFunctionInfo {
 
 };
 
+struct OpenStatus {
+
+  std::string Name;
+  bool success;
+  bool MayDelete;
+
+OpenStatus(std::string N, bool Success) : Name(N), success(Success), MayDelete(false) { }
+OpenStatus() : Name(""), success(false), MayDelete(false) {}
+
+};
+
+struct ReadFile {
+
+  struct OpenStatus* openArg;
+  uint64_t incomingOffset;
+  uint32_t readSize;
+  bool needsSeek;
+
+ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), needsSeek(true) { }
+
+ReadFile() : openArg(0), incomingOffset(0), readSize(0), needsSeek(true) { }
+
+};
+
+struct SeekFile {
+
+  struct OpenStatus* openArg;
+  uint64_t newOffset;
+  bool MayDelete;
+
+SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), MayDelete(false) { }
+SeekFile() : openArg(0), newOffset(0), MayDelete(false) { }
+
+};
+
+struct CloseFile {
+
+  struct OpenStatus* openArg;
+  bool MayDelete;
+  ShadowInstruction* openInst;
+
+CloseFile(struct OpenStatus* O, ShadowInstruction* I) : openArg(O), MayDelete(false), openInst(I) {}
+CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<Function*, LoopInfo*> LIs;
@@ -340,6 +386,11 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<ShadowInstruction*, std::vector<ShadowValue> > indirectDIEUsers;
    // Of a successful copy instruction, records the values read.
    DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> > memcpyValues;
+
+   DenseMap<ShadowInstruction*, OpenStatus*> forwardableOpenCalls;
+   DenseMap<ShadowInstruction*, ReadFile> resolvedReadCalls;
+   DenseMap<ShadowInstruction*, SeekFile> resolvedSeekCalls;
+   DenseMap<ShadowInstruction*, CloseFile> resolvedCloseCalls;   
   
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -745,56 +796,6 @@ inline bool operator!=(PartialVal V1, PartialVal V2) {
    return !(V1 == V2);
 }
 
-typedef std::pair<std::pair<std::pair<BasicBlock*, ShadowValue>, uint64_t>, uint64_t> LFCacheKey;
-
-#define LFCK(x,y,z,w) std::make_pair(std::make_pair(std::make_pair(x, y), z), w)
-
-struct OpenStatus {
-
-  std::string Name;
-  bool success;
-  bool MayDelete;
-
-OpenStatus(std::string N, bool Success) : Name(N), success(Success), MayDelete(false) { }
-OpenStatus() : Name(""), success(false), MayDelete(false) {}
-
-};
-
-struct ReadFile {
-
-  struct OpenStatus* openArg;
-  uint64_t incomingOffset;
-  uint32_t readSize;
-  bool needsSeek;
-
-ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), needsSeek(true) { }
-
-ReadFile() : openArg(0), incomingOffset(0), readSize(0), needsSeek(true) { }
-
-};
-
-struct SeekFile {
-
-  struct OpenStatus* openArg;
-  uint64_t newOffset;
-  bool MayDelete;
-
-SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), MayDelete(false) { }
-SeekFile() : openArg(0), newOffset(0), MayDelete(false) { }
-
-};
-
-struct CloseFile {
-
-  struct OpenStatus* openArg;
-  bool MayDelete;
-  ShadowInstruction* openInst;
-
-CloseFile(struct OpenStatus* O, ShadowInstruction* I) : openArg(O), MayDelete(false), openInst(I) {}
-CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
-
-};
-
 class UnaryPred {
  public:
   virtual bool operator()(Value*) = 0;
@@ -991,12 +992,6 @@ protected:
   int64_t residualInstructions;
 
   DenseMap<LoadInst*, std::string> normalLFFailures;
-
-  DenseMap<CallInst*, OpenStatus*> forwardableOpenCalls;
-  DenseMap<CallInst*, ReadFile> resolvedReadCalls;
-  DenseMap<CallInst*, SeekFile> resolvedSeekCalls;
-  DenseMap<CallInst*, CloseFile> resolvedCloseCalls;
-
   DenseMap<Instruction*, std::string> optimisticForwardStatus;
 
   // Inline attempts / peel attempts which are currently ignored because they've been opted out.
@@ -1061,10 +1056,6 @@ protected:
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
-    forwardableOpenCalls(2),
-    resolvedReadCalls(2),
-    resolvedSeekCalls(2),
-    resolvedCloseCalls(2),
     ignoreIAs(2),
     ignorePAs(2),
     commitStarted(false),
@@ -1245,24 +1236,22 @@ protected:
 
   // VFS call forwarding:
 
-  bool openCallSucceeds(Value*);
-  virtual int64_t tryGetIncomingOffset(CallInst*);
-  virtual ReadFile* tryGetReadFile(CallInst* CI);
+  virtual int64_t tryGetIncomingOffset(ShadowInstruction*);
+  virtual ReadFile* tryGetReadFile(ShadowInstruction* CI);
   bool tryPromoteOpenCall(ShadowInstruction* CI);
   void tryPromoteAllCalls();
   bool tryResolveVFSCall(ShadowInstruction*);
   bool executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename);
   WalkInstructionResult isVfsCallUsingFD(ShadowInstruction* VFSCall, ShadowInstruction* FD, bool ignoreClose);
-  virtual void resolveReadCall(CallInst*, struct ReadFile);
-  virtual void resolveSeekCall(CallInst*, struct SeekFile);
-  bool isResolvedVFSCall(const Instruction*);
-  bool VFSCallWillUseFD(const Instruction*);
-  bool isSuccessfulVFSCall(const Instruction*);
+  virtual void resolveReadCall(ShadowInstruction*, struct ReadFile);
+  virtual void resolveSeekCall(ShadowInstruction*, struct SeekFile);
+  bool isResolvedVFSCall(ShadowInstruction*);
+  bool VFSCallWillUseFD(ShadowInstruction*);
   bool isUnusedReadCall(ShadowInstruction*);
-  bool isCloseCall(CallInst*);
-  OpenStatus& getOpenStatus(CallInst*);
+  bool isCloseCall(ShadowInstruction*);
+  OpenStatus& getOpenStatus(ShadowInstruction*);
   void tryKillAllVFSOps();
-  void markCloseCall(CallInst*);
+  void markCloseCall(ShadowInstruction*);
 
   // Load forwarding extensions for varargs:
   virtual void getVarArg(int64_t, ImprovedValSet*&) = 0;
@@ -1292,11 +1281,6 @@ protected:
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   bool shouldCheckPB(ShadowValue);
   void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-
-  // PBLF Caching
-  ImprovedValSetSingle* getLFPBCacheEntry(LFCacheKey& Key);
-  void deleteLFPBCacheEntry(LFCacheKey& Key);
-  ImprovedValSetSingle* createLFPBCacheEntry(LFCacheKey& Key);
 
   // Enabling / disabling exploration:
 

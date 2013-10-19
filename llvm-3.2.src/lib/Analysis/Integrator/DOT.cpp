@@ -179,14 +179,14 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
       Out << "NORM (" <<  it->second << ")";
     }
   }
-  else if(CallInst* CI = dyn_cast_inst<CallInst>(SI)) {
-    DenseMap<CallInst*, OpenStatus*>::iterator it = forwardableOpenCalls.find(CI);
-    if(it != forwardableOpenCalls.end()) {
+  else if(inst_is<CallInst>(SI)) {
+    DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(SI);
+    if(it != pass->forwardableOpenCalls.end()) {
       Out << it->second->Name << "(" << (it->second->success ? "success" : "not found") << ")";
     }
     else {
-      DenseMap<CallInst*, ReadFile>::iterator it = resolvedReadCalls.find(CI);
-      if(it != resolvedReadCalls.end())
+      DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(SI);
+      if(it != pass->resolvedReadCalls.end())
 	Out << it->second.openArg->Name << " (" << it->second.incomingOffset << "-" << it->second.incomingOffset + (it->second.readSize - 1) << ")";
     }
   }

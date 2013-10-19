@@ -735,7 +735,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	store->A = new TrackedAlloc(I);
 
       }
-      else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+      else if(inst_is<CallInst>(I)) {
 
 	if(InlineAttempt* IA = getInlineAttempt(I)) {
 
@@ -755,10 +755,10 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	}
 	else {
 
-	  DenseMap<CallInst*, ReadFile>::iterator RI = resolvedReadCalls.find(CI);
+	  DenseMap<ShadowInstruction*, ReadFile>::iterator RI = pass->resolvedReadCalls.find(I);
 	  Function* F;
 	  DenseMap<Function*, specialfunctions>::iterator findit;
-	  if(RI != resolvedReadCalls.end()) {
+	  if(RI != pass->resolvedReadCalls.end()) {
 
 	    DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, I, BB);
 
