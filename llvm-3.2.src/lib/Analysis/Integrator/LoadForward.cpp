@@ -637,7 +637,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
   }
 
   if(error.get())
-    optimisticForwardStatus[LI->invar->I] = *error;
+    pass->optimisticForwardStatus[LI] = *error;
    
   return ret;
 

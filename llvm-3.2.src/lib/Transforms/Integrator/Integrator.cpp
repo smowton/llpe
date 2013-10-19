@@ -293,7 +293,7 @@ public:
 	  return true;
 	if(IA->isEnabled() != newState) {
 	  //GetChildren(item, changed);
-	  IA->setEnabled(val.GetBool());
+	  IA->setEnabled(val.GetBool(), false);
 	}
 	break;
       }
@@ -301,7 +301,7 @@ public:
       {
 	PeelAttempt* PA = (PeelAttempt*)tag->ptr;
 	//GetChildren(item, changed);
-	PA->setEnabled(val.GetBool());
+	PA->setEnabled(val.GetBool(), false);
 	break;
       }
     }

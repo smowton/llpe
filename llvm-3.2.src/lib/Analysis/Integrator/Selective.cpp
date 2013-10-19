@@ -63,46 +63,6 @@ void IntegrationHeuristicsPass::rerunDSEAndDIE() {
 
 }
 
-void IntegrationAttempt::enableInline(CallInst* CI) {
-
-  pass->mustRecomputeDIE = true;
-  ignoreIAs.erase(CI);
-
-}
-
-void IntegrationAttempt::disableInline(CallInst* CI) {
-
-  pass->mustRecomputeDIE = true;
-  ignoreIAs.insert(CI);
-
-}
-
-void IntegrationAttempt::enablePeel(const Loop* L) {
-
-  pass->mustRecomputeDIE = true;
-  ignorePAs.erase(L);
-
-}
-
-void IntegrationAttempt::disablePeel(const Loop* L) {
-
-  pass->mustRecomputeDIE = true;
-  ignorePAs.insert(L);
-
-}
-
-bool IntegrationAttempt::loopIsEnabled(const Loop* L) {
-
-  return !ignorePAs.count(L);
-
-}
-
-bool IntegrationAttempt::inlineIsEnabled(CallInst* CI) {
-
-  return !ignoreIAs.count(CI);
-
-}
-
 bool InlineAttempt::isEnabled() {
 
   if(!Callers.size())
@@ -110,23 +70,23 @@ bool InlineAttempt::isEnabled() {
   else if(isPathCondition)
     return false;
   else
-    return isShared() || getUniqueParent()->inlineIsEnabled(cast<CallInst>(Callers[0]->invar->I));
+    return isShared() || enabled;
 
 }
 
 bool PeelIteration::isEnabled() {
 
-  return parentPA->isEnabled();
+  return true;
 
 }
 
 bool PeelAttempt::isEnabled() {
 
-  return parent->loopIsEnabled(L);
+  return enabled;
 
 }
 
-void InlineAttempt::setEnabled(bool en) {
+void InlineAttempt::setEnabled(bool en, bool skipStats) {
 
   if(!Callers.size())
     return;
@@ -137,29 +97,28 @@ void InlineAttempt::setEnabled(bool en) {
   if(isPathCondition)
     return;
 
-  IntegrationAttempt* Parent = Callers[0]->parent->IA;
+  if(enabled != en)
+    pass->mustRecomputeDIE = true;    
 
-  if(en)
-    Parent->enableInline(cast<CallInst>(Callers[0]->invar->I));
-  else
-    Parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
+  enabled = en;
 
-  pass->getRoot()->collectStats();
+  if(!skipStats)
+    pass->getRoot()->collectStats();
 
 }
 
-void PeelIteration::setEnabled(bool en) {
+void PeelIteration::setEnabled(bool en, bool skipStats) {
 
   assert(0 && "Can't individually disable iterations yet");
 
 }
 
-void PeelAttempt::setEnabled(bool en) {
+void PeelAttempt::setEnabled(bool en, bool skipStats) {
 
-  if(en)
-    parent->enablePeel(L);
-  else
-    parent->disablePeel(L);
+  if(en != enabled)
+    pass->mustRecomputeDIE = true;
+
+  enabled = en;
 
 }
 

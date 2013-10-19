@@ -376,7 +376,7 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       // instruction, but since its arguments are pushed in rather than pulled it doesn't matter.
 
       if(!it->IA) {
-	InlineAttempt* SymIA = new InlineAttempt(pass, *it->F, this->LI, &BB->insts[0], this->nesting_depth + 1, true);
+	InlineAttempt* SymIA = new InlineAttempt(pass, *it->F, &BB->insts[0], this->nesting_depth + 1, true);
 	it->IA = SymIA;
       }
 

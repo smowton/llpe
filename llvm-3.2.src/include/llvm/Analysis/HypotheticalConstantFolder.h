@@ -312,6 +312,8 @@ CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
 
 class IntegrationHeuristicsPass : public ModulePass {
 
+ public:
+
    DenseMap<Function*, LoopInfo*> LIs;
    DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
 
@@ -324,6 +326,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
    DenseSet<LoadInst*> simpleVolatileLoads;
+   
+   DenseMap<ShadowInstruction*, std::string> optimisticForwardStatus;
 
    DataLayout* TD;
    AliasAnalysis* AA;
@@ -347,8 +351,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<IntegratorTag> tags;
    IntegratorTag* rootTag;
 
- public:
-   
    // Pass identifier
    static char ID;
 
@@ -981,24 +983,10 @@ class IntegrationAttempt {
 
 protected:
 
-  // Analyses created by the Pass.
-  DenseMap<Function*, LoopInfo*>& LI;
-
-  std::string HeaderStr;
-
   int improvableInstructions;
   int improvableInstructionsIncludingLoops;
   int improvedInstructions;
   int64_t residualInstructions;
-
-  DenseMap<LoadInst*, std::string> normalLFFailures;
-  DenseMap<Instruction*, std::string> optimisticForwardStatus;
-
-  // Inline attempts / peel attempts which are currently ignored because they've been opted out.
-  // These may include inlines / peels which are logically two loop levels deep, 
-  // because they were created when a parent loop was opted out but then opted in again.
-  DenseSet<CallInst*> ignoreIAs;
-  DenseSet<const Loop*> ignorePAs;
 
   bool commitStarted;
   // The LoopInfo belonging to the function which is being specialised
@@ -1051,13 +1039,10 @@ protected:
   BarrierState yieldState;
 
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
-		    const Loop* _L, DenseMap<Function*, LoopInfo*>& _LI, int depth, int sdepth) : 
-    LI(_LI),
+		    const Loop* _L, int depth, int sdepth) : 
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
-    ignoreIAs(2),
-    ignorePAs(2),
     commitStarted(false),
     contextTaintedByVarargs(false),
     nesting_depth(depth),
@@ -1102,7 +1087,7 @@ protected:
   // Pure virtuals to be implemented by PeelIteration or InlineAttempt:
 
   virtual void collectAllLoopStats() = 0;
-  void printHeader(raw_ostream& OS) const;
+  virtual void printHeader(raw_ostream& OS) const = 0;
   virtual bool isOptimisticPeel() = 0;
 
   // Simple state-tracking helpers:
@@ -1284,14 +1269,8 @@ protected:
 
   // Enabling / disabling exploration:
 
-  void enablePeel(const Loop*);
-  void disablePeel(const Loop*);
-  bool loopIsEnabled(const Loop*);
-  void enableInline(CallInst*);
-  void disableInline(CallInst*);
-  bool inlineIsEnabled(CallInst*);
   virtual bool isEnabled() = 0;
-  virtual void setEnabled(bool) = 0;
+  virtual void setEnabled(bool, bool skipStats) = 0;
   bool unsharedContextAvailable();
   bool allocasAvailableFrom(IntegrationAttempt*);
   bool heapObjectsAvailableFrom(IntegrationAttempt*);
@@ -1462,7 +1441,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth);
+  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, int iter, int depth);
 
   IntegrationAttempt* parent;
 
@@ -1497,7 +1476,7 @@ public:
 
   virtual bool canDisable(); 
   virtual bool isEnabled(); 
-  virtual void setEnabled(bool); 
+  virtual void setEnabled(bool, bool skipStats); 
 
   virtual bool isOptimisticPeel(); 
 
@@ -1541,6 +1520,8 @@ public:
   virtual bool commitsOutOfLine();
   virtual void popAllocas(OrdinaryLocalStore*);
 
+  virtual void printHeader(raw_ostream& OS) const;
+
 };
 
 class ProcessExternalCallback;
@@ -1556,13 +1537,13 @@ class PeelAttempt {
 
    std::string HeaderStr;
 
-   DenseMap<Function*, LoopInfo*>& LI;
-
    int64_t residualInstructions;
 
    int nesting_depth;
    int stack_depth;
    int debugIndent;
+
+   bool enabled;
 
  public:
 
@@ -1575,7 +1556,7 @@ class PeelAttempt {
 
    std::vector<PeelIteration*> Iterations;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
    ~PeelAttempt();
 
    bool analyse(uint32_t parent_stack_depth);
@@ -1601,7 +1582,7 @@ class PeelAttempt {
    std::string getShortHeader(); 
    bool hasChildren(); 
    bool isEnabled(); 
-   void setEnabled(bool); 
+   void setEnabled(bool, bool skipStats); 
    
    void reduceDependentLoads(int64_t); 
 
@@ -1647,7 +1628,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth, bool isPathCond = false);
+  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, ShadowInstruction* _CI, int depth, bool isPathCond = false);
 
   virtual ~InlineAttempt();
 
@@ -1678,6 +1659,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   bool isModel;
   bool isPathCondition;
+
+  bool enabled;
 
   IATargetInfo* targetCallInfo;
 
@@ -1716,7 +1699,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual bool canDisable(); 
   virtual bool isEnabled(); 
-  virtual void setEnabled(bool); 
+  virtual void setEnabled(bool, bool skipStats); 
 
   virtual bool isOptimisticPeel(); 
 
@@ -1823,6 +1806,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
   virtual void noteAsExpectedChecks(ShadowBB* BB);
+
+  virtual void printHeader(raw_ostream& OS) const;
   
 };
 

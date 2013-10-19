@@ -331,7 +331,7 @@ InlineAttempt* InlineAttempt::getWritableCopyFrom(ShadowInstruction* SI) {
 
   release_assert(pass->enableSharing && "getWritableCopyFrom without sharing enabled?");
 
-  InlineAttempt* Copy = new InlineAttempt(pass, F, LI, SI, nesting_depth);
+  InlineAttempt* Copy = new InlineAttempt(pass, F, SI, nesting_depth);
 
   SmallVector<ShadowInstruction*, 1>:: iterator findit = std::find(Callers.begin(), Callers.end(), SI);
   release_assert(findit != Callers.end() && "CoW break IA with bad caller?");

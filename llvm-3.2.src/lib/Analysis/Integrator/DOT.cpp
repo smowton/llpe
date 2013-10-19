@@ -165,21 +165,13 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
   if(!SI)
     return;
 
-  DenseMap<Instruction*, std::string>::iterator optit = optimisticForwardStatus.find(SI->invar->I);
+  DenseMap<ShadowInstruction*, std::string>::iterator optit = pass->optimisticForwardStatus.find(SI);
   if(!PBPrinted) {
-    if(optit != optimisticForwardStatus.end()) {
+    if(optit != pass->optimisticForwardStatus.end()) {
       Out << "OPT (" << optit->second << "), ";
     }
   }
-  if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
-
-    DenseMap<LoadInst*, std::string>::iterator it = normalLFFailures.find(LI);
-
-    if(it != normalLFFailures.end()) {
-      Out << "NORM (" <<  it->second << ")";
-    }
-  }
-  else if(inst_is<CallInst>(SI)) {
+  if(inst_is<CallInst>(SI)) {
     DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(SI);
     if(it != pass->forwardableOpenCalls.end()) {
       Out << it->second->Name << "(" << (it->second->success ? "success" : "not found") << ")";

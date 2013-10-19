@@ -202,7 +202,7 @@ void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonIn
   if(totalIntegrationGoodness < 0) {
 
     // Overall, not profitable to peel this loop.
-    parent->disablePeel(L);
+    setEnabled(false, true);
 
     // Decided to fold this context: deduct the penalty from parent contexts.
     parent->reduceDependentLoads(nDependentLoads);
@@ -318,7 +318,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
   if(isModel) {
 
-    getUniqueParent()->disableInline(cast<CallInst>(Callers[0]->invar->I));
+    setEnabled(false, true);
     return;
 
   }
@@ -370,7 +370,7 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
 
     if(Parent) {
 
-      Parent->disableInline(cast<CallInst>(Callers[0]->invar->I));
+      setEnabled(false, true);
       Parent->reduceDependentLoads(nDependentLoads);
 
     }
@@ -654,7 +654,7 @@ void IntegrationAttempt::collectAllBlockStats() {
 
 void InlineAttempt::collectAllLoopStats() {
 
-  for(LoopInfo::iterator LoopI = LI[&F]->begin(), LoopE = LI[&F]->end(); LoopI != LoopE; ++LoopI)
+  for(LoopInfo::iterator LoopI = pass->LIs[&F]->begin(), LoopE = pass->LIs[&F]->end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
 
 }

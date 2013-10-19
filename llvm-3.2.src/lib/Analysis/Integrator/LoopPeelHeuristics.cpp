@@ -114,19 +114,14 @@ static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functio
 
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
-			     DenseMap<Function*, LoopInfo*>& LI, ShadowInstruction* _CI, int depth,
+			     ShadowInstruction* _CI, int depth,
 			     bool pathCond) : 
-  IntegrationAttempt(Pass, F, 0, LI, depth, 0)
+  IntegrationAttempt(Pass, F, 0, depth, 0)
 { 
-    raw_string_ostream OS(HeaderStr);
-    OS << (!_CI ? "Root " : "") << "Function " << F.getName();
-    if(pathCond)
-      OS << " pathcond at " << _CI->parent->invar->BB->getName();
-    else if(_CI && !_CI->getType()->isVoidTy())
-      OS << " at " << itcache(_CI, true);
-    SeqNumber = Pass->getSeq();
-    OS << " / " << SeqNumber;
 
+    SeqNumber = Pass->getSeq();
+
+    enabled = true;
     isModel = false;
     isPathCondition = pathCond;
     storeAtEntry = 0;
@@ -146,32 +141,25 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
 }
 
 PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
-			     Function& F, DenseMap<Function*, LoopInfo*>& _LI, int iter, int depth) :
-  IntegrationAttempt(Pass, F, PP->L, _LI, depth, 0),
+			     Function& F, int iter, int depth) :
+  IntegrationAttempt(Pass, F, PP->L, depth, 0),
   iterationCount(iter),
   parentPA(PP),
   parent(P),
   iterStatus(IterationStatusUnknown)
 { 
-  raw_string_ostream OS(HeaderStr);
-  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
   SeqNumber = Pass->getSeq();
-  OS << " / " << SeqNumber;
   prepareShadows();
 }
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-			 DenseMap<Function*, LoopInfo*>& _LI, const Loop* _L, int depth) 
-  : pass(Pass), parent(P), F(_F), LI(_LI), 
-    residualInstructions(-1), nesting_depth(depth), stack_depth(0), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
+			 const Loop* _L, int depth) 
+  : pass(Pass), parent(P), F(_F), residualInstructions(-1), nesting_depth(depth), stack_depth(0), 
+    enabled(true), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
 {
 
-  raw_string_ostream OS(HeaderStr);
-  OS << "Loop " << L->getHeader()->getName();
-  SeqNumber = Pass->getSeq();
-  OS << " / " << SeqNumber;
-  
   invarInfo = parent->invarInfo->LInfo[L];
+  SeqNumber = Pass->getSeq();
 
   getOrCreateIteration(0);
 
@@ -562,10 +550,6 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
 InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool& created, bool& needsAnalyse) {
 
   created = false;
-  CallInst* CI = cast_inst<CallInst>(SI);
-
-  if(ignoreIAs.count(CI))
-    return 0;
 
   InlineAttempt* Result;
   if(!callCanExpand(SI, Result))
@@ -622,7 +606,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
   if(isModel)
     FCalled = it->second;
 
-  InlineAttempt* IA = new InlineAttempt(pass, *FCalled, this->LI, SI, this->nesting_depth + 1);
+  InlineAttempt* IA = new InlineAttempt(pass, *FCalled, SI, this->nesting_depth + 1);
   IA->isModel = isModel;
   inlineChildren[SI] = IA;
 
@@ -802,7 +786,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
 
   assert(iter == Iterations.size());
 
-  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, LI, iter, nesting_depth);
+  PeelIteration* NewIter = new PeelIteration(pass, parent, this, F, iter, nesting_depth);
   Iterations.push_back(NewIter);
     
   return NewIter;
@@ -897,9 +881,6 @@ PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
 
 PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
-  if(ignorePAs.count(NewL))
-    return 0;
-
   if(pass->shouldIgnoreLoop(&F, NewL->getHeader()))
     return 0;
 
@@ -922,7 +903,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
 
     LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
-    PeelAttempt* LPA = new PeelAttempt(pass, this, F, LI, NewL, nesting_depth + 1);
+    PeelAttempt* LPA = new PeelAttempt(pass, this, F, NewL, nesting_depth + 1);
     peelChildren[NewL] = LPA;
 
     return LPA;
@@ -1064,15 +1045,28 @@ void IntegrationAttempt::dump() const {
 
 }
 
-void IntegrationAttempt::printHeader(raw_ostream& OS) const {
+void InlineAttempt::printHeader(raw_ostream& OS) const {
   
-  OS << HeaderStr;
+  OS << (Callers.empty() ? "Root " : "") << "Function " << F.getName();
+  if(isPathCondition)
+    OS << " pathcond at " << Callers[0]->parent->invar->BB->getName();
+  else if((!Callers.empty()) && F.getFunctionType()->getReturnType()->isVoidTy())
+    OS << " at " << itcache(Callers[0], true);
+  OS << " / " << SeqNumber;
+
+}
+
+void PeelIteration::printHeader(raw_ostream& OS) const {
+
+  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
+  OS << " / " << SeqNumber;
 
 }
 
 void PeelAttempt::printHeader(raw_ostream& OS) const {
   
-  OS << HeaderStr;
+  OS << "Loop " << L->getHeader()->getName();
+  OS << " / " << SeqNumber;
 
 }
 
@@ -3378,7 +3372,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   initShadowGlobals(M, UseGlobalInitialisers, PathConditionsString.size());
   initBlacklistedFunctions(M);
 
-  InlineAttempt* IA = new InlineAttempt(this, F, LIs, 0, 0);
+  InlineAttempt* IA = new InlineAttempt(this, F, 0, 0);
   if(targetCallStack.size()) {
 
     IA->setTargetCall(targetCallStack[0], 0);

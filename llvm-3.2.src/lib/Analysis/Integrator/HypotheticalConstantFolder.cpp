@@ -2043,7 +2043,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 	  raw_string_ostream RSO(RStr);
 	  NewPB->print(RSO, true);
 	  RSO.flush();
-	  optimisticForwardStatus[I->invar->I] = RStr;
+	  pass->optimisticForwardStatus[I] = RStr;
 	}
       }
     }

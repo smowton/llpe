@@ -46,7 +46,7 @@ void IntegrationAttempt::prepareCommit() {
 
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
-    if(ignoreIAs.count(cast_inst<CallInst>(it->first)))
+    if(!it->second->isEnabled())
       continue;
 
     it->second->prepareCommit();

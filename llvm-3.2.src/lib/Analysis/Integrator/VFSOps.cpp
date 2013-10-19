@@ -1003,13 +1003,13 @@ void IntegrationAttempt::tryKillAllVFSOps() {
   }
 
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-    if(ignoreIAs.count(cast_inst<CallInst>(it->first)))
+    if(!it->second->isEnabled())
       continue;
     it->second->tryKillAllVFSOps();
   }
 
   for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-    if(ignorePAs.count(it->first))
+    if(!it->second->isEnabled())
       continue;
     for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
       it->second->Iterations[i]->tryKillAllVFSOps();
