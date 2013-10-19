@@ -49,7 +49,7 @@ static BasicBlock* getChainNext(BasicBlock* BB) {
 
 void IntegrationHeuristicsPass::postCommitOptimiseF(Function* F) {
 
-  errs() << "Post-processing " << F->getName() << "\n";
+  errs() << ".";
 
   std::vector<std::vector<BasicBlock*> > Chains;
 
@@ -126,11 +126,15 @@ void IntegrationHeuristicsPass::postCommitOptimise() {
   // long chains of blocks with a single predecessor and a unique successor.
   // For each such chain, merge into a single large block.
 
+  errs() << "Post-commit optimisation";
+
   for(SmallVector<Function*, 4>::iterator it = commitFunctions.begin(),
 	itend = commitFunctions.end(); it != itend; ++it) {
 
     postCommitOptimiseF(*it);
 
   }
+
+  errs() << "\n";
 
 }

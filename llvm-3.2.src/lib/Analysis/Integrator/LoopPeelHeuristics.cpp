@@ -2062,8 +2062,6 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
 void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
-  errs() << sizeof(ShadowInstruction) << ", " << sizeof(ShadowBB) << ", " << sizeof(IntegrationAttempt) << ", " << sizeof(InlineAttempt) << ", " << sizeof(PeelIteration) << "\n";
-
   this->mallocAlignment = MallocAlignment;
   
   if(EnvFileAndIdx != "") {
