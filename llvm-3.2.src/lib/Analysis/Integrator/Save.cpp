@@ -245,17 +245,21 @@ void IntegrationAttempt::commitCFG() {
     // Can't go direct from one loop to another due to preheader.
     currentLoop = BB->invar->naturalScope;
     
+    bool isEntryBlock = (!L) && i == 0 && commitsOutOfLine();
+
     std::string Name;
     if(VerboseNames) {
       raw_string_ostream RSO(Name);
       RSO << getCommittedBlockPrefix() << BB->invar->BB->getName();
     }
+    else if(isEntryBlock)
+      Name = "entry";
     BasicBlock* firstNewBlock = BasicBlock::Create(F.getContext(), Name);
 
     BB->committedBlocks.push_back(CommittedBlock(firstNewBlock, firstNewBlock, 0));
 
     // The function entry block is just the first one listed: create at front if necessary.
-    if((!L) && i == 0 && commitsOutOfLine())
+    if(isEntryBlock)
       CF->getBasicBlockList().push_front(firstNewBlock);
     else
       CF->getBasicBlockList().push_back(firstNewBlock);
@@ -1468,6 +1472,9 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   if(isa<AllocaInst>(newI))
     getFunctionRoot()->emittedAlloca = true;
+
+  if(isa<CallInst>(newI))
+    cast<CallInst>(newI)->setTailCall(false);
 
   // Normal instruction: no BB arguments, and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
