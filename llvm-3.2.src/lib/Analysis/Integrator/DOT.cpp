@@ -17,7 +17,7 @@
 
 using namespace llvm;
 
-std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& textColour) {
+std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& textColour, bool plain) {
 
   // How should the instruction be coloured:
   // Bright green: defined here, i.e. it's a loop invariant.
@@ -27,6 +27,9 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
   // Lime green: Invariant defined above.
   // Dark green: Pointer base known
   // Grey: part of a dead block.
+
+  if(plain)
+    return "white";
 
   InstArgImprovement* IAI = SV.getIAI();
   ShadowInstruction* SI = SV.getInst();
@@ -370,7 +373,7 @@ void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, Sh
 
 }
 
-void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief) {
+void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain) {
 
   if(brief && !BB)
     return;
@@ -391,17 +394,21 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
 
   Out << "<tr><td border=\"0\" align=\"left\" colspan=\"2\"";
   
-  if(BB && BB->useSpecialVarargMerge) {
-    Out << " bgcolor=\"lightblue\"";
-  }
-  else if(BB && BB->status == BBSTATUS_CERTAIN) {
-    if(!BB->inAnyLoop)
-      Out << " bgcolor=\"green\"";
-    else
-      Out << " bgcolor=\"yellow\"";
-  }
-  else if(BB && BB->status == BBSTATUS_ASSUMED) {
-    Out << " bgcolor=\"orange\"";
+  if(!plain) {
+
+    if(BB && BB->useSpecialVarargMerge) {
+      Out << " bgcolor=\"lightblue\"";
+    }
+    else if(BB && BB->status == BBSTATUS_CERTAIN) {
+      if(!BB->inAnyLoop)
+	Out << " bgcolor=\"green\"";
+      else
+	Out << " bgcolor=\"yellow\"";
+    }
+    else if(BB && BB->status == BBSTATUS_ASSUMED) {
+      Out << " bgcolor=\"orange\"";
+    }
+
   }
 
   Out << "><font point-size=\"14\">";
@@ -438,7 +445,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   for(std::vector<ShadowValue>::iterator VI = Vals.begin(), VE = Vals.end(); VI != VE; ++VI) {
 
     std::string textColour;
-    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(*VI, textColour) << "\">";
+    Out << "<tr><td border=\"0\" align=\"left\" bgcolor=\"" << getValueColour(*VI, textColour, plain) << "\">";
     if(!textColour.empty())
       Out << "<font color=\"" << textColour << "\">";
     Out << escapeHTMLValue(VI->getBareVal(), this);
@@ -447,7 +454,8 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
     Out << "</td><td>";
     std::string RHSStr;
     raw_string_ostream RSO(RHSStr);
-    printRHS(*VI, RSO);
+    if(!plain)
+      printRHS(*VI, RSO);
     RSO.flush();
     Out << escapeHTML(TruncStr(RSO.str(), 400));
     Out << "</td></tr>\n";
@@ -544,6 +552,19 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
   Out << "subgraph \"cluster_" << DOT::EscapeString(DescribeL->getHeader()->getName()) << "\" {";
 
   bool loopIsIgnored = pass->shouldIgnoreLoop(DescribeL->getHeader()->getParent(), DescribeL->getHeader());
+  bool loopExplored = false;
+  bool loopTerminated = false;
+
+  if(!loopIsIgnored) {
+
+    DenseMap<const Loop*, PeelAttempt*>::iterator InlIt = peelChildren.find(DescribeL);
+    if(InlIt != peelChildren.end()) {
+      loopExplored = true;
+      if(InlIt->second->isTerminated())
+	loopTerminated = true;
+    }
+
+  }
 
   if(loopIsIgnored) {
 
@@ -569,7 +590,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
     }
 
-    describeBlockAsDOT(getBBInvar(headerIdx + BBsOffset), getBB(headerIdx + BBsOffset), 0, 0, Out, &liveExitingBlocks, brief);
+    describeBlockAsDOT(getBBInvar(headerIdx + BBsOffset), getBB(headerIdx + BBsOffset), 0, 0, Out, &liveExitingBlocks, brief, loopTerminated);
 
     std::vector<std::pair<uint32_t, uint32_t> >& exitEdges = LInfo.exitEdges;
 
@@ -588,7 +609,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
       }
 
-      describeBlockAsDOT(BBI, getBB(*BBI), DescribeL, &deferredEdges, Out, &Targets, brief);      
+      describeBlockAsDOT(BBI, getBB(*BBI), DescribeL, &deferredEdges, Out, &Targets, brief, loopTerminated);      
 
     }
 
@@ -609,28 +630,26 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 						     
   Out << "label = \"Loop " << DOT::EscapeString(DescribeL->getHeader()->getName()) << " (";
 
-  DenseMap<const Loop*, PeelAttempt*>::iterator InlIt = peelChildren.find(DescribeL);
   if(loopIsIgnored) {
 
     Out << "Ignored";
 
   }
-  else if(InlIt == peelChildren.end()) {
+  else if(!loopExplored) {
 
     Out << "Not explored";
 
   }
   else {
 
-    PeelIteration* LastIter = InlIt->second->Iterations.back();
-    if(LastIter->iterStatus == IterationStatusFinal) {
+    if(loopTerminated) {
       Out << "Terminated";
     }
     else {
       Out << "Not terminated";
     }
 
-    Out << ", " << InlIt->second->Iterations.size() << " iterations";
+    Out << ", " << peelChildren[DescribeL]->Iterations.size() << " iterations";
 
   }
 
