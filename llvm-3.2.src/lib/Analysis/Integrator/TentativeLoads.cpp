@@ -606,7 +606,7 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
     BBs[0]->u.tlStore->allOthersClobbered = false;
   }
 
-  if(invarInfo->frameSize != -1) {
+  if(invarInfo->frameSize != -1 || !Callers.size()) {
     BBs[0]->u.tlStore = BBs[0]->u.tlStore->getWritableFrameList();
     BBs[0]->u.tlStore->pushStackFrame(this);
   }

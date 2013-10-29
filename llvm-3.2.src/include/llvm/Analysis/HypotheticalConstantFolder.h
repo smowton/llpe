@@ -310,6 +310,58 @@ CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
 
 };
 
+struct GlobalStats {
+  
+  uint32_t dynamicFunctions;
+  uint32_t dynamicContexts;
+  uint32_t dynamicBlocks;
+  uint32_t dynamicInsts;
+
+  uint32_t disabledContexts;
+
+  uint32_t resolvedBranches;
+  uint32_t constantInstructions;
+  uint32_t pointerInstructions;
+  uint32_t setInstructions;
+  uint32_t unknownInstructions;
+  uint32_t deadInstructions;
+
+  uint32_t residualBlocks;
+  uint32_t residualInstructions;
+  uint32_t mallocChecks;
+  uint32_t fileChecks;
+  uint32_t threadChecks;
+  uint32_t condChecks;
+
+GlobalStats() : dynamicFunctions(0), dynamicContexts(0), dynamicBlocks(0), dynamicInsts(0),
+    disabledContexts(0), resolvedBranches(0), constantInstructions(0), pointerInstructions(0),
+    setInstructions(0), unknownInstructions(0), deadInstructions(0), residualBlocks(0),
+    residualInstructions(0), mallocChecks(0), fileChecks(0), threadChecks(0), condChecks(0) {}
+
+  void print(raw_ostream& Out) {
+
+    Out << "Dynamic functions: " << dynamicFunctions << "\n";
+    Out << "Dynamic contexts: " << dynamicContexts << "\n";
+    Out << "Dynamic blocks: " << dynamicBlocks << "\n";
+    Out << "Dynamic instructions: " << dynamicInsts << "\n";
+    Out << "Disabled contexts: " << disabledContexts << "\n";
+    Out << "Resolved branches: " << resolvedBranches << "\n";
+    Out << "Constant instructions: " << constantInstructions << "\n";
+    Out << "Pointer instructions: " << pointerInstructions << "\n";
+    Out << "Set instructions: " << setInstructions << "\n";
+    Out << "Unknown instructions: " << unknownInstructions << "\n";
+    Out << "Dead instructions: " << deadInstructions << "\n";
+    Out << "Residual blocks: " << residualBlocks << "\n";
+    Out << "Residual instructons: " << residualInstructions << "\n";
+    Out << "Malloc checks: " << mallocChecks << "\n";
+    Out << "File checks: " << fileChecks << "\n";
+    Out << "Thread checks: " << threadChecks << "\n";
+    Out << "Cond checks: " << condChecks << "\n";
+
+  }
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
  public:
@@ -419,6 +471,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseSet<ShadowInstruction*> barrierInstructions;
 
    DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
+
+   GlobalStats stats;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -552,6 +606,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    IHPFunctionInfo* getMRInfo(Function*);
 
    void releaseStoreMemory();
+
+   void postCommitStats();
 
 };
 
@@ -1403,6 +1459,7 @@ protected:
   void collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB);
   void collectLoopStats(const Loop*);
   void collectStats();
+  virtual void preCommitStats(bool enabledHere);
 
   void print(raw_ostream& OS) const;
   // Callable from GDB
@@ -1804,11 +1861,19 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void noteAsExpectedChecks(ShadowBB* BB);
 
   virtual void printHeader(raw_ostream& OS) const;
+
+  virtual void preCommitStats(bool enabledHere);
   
 };
 
 inline int32_t getFrameSize(InlineAttempt* IA) {
   return IA->invarInfo->frameSize;
+}
+
+inline bool hasNoCallers(InlineAttempt* IA) {
+
+  return IA->Callers.empty();
+
 }
 
 inline ShadowValue getStackAllocationWithIndex(InlineAttempt* IA, uint32_t i) {

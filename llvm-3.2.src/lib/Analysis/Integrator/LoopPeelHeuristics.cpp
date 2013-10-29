@@ -100,9 +100,10 @@ static cl::opt<bool> DumpTL("int-dump-tl");
 static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
 static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
 static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
-static cl::opt<bool>VerbosePathConditions("int-verbose-path-conditions");
+static cl::opt<bool> VerbosePathConditions("int-verbose-path-conditions");
 static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
 static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
+static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -111,7 +112,6 @@ ModulePass *llvm::createIntegrationHeuristicsPass() {
 static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functions for pervasive integration benefit",
 						 false /* Only looks at CFG */,
 						 true /* Analysis Pass */);
-
 
 InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
 			     ShadowInstruction* _CI, int depth,
@@ -1745,6 +1745,9 @@ void IntegrationHeuristicsPass::commit() {
     }
   }
 
+  if(!StatsFile.empty())
+    RootIA->preCommitStats(true);
+
   errs() << "Writing specialised module";
 
   std::string Name;
@@ -1758,6 +1761,17 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->commitArgsAndInstructions();
   errs() << "\n";
   postCommitOptimise();
+
+  if(!StatsFile.empty()) {
+    postCommitStats();
+    std::string error;
+    raw_fd_ostream RFO(StatsFile.c_str(), error);
+    if(!error.empty())
+      errs() << "Failed to open " << StatsFile << ": " << error << "\n";
+    else
+      stats.print(RFO);
+  }
+
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
 
   Function* writePreludeFn;

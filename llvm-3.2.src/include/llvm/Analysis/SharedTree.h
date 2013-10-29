@@ -551,6 +551,25 @@ template<class ChildType, class ExtraState> SharedStoreMap<ChildType, ExtraState
 }
 
 int32_t getFrameSize(InlineAttempt*);
+bool hasNoCallers(InlineAttempt*);
+
+static int32_t allocFrameSize(InlineAttempt* IA) {
+
+  uint32_t frameSize = getFrameSize(IA);
+  if(frameSize == (uint32_t)-1) {
+
+    release_assert(hasNoCallers(IA)
+		   && "Call with no allocas should only be given a frame if it is the root.");
+    return 0;
+
+  }  
+  else {
+
+    return frameSize;
+
+  }
+
+}
 
 template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::clear() {
 
@@ -564,7 +583,7 @@ template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, Extra
   }
 
   store.clear();
-  store.resize(getFrameSize(IA));
+  store.resize(allocFrameSize(IA));
   empty = true;
 
 }
@@ -765,8 +784,11 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
 
   // Heap starts in empty state.
   // Copy metadata per frame but don't populate any objects.
-  for(uint32_t i = 0; i < frames.size(); ++i)
-    frames[i] = new SharedStoreMap<ChildType, ExtraState>(copyFrom[i]->IA, copyFrom[i]->IA->invarInfo->frameSize);
+  for(uint32_t i = 0; i < frames.size(); ++i) {
+    
+    uint32_t newFrameSize = allocFrameSize(copyFrom[i]->IA);
+    frames[i] = new SharedStoreMap<ChildType, ExtraState>(copyFrom[i]->IA, newFrameSize);
+  }
 
 }
 
@@ -819,7 +841,7 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
 
 template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::pushStackFrame(InlineAttempt* IA) {
 
-  frames.push_back(new SharedStoreMap<ChildType, ExtraState>(IA, getFrameSize(IA)));
+  frames.push_back(new SharedStoreMap<ChildType, ExtraState>(IA, allocFrameSize(IA)));
 
 }
 

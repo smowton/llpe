@@ -590,7 +590,7 @@ void InlineAttempt::tryKillStores(bool commitDisabledHere, bool disableWrites) {
   if(isRootMainCall())
     BBs[0]->u.dseStore = new DSELocalStore(0);
 
-  if(invarInfo->frameSize != -1) {
+  if(invarInfo->frameSize != -1 || !Callers.size()) {
     BBs[0]->u.dseStore = BBs[0]->u.dseStore->getWritableFrameList();
     BBs[0]->u.dseStore->pushStackFrame(this);
   }

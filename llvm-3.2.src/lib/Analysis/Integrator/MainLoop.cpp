@@ -79,7 +79,7 @@ void InlineAttempt::getInitialStore() {
   else
     BBs[0]->u.localStore = new OrdinaryLocalStore(0);
 
-  if(invarInfo->frameSize != -1)
+  if(invarInfo->frameSize != -1 || !Callers.size())
     BBs[0]->pushStackFrame(this);
 
 }
