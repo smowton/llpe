@@ -142,6 +142,20 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
   bool changed = false;
   
   ConstantInt* ConstCondition = dyn_cast_or_null<ConstantInt>(getConstReplacement(Condition));
+  if(!ConstCondition) {
+
+    // Switch statements can operate on a ptrtoint operand, of which only ptrtoint(null) is useful:
+    if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(Condition))) {
+
+      if(IVS->onlyContainsNulls()) {
+
+	ConstCondition = cast<ConstantInt>(Constant::getNullValue(SI->invar->I->getOperand(0)->getType()));
+
+      }
+
+    }
+
+  }
 
   if(!ConstCondition) {
     
