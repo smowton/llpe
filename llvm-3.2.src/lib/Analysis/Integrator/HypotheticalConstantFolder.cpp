@@ -1016,6 +1016,16 @@ namespace llvm {
 
 }
 
+static Constant* tryCastTo(Constant* C, Type* Ty) {
+
+  if(!CastInst::isCastable(C->getType(), Ty))
+    return 0;
+
+  Instruction::CastOps Op = CastInst::getCastOpcode(C, false, Ty, false);
+  return ConstantExpr::getCast(Op, C, Ty);
+
+}
+
 void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
 					   ValSetType& ImpType, ImprovedVal& Improved,
@@ -1232,8 +1242,30 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   Constant* newConst = 0;
 
-  if (const CmpInst *CI = dyn_cast<CmpInst>(I))
+  if (const CmpInst *CI = dyn_cast<CmpInst>(I)) {
+   
+    // Rare corner case: we get here but the compare args are not of the same type.
+    // Example: comparing a constant against ptrtoint(null).
+    // Coerece to the real instruction's type if possible.
+    if(instOperands[0]->getType() != CI->getOperand(0)->getType()) {
+      instOperands[0] = tryCastTo(instOperands[0], CI->getOperand(0)->getType());
+      if(!instOperands[0]) {
+	ImpType = ValSetTypeUnknown;
+	return;
+      }
+    }
+
+    if(instOperands[1]->getType() != CI->getOperand(1)->getType()) {
+      instOperands[1] = tryCastTo(instOperands[1], CI->getOperand(1)->getType());
+      if(!instOperands[1]) {
+	ImpType = ValSetTypeUnknown;
+	return;
+      }
+    }    
+
     newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], GlobalTD);
+
+  }
   else if(isa<LoadInst>(I))
     newConst = ConstantFoldLoadFromConstPtr(instOperands[0], GlobalTD);
   else
