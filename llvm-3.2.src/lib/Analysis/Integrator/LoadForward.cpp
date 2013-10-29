@@ -1755,6 +1755,10 @@ void llvm::replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewV
       
     }
 
+    // Out of bounds access? Grow our perception of allocation size.
+    if(Offset + Size > M->AllocSize)
+      M->AllocSize = Offset + Size;
+
     if(Size == ULONG_MAX)
       Size = M->AllocSize - Offset;
 
@@ -2416,7 +2420,13 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
   // No need to check the copy instruction is as expected in any of the coming failure cases.
   CopySI->isThreadLocal = TLS_NEVERCHECK;
 
-  if(Size == ULONG_MAX || PtrSet.isWhollyUnknown() || PtrSet.Values.size() != 1 || SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() != 1) {
+  if(Size == ULONG_MAX || 
+     PtrSet.isWhollyUnknown() || 
+     PtrSet.Values.size() != 1 ||
+     PtrSet.Values[0].Offset == LLONG_MAX ||
+     SrcPtrSet.isWhollyUnknown() || 
+     SrcPtrSet.Values.size() != 1 || 
+     SrcPtrSet.Values[0].Offset == LLONG_MAX) {
 
     // Only support memcpy from single pointer to single pointer for the time being:
     // If we're known to be copying scalars, note that in our overdef to prevent unnecessary clobbers.
