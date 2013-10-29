@@ -314,6 +314,7 @@ static IHPFunctionInfo VFSCallFunctions[] = {
   { "pthread_setcanceltype", false, Arg1AndErrnoMR, 0 },
   { "pthread_setcancelstate", false, Arg1AndErrnoMR, 0 },
   { "writev", false, JustErrno, 0 },
+  { "epoll_create", false, JustErrno, 0 },
   // Terminator
   { 0, false, 0, 0 }
 

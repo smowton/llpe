@@ -451,7 +451,8 @@ static const char* blacklistedFnNames[] = {
    "__pthread_mutex_unlock",
    "pthread_setcanceltype",
    "pthread_setcancelstate",
-   "writev"
+   "writev",
+   "epoll_create"
    
 };
 
