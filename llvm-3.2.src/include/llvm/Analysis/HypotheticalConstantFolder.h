@@ -241,6 +241,16 @@ DeallocatorFn(uint32_t a) : arg(a) {}
 
 };
 
+struct ReallocatorFn {
+
+  uint32_t ptrArg;
+  uint32_t sizeArg;
+  
+ReallocatorFn() : ptrArg(UINT_MAX), sizeArg(UINT_MAX) {}
+ReallocatorFn(uint32_t pa, uint32_t sa) : ptrArg(pa), sizeArg(sa) {}
+
+};
+
 struct IHPLocationInfo {
   
   void (*getLocation)(ShadowValue CS, ShadowValue& Loc, uint64_t& LocSize);
@@ -420,6 +430,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<Function*, SpecialLocationDescriptor> specialLocations;
    SmallDenseMap<Function*, AllocatorFn, 4> allocatorFunctions;
    SmallDenseMap<Function*, DeallocatorFn, 4> deallocatorFunctions;
+   SmallDenseMap<Function*, ReallocatorFn, 4> reallocatorFunctions;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
@@ -1988,7 +1999,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc);
  void executeAllocaInst(ShadowInstruction* SI);
  void executeMallocLikeInst(ShadowInstruction* SI);
- void executeReallocInst(ShadowInstruction* SI);
+ void executeReallocInst(ShadowInstruction* SI, Function*);
  void executeFreeInst(ShadowInstruction* SI, Function*);
  void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction*);
  void executeVaStartInst(ShadowInstruction* SI);

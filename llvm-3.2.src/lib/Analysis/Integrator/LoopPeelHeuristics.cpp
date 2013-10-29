@@ -2577,13 +2577,17 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   for(cl::list<std::string>::iterator it = ConstAllocators.begin(),
 	itend = ConstAllocators.end(); it != itend; ++it) {
 
-    std::string fName, sizeStr, freeName, freeIdxStr;;
+    std::string fName, sizeStr, freeName, freeIdxStr, reallocName, reallocPtrIdxStr, reallocSizeIdxStr;
 
     std::istringstream istr(*it);
     std::getline(istr, fName, ',');
     std::getline(istr, sizeStr, ',');
     std::getline(istr, freeName, ',');
     std::getline(istr, freeIdxStr, ',');
+    std::getline(istr, reallocName, ',');
+    std::getline(istr, reallocPtrIdxStr, ',');
+    std::getline(istr, reallocSizeIdxStr, ',');
+
 
     Function* allocF = F.getParent()->getFunction(fName);
     if(!allocF) {
@@ -2616,14 +2620,33 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     }
 
+    if(!reallocName.empty()) {
+
+      Function* reallocF = F.getParent()->getFunction(reallocName);
+      if(!reallocF) {
+
+	errs() << "-int-allocator-fn: bad realloc function " << reallocName << "\n";
+	exit(1);
+
+      }
+
+      uint32_t reallocPtrIdx = getInteger(reallocPtrIdxStr, "int-allocator-fn sixth param");
+      uint32_t reallocSizeIdx = getInteger(reallocPtrIdxStr, "int-allocator-fn seventh param");
+      reallocatorFunctions[reallocF] = ReallocatorFn(reallocPtrIdx, reallocSizeIdx);
+      SpecialFunctionMap[reallocF] = SF_REALLOC;
+
+    }
+
   }
 
   if(Function* libcMalloc = F.getParent()->getFunction("malloc"))
     allocatorFunctions[libcMalloc] = AllocatorFn::getVariableSize(0);
   if(Function* libcFree = F.getParent()->getFunction("free"))
     deallocatorFunctions[libcFree] = DeallocatorFn(0);
-  if(Function* libcRealloc = F.getParent()->getFunction("realloc"))
+  if(Function* libcRealloc = F.getParent()->getFunction("realloc")) {
     deallocatorFunctions[libcRealloc] = DeallocatorFn(0);
+    reallocatorFunctions[libcRealloc] = ReallocatorFn(0, 1);
+  }
 
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;

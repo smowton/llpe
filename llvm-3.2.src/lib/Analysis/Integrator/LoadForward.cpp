@@ -2324,12 +2324,14 @@ void llvm::executeFreeInst(ShadowInstruction* SI, Function* FreeF) {
 
 }
 
-void llvm::executeReallocInst(ShadowInstruction* SI) {
+void llvm::executeReallocInst(ShadowInstruction* SI, Function* F) {
+
+  ReallocatorFn& Re = GlobalIHP->reallocatorFunctions[F];
 
   if(!GlobalIHP->allocations.count(SI)) {
     
     // Only alloc the first time; always carry out the copy implied by realloc.
-    ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(1)));
+    ConstantInt* AllocSize = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(Re.sizeArg)));
     Type* allocType = 0;
     if(AllocSize)
       allocType = ArrayType::get(Type::getInt8Ty(SI->invar->I->getContext()), AllocSize->getLimitedValue());
@@ -2346,7 +2348,7 @@ void llvm::executeReallocInst(ShadowInstruction* SI) {
 
   }
 
-  ShadowValue SrcPtr = SI->getCallArgOperand(0);
+  ShadowValue SrcPtr = SI->getCallArgOperand(Re.ptrArg);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Realloc from uninitialised PB?");
   release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Realloc non-pointer-typed value?");
@@ -2955,7 +2957,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	  executeMallocLikeInst(SI);
 	  break;
 	case SF_REALLOC:
-	  executeReallocInst(SI);
+	  executeReallocInst(SI, F);
 	  break;
 	case SF_FREE:
 	  executeFreeInst(SI, F);
