@@ -3,6 +3,7 @@
 
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
+#include "llvm/InlineAsm.h"
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/GlobalVariable.h"
@@ -3004,11 +3005,21 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
   }
 
-  // Finally clobber all locations; this call is entirely unhandled
-  //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
-  ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-  executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
+  bool clobbersMemory = true;
+  
+  InlineAsm* ASM;
+  if((ASM = dyn_cast<InlineAsm>(cast<CallInst>(SI->invar->I)->getCalledValue())) && !ASM->hasSideEffects())
+    clobbersMemory = false;
 
+  if(clobbersMemory) {
+
+    // Finally clobber all locations; this call is entirely unhandled
+    //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
+    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+    executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
+
+  }
+    
   // Args to an unhandled call escape, may be stored in old object, and may be visible from other threads.
   for(uint32_t i = 0, ilim = SI->invar->operandIdxs.size(); i != ilim; ++i) {
     

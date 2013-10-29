@@ -905,42 +905,59 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
     // Common technique to discover a pointer's alignment -- and it with a small integer.
     // Answer if we can.
 
-    if((!Op0Ptr) || Op1Ptr)
-      return false;
+    do {
 
-    ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
-    if(!MaskC)
-      return false;
+      if((!Op0Ptr) || Op1Ptr)
+	break;
 
-    if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
-      return false;
+      ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
+      if(!MaskC)
+	break;
 
-    uint64_t UOff = (uint64_t)Ops[0].second.Offset;
+      if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
+	break;
 
-    // Try to get alignment:
+      uint64_t UOff = (uint64_t)Ops[0].second.Offset;
 
-    unsigned Align = 0;
-    if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Ops[0].second.V.getVal()))
-      Align = GV->getAlignment();
-    else if(ShadowInstruction* SI = Ops[0].second.V.getInst()) {
+      // Try to get alignment:
+
+      unsigned Align = 0;
+      if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Ops[0].second.V.getVal()))
+	Align = GV->getAlignment();
+      else if(ShadowInstruction* SI = Ops[0].second.V.getInst()) {
       
-      if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
-	Align = AI->getAlignment();
-      else if(isa<CallInst>(SI->invar->I)) {
-	Function* F = getCalledFunction(SI);
-	if(F && F->getName() == "malloc") {
-	  Align = pass->getMallocAlignment();
+	if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
+	  Align = AI->getAlignment();
+	else if(isa<CallInst>(SI->invar->I)) {
+	  Function* F = getCalledFunction(SI);
+	  if(F && F->getName() == "malloc") {
+	    Align = pass->getMallocAlignment();
+	  }
 	}
+
       }
 
-    }
-
-    uint64_t Mask = MaskC->getLimitedValue();
+      uint64_t Mask = MaskC->getLimitedValue();
 	
-    if(Align > Mask) {
+      if(Align > Mask) {
       
-      ImpType = ValSetTypeScalar;
-      Improved.V = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
+	ImpType = ValSetTypeScalar;
+	Improved.V = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
+	return true;
+
+      }
+
+    } while(0);
+
+    // Otherwise, the usual rule: the and op cannot take a pointer into a different allocated object.
+    
+    if(Op0Ptr || Op1Ptr) {
+
+      std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0] : Ops[1];
+
+      ImpType = ValSetTypePB;
+      Improved.V = PtrV.second.V;
+      Improved.Offset = LLONG_MAX;
       return true;
 
     }
