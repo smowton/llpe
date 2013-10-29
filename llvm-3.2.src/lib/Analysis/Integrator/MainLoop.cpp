@@ -443,7 +443,9 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
 	  ShadowBB* BB = getBB(it->first);
 
-	  if(BB && !edgeIsDead(BB->invar, getBBInvar(it->second))) {
+	  if(BB 
+	     && (!edgeIsDead(BB->invar, getBBInvar(it->second)))
+	     && (!shouldIgnoreEdge(BB->invar, getBBInvar(it->second)))) {
 
 	    LFV3(errs() << "Drop exit edge " << BB->invar->BB->getName() << " -> " << getBBInvar(it->second)->BB->getName() << " with store " << BB->u.localStore << "\n");
 	    BB->u.localStore->dropReference();
