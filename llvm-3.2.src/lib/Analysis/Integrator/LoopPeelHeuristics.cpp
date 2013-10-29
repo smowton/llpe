@@ -1437,7 +1437,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
     StartE = SL->getElementContainingOffset(Offset);
     StartOff = Offset - SL->getElementOffset(StartE);
     EndE = SL->getElementContainingOffset(Offset + TargetSize);
-    EndOff = Offset - SL->getElementOffset(StartE);
+    EndOff = (Offset + TargetSize) - SL->getElementOffset(EndE);
 
   }
 
