@@ -1113,10 +1113,23 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
   
   if((!ResultPV) || !ResultPV->isComplete()) {
       
-    // Try the next linked map (one should exist:)
-    release_assert(IVM->Underlying && "Value not complete, but no underlying map?");
-    LFV3(errs() << "Defer to next map: " << IVM->Underlying << "\n");
-    readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, shouldTryMulti, error);
+    // If this is an out-of-bounds read it's legitimate to reach the bottom without resolution:
+    if(!IVM->Underlying) {
+
+      if(ResultPV) {
+	delete ResultPV;
+	ResultPV = 0;
+      }
+
+      Result.setOverdef();
+
+    }
+    else {
+
+      LFV3(errs() << "Defer to next map: " << IVM->Underlying << "\n");
+      readValRangeFrom(V, Offset, Size, ReadBB, IVM->Underlying, Result, ResultPV, shouldTryMulti, error);
+
+    }
       
   }
 
@@ -2599,6 +2612,8 @@ void llvm::initSpecialFunctionsMap(Module& M) {
     SpecialFunctionMap[F4] = SF_VASTART;
   if(Function* F5 = M.getFunction("llvm.va_copy"))
     SpecialFunctionMap[F5] = SF_VACOPY;
+  if(Function* F6 = M.getFunction("integrator_same_object"))
+    SpecialFunctionMap[F6] = SF_SAMEOBJECT;
 
 }
 
@@ -2968,7 +2983,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 	case SF_VACOPY:
 	  executeVaCopyInst(SI);
 	  break;
-
+	case SF_SAMEOBJECT:
+	  executeSameObject(SI);
+	  break;
 	}
 
 	return;

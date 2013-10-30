@@ -2059,7 +2059,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    SF_REALLOC,
    SF_FREE,
    SF_VASTART,
-   SF_VACOPY
+   SF_VACOPY,
+   SF_SAMEOBJECT
 
  };
 
@@ -2078,6 +2079,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  }
 
  void noteBarrierInst(ShadowInstruction*);
+ void executeSameObject(ShadowInstruction*);
 
 } // Namespace LLVM
 

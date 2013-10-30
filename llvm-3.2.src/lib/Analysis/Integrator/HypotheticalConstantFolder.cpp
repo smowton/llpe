@@ -968,6 +968,74 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
+#define SO_RESULT_DIFFERENT 0
+#define SO_RESULT_SAME 1
+#define SO_RESULT_UNKNOWN 2
+
+void llvm::executeSameObject(ShadowInstruction* SI) {
+
+  int existingResult = 0;
+  
+  if(SI->i.PB) {
+
+    if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI))) {
+
+      uint64_t oldRes = CI->getLimitedValue();
+      if(oldRes == 0)
+	existingResult = SO_RESULT_DIFFERENT;
+      else if(oldRes == 1)
+	existingResult = SO_RESULT_SAME;
+      else
+	existingResult = SO_RESULT_UNKNOWN;
+
+    }
+    else {
+
+      existingResult = SO_RESULT_UNKNOWN;
+
+    }
+
+  }
+  
+  int newResult = 0;
+
+  ShadowValue Op0 = SI->getOperand(0);
+  ShadowValue Op1 = SI->getOperand(1);
+  ShadowValue Op0Base, Op1Base;
+  if(getBaseObject(Op0, Op0Base) && getBaseObject(Op1, Op1Base)) {
+
+    newResult = (Op0Base == Op1Base) ? SO_RESULT_SAME : SO_RESULT_DIFFERENT;
+
+  }
+  else {
+
+    newResult = SO_RESULT_UNKNOWN;
+
+  }
+
+  if(SI->i.PB) {
+    if(existingResult == newResult)
+      return;
+    deleteIV(SI->i.PB);
+  }
+
+  if(newResult == SO_RESULT_UNKNOWN) {
+
+    SI->i.PB = newOverdefIVS();
+
+  }
+  else {
+ 
+    Type* I32 = Type::getInt32Ty(SI->invar->I->getContext());
+    Constant* Ret = ConstantInt::get(I32, newResult, true);
+    ImprovedValSetSingle* IVS = newIVS();
+    IVS->set(ImprovedVal(ShadowValue(Ret)), ValSetTypeScalar);
+    SI->i.PB = IVS;
+    
+  }
+  
+}
+
 // Defined in VMCore/ConstantFold.cpp but never prototyped:
 namespace llvm {
   Constant* ConstantFoldExtractValueInstruction(Constant *Agg, ArrayRef<unsigned> Idxs);

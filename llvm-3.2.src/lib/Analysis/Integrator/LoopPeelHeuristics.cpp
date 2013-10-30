@@ -104,6 +104,7 @@ static cl::opt<bool> VerbosePathConditions("int-verbose-path-conditions");
 static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
 static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
 static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
+static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2636,6 +2637,20 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
       SpecialFunctionMap[reallocF] = SF_REALLOC;
 
     }
+
+  }
+
+  for(cl::list<std::string>::iterator it = NeverInline.begin(), itend = NeverInline.end(); it != itend; ++it) {
+
+    Function* IgnoreF = F.getParent()->getFunction(*it);
+    if(!IgnoreF) {
+
+      errs() << "int-never-inline: no such function " << *it << "\n";
+      exit(1);
+
+    }
+
+    blacklistedFunctions.insert(IgnoreF);
 
   }
 
