@@ -223,14 +223,14 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
    
   if(!skipStoreMerge) {
 
+    // Check if the block becomes a certainty (only applicable when not in a loop!)
+    checkBlockStatus(BB, inLoopAnalyser);
+
     // Loop headers and entry blocks are given their stores in other ways
     // If doBlockStoreMerge returned false this block isn't currently reachable.
     // See comments in that function for reasons why that can happen.
     if(!doBlockStoreMerge(BB))
       return false;
-
-    // Check if the block becomes a certainty (only applicable when not in a loop!)
-    checkBlockStatus(BB, inLoopAnalyser);
 
   }
 
