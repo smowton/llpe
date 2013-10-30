@@ -3010,10 +3010,20 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
       }
     }
 
-    // All annotated calls return an unknown value:
     if(SI->i.PB)
       deleteIV(SI->i.PB);
-    SI->i.PB = newOverdefIVS();
+
+    std::pair<ValSetType, ImprovedVal> PathVal;
+    if(SI->parent->IA->tryGetAsDefPathValue(ShadowValue(SI), SI->parent, PathVal)) {
+      // Even unexpandable calls like syscalls can have path values:
+      ImprovedValSetSingle* NewIVS = newIVS();
+      NewIVS->set(PathVal.second, PathVal.first);
+      SI->i.PB = NewIVS;
+    }
+    else {
+      // All other annotated calls return an unknown value:
+      SI->i.PB = newOverdefIVS();
+    }
 
     // See if we can discard the call because it's annotated read-only:
     if(F->onlyReadsMemory())

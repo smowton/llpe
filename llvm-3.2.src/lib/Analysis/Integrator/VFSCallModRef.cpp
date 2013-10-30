@@ -237,6 +237,8 @@ static const IHPLocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
     switch(C->getLimitedValue()) {
     case TCGETS:
       return TCGETSMR;
+    case FIONBIO:
+      return JustErrno;
     }
 
   }
