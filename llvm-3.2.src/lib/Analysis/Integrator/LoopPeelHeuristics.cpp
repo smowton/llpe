@@ -453,7 +453,8 @@ static const char* blacklistedFnNames[] = {
    "pthread_setcanceltype",
    "pthread_setcancelstate",
    "writev",
-   "epoll_create"
+   "epoll_create",
+   "dup2"
    
 };
 
