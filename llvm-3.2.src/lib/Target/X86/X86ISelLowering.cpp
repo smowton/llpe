@@ -16990,6 +16990,27 @@ namespace {
   const VariadicFunction1<bool, StringRef, StringRef, matchAsmImpl> matchAsm={};
 }
 
+static bool clobbersFlagRegisters(const SmallVector<StringRef, 4>& AsmPieces) {
+
+  if(AsmPieces.size() == 3 || AsmPieces.size() == 4) {
+
+    if(std::count(AsmPieces.begin(), AsmPieces.end(), "~{cc}") &&
+       std::count(AsmPieces.begin(), AsmPieces.end(), "~{flags}") &&
+       std::count(AsmPieces.begin(), AsmPieces.end(), "~{fpsr}")) {
+
+      if(AsmPieces.size() == 3)
+	return true;
+      else if(std::count(AsmPieces.begin(), AsmPieces.end(), "~{dirflag}"))
+	return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
 bool X86TargetLowering::ExpandInlineAsm(CallInst *CI) const {
   InlineAsm *IA = cast<InlineAsm>(CI->getCalledValue());
 
@@ -17031,12 +17052,8 @@ bool X86TargetLowering::ExpandInlineAsm(CallInst *CI) const {
       const std::string &ConstraintsStr = IA->getConstraintString();
       SplitString(StringRef(ConstraintsStr).substr(5), AsmPieces, ",");
       std::sort(AsmPieces.begin(), AsmPieces.end());
-      if (AsmPieces.size() == 4 &&
-          AsmPieces[0] == "~{cc}" &&
-          AsmPieces[1] == "~{dirflag}" &&
-          AsmPieces[2] == "~{flags}" &&
-          AsmPieces[3] == "~{fpsr}")
-      return IntrinsicLowering::LowerToByteSwap(CI);
+      if (clobbersFlagRegisters(AsmPieces))
+	return IntrinsicLowering::LowerToByteSwap(CI);
     }
     break;
   case 3:
@@ -17049,11 +17066,7 @@ bool X86TargetLowering::ExpandInlineAsm(CallInst *CI) const {
       const std::string &ConstraintsStr = IA->getConstraintString();
       SplitString(StringRef(ConstraintsStr).substr(5), AsmPieces, ",");
       std::sort(AsmPieces.begin(), AsmPieces.end());
-      if (AsmPieces.size() == 4 &&
-          AsmPieces[0] == "~{cc}" &&
-          AsmPieces[1] == "~{dirflag}" &&
-          AsmPieces[2] == "~{flags}" &&
-          AsmPieces[3] == "~{fpsr}")
+      if (clobbersFlagRegisters(AsmPieces))
         return IntrinsicLowering::LowerToByteSwap(CI);
     }
 
