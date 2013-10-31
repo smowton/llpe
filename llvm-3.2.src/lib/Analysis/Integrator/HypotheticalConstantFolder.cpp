@@ -2116,7 +2116,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   {
 
     ImprovedValSetSingle* NewIVS;
-    if((NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) && NewIVS->isWhollyUnknown()) {
+    if((NewIVS = dyn_cast<ImprovedValSetSingle>(NewPB)) && (NewIVS->isWhollyUnknown() || NewIVS->Values.size() > 1)) {
 
       std::pair<ValSetType, ImprovedVal> PathVal;
       if(tryGetAsDefPathValue(V, SI->parent, PathVal))
