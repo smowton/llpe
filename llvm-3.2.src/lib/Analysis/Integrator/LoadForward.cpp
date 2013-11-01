@@ -2217,6 +2217,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   baseStore.storeSize = AllocSize;
   // baseStore.allocIdx was already set by our caller.
   baseStore.allocVague = false;
+  baseStore.allocTested = AllocUnchecked;
 
   // Note that the new object is unreachable from old objects, thread-local and unescaped.
   SI->parent->u.localStore = SI->parent->u.localStore->getWritableFrameList();

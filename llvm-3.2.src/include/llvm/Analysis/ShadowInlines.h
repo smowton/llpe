@@ -783,12 +783,21 @@ LocStore(const LocStore& other) : store(other.store) {}
 
 };
 
+enum AllocTestedState {
+
+  AllocUnchecked,
+  AllocTested,
+  AllocEscaped
+
+};
+
 struct AllocData {
 
   LocStore store;
   uint64_t storeSize;
   int32_t allocIdx;
   bool allocVague;
+  AllocTestedState allocTested;
 
 };
 

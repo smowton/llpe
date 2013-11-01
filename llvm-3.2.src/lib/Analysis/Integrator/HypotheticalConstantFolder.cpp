@@ -627,39 +627,91 @@ static bool isIDOrConst(ShadowValue& op) {
 
 }
 
-static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
+class FindTestWalker : public ForwardIAWalker {
 
-  // For now, only deal with the common case that a heap object is allocated
-  // and immediately tested in the same basic block.
-  // If this situation is apparent, only that test needs to be checked at runtime;
-  // if it can't, all heap pointer checks need repeating.
+  ShadowInstruction* AllocI;
+  ShadowInstruction* TestI;
 
-  // I know V is a heap allocation, therefore a call instruction.
-  ShadowInstruction* I = V.getInst();
-  ShadowBB* BB = I->parent;
+  bool isAllocI(ShadowValue Op) {
 
-  // This test is in the allocation block?
-  if(TestI->parent == BB)
-    return false;
+    ShadowValue OpB;
+    if(!getBaseObject(Op, OpB))
+      return false;
+    return OpB.isInst() && OpB.getInst() == AllocI;
 
-  // Look for a comparison against null that follows the allocation:
-  for(uint32_t i = I->invar->idx + 1, ilim = BB->insts.size(); i != ilim; ++i) {
+  }
 
-    ShadowInstruction* ThisI = &BB->insts[i];
-    if(inst_is<ICmpInst>(ThisI)) {
+  virtual WalkInstructionResult walkInstruction(ShadowInstruction* ThisI, void* Context) {
+
+    if(ThisI == TestI) {
 
       ShadowValue Op0 = ThisI->getOperand(0);
       ShadowValue Op1 = ThisI->getOperand(1);
 
-      if((val_is<ConstantPointerNull>(Op0) && Op1.isInst() && Op1.getInst() == I) ||
-	 (val_is<ConstantPointerNull>(Op1) && Op0.isInst() && Op0.getInst() == I))
-	return true;
+      if((val_is<ConstantPointerNull>(Op0) && Op1.isInst() && isAllocI(Op1)) ||
+	 (val_is<ConstantPointerNull>(Op1) && Op0.isInst() && isAllocI(Op0))) {
+
+	Result = AllocTested;
+	return WIRStopWholeWalk;
+	
+      }
       
     }
 
+    return WIRContinue;
+
   }
 
-  errs() << "Heap allocation " << itcache(V) << " does not appear to be locally tested and so all null comparisons will be checked\n";
+  virtual bool shouldContinue() {
+
+    if(Worklist1.size() + Worklist2.size() > 2) {
+
+      // Control flow divergence
+      Result = AllocEscaped;
+      return false;
+
+    }
+
+    return true;
+
+  }
+
+  virtual bool shouldEnterCall(ShadowInstruction* I, void* C) { return true; }
+  virtual bool blockedByUnexpandedCall(ShadowInstruction* CI, void* C) { Result = AllocEscaped; return true; }
+
+public:
+
+  AllocTestedState Result;
+
+  FindTestWalker(ShadowInstruction* _StartI, ShadowInstruction* _TestI) : ForwardIAWalker(_StartI->invar->idx, _StartI->parent, true), AllocI(_StartI), TestI(_TestI) {  }
+
+};
+
+static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
+
+  // I know V is a heap allocation, therefore a call instruction.
+  ShadowInstruction* I = V.getInst();
+
+  // Has the allocation already been tested?
+  if(I->getAllocData()->allocTested == AllocTested)
+    return true;
+  else if(I->getAllocData()->allocTested == AllocEscaped)
+    return false;
+  
+  // Determine if this test dominates all other tests. Instructions are visited in
+  // topological order, so this must be the first test. Walk forwards starting at the allocation,
+  // and determine whether we reach TestI or a control flow split first.
+
+  FindTestWalker W(I, TestI);
+  W.walk();
+
+  I->getAllocData()->allocTested = W.Result;
+  if(W.Result == AllocEscaped) {
+
+     errs() << "Heap allocation " << itcache(V) << " does not appear to be locally tested and so all null comparisons will be checked\n";
+
+  }
+
   return false;
 
 }
