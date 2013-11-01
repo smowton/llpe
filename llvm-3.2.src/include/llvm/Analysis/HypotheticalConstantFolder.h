@@ -1427,6 +1427,7 @@ protected:
   virtual void finishFailedBlockCommit();
   uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
+  Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V);
   virtual void commitSimpleFailedBlock(uint32_t i);
   void getSplitInsts(ShadowBBInvar*, bool* splits);
   virtual void createFailedBlock(uint32_t idx);
@@ -2035,6 +2036,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  InlineAttempt* getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth);
 
  Value* getCommittedValue(ShadowValue SV);
+ Constant* getConstAsType(Constant*, Type*);
  Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore);
  Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd);
 

@@ -950,7 +950,7 @@ Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value*
 
 }
 
-Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V) {
+Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
 
@@ -968,10 +968,60 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
     ShadowInstruction* specI = getInst(blockIdx, instIdx);
     if((!specI) || !specI->committedVal)
       return 0;
-    else
-      return getCommittedValue(ShadowValue(specI));
+    else {
+
+      // Rise if appropriate:
+      ShadowBBInvar* BBI = getBBInvar(blockIdx);
+      PeelAttempt* LPA;
+      if(BBI->naturalScope != L && 
+	 ((!L) || L->contains(BBI->naturalScope)) &&
+	 (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) &&
+	 LPA->isTerminated() &&
+	 LPA->isEnabled()) {
+
+	return LPA->Iterations.back()->getSpecValueAnyType(blockIdx, instIdx, V);
+	  
+      }
+      else {
+     
+	return getCommittedValue(ShadowValue(specI));
+
+      }
+
+    }
 
   }  
+
+}
+
+Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V) {
+
+  Value* Ret = getSpecValueAnyType(blockIdx, instIdx, V);
+  if(!Ret)
+    return 0;
+
+  if(Ret->getType() != V->getType()) {
+
+    Instruction* insertCastBefore = 0;
+
+    if(Instruction* I = dyn_cast<Instruction>(Ret)) {
+
+      BasicBlock::iterator BI(I);
+      ++BI;
+      insertCastBefore = BI;
+      Ret = getValAsType(Ret, V->getType(), insertCastBefore);
+
+    }
+    else {
+
+      release_assert(isa<Constant>(Ret));
+      Ret = getConstAsType(cast<Constant>(Ret), V->getType());
+
+    }
+
+  }
+
+  return Ret;
 
 }
 

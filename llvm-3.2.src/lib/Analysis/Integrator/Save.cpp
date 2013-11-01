@@ -344,14 +344,8 @@ void IntegrationAttempt::commitCFG() {
 
 	      // Split the specialised block:
 	      
-	      Twine ExitName;
-	      if(VerboseNames)
-		ExitName = StringRef(Pref) + "callexit";
-	      else
-		ExitName = "";
-
 	      IA->returnBlock = 
-		BasicBlock::Create(F.getContext(), ExitName, CF);
+		BasicBlock::Create(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CF);
 	      BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
 	      IA->CommitF = CF;
 
@@ -397,13 +391,7 @@ void IntegrationAttempt::commitCFG() {
 	      // Requires a break afterwards if the target function might branch onto a failed path.
 	      if(IA->hasFailedReturnPath()) {
 
-		Twine RetName;
-		if(VerboseNames)
-		  RetName = StringRef(Pref) + "OOL callexit";
-		else
-		  RetName = "";
-
-		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), RetName, CF);
+		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
 		BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
 
 	      }
@@ -427,24 +415,12 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(pass->verbosePCs || requiresBreakCode(SI)) {
 
-	    Twine BreakName;
-	    if(VerboseNames)
-	      BreakName = StringRef(Name) + ".vfsbreak";
-	    else
-	      BreakName = "";
-
-	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
+	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".vfsbreak" : "", CF);
 	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	  }
 
-	  Twine PassName;
-	  if(VerboseNames)
-	    PassName = StringRef(Name) + ".vfspass";
-	  else
-	    PassName = "";
-
-	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), PassName, CF);
+	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF);
 	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j));
 
 	}
@@ -462,25 +438,13 @@ void IntegrationAttempt::commitCFG() {
 
 	if(pass->verbosePCs) {
 	
-	  Twine BreakName;
-	  if(VerboseNames)
-	    BreakName = StringRef(Name) + ".tlbreak";
-	  else
-	    BreakName = "";
-
 	  // The previous block will break due to a tentative load. Give it a break block.
-	  BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
+	  BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
 	  BB->committedBlocks.back().breakBlock = breakBlock;
 
 	}
 
-	Twine PassName;
-	if(VerboseNames)
-	  PassName = StringRef(Name) + ".checkpass";
-	else
-	  PassName = "";
-
-	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), PassName, CF);
+	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF);
 	BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j+1));
 
       }
@@ -491,14 +455,8 @@ void IntegrationAttempt::commitCFG() {
     // Make a break block for that purpose.
     if(pass->verbosePCs && hasLiveIgnoredEdges(BB)) {
 
-      Twine BreakName;
-      if(VerboseNames)
-	BreakName = StringRef(Name) + ".directbreak";
-      else
-	BreakName = "";
-
       BB->committedBlocks.back().breakBlock = 
-	BasicBlock::Create(F.getContext(), BreakName, CF);
+	BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".directbreak" : "", CF);
 
     }
 
@@ -667,10 +625,21 @@ ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
   
 }
 
+Constant* llvm::getConstAsType(Constant* C, Type* Ty) {
+
+  release_assert(CastInst::isCastable(C->getType(), Ty) && "Bad cast in commit stage");
+  Instruction::CastOps Op = CastInst::getCastOpcode(C, false, Ty, false);
+  return ConstantExpr::getCast(Op, C, Ty);
+
+}
+
 Value* llvm::getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
   if(Ty == V->getType())
     return V;
+
+  if(isa<Constant>(V))
+    return getConstAsType(cast<Constant>(V), Ty);
 
   release_assert(CastInst::isCastable(V->getType(), Ty) && "Bad cast in commit stage");
   Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
@@ -683,11 +652,15 @@ Value* llvm::getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
   if(Ty == V->getType())
     return V;
 
+  if(isa<Constant>(V))
+    return getConstAsType(cast<Constant>(V), Ty);
+
   release_assert(CastInst::isCastable(V->getType(), Ty) && "Bad cast in commit stage");
   Instruction::CastOps Op = CastInst::getCastOpcode(V, false, Ty, false);
   return CastInst::Create(Op, V, Ty, VerboseNames ? "speccast" : "", insertAtEnd);
 
 }
+
 PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
   // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
@@ -1486,6 +1459,12 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  if(isa<StoreInst>(newI)) {
+
+    release_assert(newI->getOperand(0)->getType() == cast<PointerType>(newI->getOperand(1)->getType())->getElementType());
+
+  }
+
   return newI;
 
 }
@@ -1568,10 +1547,10 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
   
   Type* Int8Ptr = Type::getInt8PtrTy(emitBB->getContext());
 
-  if(GlobalVariable* GV = cast_or_null<GlobalVariable>(Base.getVal())) {
+  if(Base.isGV()) {
 
     // Rep as a constant expression:
-    Result = (getGVOffset(GV, Offset, targetType));
+    Result = (getGVOffset(Base.getGV()->G, Offset, targetType));
 
   }
   else {
@@ -1743,6 +1722,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
     else {
 
       // Emit as simple store.
+      release_assert(newVal->getType() == cast<PointerType>(targetPtrSynth->getType())->getElementType());
       new StoreInst(newVal, targetPtrSynth, emitBB);
 
     }
@@ -1758,6 +1738,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
       ImprovedVal& IV = it->second.Values[0];
       Value* newVal = trySynthVal(I, IV.V.getType(), it->second.SetType, IV, emitBB);
+      release_assert(!isa<Instruction>(newVal));
       Types.push_back(newVal->getType());
       Copy.push_back(cast<Constant>(newVal));
       lastOffset = it->first.second;
@@ -1826,7 +1807,7 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
 	itend = Vals.end(); it != itend; ++it) {
 
     if(it->second.SetType == ValSetTypeScalar || 
-       (it->second.SetType == ValSetTypePB && it->second.Values[0].V.isGV())) {
+       (it->second.SetType == ValSetTypePB && (it->second.Values[0].V.isGV() || it->second.Values[0].V.isVal()))) {
 
       // Emit shortly.
       continue;

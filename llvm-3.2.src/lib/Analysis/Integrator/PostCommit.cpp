@@ -106,23 +106,15 @@ void IntegrationHeuristicsPass::postCommitOptimiseF(Function* F) {
   for(std::vector<std::vector<BasicBlock*> >::iterator chainit = Chains.begin(),
 	itend = Chains.end(); chainit != itend; ++chainit) {
 
-    errs() << "Merge chain of length" << chainit->size();
-    uint32_t dotFreq = chainit->size() / 10;
-
     std::vector<BasicBlock*>& Chain = *chainit;
 
     bool isEntry = Chain[0] == &Chain[0]->getParent()->getEntryBlock();
     
-    for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i) {
-      if(dotFreq != 0 && i % dotFreq == 0)
-	errs() << ".";
+    for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i)
       MergeBasicBlockIntoOnlyPred(Chain[i]);
-    }
 
     if(isEntry && Chain.back() != &Chain.back()->getParent()->getEntryBlock())
       Chain.back()->moveBefore(&Chain.back()->getParent()->getEntryBlock());
-
-    errs() << "\n";
 
   }
 
