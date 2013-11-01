@@ -367,7 +367,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 	}
 
       }
-      else if((!F) || GlobalIHP->yieldFunctions.count(F)) {
+      else if(((!F) && !GlobalIHP->programSingleThreaded) || GlobalIHP->yieldFunctions.count(F)) {
 
 	if(GlobalIHP->pessimisticLocks.count(CallI)) {
 

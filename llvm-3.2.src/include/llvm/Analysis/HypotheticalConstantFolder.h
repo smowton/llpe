@@ -481,6 +481,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseSet<ShadowInstruction*> barrierInstructions;
 
+   bool programSingleThreaded;
+
    DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
 
    GlobalStats stats;
@@ -569,7 +571,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool volatileLoadIsSimple(LoadInst* LI) {
 
-     return simpleVolatileLoads.count(LI);
+     return programSingleThreaded || simpleVolatileLoads.count(LI);
 
    }
 

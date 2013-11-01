@@ -105,6 +105,7 @@ static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
 static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
 static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
+static cl::opt<bool> SingleThreaded("int-single-threaded", cl::ZeroOrMore);
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2669,6 +2670,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->verboseSharing = VerboseFunctionSharing;
   this->useDSA = UseDSA;
   this->verbosePCs = VerbosePathConditions;
+  this->programSingleThreaded = SingleThreaded;
 
   if(Function* preludeFn = F.getParent()->getFunction(LLIOPreludeFn))
     this->llioPreludeFn = preludeFn;

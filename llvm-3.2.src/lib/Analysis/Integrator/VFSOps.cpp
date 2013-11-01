@@ -551,6 +551,9 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
       LPDEBUG("Failed to stat " << OS.Name << "\n");
       return true;
     }
+
+    if(!(file_stat.st_mode & S_IFREG))
+      return true;
     
     int64_t bytesAvail = file_stat.st_size - Walk.uniqueIncomingOffset;
     if(cBytes > bytesAvail) {
