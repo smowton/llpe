@@ -7,8 +7,11 @@
 
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
+
+static cl::opt<bool> SkipPostCommit("int-skip-post-commit");
 
 // TODO at some point: fold this stuff into the save procedure.
 
@@ -125,6 +128,9 @@ void IntegrationHeuristicsPass::postCommitOptimise() {
   // Just one post-save optimisation at the moment: specialisation commonly produces
   // long chains of blocks with a single predecessor and a unique successor.
   // For each such chain, merge into a single large block.
+
+  if(SkipPostCommit)
+    return;
 
   errs() << "Post-commit optimisation";
 

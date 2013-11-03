@@ -482,6 +482,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseSet<ShadowInstruction*> barrierInstructions;
 
    bool programSingleThreaded;
+   bool omitChecks;
 
    DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
 

@@ -47,6 +47,9 @@ void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool
 
 void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
 
+  if(pass->omitChecks)
+    return;
+
   if(!blocksReachableOnFailure)
     blocksReachableOnFailure = new SmallDenseMap<uint32_t, uint32_t, 8>();
 
@@ -448,6 +451,9 @@ void IntegrationAttempt::initFailedBlockCommit() {}
 
 void InlineAttempt::initFailedBlockCommit() {
 
+  if(pass->omitChecks)
+    release_assert(!blocksReachableOnFailure);
+
   // We won't need PHIForwards or ForwardingPHIs until the instruction commit phase;
   // they will remain 0-sized and unallocated until then.
   // failedBlockMap only needs to hold a little more than one entry per failed block here.
@@ -799,6 +805,9 @@ BasicBlock::iterator InlineAttempt::skipMergePHIs(BasicBlock::iterator it) {
 }
 
 bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
+
+  if(pass->omitChecks)
+    return false;
 
   for(uint32_t i = 0, ilim = BB->invar->succIdxs.size(); i != ilim; ++i) {
 

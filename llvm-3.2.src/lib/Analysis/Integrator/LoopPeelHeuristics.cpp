@@ -105,7 +105,8 @@ static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
 static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
 static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
-static cl::opt<bool> SingleThreaded("int-single-threaded", cl::ZeroOrMore);
+static cl::opt<bool> SingleThreaded("int-single-threaded");
+static cl::opt<bool> OmitChecks("int-omit-checks");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -1780,7 +1781,7 @@ void IntegrationHeuristicsPass::commit() {
 
   Function* writePreludeFn;
 
-  if(llioDependentFiles.empty())
+  if(omitChecks || llioDependentFiles.empty())
     writePreludeFn = 0;
   else {
 
@@ -2671,6 +2672,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->useDSA = UseDSA;
   this->verbosePCs = VerbosePathConditions;
   this->programSingleThreaded = SingleThreaded;
+  this->omitChecks = OmitChecks;
+  if(this->omitChecks && !this->programSingleThreaded) {
+
+    errs() << "omit-checks currently requires single-threaded\n";
+    exit(1);
+
+  }
 
   if(Function* preludeFn = F.getParent()->getFunction(LLIOPreludeFn))
     this->llioPreludeFn = preludeFn;

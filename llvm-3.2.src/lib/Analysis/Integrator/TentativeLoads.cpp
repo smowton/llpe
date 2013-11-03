@@ -835,8 +835,12 @@ void InlineAttempt::rerunTentativeLoads() {
 
 bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
 
+  if(GlobalIHP->omitChecks)
+    return false;
+
   if(!V.isInst())
     return false;
+
   return V.u.I->parent->IA->requiresRuntimeCheck2(V, includeSpecialChecks);
 
 }

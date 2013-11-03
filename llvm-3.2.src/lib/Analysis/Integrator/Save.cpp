@@ -265,7 +265,9 @@ void IntegrationAttempt::commitCFG() {
       CF->getBasicBlockList().push_back(firstNewBlock);
       
     // Create extra empty blocks for each path condition that's effective here:
-    uint32_t nCondsHere = pass->countPathConditionsAtBlockStart(BB->invar, BB->IA);
+    // If OmitChecks is specified, no tests are emitted and so no blocks are needed.
+    uint32_t nCondsHere = pass->omitChecks ? 0 : pass->countPathConditionsAtBlockStart(BB->invar, BB->IA);
+
     for(uint32_t k = 0; k < nCondsHere; ++k) {
 
       if(pass->verbosePCs) {
@@ -297,7 +299,7 @@ void IntegrationAttempt::commitCFG() {
     }
 
     // Create one extra top block if there's a special check at the beginning
-    if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+    if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !pass->omitChecks) {
 
       if(pass->verbosePCs || requiresBreakCode(&BB->insts[0])) {
 	
@@ -409,7 +411,7 @@ void IntegrationAttempt::commitCFG() {
 
       // If we need a check *before* this instruction (at the moment only true if it's a read 
       // call that will require an inline check) then add a break.
-      if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+      if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !GlobalIHP->omitChecks) {
 
 	if(j != 0) {
 
@@ -873,6 +875,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(BB->succsAlive[i]) {
 
+      if(pass->omitChecks && shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
+	continue;
+
       if(knownSucc == 0xffffffff)
 	knownSucc = BB->invar->succIdxs[i];
       else if(knownSucc == BB->invar->succIdxs[i])
@@ -1058,45 +1063,49 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
       
       LLVMContext& Context = CI->getContext();
 
-      // Emit a check that file specialisations are still admissible:
-      // (TODO: avoid these more often)
-      Type* Int32Ty = IntegerType::get(Context, 32);
-      Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
-      Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
-      
-      Constant* Zero32 = Constant::getNullValue(Int32Ty);
-      Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
-      
-      BasicBlock* breakBlock = emitBBIter->breakBlock;
+      if(!pass->omitChecks) {
 
-      // Seek to the right position in the break block:
-      emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
-		 it->second.incomingOffset, breakBlock);
+	// Emit a check that file specialisations are still admissible:
+	// (TODO: avoid these more often)
+	Type* Int32Ty = IntegerType::get(Context, 32);
+	Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+	Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
       
-      // Print failure notice if building a verbose specialisation:
-      if(pass->verbosePCs) {
+	Constant* Zero32 = Constant::getNullValue(Int32Ty);
+	Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
+
+	BasicBlock* breakBlock = emitBBIter->breakBlock;
+
+	// Seek to the right position in the break block:
+	emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
+		   it->second.incomingOffset, breakBlock);
+      
+	// Print failure notice if building a verbose specialisation:
+	if(pass->verbosePCs) {
 	
-	std::string message;
-	{
-	  raw_string_ostream RSO(message);
-	  RSO << "Denied permission to use specialised files reading " << it->second.openArg->Name << " in " << emitBB->getName() << "\n";
+	  std::string message;
+	  {
+	    raw_string_ostream RSO(message);
+	    RSO << "Denied permission to use specialised files reading " << it->second.openArg->Name << " in " << emitBB->getName() << "\n";
+	  }
+	
+	  emitRuntimePrint(breakBlock, message, 0);
+	
 	}
-	
-	emitRuntimePrint(breakBlock, message, 0);
-	
-      }
       
-      ++emitBBIter;
+	++emitBBIter;
 
-      // Branch to the real read instruction on failure:
-      BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
-      BasicBlock* successTarget = emitBBIter->specBlock;
+	// Branch to the real read instruction on failure:
+	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
+	BasicBlock* successTarget = emitBBIter->specBlock;
       
-      BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
-      BranchInst::Create(failTarget, breakBlock);
+	BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
+	BranchInst::Create(failTarget, breakBlock);
       
-      // Emit the rest of the read implementation in the next specialised block:
-      emitBB = successTarget;
+	// Emit the rest of the read implementation in the next specialised block:
+	emitBB = successTarget;
+
+      }
 
       // Insert a seek call if that turns out to be necessary (i.e. if that FD may be subsequently
       // used without an intervening SEEK_SET)
@@ -1208,7 +1217,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   Function* CalledF = getCalledFunction(I);
 
-  if(I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
+  if((!pass->omitChecks) && I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
      (CalledF->getName() == "stat" || CalledF->getName() == "fstat")) {
 
     LLVMContext& Context = emitBB->getContext();
@@ -1994,7 +2003,11 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
     release_assert(emitPHIsTo == BB->committedBlocks.begin() && "PHI emission should not move the emit pointer");
 
     // Synthesise path condition checks, using a successive emitBB for each one:
-    SmallVector<CommittedBlock, 1>::iterator emitBlockIt = emitPathConditionChecks(BB);
+    SmallVector<CommittedBlock, 1>::iterator emitBlockIt;
+    if(pass->omitChecks)
+      emitBlockIt = BB->committedBlocks.begin();
+    else
+      emitBlockIt = emitPathConditionChecks(BB);
 
     // If the PHI nodes are loop exit PHIs that need their values checking, emit the check.
     if(j != 0) {
