@@ -874,7 +874,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
     }
 
   }
-
+  
   // There was already an entry in the local map or base store.
 
   if(writeWholeObject && willWriteSingleObject) {
@@ -932,21 +932,18 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   
 }
 
-bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
+bool llvm::addIVToPartialVal(ImprovedVal& IV, ValSetType SetType, uint64_t IVOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
 
-  release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVSToPartialVal");
+  release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVToPartialVal");
 
-  // For now we forbid building from bytes when an input is set-typed:
-  if(IVS.isWhollyUnknown() || IVS.Values.size() != 1)
-    return false;
   // And also if the value that would be merged is not constant-typed:
-  if(IVS.SetType != ValSetTypeScalar && IVS.SetType != ValSetTypeScalarSplat)
+  if(SetType != ValSetTypeScalar && SetType != ValSetTypeScalarSplat)
     return false;
 
   PartialVal NewPV;
-  Constant* DefC = cast<Constant>(IVS.Values[0].V.getVal());
-  if(IVS.SetType == ValSetTypeScalar) {
-    NewPV = PartialVal::getPartial(DefC, IVSOffset);
+  Constant* DefC = cast<Constant>(IV.V.getVal());
+  if(SetType == ValSetTypeScalar) {
+    NewPV = PartialVal::getPartial(DefC, IVOffset);
   }
   else {
     // Splat of i8:
@@ -968,6 +965,16 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uin
     return false;
 
   return true;
+
+}
+
+bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
+
+  // For now we forbid building from bytes when an input is set-typed:
+  if(IVS.isWhollyUnknown() || IVS.Values.size() != 1)
+    return false;
+  
+  return addIVToPartialVal(IVS.Values[0], IVS.SetType, IVSOffset, PVOffset, Size, PV, error);
 
 }
 
@@ -1095,15 +1102,20 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       ResultPV = 0;
       Result.setOverdef();
 
-      if((it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) 
-	 && FirstReadByte == it.start() 
-	 && LastReadByte == it.stop()) {
+      if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	if(FirstReadByte == it.start() && LastReadByte == it.stop()) {
 
-	// This read would read a whole FD or pointer, but can't because we can't express those
-	// as bytes. It's therefore worth trying again with a more expensive multi descriptor.
+	  // This read would read a whole FD or pointer, but can't because we can't express those
+	  // as bytes. It's therefore worth trying again with a more expensive multi descriptor.
+	  
+	  shouldTryMulti = true;
+	  
+	}
+      }
+      else if(!it.val().isWhollyUnknown()) {
 
 	shouldTryMulti = true;
-      
+	  
       }
 
       return;
@@ -3495,6 +3507,21 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 
 }
 
+static void scalarSplatToScalar(ImprovedValSetSingle& IVS, Type* targetType) {
+
+  for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
+
+    PartialVal PV(ValSetTypeScalarSplat, IVS.Values[i]);
+    Constant* PVC = PVToConst(PV, 0, GlobalTD->getTypeStoreSize(targetType), targetType->getContext());
+    IVS.Values[i] = ImprovedVal(ShadowValue(PVC));
+
+  }
+
+  IVS.SetType = ValSetTypeScalar;
+  IVS.coerceToType(targetType, GlobalTD->getTypeStoreSize(targetType), 0);
+
+}
+
 static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& otherVal, OrdinaryMerger* Visitor) {
 
   if(Visitor->useVarargMerge && 
@@ -3505,12 +3532,36 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
 
     if(otherVal.Values[0].Offset > consumeVal.Values[0].Offset)
       consumeVal = otherVal;
-
+    
   }
   else {
 
-    if((consumeVal.SetType == ValSetTypeScalar && consumeVal.Values.size() && otherVal.SetType == ValSetTypePB && otherVal.Values.size()) ||
-       (otherVal.SetType == ValSetTypeScalar && otherVal.Values.size() && consumeVal.SetType == ValSetTypePB && consumeVal.Values.size())) {
+    // Expand scalar splats if the other argument is not a splat.
+    if(consumeVal.SetType == ValSetTypeScalarSplat && consumeVal.Values.size() && otherVal.SetType == ValSetTypeScalar && otherVal.Values.size()) {
+
+      scalarSplatToScalar(consumeVal, otherVal.Values[0].V.getVal()->getType());
+      // Fall through to merge
+
+    }
+    else if(consumeVal.SetType == ValSetTypeScalar && consumeVal.Values.size() && otherVal.SetType == ValSetTypeScalarSplat && otherVal.Values.size()) {
+
+      ImprovedValSetSingle Copy(otherVal);
+      scalarSplatToScalar(Copy, consumeVal.Values[0].V.getVal()->getType());
+      consumeVal.merge(Copy);
+      return;
+
+    }
+
+    // Convert scalar zeroes to null pointers if appropriate.
+    else if(((consumeVal.SetType == ValSetTypeScalar || consumeVal.SetType == ValSetTypeScalarSplat) && 
+	     consumeVal.Values.size() && 
+	     otherVal.SetType == ValSetTypePB && 
+	     otherVal.Values.size()) ||
+	    
+	    ((otherVal.SetType == ValSetTypeScalar || otherVal.SetType == ValSetTypeScalarSplat) && 
+	     otherVal.Values.size() && 
+	     consumeVal.SetType == ValSetTypePB && 
+	     consumeVal.Values.size())) {
 
       // Asymmetry to avoid altering the read-only otherVal (consumeVal is mutable).
       if(consumeVal.onlyContainsZeroes()) {

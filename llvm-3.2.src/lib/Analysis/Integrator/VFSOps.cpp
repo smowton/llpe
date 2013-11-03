@@ -104,6 +104,12 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
 }
 
+static bool filenameIsForbidden(std::string& s) {
+
+  return s.find("/proc/") == 0 || s.find("/sys/") == 0 || s.find("/dev/") == 0;
+
+}
+
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
@@ -546,6 +552,9 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     
     int64_t cBytes = intBytes->getLimitedValue();
 
+    if(filenameIsForbidden(OS.Name))
+      return true;
+
     struct stat file_stat;
     if(::stat(OS.Name.c_str(), &file_stat) == -1) {
       LPDEBUG("Failed to stat " << OS.Name << "\n");
@@ -554,7 +563,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
     if(!(file_stat.st_mode & S_IFREG))
       return true;
-    
+
     int64_t bytesAvail = file_stat.st_size - Walk.uniqueIncomingOffset;
     if(cBytes > bytesAvail) {
       LPDEBUG("Desired read of " << cBytes << " truncated to " << bytesAvail << " (EOF)\n");

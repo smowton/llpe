@@ -29,7 +29,7 @@
 
 using namespace llvm;
 
-int debugDOT = 0;
+int nLoopsWritten = 0;
 
 bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
@@ -65,7 +65,9 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
 bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
-  return analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
+  bool ret = analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
+
+  return ret;
 
 }
 

@@ -1653,6 +1653,52 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
 
 }
 
+static void flattenIVM(ImprovedValSetMulti* InIVM, uint64_t resSize, int64_t ShiftInt, uint32_t elemsLimit, uint32_t nextElem, uint32_t* elems, SmallVector<uint32_t, 4>& setSizesInRange, ImprovedValSetSingle& Result) {
+
+  if(nextElem == elemsLimit) {
+
+    PartialVal PV(resSize);
+    uint32_t thisElem = 0;
+    for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
+
+      // Out of range left?
+      if(((int64_t)it.stop()) + ShiftInt <= 0)
+	continue;
+	
+      // Out of range right?
+      if(it.start() + ShiftInt >= (uint64_t)resSize)
+	continue;
+
+      int64_t ShiftedStart = ((int64_t)it.start()) + ShiftInt;
+      int64_t ShiftedStop = ((int64_t)it.stop()) + ShiftInt;
+
+      if(!addIVToPartialVal(it.val().Values[elems[thisElem++]], it.val().SetType, std::max(-ShiftedStart, (int64_t)0), std::max(ShiftedStart, (int64_t)0), std::min(ShiftedStop, (int64_t)resSize) - std::max(ShiftedStart, (int64_t)0), &PV, 0)) {
+
+	Result.setOverdef();
+	return;    
+
+      }
+
+    }
+
+    Constant* PVConst = PVToConst(PV, 0, resSize, GlobalIHP->RootIA->F.getContext());
+    ShadowValue PVConstV(PVConst);
+    addValToPB(PVConstV, Result);
+    
+  }
+  else {
+
+    for(uint32_t i = 0, ilim = setSizesInRange[nextElem]; i != ilim; ++i) {
+
+      elems[nextElem] = i;
+      flattenIVM(InIVM, resSize, ShiftInt, elemsLimit, nextElem + 1, elems, setSizesInRange, Result);
+
+    }
+
+  }
+
+}
+
 bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedValSet*& NewIV) {
 
   // Currently supported operations on multis:
@@ -1706,8 +1752,11 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
       // Discounting items that will be out of range, will the new value be a simple integer?
       // How many items will remain visible post shift?
-      bool NonScalarsInRange = false;
+      bool ComplexValuesInRange = false;
       bool uniqueValid = false;
+      bool overdefInRange = false;
+      uint32_t setProduct = 1;
+      SmallVector<uint32_t, 4> setSizesInRange;
       ImprovedValSetSingle* uniqueVal = 0;
       for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
 
@@ -1719,8 +1768,16 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	if(it.start() + ShiftInt >= (uint64_t)resSize)
 	  continue;
 
+	setSizesInRange.push_back(it.val().Values.size());
+
 	if(!(it.val().SetType == ValSetTypeScalar || it.val().Overdef || !it.val().isInitialised()))
-	  NonScalarsInRange = true;
+	  ComplexValuesInRange = true;
+
+	if(it.val().isWhollyUnknown())
+	  overdefInRange = true;
+
+	if(it.val().Values.size() > 0)
+	  setProduct *= it.val().Values.size();
 
 	if(!uniqueValid) {
 	  uniqueVal = &(it.val());
@@ -1736,37 +1793,20 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	NewIV = copyIV(uniqueVal);
 
       }
-      else if(!NonScalarsInRange) {
+      else if(!ComplexValuesInRange) {
 	
-	// Flatten to single value.
-	PartialVal PV(resSize);
-	for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
-
-	  // Out of range left?
-	  if(((int64_t)it.stop()) + ShiftInt <= 0)
-	    continue;
-	
-	  // Out of range right?
-	  if(it.start() + ShiftInt >= (uint64_t)resSize)
-	    continue;
-
-	  int64_t ShiftedStart = ((int64_t)it.start()) + ShiftInt;
-	  int64_t ShiftedStop = ((int64_t)it.stop()) + ShiftInt;
-
-	  if(!addIVSToPartialVal(it.val(), std::max(-ShiftedStart, (int64_t)0), std::max(ShiftedStart, (int64_t)0), std::min(ShiftedStop, resSize) - std::max(ShiftedStart, (int64_t)0), &PV, 0)) {
-
-	    NewIV = newOverdefIVS();
-	    return true;    
-
-	  }
-
+	if(overdefInRange || setProduct > PBMAX) {
+	  NewIV = newOverdefIVS();
+	  return true;
 	}
 
+	// Flatten to single value, using each combination of each involved field.
+
 	ImprovedValSetSingle* NewIVS = newIVS();
+	uint32_t useIndices[setSizesInRange.size()];
+	
+	flattenIVM(InIVM, (uint64_t)resSize, ShiftInt, setSizesInRange.size(), 0, useIndices, setSizesInRange, *NewIVS);
 	NewIV = NewIVS;
-	Constant* PVConst = PVToConst(PV, 0, resSize, SI->invar->I->getContext());
-	ShadowValue PVConstV(PVConst);
-	addValToPB(PVConstV, *NewIVS);
 
       }
       else {
