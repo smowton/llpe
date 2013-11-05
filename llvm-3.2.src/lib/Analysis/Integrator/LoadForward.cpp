@@ -1147,13 +1147,19 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
 }
 
-void llvm::readValRange(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {
+void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {
 
   // Try to make an IVS representing the block-local value of V+Offset -> Size.
   // Limitations for now: because our output is a single IVS, non-scalar types may only be described
   // if they correspond to a whole object.
 
   LFV3(errs() << "Start read " << Offset << "-" << (Offset + Size) << "\n");
+
+  // Reads from a negative offset are always out of bounds.
+  if(Offset < 0) {
+    Result.setOverdef();
+    return;
+  }
 
   LocStore* firstStore = ReadBB->getReadableStoreFor(V);
   if(!firstStore) {
@@ -3382,7 +3388,7 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 	else {
 
 	  LFV3(errs() << "Write through maybe pointer; merge\n");
-	  readValRange(it->V, (uint64_t)it->Offset, PtrSize, StoreBB, oldValSet, 0, 0);
+	  readValRange(it->V, it->Offset, PtrSize, StoreBB, oldValSet, 0, 0);
 
 	  if((!oldValSet.isWhollyUnknown()) && oldValSet.isInitialised()) {
 
