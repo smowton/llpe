@@ -102,6 +102,7 @@ static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
 static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
 static cl::opt<bool> VerbosePathConditions("int-verbose-path-conditions");
 static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
+static cl::opt<int> LLIOPreludeStackIdx("int-prelude-stackidx", cl::init(-1));
 static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
 static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
@@ -1765,6 +1766,43 @@ void IntegrationHeuristicsPass::commit() {
   RootIA->commitCFG();
   RootIA->commitArgsAndInstructions();
   errs() << "\n";
+
+  if(!(omitChecks || llioDependentFiles.empty()))
+    writeLliowdConfig();
+
+  BasicBlock* preludeBlock = 0;
+  
+  if(llioPreludeStackIdx != -1) {
+
+    release_assert(llioPreludeStackIdx < (int)targetCallStackIAs.size());
+    preludeBlock = targetCallStackIAs[llioPreludeStackIdx]->BBs[0]->committedBlocks[0].specBlock;
+
+  }
+  else {
+
+    Function* writePreludeFn = llioPreludeFn;
+    if(llioPreludeFn == &RootIA->F)
+      writePreludeFn = RootIA->CommitF;
+
+    if(writePreludeFn)
+      preludeBlock = &writePreludeFn->getEntryBlock();
+
+  }
+
+  // Add an lliowd_init() prelude to the beginning of the requested function:
+  if(preludeBlock) {
+
+    BasicBlock::iterator it = preludeBlock->begin();
+    while(it != preludeBlock->end() && isa<AllocaInst>(it))
+      ++it;
+
+    Type* Void = Type::getVoidTy(preludeBlock->getContext());
+    Constant* WDInit = preludeBlock->getParent()->getParent()->getOrInsertFunction("lliowd_init", Void, NULL);
+    CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+
+  }
+
+  // Repair some of the more egregiously silly code we've generated:
   postCommitOptimise();
 
   if(!StatsFile.empty()) {
@@ -1779,20 +1817,6 @@ void IntegrationHeuristicsPass::commit() {
 
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
 
-  Function* writePreludeFn;
-
-  if(omitChecks || llioDependentFiles.empty())
-    writePreludeFn = 0;
-  else {
-
-    writePreludeFn = llioPreludeFn;
-    if(llioPreludeFn == &RootIA->F)
-      writePreludeFn = RootIA->CommitF;
-
-    writeLliowdConfig();
-
-  }
-
   // Also exchange names so that external users will use this new version:
   std::string oldFName;
   {
@@ -1802,20 +1826,6 @@ void IntegrationHeuristicsPass::commit() {
 
   RootIA->CommitF->takeName(&(RootIA->F));
   RootIA->F.setName(oldFName);
-
-  // Add an lliowd_init() prelude to the beginning of the requested function:
-  if(writePreludeFn) {
-
-    BasicBlock& preludeBlock = writePreludeFn->getEntryBlock();
-    BasicBlock::iterator it = preludeBlock.begin();
-    while(it != preludeBlock.end() && isa<AllocaInst>(it))
-      ++it;
-
-    Type* Void = Type::getVoidTy(writePreludeFn->getContext());
-    Constant* WDInit = writePreludeFn->getParent()->getOrInsertFunction("lliowd_init", Void, NULL);
-    CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
-
-  }
 
   errs() << "\n";
 
@@ -2680,10 +2690,21 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
   }
 
-  if(Function* preludeFn = F.getParent()->getFunction(LLIOPreludeFn))
-    this->llioPreludeFn = preludeFn;
-  else
-    this->llioPreludeFn = &F;
+  if(LLIOPreludeStackIdx != -1) {
+
+    this->llioPreludeStackIdx = LLIOPreludeStackIdx;
+    this->llioPreludeFn = 0;
+
+  }
+  else {
+
+    this->llioPreludeStackIdx = -1;    
+    if(Function* preludeFn = F.getParent()->getFunction(LLIOPreludeFn))
+      this->llioPreludeFn = preludeFn;
+    else
+      this->llioPreludeFn = &F;
+
+  }
 
   this->llioConfigFile = LLIOConfFile;
 

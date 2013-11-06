@@ -438,6 +438,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::pair<LocStore, uint32_t>* argStores;
 
    std::vector<std::pair<BasicBlock*, uint32_t> > targetCallStack;
+   std::vector<InlineAttempt*> targetCallStackIAs;
 
    SmallSet<uint32_t, 4> forceNoAliasArgs;
 
@@ -476,6 +477,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool verbosePCs;
 
    Function* llioPreludeFn;
+   int llioPreludeStackIdx;
    std::string llioConfigFile;
    std::vector<std::string> llioDependentFiles;
 

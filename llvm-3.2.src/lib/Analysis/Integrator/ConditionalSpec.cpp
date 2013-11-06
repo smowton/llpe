@@ -25,6 +25,8 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
      SI->invar->idx == MyRoot->targetCallInfo->targetCallInst &&
      MyRoot->targetCallInfo->targetStackDepth + 1 < pass->targetCallStack.size()) {
 
+    pass->targetCallStackIAs.push_back(IA);
+
     uint32_t newDepth = MyRoot->targetCallInfo->targetStackDepth + 1;
     IA->setTargetCall(pass->targetCallStack[newDepth], newDepth);
 
