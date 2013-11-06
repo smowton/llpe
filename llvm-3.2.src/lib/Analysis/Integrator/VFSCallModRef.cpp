@@ -54,7 +54,7 @@ static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
 static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  if(GlobalVariable* GV = cast<CallInst>(CS.getBareVal())->getParent()->getParent()->getParent()->getGlobalVariable("errno")) {
+  if(GlobalVariable* GV = cast<CallInst>(CS.getBareVal())->getParent()->getParent()->getParent()->getGlobalVariable("errno", true)) {
     V = ShadowValue(GV);
     Size = AliasAnalysis::UnknownSize;
   }
