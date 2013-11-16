@@ -36,6 +36,7 @@ extern unsigned char FunctionAttrsID;
 extern unsigned char FunctionInliningID;
 extern unsigned char GVNID;
 extern unsigned char GlobalDCEID;
+extern unsigned char GlobalDCERangesID;
 extern unsigned char GlobalOptimizerID;
 extern unsigned char GlobalsModRefID;
 extern unsigned char IPSCCPID;

@@ -120,6 +120,7 @@ void initializeGCMachineCodeAnalysisPass(PassRegistry&);
 void initializeGCModuleInfoPass(PassRegistry&);
 void initializeGVNPass(PassRegistry&);
 void initializeGlobalDCEPass(PassRegistry&);
+void initializeGlobalDCERangesPass(PassRegistry&);
 void initializeGlobalOptPass(PassRegistry&);
 void initializeGlobalsModRefPass(PassRegistry&);
 void initializeIPCPPass(PassRegistry&);

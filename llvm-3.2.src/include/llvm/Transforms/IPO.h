@@ -72,6 +72,7 @@ ModulePass *createGlobalOptimizerPass();
 /// internal globals (functions or global variables)
 ///
 ModulePass *createGlobalDCEPass();
+ModulePass *createGlobalDCERangesPass();
 
 
 //===----------------------------------------------------------------------===//

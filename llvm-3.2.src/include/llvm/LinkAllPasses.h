@@ -77,6 +77,7 @@ namespace {
       (void) llvm::createFunctionInliningPass();
       (void) llvm::createAlwaysInlinerPass();
       (void) llvm::createGlobalDCEPass();
+      (void) llvm::createGlobalDCERangesPass();
       (void) llvm::createGlobalOptimizerPass();
       (void) llvm::createGlobalsModRefPass();
       (void) llvm::createIPConstantPropagationPass();
