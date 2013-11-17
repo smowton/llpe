@@ -55,11 +55,14 @@ namespace {
     /// recursively mark anything that it uses as also needed.
     void GlobalIsNeeded(Value* User, GlobalValue *GV, uint64_t Offset = 0, uint64_t Size = ULONG_MAX);
     void MarkUsedGlobalsAsNeeded(Value* User, Constant *C, uint64_t Offset = 0, uint64_t Size = ULONG_MAX, bool Traverse = false);
-    void InstructionIsNeeded(Value* User, Instruction* I);
+    void InstructionIsNeeded(Instruction* I);
     void MarkValueAsNeeded(Value* User, Value* Used, uint64_t Offset, uint64_t Size, bool Traverse);
     uint64_t getGEPOffset(GEPOperator*);
     Constant* buildPartialInitializer(Constant* Old, uint64_t Offset, std::vector<bool>& Needed);
     bool AddUsedBytes(GlobalValue* G, uint64_t Offset, uint64_t Size);
+    void SpecialFunctionIsNeeded(Function*);
+    bool HideUser(Function*, GlobalVariable*);
+    void AddSpecialNeededGlobals(Module& M);
 
     bool RemoveUnusedGlobalValue(GlobalValue &GV);
   };
@@ -71,6 +74,17 @@ INITIALIZE_PASS(GlobalDCERanges, "globaldceranges",
 
 ModulePass *llvm::createGlobalDCERangesPass() { return new GlobalDCERanges(); }
 
+static void print_val(Value* V, raw_ostream& Out) {
+
+  if(!V)
+    Out << "(null)";
+  else if(!V->hasName())
+    Out << (*V);
+  else
+    Out << V->getName();
+
+}
+
 Constant* GlobalDCERanges::buildPartialInitializer(Constant* Old, uint64_t Offset, std::vector<bool>& Needed) {
 
   // Return a version of Old that has nulled pointers if Needed doesn't indicate they are necessary.
@@ -81,8 +95,8 @@ Constant* GlobalDCERanges::buildPartialInitializer(Constant* Old, uint64_t Offse
   
   uint64_t OldSize = DL->getTypeStoreSize(Old->getType());
   for(uint64_t i = Offset, ilim = Offset + OldSize; i != ilim && !needed; ++i) {
-
-    if(Needed[Offset])
+    
+    if(Needed[i])
       needed = true;
 
   }
@@ -125,6 +139,121 @@ Constant* GlobalDCERanges::buildPartialInitializer(Constant* Old, uint64_t Offse
 
 }
 
+void GlobalDCERanges::AddSpecialNeededGlobals(Module& M) {
+
+  // Preserve variables that were hacked out, without referencing their referees.
+
+  // 1. Keep the ngx_modules array.
+  
+  GlobalVariable* G = M.getGlobalVariable("ngx_modules", true);
+  AliveGlobals[G] = std::vector<bool>();
+
+  // 2. Keep modules' ->ctx pointer and ->type field, needed by event_process_init.
+
+  Constant* Mods = G->getInitializer();
+  for(uint32_t i = 0, ilim = Mods->getNumOperands(); i != ilim; ++i) {
+
+    Constant* Op = cast<Constant>(Mods->getOperand(i));
+    if(isa<ConstantPointerNull>(Op))
+      continue;
+    GlobalVariable* Mod = cast<GlobalVariable>(Op);
+    AddUsedBytes(Mod, 56, 8);
+    AddUsedBytes(Mod, 72, 8);
+
+    errs() << "Added extra for: ";
+    print_val(Mod, errs());
+    errs() << "\n";
+
+  }
+
+}
+
+bool GlobalDCERanges::HideUser(Function* F, GlobalVariable* G) {
+
+  if(G->getName() == "ngx_modules" || G->getName() == "ngx_core_module") {
+
+    return F->getName() == "ngx_worker_process_init" ||
+      F->getName() == "ngx_worker_process_exit" ||
+      F->getName() == "ngx_event_process_init" ||
+      F->getName() == "ngx_master_process_exit";
+
+  }
+
+  return false;
+
+}
+
+void GlobalDCERanges::SpecialFunctionIsNeeded(Function* F) {
+
+  if(F->getName() == "ngx_worker_process_init") {
+
+    GlobalVariable* ModsG = F->getParent()->getGlobalVariable("ngx_modules", true);
+    Constant* Mods = ModsG->getInitializer();
+    for(uint32_t i = 0, ilim = Mods->getNumOperands(); i != ilim; ++i) {
+
+      Constant* Op = cast<Constant>(Mods->getOperand(i));
+      if(isa<ConstantPointerNull>(Op))
+	continue;
+      GlobalVariable* Mod = cast<GlobalVariable>(Op);
+      GlobalIsNeeded(F, Mod, 96, 8);
+
+    }
+
+  }
+  else if(F->getName() == "ngx_worker_process_exit") {
+
+    GlobalVariable* ModsG = F->getParent()->getGlobalVariable("ngx_modules", true);
+    Constant* Mods = ModsG->getInitializer();
+    for(uint32_t i = 0, ilim = Mods->getNumOperands(); i != ilim; ++i) {
+
+      Constant* Op = cast<Constant>(Mods->getOperand(i));
+      if(isa<ConstantPointerNull>(Op))
+	continue;
+      GlobalVariable* Mod = cast<GlobalVariable>(Op);
+      GlobalIsNeeded(F, Mod, 120, 8);
+
+    }
+    
+  }
+  else if(F->getName() == "ngx_master_process_exit") {
+
+    GlobalVariable* ModsG = F->getParent()->getGlobalVariable("ngx_modules", true);
+    Constant* Mods = ModsG->getInitializer();
+    for(uint32_t i = 0, ilim = Mods->getNumOperands(); i != ilim; ++i) {
+
+      Constant* Op = cast<Constant>(Mods->getOperand(i));
+      if(isa<ConstantPointerNull>(Op))
+	continue;
+      GlobalVariable* Mod = cast<GlobalVariable>(Op);
+      GlobalIsNeeded(F, Mod, 128, 8);
+
+    }
+    
+  }
+  else if(F->getName() == "ngx_event_process_init") {
+
+    GlobalVariable* ModsG = F->getParent()->getGlobalVariable("ngx_modules", true);
+    Constant* Mods = ModsG->getInitializer();
+    for(uint32_t i = 0, ilim = Mods->getNumOperands(); i != ilim; ++i) {
+
+      Constant* Op = cast<Constant>(Mods->getOperand(i));
+      if(isa<ConstantPointerNull>(Op))
+	continue;
+      GlobalVariable* Mod = cast<GlobalVariable>(Op);
+
+      Constant* ModInit = Mod->getInitializer();
+      Constant* ModCtx = cast<Constant>(ModInit->getOperand(7));
+      if(isa<ConstantPointerNull>(ModCtx))
+	continue;
+      
+      MarkUsedGlobalsAsNeeded(F, ModCtx, 88, 8, true);
+
+    }    
+
+  }
+
+}
+
 bool GlobalDCERanges::runOnModule(Module &M) {
 
   bool Changed = false;
@@ -157,12 +286,15 @@ bool GlobalDCERanges::runOnModule(Module &M) {
       GlobalIsNeeded(0, I);
   }
 
+  AddSpecialNeededGlobals(M);
+
   // Now that all globals which are needed are in the AliveGlobals set, we loop
   // through the program, deleting those which are not alive.
   //
 
   // The first pass is to drop initializers of global variables which are dead.
   std::vector<GlobalVariable*> DeadGlobalVars;   // Keep track of dead globals
+  std::vector<std::pair<GlobalVariable*, Constant*> > ReplacedInitializers;
   for (Module::global_iterator I = M.global_begin(), E = M.global_end();
        I != E; ++I) {
 
@@ -175,19 +307,49 @@ bool GlobalDCERanges::runOnModule(Module &M) {
 
       if(I->hasInitializer()) {
 
-	Constant* newInit = buildPartialInitializer(I->getInitializer(), 0, it->second);
-	errs() << "Replacing initialiser for " << (*I) << "\n";
-	errs() << "Old: " << (*I->getInitializer()) << "\n";
-	errs() << "New: " << (*newInit) << "\n";
-	I->setInitializer(newInit);
+	Constant* oldInit = I->getInitializer();
+	bool anyFalse = false;
+	uint32_t oldInitSize = DL->getTypeStoreSize(oldInit->getType());
+
+	if(it->second.size() < oldInitSize)
+	  anyFalse = true;
+	else {
+	  for(uint32_t i = 0; i != oldInitSize && !anyFalse; ++i) {
+	    if(!it->second[i])
+	      anyFalse = true;
+	  }
+	}
+
+	if(anyFalse) {
+
+	  Constant* newInit = buildPartialInitializer(oldInit, 0, it->second);
+	  ReplacedInitializers.push_back(std::make_pair(I, oldInit));
+	  I->setInitializer(newInit);
+
+	}
 
       }
 
     }
 
   }
-  
 
+  for(std::vector<std::pair<GlobalVariable*, Constant*> >::iterator it = ReplacedInitializers.begin(),
+	itend = ReplacedInitializers.end(); it != itend; ++it) {
+
+    errs() << "Replacing initialiser for ";
+    print_val(it->first, errs());
+    errs() << "\n";
+    errs() << "Old: " << (*it->second) << "\n";
+    errs() << "Vector: ";
+    std::vector<bool>& V = AliveGlobals[it->first];
+    for(uint32_t i = 0, ilim = V.size(); i != ilim; ++i)
+      errs() << (V[i] ? "1" : "0");
+    errs() << "\n";
+    errs() << "New: " << (*it->first->getInitializer()) << "\n";
+
+  }
+  
   // The second pass drops the bodies of functions which are dead...
   std::vector<Function*> DeadFunctions;
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
@@ -249,7 +411,7 @@ void GlobalDCERanges::MarkValueAsNeeded(Value* User, Value* Used, uint64_t Offse
 
 }
 
-void GlobalDCERanges::InstructionIsNeeded(Value* User, Instruction* I) {
+void GlobalDCERanges::InstructionIsNeeded(Instruction* I) {
 
   uint64_t UseOffset = 0;
   uint64_t UseSize = ULONG_MAX;
@@ -265,7 +427,7 @@ void GlobalDCERanges::InstructionIsNeeded(Value* User, Instruction* I) {
   }
   else {
     for (User::op_iterator U = I->op_begin(), E = I->op_end(); U != E; ++U)
-      MarkValueAsNeeded(User, *U, UseOffset, UseSize, true);
+      MarkValueAsNeeded(I->getParent()->getParent(), *U, UseOffset, UseSize, true);
   }
 
 }
@@ -324,7 +486,18 @@ bool GlobalDCERanges::AddUsedBytes(GlobalValue* G, uint64_t Offset, uint64_t Siz
 /// recursively mark anything that it uses as also needed.
 void GlobalDCERanges::GlobalIsNeeded(Value* User, GlobalValue *G, uint64_t Offset, uint64_t Size) {
 
-  errs() << ((User && User->hasName()) ? User->getName() : "(unknown)") << " -> " << (G->hasName() ? G->getName() : "(unknown)");
+  Function* UserF;
+  GlobalVariable* GV;
+  if((UserF = dyn_cast_or_null<Function>(User)) && (GV = dyn_cast_or_null<GlobalVariable>(G)) && HideUser(UserF, GV)) {
+
+    errs() << "Hid user: " << UserF->getName() << " -> " << G->getName() << "\n";
+    return;
+
+  }
+
+  print_val(User, errs());
+  errs() << " -> ";
+  print_val(G, errs());
   if(Offset != 0 || Size != ULONG_MAX) {
     errs() << " (range " << Offset << "-";
     if(Size == ULONG_MAX)
@@ -354,9 +527,12 @@ void GlobalDCERanges::GlobalIsNeeded(Value* User, GlobalValue *G, uint64_t Offse
     // any globals used will be marked as needed.
     Function *F = cast<Function>(G);
 
+    SpecialFunctionIsNeeded(F);
+
     for (Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
       for (BasicBlock::iterator I = BB->begin(), E = BB->end(); I != E; ++I)
-	InstructionIsNeeded(User, I);
+	InstructionIsNeeded(I);
+
   }
 
 }
