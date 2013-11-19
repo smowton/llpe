@@ -116,7 +116,7 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   InstArgImprovement* getIAI();
   LLVMContext& getLLVMContext();
   void setCommittedVal(Value* V);
-  bool objectAvailableFrom(IntegrationAttempt* OtherIA);
+  bool objectAvailable();
   const MDNode* getTBAATag();
   uint64_t getAllocSize();
   LocStore& getBaseStore();

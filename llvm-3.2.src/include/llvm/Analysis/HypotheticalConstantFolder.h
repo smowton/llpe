@@ -372,6 +372,17 @@ GlobalStats() : dynamicFunctions(0), dynamicContexts(0), dynamicBlocks(0), dynam
 
 };
 
+struct ArgStore {
+
+  LocStore store;
+  uint32_t heapIdx;
+  GlobalVariable* fwdGV;
+
+ArgStore() : store(), heapIdx(0), fwdGV(0) {}
+ArgStore(LocStore s, uint32_t hi) : store(s), heapIdx(hi), fwdGV(0) {}
+
+};
+
 class IntegrationHeuristicsPass : public ModulePass {
 
  public:
@@ -435,7 +446,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallPtrSet<Function*, 4> yieldFunctions;
    bool useDSA;
 
-   std::pair<LocStore, uint32_t>* argStores;
+   ArgStore* argStores;
 
    std::vector<std::pair<BasicBlock*, uint32_t> > targetCallStack;
    std::vector<InlineAttempt*> targetCallStackIAs;
@@ -456,7 +467,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<ShadowInstruction*, OpenStatus*> forwardableOpenCalls;
    DenseMap<ShadowInstruction*, ReadFile> resolvedReadCalls;
    DenseMap<ShadowInstruction*, SeekFile> resolvedSeekCalls;
-   DenseMap<ShadowInstruction*, CloseFile> resolvedCloseCalls;   
+   DenseMap<ShadowInstruction*, CloseFile> resolvedCloseCalls;
+
+   DenseMap<ShadowInstruction*, GlobalVariable*> globalisedAllocations;
+   DenseMap<ShadowInstruction*, GlobalVariable*> globalisedFDs;
   
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
@@ -624,6 +638,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void releaseStoreMemory();
 
    void postCommitStats();
+
+   void saveSplitPhase();
 
 };
 
@@ -1332,10 +1348,9 @@ protected:
 
   virtual bool isEnabled() = 0;
   virtual void setEnabled(bool, bool skipStats) = 0;
-  bool unsharedContextAvailable();
-  bool allocasAvailableFrom(IntegrationAttempt*);
-  bool heapObjectsAvailableFrom(IntegrationAttempt*);
+  bool allAncestorsEnabled();
   virtual bool commitsOutOfLine() = 0;
+  virtual bool mustCommitOutOfLine() = 0;
 
   // Estimating inlining / unrolling benefit:
 
@@ -1470,6 +1485,12 @@ protected:
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
 
+  // Function splitting in the commit stage
+  
+  void findNonLocalPointers();
+  virtual uint64_t findSaveSplits();
+  virtual void inheritCommitFunction();
+  
   // Stat collection and printing:
 
   void collectAllBlockStats();
@@ -1581,6 +1602,7 @@ public:
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   virtual bool commitsOutOfLine();
+  virtual bool mustCommitOutOfLine();
   virtual void popAllocas(OrdinaryLocalStore*);
 
   virtual void printHeader(raw_ostream& OS) const;
@@ -1834,6 +1856,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI);
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx);
   virtual bool commitsOutOfLine();
+  virtual bool mustCommitOutOfLine();
   void executeCall(uint32_t new_stack_depth);
   void releaseCallLatchStores();
   virtual bool tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef);
@@ -1880,6 +1903,10 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void printHeader(raw_ostream& OS) const;
 
   virtual void preCommitStats(bool enabledHere);
+
+  virtual uint64_t findSaveSplits();
+  virtual void inheritCommitFunction();
+  void splitCommitHere();
   
 };
 

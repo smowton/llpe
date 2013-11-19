@@ -917,6 +917,10 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
       edges.push_back(std::make_pair(IA->failedReturnBlock, this));
       added = true;
     }
+    else if(IA->commitsOutOfLine() && IA->hasFailedReturnPath()) {
+      edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
+      added = true;
+    }
 
   }
 
@@ -1499,6 +1503,11 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	}
 
 	// Further subdivisions of this block should use the new PHI
+	if(insertBlock->getName() == "xmlParseChunk-82 53 (failed).checksplit") {
+
+	  errs() << "Insert 1\n";
+
+	}
 	thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
 	ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
 
@@ -1553,6 +1562,12 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // Not needed at this offset?
       if(it->second > predBlocks[i].second)
 	break;
+
+      if(it->first->getName() == "xmlParseChunk-82 53 (failed).checksplit") {
+	
+	errs() << "Insert 2\n";
+	
+      }
 
       // If a block break exists, then there must be some cause to merge.
       SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;

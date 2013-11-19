@@ -122,11 +122,20 @@ void PeelAttempt::setEnabled(bool en, bool skipStats) {
 
 }
 
-// Return true if this function will be committed as a residual function
-// rather than being inlined everywhere as usual.
 bool InlineAttempt::commitsOutOfLine() {
 
-  return isRootMainCall() || F.isVarArg() || isShared();
+  if(isRootMainCall())
+    return true;
+
+  for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
+	itend = Callers.end(); it != itend; ++it) {
+
+    if((*it)->parent->IA->getFunctionRoot()->CommitF != CommitF)
+      return true;
+
+  }
+
+  return false;
 
 }
 
@@ -136,7 +145,21 @@ bool PeelIteration::commitsOutOfLine() {
 
 }
 
-bool IntegrationAttempt::unsharedContextAvailable() {
+// Return true if this function will be committed as a residual function
+// rather than being inlined everywhere as usual.
+bool InlineAttempt::mustCommitOutOfLine() {
+
+  return isRootMainCall() || F.isVarArg() || isShared();
+
+}
+
+bool PeelIteration::mustCommitOutOfLine() {
+
+  return false;
+
+}
+
+bool IntegrationAttempt::allAncestorsEnabled() {
 
   // Not enabled?
   if(!isEnabled())
@@ -152,56 +175,9 @@ bool IntegrationAttempt::unsharedContextAvailable() {
 
   IntegrationAttempt* parent = getUniqueParent();
 
-  if(parent && !parent->unsharedContextAvailable())
+  if(parent && !parent->allAncestorsEnabled())
     return false;
 
   return true;
 
 }
-
-// OtherIA must be a child without an intervening out-of-line commit point
-bool IntegrationAttempt::allocasAvailableFrom(IntegrationAttempt* OtherIA) {
-
-  while(OtherIA && OtherIA != this) {
-
-    if(!OtherIA->isEnabled())
-      return false;
-    if(OtherIA->commitsOutOfLine())
-      return false;
-    OtherIA = OtherIA->getUniqueParent();
-
-  }
-
-  return !!OtherIA;
-
-}
-
-// Return true if an object allocated here will be accessible from OtherIA.
-// This context may or may not be shared, but due to the definition of isUnsharable,
-// if it is then the allocation does not escape this context and we must be equal to
-// or a parent of OtherIA.
-bool IntegrationAttempt::heapObjectsAvailableFrom(IntegrationAttempt* OtherIA) {
-
-  if(!unsharedContextAvailable())
-    return false;
-
-  // Walk down to the nearest function boundary. Note that if OtherIA is shared, directly or otherwise,
-  // we don't care which version we're talking about because allocations cannot cross shared
-  // function boundaries. If they become able to do so then we need a context-sensitive test here.
-
-  IntegrationAttempt* AvailCtx1 = this;
-  while(AvailCtx1 && !AvailCtx1->commitsOutOfLine())
-    AvailCtx1 = AvailCtx1->getUniqueParent();
-
-  IntegrationAttempt* AvailCtx2 = OtherIA;
-  while(AvailCtx2 && !AvailCtx2->commitsOutOfLine())
-    AvailCtx2 = AvailCtx2->getUniqueParent();
-
-  // If we hit different barriers we'll end up integrated into different functions.
-  if(AvailCtx1 != AvailCtx2)
-    return false;
-
-  return true;
-
-}
-

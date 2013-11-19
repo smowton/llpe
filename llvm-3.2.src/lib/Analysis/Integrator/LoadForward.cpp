@@ -760,7 +760,7 @@ int32_t ShadowValue::getHeapKey() {
     }
   case SHADOWVAL_ARG:
     release_assert((u.A->IA->Callers.empty()) && "getHeapKey on arg other than root argv?");
-    return GlobalIHP->argStores[u.A->invar->A->getArgNo()].second;
+    return GlobalIHP->argStores[u.A->invar->A->getArgNo()].heapIdx;
   default:
     return -1;
 

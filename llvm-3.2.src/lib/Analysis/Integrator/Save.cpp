@@ -349,7 +349,6 @@ void IntegrationAttempt::commitCFG() {
 	      IA->returnBlock = 
 		BasicBlock::Create(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CF);
 	      BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
-	      IA->CommitF = CF;
 
 	      // Direct the call to the appropriate fail block:
 	      if(IA->hasFailedReturnPath()) {
@@ -376,17 +375,6 @@ void IntegrationAttempt::commitCFG() {
 	    else {
 
 	      // Out-of-line function (vararg, or shared).
-	      std::string Name;
-	      {
-		raw_string_ostream RSO(Name);
-		RSO << IA->getCommittedBlockPrefix() << "clone";
-	      }
-
-	      // Only create each shared function once.
-	      if(IA->CommitF)
-		continue;
-
-	      IA->CommitF = cloneEmptyFunction(&(IA->F), GlobalValue::InternalLinkage, Name, IA->hasFailedReturnPath());
 	      IA->returnBlock = 0;
 	      IA->failedReturnBlock = 0;
 
@@ -1468,6 +1456,30 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit = pass->globalisedAllocations.find(I);
+  if(findit != pass->globalisedAllocations.end()) {
+
+    // This allocation is used in other functions: store it to a corresponding global.
+    // Cast to i8* if need be:
+    Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
+    Instruction* StoreI;
+
+    if(newI->getType() != VoidPtr)
+      StoreI = new BitCastInst(newI, VoidPtr, "", emitBB);
+    else
+      StoreI = newI;
+
+    new StoreInst(StoreI, findit->second, emitBB);
+
+  }
+
+  DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit2 = pass->globalisedFDs.find(I);
+  if(findit2 != pass->globalisedFDs.end()) {
+
+    new StoreInst(newI, findit2->second, emitBB);
+
+  }
+
   if(isa<StoreInst>(newI)) {
 
     release_assert(newI->getOperand(0)->getType() == cast<PointerType>(newI->getOperand(1)->getType())->getElementType());
@@ -1531,7 +1543,7 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
   if(I && Base == *I)
     return false;
 
-  if(!Base.objectAvailableFrom(this))
+  if(!Base.objectAvailable())
     return false;
 
   return true;
@@ -1564,7 +1576,18 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
   }
   else {
 
-    Value* BaseI = getCommittedValue(Base);
+    Value* BaseI;
+    if(Base.isVal() || Base.getCtx()->getFunctionRoot()->CommitF == getFunctionRoot()->CommitF)
+      BaseI = getCommittedValue(Base);
+    else {
+      GlobalVariable* FwdGlobal;
+      if(Base.isInst())
+	FwdGlobal = pass->globalisedAllocations[Base.u.I];
+      else
+	FwdGlobal = pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV;
+      release_assert(FwdGlobal && "Used out of function but not forwarded?");
+      BaseI = new LoadInst(FwdGlobal, "getfwdg", emitBB);
+    }
     release_assert(BaseI && "Synthing pointer atop uncommitted allocation");
 
     // Try a few tricks to get the right pointer without using an i8 cast:
@@ -1626,7 +1649,7 @@ bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, Improv
   if(Ty == ValSetTypeScalar)
     return true;
   else if(Ty == ValSetTypeFD)
-    return (I != IV.V.getInst() && IV.V.objectAvailableFrom(this));
+    return (I != IV.V.getInst() && IV.V.objectAvailable());
   else if(Ty == ValSetTypePB) {
     ShadowValue SV;
     if(I)
@@ -1645,9 +1668,15 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
   else if(Ty == ValSetTypeFD) {
     
     if(I != IV.V.getInst() && 
-       IV.V.objectAvailableFrom(this)) {
-    
-      return IV.V.getInst()->committedVal;
+       IV.V.objectAvailable()) {
+      
+      DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit = pass->globalisedFDs.find(IV.V.u.I);
+      if(findit != pass->globalisedFDs.end()) {
+	return new LoadInst(findit->second, "fwdfd", emitBB);
+      }
+      else {
+	return IV.V.getInst()->committedVal;
+      }
 
     }
     
@@ -2075,16 +2104,39 @@ void IntegrationAttempt::commitInstructions() {
 
   SaveProgress();
   
-  if(this == getFunctionRoot() && getFunctionRoot()->isRootMainCall() && pass->verbosePCs) {
+  if(this == getFunctionRoot() && getFunctionRoot()->isRootMainCall()) {
 
-    std::string msg;
-    {
-      raw_string_ostream RSO(msg);
-      RSO << "Entering specialised function " << F.getName() << "\n";
+    BasicBlock* emitBB = BBs[0]->committedBlocks[0].specBlock;
+
+    if(pass->verbosePCs) {
+
+      std::string msg;
+      {
+	raw_string_ostream RSO(msg);
+	RSO << "Entering specialised function " << F.getName() << "\n";
+      }
+      
+      escapePercent(msg);
+      emitRuntimePrint(emitBB, msg, 0);
+
     }
 
-    escapePercent(msg);
-    emitRuntimePrint(BBs[0]->committedBlocks[0].specBlock, msg, 0);
+    // Emit a store to forwarding global for any arg-stores that are needed in other functions.
+    for(uint32_t i = 0, ilim = F.arg_size(); i != ilim; ++i) {
+
+      if(pass->argStores[i].fwdGV) {
+
+	Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
+	Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
+	
+	if(StoreI->getType() != VoidPtr)
+	  StoreI = new BitCastInst(StoreI, VoidPtr, "", emitBB);
+
+	new StoreInst(StoreI, pass->argStores[i].fwdGV, emitBB);
+
+      }
+
+    }
 
   }
 

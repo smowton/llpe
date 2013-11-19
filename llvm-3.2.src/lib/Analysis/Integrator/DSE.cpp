@@ -873,7 +873,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	  if(IVS->SetType == ValSetTypePB || IVS->SetType == ValSetTypeFD) {
 
 	    ShadowValue Base = IVS->Values[0].V;
-	    if((!Base.getCtx()) || Base.objectAvailableFrom(I->parent->IA))
+	    if((!Base.getCtx()) || Base.objectAvailable())
 	      continue;
 
 	  }

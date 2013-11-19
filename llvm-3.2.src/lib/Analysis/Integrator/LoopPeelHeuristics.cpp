@@ -1761,7 +1761,9 @@ void IntegrationHeuristicsPass::commit() {
     raw_string_ostream RSO(Name);
     RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
   }
-  RootIA->CommitF = cloneEmptyFunction(&(RootIA->F), RootIA->F.getLinkage(), Name, false);
+
+  saveSplitPhase();
+
   RootIA->returnBlock = 0;
   RootIA->commitCFG();
   RootIA->commitArgsAndInstructions();
@@ -2737,7 +2739,7 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
 
   release_assert(A->IA == RootIA && "ShadowArg used as object but not root IA?");
-  return argStores[A->invar->A->getArgNo()].first;
+  return argStores[A->invar->A->getArgNo()].store;
 
 }
 
@@ -3137,7 +3139,7 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
 
 	      // Create location:
 	      ImprovedValSetSingle* initialVal = new ImprovedValSetSingle(ValSetTypeOldOverdef, false);
-	      argStores[i] = std::make_pair(LocStore(initialVal), heap.size());
+	      argStores[i] = ArgStore(LocStore(initialVal), heap.size());
 	      heap.push_back(ShadowValue(&IA->argShadows[i]));
 	      anyNonGlobals = true;
 
@@ -3469,7 +3471,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   // Now that all globals have grabbed heap slots, insert extra locations per special function.
   createSpecialLocations();
 
-  argStores = new std::pair<LocStore, uint32_t>[F.arg_size()];
+  argStores = new ArgStore[F.arg_size()];
   
   for(unsigned i = 0; i < F.arg_size(); ++i) {
 
@@ -3488,7 +3490,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     ImprovedValSetSingle* NewIVS = newIVS();
     NewIVS->set(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
     IA->argShadows[argvIdx].i.PB = NewIVS;
-    argStores[argvIdx] = std::make_pair(LocStore(new ImprovedValSetSingle(ValSetTypeUnknown, true)), heap.size());
+    argStores[argvIdx] = ArgStore(LocStore(new ImprovedValSetSingle(ValSetTypeUnknown, true)), heap.size());
     heap.push_back(ShadowValue(&IA->argShadows[argvIdx]));
 
   }
