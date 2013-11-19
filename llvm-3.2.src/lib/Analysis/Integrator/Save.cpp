@@ -1321,8 +1321,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	    AttributesVec.push_back(AttributeWithIndex::get(i + 1, Attrs));
 
 	  // (Except this bit, a clone of emitInst)
-	  ShadowValue op = I->getCallArgOperand(i);
-	  Value* opV = getCommittedValue(op);
+
 	  Type* needTy;
 	  if(i < FType->getNumParams()) {
 	    // Normal argument: cast to target function type.
@@ -1332,6 +1331,15 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	    // Vararg: cast to old callinst arg type.
 	    needTy = OldCI->getArgOperand(i)->getType();
 	  }
+	  
+	  Value* opV;
+	  if(IA->argShadows[i].dieStatus != INSTSTATUS_ALIVE)
+	    opV = UndefValue::get(needTy);
+	  else {
+	    ShadowValue op = I->getCallArgOperand(i);
+	    opV = getCommittedValue(op);
+	  }
+
 	  Args.push_back(getValAsType(opV, needTy, emitBB));
 
 	}
