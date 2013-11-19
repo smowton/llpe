@@ -37,11 +37,13 @@ namespace {
   class InstCount : public FunctionPass, public InstVisitor<InstCount> {
     friend class InstVisitor<InstCount>;
 
+    uint32_t thisFunctionInsts;
+
     void visitFunction  (Function &F) { ++TotalFuncs; }
     void visitBasicBlock(BasicBlock &BB) { ++TotalBlocks; }
 
 #define HANDLE_INST(N, OPCODE, CLASS) \
-    void visit##OPCODE(CLASS &) { ++Num##OPCODE##Inst; ++TotalInsts; }
+    void visit##OPCODE(CLASS &) { ++Num##OPCODE##Inst; ++TotalInsts; ++thisFunctionInsts; }
 
 #include "llvm/Instruction.def"
 
@@ -51,7 +53,7 @@ namespace {
     }
   public:
     static char ID; // Pass identification, replacement for typeid
-    InstCount() : FunctionPass(ID) {
+    InstCount() : FunctionPass(ID), thisFunctionInsts(0) {
       initializeInstCountPass(*PassRegistry::getPassRegistry());
     }
 
@@ -60,7 +62,9 @@ namespace {
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.setPreservesAll();
     }
-    virtual void print(raw_ostream &O, const Module *M) const {}
+    virtual void print(raw_ostream &O, const Module *M) const {
+      O << "Total instructions: " << thisFunctionInsts << "\n";
+    }
 
   };
 }
@@ -75,6 +79,7 @@ FunctionPass *llvm::createInstCountPass() { return new InstCount(); }
 // function.
 //
 bool InstCount::runOnFunction(Function &F) {
+  thisFunctionInsts = 0;
   unsigned StartMemInsts =
     NumGetElementPtrInst + NumLoadInst + NumStoreInst + NumCallInst +
     NumInvokeInst + NumAllocaInst;

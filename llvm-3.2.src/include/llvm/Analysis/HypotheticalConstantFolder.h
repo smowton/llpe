@@ -1487,9 +1487,10 @@ protected:
 
   // Function splitting in the commit stage
   
-  void findNonLocalPointers();
+  virtual void findNonLocalPointers();
   virtual uint64_t findSaveSplits();
   virtual void inheritCommitFunction();
+  void checkNonLocalReference(ShadowValue);
   
   // Stat collection and printing:
 
@@ -1904,6 +1905,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void preCommitStats(bool enabledHere);
 
+  virtual void findNonLocalPointers();
   virtual uint64_t findSaveSplits();
   virtual void inheritCommitFunction();
   void splitCommitHere();

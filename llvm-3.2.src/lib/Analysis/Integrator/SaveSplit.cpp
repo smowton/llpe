@@ -8,11 +8,77 @@ using namespace llvm;
 // Where a pointer is used in a context that will be committed to a different function,
 // create a global that will store the pointer.
 
-void IntegrationAttempt::findNonLocalPointers() {
+void IntegrationAttempt::checkNonLocalReference(ShadowValue V) {
 
   PointerType* VoidPtr = cast<PointerType>(Type::getInt8PtrTy(F.getContext()));
   PointerType* Int32 = cast<PointerType>(Type::getInt32Ty(F.getContext()));
   
+  ShadowValue Base;
+  ImprovedValSetSingle* IVS;
+  if(getBaseObject(V, Base)) {
+
+    if(Base.isInst() && Base.objectAvailable() && Base.u.I->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+
+      // Base has a nonlocal user.
+      if(!pass->globalisedAllocations.count(Base.u.I)) {
+
+	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
+	pass->globalisedAllocations[Base.u.I] = NewGV;
+
+      }
+
+    }
+    else if(Base.isArg() && pass->RootIA->CommitF != getFunctionRoot()->CommitF) {
+
+      if(!pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV) {
+
+	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
+	pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV = NewGV;
+
+      }
+
+    }
+
+  }
+  else if((IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V))) && 
+	  IVS->SetType == ValSetTypeFD &&
+	  IVS->Values.size() == 1) {
+
+    ShadowInstruction* FDI = IVS->Values[0].V.u.I;
+
+    if(FDI->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+
+      if(!pass->globalisedFDs.count(FDI)) {
+
+	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), Int32, false, GlobalVariable::InternalLinkage, UndefValue::get(Int32), "specglobalfd");
+	pass->globalisedFDs[FDI] = NewGV;
+	    
+      }
+
+    }
+
+  }
+
+}
+
+void InlineAttempt::findNonLocalPointers() {
+
+  for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {
+
+    if(argShadows[i].dieStatus != INSTSTATUS_ALIVE)
+      continue;
+    
+    ShadowValue SV(&argShadows[i]);
+    checkNonLocalReference(SV);
+
+  }
+
+  IntegrationAttempt::findNonLocalPointers();
+
+}
+
+void IntegrationAttempt::findNonLocalPointers() {
+
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
     
     ShadowBBInvar* BBI = getBBInvar(i);
@@ -38,56 +104,12 @@ void IntegrationAttempt::findNonLocalPointers() {
 
     for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
-      ShadowInstruction& SI = BB->insts[j];
-      if(SI.dieStatus != INSTSTATUS_ALIVE)
+      ShadowInstruction* SI = &BB->insts[j];
+      if(SI->dieStatus != INSTSTATUS_ALIVE)
 	continue;
 
-      ShadowValue Base;
-      ImprovedValSetSingle* IVS;
-      if(getBaseObject(ShadowValue(&SI), Base)) {
-
-	if(Base.isInst() && Base.objectAvailable() && Base.u.I->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
-
-	  // Base has a nonlocal user.
-	  if(!pass->globalisedAllocations.count(Base.u.I)) {
-
-	    GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
-	    pass->globalisedAllocations[Base.u.I] = NewGV;
-	    errs() << "Global created for " << itcache(Base) << " because of user " << itcache(ShadowValue(&SI)) << "\n";
-
-	  }
-
-	}
-	else if(Base.isArg() && pass->RootIA->CommitF != getFunctionRoot()->CommitF) {
-
-	  if(!pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV) {
-
-	    GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
-	    pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV = NewGV;
-
-	  }
-
-	}
-
-      }
-      else if((IVS = dyn_cast_or_null<ImprovedValSetSingle>(SI.i.PB)) && 
-	      IVS->SetType == ValSetTypeFD &&
-	      IVS->Values.size() == 1) {
-
-	ShadowInstruction* FDI = IVS->Values[0].V.u.I;
-
-	if(FDI->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
-
-	  if(!pass->globalisedFDs.count(FDI)) {
-
-	    GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), Int32, false, GlobalVariable::InternalLinkage, UndefValue::get(Int32), "specglobalfd");
-	    pass->globalisedFDs[FDI] = NewGV;
-	    
-	  }
-
-	}
-
-      }
+      ShadowValue SV(SI);
+      checkNonLocalReference(SV);
 
     }
     
@@ -244,7 +266,7 @@ void InlineAttempt::splitCommitHere() {
 uint64_t InlineAttempt::findSaveSplits() {
 
   uint64_t residuals = IntegrationAttempt::findSaveSplits();
-
+  
   if(mustCommitOutOfLine() || residuals > SPLIT_THRESHOLD) {
     splitCommitHere();
     return 1;
