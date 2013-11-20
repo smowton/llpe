@@ -316,6 +316,8 @@ void SharedTreeNode<ChildType, ExtraState>
       
       }
 
+      ChildType::simplifyStore((ChildType*)children[i]);
+
     }
     else {
 
@@ -1121,6 +1123,8 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
       mergeToLoc->checkMergedResult(mergeSV);
 
     }
+
+    ChildType::simplifyStore(mergeToLoc);
 
   }
 

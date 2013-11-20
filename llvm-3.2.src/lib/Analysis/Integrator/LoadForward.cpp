@@ -1147,6 +1147,24 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
 }
 
+static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
+
+  ImprovedValSetMulti* IVM = dyn_cast<ImprovedValSetMulti>(IVS);
+  if((!IVM) || !IVM->Underlying) {
+    
+    if(depth >= 2)
+      errs() << "RD " << depth << "\n";
+    return depth;
+    
+  }
+  else {
+    
+    return logReadDepth(IVM->Underlying, depth + 1);
+
+  }
+  
+}
+
 void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {
 
   // Try to make an IVS representing the block-local value of V+Offset -> Size.
@@ -1177,6 +1195,18 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
 
   PartialVal* ResultPV = 0;
   bool shouldTryMulti = false;
+  
+  /*
+  if(logReadDepth(firstStore->store, 1) >= 10) {
+
+    errs() << "Deep read for " << itcache(V, true) << " from " << ReadBB->invar->BB->getName() << " / " << ReadBB->IA->SeqNumber << "\n";
+    firstStore->store->print(errs(), false);
+
+  }
+  */
+
+  LocStore::simplifyStore(firstStore);
+  
   readValRangeFrom(V, Offset, Size, ReadBB, firstStore->store, Result, ResultPV, shouldTryMulti, error);
 
   if(ResultPV) {
@@ -3840,6 +3870,43 @@ void LocStore::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, Sha
     LFV3(newStore->print(errs()));
 
     mergeToStore->store = newStore;
+
+  }
+
+}
+
+// If store merging has left a common base store with only single reference, merge down.
+void LocStore::simplifyStore(LocStore* LS) {
+
+  ImprovedValSetMulti* IVM;
+  ImprovedValSetMulti* IVM2;
+
+  while((IVM = dyn_cast_or_null<ImprovedValSetMulti>(LS->store)) &&
+	(IVM2 = dyn_cast_or_null<ImprovedValSetMulti>(IVM->Underlying)) &&
+	IVM->MapRefCount == 1 && IVM2->MapRefCount == 1) {
+    
+    /*
+    errs() << "Simplify:\n";
+    IVM->print(errs(), false);
+    */
+
+    // Write IVM members over IVM2
+
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(),
+	  itend = IVM->Map.end(); it != itend; ++it) {
+
+      replaceRangeWithPB(IVM2, it.val(), it.start(), it.stop() - it.start());
+	  
+    }
+
+    // IVM2 becomes the new head.
+    LS->store = IVM2;
+    delete IVM;
+
+    /*
+    errs() << "Result:\n";
+    IVM2->print(errs(), false);
+    */
 
   }
 

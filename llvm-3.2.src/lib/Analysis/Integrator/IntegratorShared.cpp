@@ -289,7 +289,7 @@ void ImprovedValSetSingle::print(raw_ostream& RSO, bool brief) {
 
 void ImprovedValSetMulti::print(raw_ostream& RSO, bool brief) {
 
-  RSO << "Multi: {\n";
+  RSO << "Multi [" << MapRefCount << "]: {\n";
   
   for(MapIt it = Map.begin(), itend = Map.end(); it != itend; ++it) {
 

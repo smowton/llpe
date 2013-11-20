@@ -781,6 +781,8 @@ LocStore(const LocStore& other) : store(other.store) {}
 
   static void mergeStores(LocStore* mergeFrom, LocStore* mergeTo, ShadowValue& MergeV, MergeBlockVisitor<LocStore, OrdinaryStoreExtraState>*);
 
+  static void simplifyStore(LocStore*);
+
 };
 
 enum AllocTestedState {
@@ -1025,6 +1027,7 @@ DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
 			  ShadowValue& V, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
+  static void simplifyStore(DSEMapPointer*) { }
   void useWriters(int64_t Offset, uint64_t Size);
   void setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* SI);
 
@@ -1089,6 +1092,7 @@ TLMapPointer(const TLMapPointer& other) : M(other.M) {}
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, 
 			  ShadowValue& V, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
+  static void simplifyStore(TLMapPointer*) { }
   
 };
 
