@@ -316,8 +316,6 @@ void SharedTreeNode<ChildType, ExtraState>
       
       }
 
-      ChildType::simplifyStore((ChildType*)children[i]);
-
     }
     else {
 

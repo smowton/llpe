@@ -1195,8 +1195,8 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
 
   PartialVal* ResultPV = 0;
   bool shouldTryMulti = false;
-  
-  /*
+
+  /*  
   if(logReadDepth(firstStore->store, 1) >= 10) {
 
     errs() << "Deep read for " << itcache(V, true) << " from " << ReadBB->invar->BB->getName() << " / " << ReadBB->IA->SeqNumber << "\n";
