@@ -398,7 +398,6 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 	release_assert((!SArg->i.PB) && "Path condition functions shouldn't be reentrant");
 
 	copyImprovedVal(Op, SArg->i.PB);
-	noteIndirectUse(ShadowValue(SArg), SArg->i.PB);
 
       }
 
@@ -970,7 +969,7 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
   if(blockIdx == INVALID_BLOCK_IDX) {
 
     if(Argument* A = dyn_cast<Argument>(V))
-      return getFunctionRoot()->argShadows[A->getArgNo()].committedVal;
+      return getFunctionRoot()->getArgCommittedValue(&getFunctionRoot()->argShadows[A->getArgNo()]);
     else
       return V;
 
@@ -1059,19 +1058,18 @@ void IntegrationAttempt::gatherPathConditionEdges(uint32_t bbIdx, uint32_t instI
     if(!BB)
       return;
 
-    Value* PCVal;
-    if(preds)
-      PCVal = getCommittedValue(ShadowValue(&BB->insts[instIdx]));
-    else
-      PCVal = 0;
+    Value* PCVal = 0;
 
     for(uint32_t i = 0, ilim = pass->countPathConditionsAtBlockStart(BB->invar, this); i != ilim; ++i) {
 
       // Assert block starts at offset 0, as with all PC test blocks.
       release_assert(BB->committedBlocks[i].startIndex == 0);
 
-      if(preds)
+      if(preds) {
+	if(!PCVal)
+	  PCVal = getCommittedValue(ShadowValue(&BB->insts[instIdx]));	  
 	preds->push_back(std::make_pair(PCVal, BB->committedBlocks[i].breakBlock));
+      }
       else if(IAPreds)
 	IAPreds->push_back(std::make_pair(BB->committedBlocks[i].breakBlock, this));
       
@@ -1735,6 +1733,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	else
 	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, BB);
 
+	release_assert(Repl);
 	((Use*)replit)->set(Repl);
 
       }
@@ -2196,6 +2195,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
 
 	}
 
+	release_assert(NewPN);
 	(*failedBlockMap)[failedI] = NewPN;
 
 	// Insert PHI forwarding of this merge where necessary:

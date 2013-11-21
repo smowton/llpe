@@ -1683,6 +1683,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 	return new LoadInst(findit->second, "fwdfd", emitBB);
       }
       else {
+	release_assert(IV.V.getInst()->committedVal && "Trying to synth pointer dependent on dead allocation");
 	return IV.V.getInst()->committedVal;
       }
 
@@ -2136,6 +2137,7 @@ void IntegrationAttempt::commitInstructions() {
 
 	Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
 	Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
+	release_assert(StoreI && "Dead argument needed for cross-function forwarding global");
 	
 	if(StoreI->getType() != VoidPtr)
 	  StoreI = new BitCastInst(StoreI, VoidPtr, "", emitBB);

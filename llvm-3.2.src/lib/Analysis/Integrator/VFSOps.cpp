@@ -361,6 +361,10 @@ bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, vo
     if(GlobalIHP->specialLocations.count(F))
       return false;
 
+    // Certain intrinsics should be ignored too:
+    if(F->onlyReadsMemory())
+      return false;
+
   }
 
   uniqueIncomingOffset = -1;

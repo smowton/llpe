@@ -2141,25 +2141,6 @@ static bool willUseIndirectly(ImprovedValSet* IV) {
 
 }
 
-void llvm::releaseIndirectUse(ShadowValue V, ImprovedValSet* OldPB) {
-
-  if(willUseIndirectly(OldPB)) {
-
-    ImprovedValSetSingle* OldIVS = cast<ImprovedValSetSingle>(OldPB);
-    if(ShadowInstruction* Used = OldIVS->Values[0].V.getInst()) {
-	
-      std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[Used];
-
-      std::vector<ShadowValue>::iterator findit = std::find(Users.begin(), Users.end(), V);
-      if(findit != Users.end())
-	Users.erase(findit);
-      
-    }
-
-  }
-
-}
-
 void llvm::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
 
   if(willUseIndirectly(NewPB)) {
@@ -2168,9 +2149,7 @@ void llvm::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
     if(ShadowInstruction* WillUse = NewIVS->Values[0].V.getInst()) {
 
       std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[WillUse];
-      
-      if(std::find(Users.begin(), Users.end(), V) == Users.end())
-	Users.push_back(V);
+      Users.push_back(V);
 
     }
       
@@ -2219,11 +2198,6 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   }
 
   if((!OldPBValid) || !IVsEqualShallow(OldPB, NewPB)) {
-
-    if(OldPBValid)
-      releaseIndirectUse(V, OldPB);
-
-    noteIndirectUse(V, NewPB);
 
     if(pass->verboseOverdef) {
       if(ShadowInstruction* I = V.getInst()) {

@@ -639,3 +639,96 @@ void IntegrationAttempt::runDIE() {
   }
 
 }
+
+void IntegrationHeuristicsPass::gatherIndirectUsers() {
+
+  RootIA->gatherIndirectUsers();
+  
+  for(std::vector<PathFunc>::iterator it = pathConditions.FuncPathConditions.begin(),
+	itend = pathConditions.FuncPathConditions.end(); it != itend; ++it)
+    if(it->IA)
+      it->IA->gatherIndirectUsers();
+
+  for(DenseMap<Function*, ShadowFunctionInvar*>::iterator it = functionInfo.begin(),
+	itend = functionInfo.end(); it != itend; ++it) {
+    
+    if(it->second->pathConditions) {
+
+      for(std::vector<PathFunc>::iterator it2 = it->second->pathConditions->FuncPathConditions.begin(),
+	    itend2 = it->second->pathConditions->FuncPathConditions.end(); it2 != itend2; ++it2) {
+
+	if(it2->IA)
+	  it2->IA->gatherIndirectUsers();
+
+      }
+
+    }
+
+  }
+
+}
+
+void InlineAttempt::gatherIndirectUsers() {
+
+  for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {
+
+    if(argShadows[i].i.PB)
+      noteIndirectUse(ShadowValue(&argShadows[i]), argShadows[i].i.PB);
+
+  }
+
+  IntegrationAttempt::gatherIndirectUsers();
+
+}
+
+void IntegrationAttempt::gatherIndirectUsers() {
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    it->second->gatherIndirectUsers();
+
+  }
+  
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isTerminated())
+      continue;
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
+      it->second->Iterations[i]->gatherIndirectUsers();
+
+  }
+
+  for(uint32_t bbi = BBsOffset, bblim = BBsOffset + nBBs; bbi != bblim; ++bbi) {
+
+    ShadowBBInvar* BBI = getBBInvar(bbi);
+    if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
+
+      DenseMap<const Loop*, PeelAttempt*>::iterator findit = peelChildren.find(immediateChildLoop(L, BBI->naturalScope));
+      if(findit != peelChildren.end() && findit->second->isTerminated()) {
+
+	while(bbi != bblim && BBI->naturalScope->contains(getBBInvar(bbi)->naturalScope))
+	  ++bbi;
+	--bbi;
+	continue;
+
+      }
+
+    }
+
+    ShadowBB* BB = getBB(*BBI);
+    if(!BB)
+      continue;
+    
+    for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
+
+      if(BB->insts[i].i.PB)
+	noteIndirectUse(ShadowValue(&BB->insts[i]), BB->insts[i].i.PB);
+
+    }
+
+  }
+
+}

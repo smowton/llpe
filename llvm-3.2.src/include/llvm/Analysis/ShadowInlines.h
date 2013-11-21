@@ -1696,6 +1696,7 @@ inline bool getBaseAndConstantOffset(ShadowValue SV, ShadowValue& Base, int64_t&
 }
 
 inline bool mayBeReplaced(InstArgImprovement& IAI) {
+
   ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(IAI.PB);
   if(!IVS)
     return false;
