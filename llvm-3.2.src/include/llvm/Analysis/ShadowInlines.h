@@ -42,6 +42,7 @@ enum ShadowValType {
   SHADOWVAL_INST,
   SHADOWVAL_GV,
   SHADOWVAL_OTHER,
+  SHADOWVAL_IDX,
   SHADOWVAL_INVAL
 
 };
@@ -70,6 +71,7 @@ struct ShadowValue {
     ShadowInstruction* I;
     ShadowGV* GV;
     Value* V;
+    uint64_t idx;
   } u;
 
 ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
@@ -141,6 +143,8 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
     return V1.u.GV == V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V == V2.u.V;
+  case SHADOWVAL_IDX:
+    return V1.u.idx == V2.u.idx;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -165,6 +169,8 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
     return V1.u.GV < V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V < V2.u.V;
+  case SHADOWVAL_IDX:
+    return V1.u.idx < V2.u.idx;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -211,6 +217,8 @@ template<> struct DenseMapInfo<ShadowValue> {
       hashPtr = V.u.GV; break;
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
+    case SHADOWVAL_IDX:
+      hashPtr = (void*)V.u.idx; break;
     default:
       release_assert(0 && "Bad value type");
       hashPtr = 0;
@@ -236,11 +244,11 @@ template<> struct DenseMapInfo<ShadowValue> {
 enum ValSetType {
 
   ValSetTypeUnknown,
-  ValSetTypePB, // Pointers; the Offset member is set
+  ValSetTypePB, // Pointers; the Offset member is set, and the values must be of idx type.
   ValSetTypeScalar, // Ordinary constants
   ValSetTypeScalarSplat, // Constant splat, used to cheaply express memset(block, size), Offset == size
-  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque
-  ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie
+  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque. Values are idx type.
+  ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie. Values are instruction type.
   ValSetTypeOverdef, // Useful for disambiguating empty PB from Overdef; never actually used in PB.
   ValSetTypeDeallocated, // Special single value signifying an object that is deallocted on a given path.
   ValSetTypeOldOverdef // A special case of Overdef where the value is known not to alias objects
@@ -1245,8 +1253,8 @@ inline Type* ShadowValue::getType() {
     return u.GV->G->getType();
   case SHADOWVAL_OTHER:
     return u.V->getType();
-  case SHADOWVAL_INVAL:
-    return 0;
+  case SHADOWVAL_IDX:
+    release_assert(0 && "Can't directly query type of idx");
   default:
     release_assert(0 && "Bad SV type");
     return 0;
@@ -1277,7 +1285,8 @@ inline Value* ShadowValue::getBareVal() {
   case SHADOWVAL_OTHER:
     return u.V;
   default:
-    return 0;
+    release_assert(0 && "Bad value type in getBareVal");
+    llvm_unreachable();
   }
 
 }
@@ -1333,6 +1342,8 @@ inline LLVMContext& ShadowValue::getLLVMContext() {
     return u.A->invar->A->getContext();
   case SHADOWVAL_GV:
     return u.GV->G->getContext();
+  case SHADOWVAL_IDX:
+    release_assert(0 && "Bad value type in getLLVMContext");
   default:
     return u.V->getContext();
   }
@@ -1365,7 +1376,8 @@ template<class X> inline bool val_is(ShadowValue V) {
     return isa<X>(V.u.A->invar->A);
   }
   default:
-    return false;
+    release_assert(0 && "Bad value type in val_is");
+    llvm_unreachable();
   }
 }
 
@@ -1380,7 +1392,8 @@ template<class X> inline X* dyn_cast_val(ShadowValue V) {
   case SHADOWVAL_INST:
     return dyn_cast_inst<X>(V.u.I);
   default:
-    return 0;
+    release_assert(0 && "Bad value type in dyn_cast_val");
+    llvm_unreachable();
   }
 }
 
@@ -1441,9 +1454,12 @@ inline Constant* getConstReplacement(ShadowValue SV) {
 	return 0;
       return getSingleConstant(IVS);
     }
-
-  default:
+  case SHADOWVAL_OTHER:
+  case SHADOWVAL_GV:
     return dyn_cast_or_null<Constant>(SV.getVal());
+  default:
+    release_assert(0 && "Bad SV type in getConstReplacement");
+    llvm_unreachable();
 
   }
 
@@ -1477,7 +1493,7 @@ inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValS
     Single = getValPB(V.u.V);
     break;
   default:
-    release_assert(0 && "Uninit V in getIVOrSingleVal");
+    release_assert(0 && "Bad value type in getIVOrSingleVal");
     llvm_unreachable();
   }
 
@@ -1563,9 +1579,8 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
       return true;
     }
 
-  case SHADOWVAL_INVAL:
   default:
-    release_assert(0 && "getImprovedValSetSingle on uninit value");
+    release_assert(0 && "Bad value type in getImprovedValSetSingle");
     llvm_unreachable();
 
   }
@@ -1622,9 +1637,8 @@ inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
     }
     return;
 
-  case SHADOWVAL_INVAL:
   default:
-    release_assert(0 && "addValToPB on uninit value");
+    release_assert(0 && "Bad value type in addValToPB");
     llvm_unreachable();
     
   }
