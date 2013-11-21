@@ -59,7 +59,7 @@ DSEMapPointer llvm::DSEEmptyMapPtr(&DSEEmptyMap, 0);
 
 DSELocalStore* DSEMapPointer::getMapForBlock(ShadowBB* BB) {
 
-  return BB->u.dseStore;
+  return BB->dseStore;
   
 }
 
@@ -479,9 +479,9 @@ void DSEMapPointer::setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* 
 
 DSEMapPointer* ShadowBB::getWritableDSEStore(ShadowValue O) {
 
-  u.dseStore = u.dseStore->getWritableFrameList();
+  dseStore = dseStore->getWritableFrameList();
   bool isNewStore;
-  DSEMapPointer* ret = u.dseStore->getOrCreateStoreFor(O, &isNewStore);
+  DSEMapPointer* ret = dseStore->getOrCreateStoreFor(O, &isNewStore);
 
   if(isNewStore) {
     ret->M = new DSEMapTy(DSEMapAllocator);
@@ -512,7 +512,7 @@ static void doDSEStoreMerge(ShadowBB* BB) {
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
-  BB->u.dseStore = V.newMap;
+  BB->dseStore = V.newMap;
 
 }
 
@@ -522,7 +522,7 @@ static void doDSECallMerge(ShadowBB* BB, InlineAttempt* IA) {
   IA->visitLiveReturnBlocks(V);
   V.doMerge();
   
-  BB->u.dseStore = V.newMap;
+  BB->dseStore = V.newMap;
 
 }
 
@@ -534,8 +534,8 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
   if(IVS.isWhollyUnknown() || IVS.SetType != ValSetTypePB || containsUncertainPointers(IVS)) {
 
     // May read anything -- assumed to read everything.
-    setAllNeeded(BB->u.dseStore);
-    BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+    setAllNeeded(BB->dseStore);
+    BB->dseStore = BB->dseStore->getEmptyMap();
     return;
 
   }
@@ -588,11 +588,11 @@ void IntegrationAttempt::DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, Shadow
 void InlineAttempt::tryKillStores(bool commitDisabledHere, bool disableWrites) {
 
   if(isRootMainCall())
-    BBs[0]->u.dseStore = new DSELocalStore(0);
+    BBs[0]->dseStore = new DSELocalStore(0);
 
   if(invarInfo->frameSize != -1 || !Callers.size()) {
-    BBs[0]->u.dseStore = BBs[0]->u.dseStore->getWritableFrameList();
-    BBs[0]->u.dseStore->pushStackFrame(this);
+    BBs[0]->dseStore = BBs[0]->dseStore->getWritableFrameList();
+    BBs[0]->dseStore->pushStackFrame(this);
   }
 
   tryKillStoresInLoop(0, commitDisabledHere, disableWrites);
@@ -624,7 +624,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
 
-	LPA->Iterations[0]->BBs[0]->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
+	LPA->Iterations[0]->BBs[0]->dseStore = getBB(NewLInfo->preheaderIdx)->dseStore;
 	bool commitDisabled = commitDisabledHere || !LPA->isEnabled();
 	uint32_t latchIdx = NewLInfo->latchIdx;
 
@@ -632,7 +632,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	  LPA->Iterations[j]->tryKillStoresInLoop(BB->invar->naturalScope, commitDisabled, disableWrites);
 	  if(j + 1 != jlim)
-	    LPA->Iterations[j + 1]->BBs[0]->u.dseStore = LPA->Iterations[j]->getBB(latchIdx)->u.dseStore;
+	    LPA->Iterations[j + 1]->BBs[0]->dseStore = LPA->Iterations[j]->getBB(latchIdx)->dseStore;
 
 	}
 	
@@ -640,7 +640,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       else {
 
 	// Give header its store:
-	BB->u.dseStore = getBB(NewLInfo->preheaderIdx)->u.dseStore;
+	BB->dseStore = getBB(NewLInfo->preheaderIdx)->dseStore;
 
 	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
 
@@ -648,7 +648,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	    // Passing true for the last parameter causes the store to be given to the header from the latch
 	    // and not to any exit blocks. 
 	    tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), false, true);
-	    BB->u.dseStore = getBB(NewLInfo->latchIdx)->u.dseStore;
+	    BB->dseStore = getBB(NewLInfo->latchIdx)->dseStore;
 	  }
 	  tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), true);
 
@@ -677,8 +677,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
     if((!pass->omitChecks) && pass->countPathConditionsAtBlockStart(BB->invar, BB->IA)) {
       
       // Reaches a path condition check, where unspecialised code might use this value.
-      setAllNeeded(BB->u.dseStore);
-      BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+      setAllNeeded(BB->dseStore);
+      BB->dseStore = BB->dseStore->getEmptyMap();
       
     }
 
@@ -695,8 +695,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       // assume store is needed if it is live over this point.
       if(requiresRuntimeCheck(ShadowValue(I), true)) {
 
-	setAllNeeded(BB->u.dseStore);
-	BB->u.dseStore = BB->u.dseStore->getEmptyMap();	
+	setAllNeeded(BB->dseStore);
+	BB->dseStore = BB->dseStore->getEmptyMap();	
 
       }
 
@@ -739,11 +739,11 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	if(InlineAttempt* IA = getInlineAttempt(I)) {
 
-	  IA->BBs[0]->u.dseStore = BB->u.dseStore;
+	  IA->BBs[0]->dseStore = BB->dseStore;
 	  IA->tryKillStores(commitDisabledHere || (!IA->isEnabled()), disableWrites);
 	  doDSECallMerge(BB, IA);
 
-	  if(!BB->u.dseStore) {
+	  if(!BB->dseStore) {
 
 	    // The call never returns: no sense analysing the rest of this block.
 	    // This block cannot have any live successors in this case.
@@ -842,8 +842,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	    else {
 
 	      // Call with unknown properties blocks everything:
-	      setAllNeeded(BB->u.dseStore);
-	      BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+	      setAllNeeded(BB->dseStore);
+	      BB->dseStore = BB->dseStore->getEmptyMap();
 
 	    }
 
@@ -851,8 +851,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	  else {
 
 	    // Unexpanded call blocks everything:
-	    setAllNeeded(BB->u.dseStore);
-	    BB->u.dseStore = BB->u.dseStore->getEmptyMap();
+	    setAllNeeded(BB->dseStore);
+	    BB->dseStore = BB->dseStore->getEmptyMap();
 
 	  }
 
@@ -899,7 +899,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     }
 
-    if(!BB->u.dseStore) {
+    if(!BB->dseStore) {
 
       // Block doesn't have a store due to a never-returns call.
       // Can't have any successors either in this case.
@@ -930,7 +930,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       }
 
       // Create a store reference for each live successor
-      ++BB->u.dseStore->refCount;
+      ++BB->dseStore->refCount;
 
     }
 
@@ -939,8 +939,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
     if(BB->invar->succIdxs.size() == 0) {
 
       if(invarInfo->frameSize != -1) {
-	BB->u.dseStore = BB->u.dseStore->getWritableFrameList();
-	BB->u.dseStore->popStackFrame();
+	BB->dseStore = BB->dseStore->getWritableFrameList();
+	BB->dseStore->popStackFrame();
       }
 
     }
@@ -948,7 +948,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
     // Drop the reference belonging to this block.
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
-      BB->u.dseStore->dropReference();
+      BB->dseStore->dropReference();
 
   }
 

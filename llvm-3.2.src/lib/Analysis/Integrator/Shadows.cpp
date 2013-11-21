@@ -567,7 +567,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
   newBB->useSpecialVarargMerge = false;
-  newBB->u.localStore = 0;
+  newBB->localStore = 0;
 
   BBs[blockIdx - BBsOffset] = newBB;
   return newBB;

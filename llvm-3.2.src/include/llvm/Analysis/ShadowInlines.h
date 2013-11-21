@@ -1138,11 +1138,9 @@ struct ShadowBB {
   ShadowBBStatus status;
   ImmutableArray<ShadowInstruction> insts;
 
-  union {
-    OrdinaryLocalStore* localStore;
-    DSELocalStore* dseStore;
-    TLLocalStore* tlStore;
-  } u;
+  OrdinaryLocalStore* localStore;
+  DSELocalStore* dseStore;
+  TLLocalStore* tlStore;
 
   SmallVector<CommittedBlock, 1> committedBlocks;
   
@@ -1188,7 +1186,7 @@ struct ShadowBB {
 
 inline LocalStoreMap<LocStore, OrdinaryStoreExtraState>* LocStore::getMapForBlock(ShadowBB* BB) {
 
-  return BB->u.localStore;
+  return BB->localStore;
 
 }
 

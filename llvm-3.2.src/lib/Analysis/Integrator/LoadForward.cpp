@@ -525,7 +525,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
     if(LI->parent->IA->tryResolveLoadFromConstant(LI, LIPB.Values[i], *NewPB))
       continue;
 
-    if(!LI->parent->u.localStore->es.threadLocalObjects.count(LIPB.Values[i].V))
+    if(!LI->parent->localStore->es.threadLocalObjects.count(LIPB.Values[i].V))
       LI->isThreadLocal = TLS_MUSTCHECK;
 
     std::auto_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
@@ -808,14 +808,14 @@ int32_t ShadowValue::getFrameNo() {
 
 LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
 
-  return u.localStore->getReadableStoreFor(V);
+  return localStore->getReadableStoreFor(V);
 
 }
 
 LocStore* ShadowBB::getOrCreateStoreFor(ShadowValue& V, bool* isNewStore) {
 
-  u.localStore = u.localStore->getWritableFrameList();
-  return u.localStore->getOrCreateStoreFor(V, isNewStore);
+  localStore = localStore->getWritableFrameList();
+  return localStore->getOrCreateStoreFor(V, isNewStore);
 
 }
 
@@ -826,7 +826,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   // Can write direct to the base store if we're sure this write is "for good".
   LocStore* ret = 0;
-  if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && (!u.localStore->allOthersClobbered) && !IA->pass->enableSharing) {
+  if(status == BBSTATUS_CERTAIN && (!inAnyLoop) && (!localStore->allOthersClobbered) && !IA->pass->enableSharing) {
     LFV3(errs() << "Use base store for " << IA->F.getName() << " / " << IA->SeqNumber << " / " << invar->BB->getName() << "\n");
     ret = &V.getBaseStore();
   }
@@ -853,7 +853,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 	if(writeWholeObject) {
 	  M->Underlying = 0;
 	}
-	else if(u.localStore->allOthersClobbered) {
+	else if(localStore->allOthersClobbered) {
 	  M->Underlying = new ImprovedValSetSingle(ValSetTypeUnknown, true);
 	}
 	else {
@@ -1181,7 +1181,7 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
 
   LocStore* firstStore = ReadBB->getReadableStoreFor(V);
   if(!firstStore) {
-    if(ReadBB->u.localStore->allOthersClobbered) {
+    if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Result.setOverdef();
       return;
@@ -2167,7 +2167,7 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
 
   LocStore* firstStore = ReadBB->getReadableStoreFor(V);
   if(!firstStore) {
-    if(ReadBB->u.localStore->allOthersClobbered) {
+    if(ReadBB->localStore->allOthersClobbered) {
       LFV3(errs() << "Location not in local map and allOthersClobbered\n");
       Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
       return;
@@ -2240,7 +2240,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   
   AllocData& baseStore = GlobalIHP->allocations[SI];
 
-  if(trackAlloc || SI->parent->u.localStore->allOthersClobbered) {
+  if(trackAlloc || SI->parent->localStore->allOthersClobbered) {
 
     // malloc and realloc instructions should also be inserted into the path store,
     // as a flag that the allocation exists here. Their baseStore should be deallocated,
@@ -2268,10 +2268,10 @@ void llvm::executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t All
   baseStore.allocTested = AllocUnchecked;
 
   // Note that the new object is unreachable from old objects, thread-local and unescaped.
-  SI->parent->u.localStore = SI->parent->u.localStore->getWritableFrameList();
-  SI->parent->u.localStore->es.noAliasOldObjects.insert(ShadowValue(SI));
-  SI->parent->u.localStore->es.threadLocalObjects.insert(ShadowValue(SI));
-  SI->parent->u.localStore->es.unescapedObjects.insert(ShadowValue(SI));
+  SI->parent->localStore = SI->parent->localStore->getWritableFrameList();
+  SI->parent->localStore->es.noAliasOldObjects.insert(ShadowValue(SI));
+  SI->parent->localStore->es.threadLocalObjects.insert(ShadowValue(SI));
+  SI->parent->localStore->es.unescapedObjects.insert(ShadowValue(SI));
 
   ImprovedValSetSingle* NewIVS = newIVS();
   SI->i.PB = NewIVS;
@@ -2546,7 +2546,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
   BB->IA->noteDependency(SrcPtrSet.Values[0].V);
 
   CopySI->isThreadLocal = 
-    BB->u.localStore->es.threadLocalObjects.count(SrcPtrSet.Values[0].V) ? 
+    BB->localStore->es.threadLocalObjects.count(SrcPtrSet.Values[0].V) ? 
     TLS_NEVERCHECK : TLS_MUSTCHECK;
 
   SmallVector<IVSRange, 4>& copyValues = GlobalIHP->memcpyValues[CopySI];
@@ -2673,7 +2673,7 @@ static bool containsOldObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
 
-    if(!BB->u.localStore->es.noAliasOldObjects.count(Ptr.Values[i].V))    
+    if(!BB->localStore->es.noAliasOldObjects.count(Ptr.Values[i].V))    
       return true;
 
   }
@@ -2689,7 +2689,7 @@ static bool containsGlobalObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
 
-    if(!BB->u.localStore->es.threadLocalObjects.count(Ptr.Values[i].V))
+    if(!BB->localStore->es.threadLocalObjects.count(Ptr.Values[i].V))
       return true;
     
   }
@@ -2813,11 +2813,11 @@ struct SetMAOVisitor : public ReachableObjectVisitor {
   virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
 
     // Don't explore objects reachable this way, it's already known MAO
-    if(!BB->u.localStore->es.noAliasOldObjects.count(Obj))
+    if(!BB->localStore->es.noAliasOldObjects.count(Obj))
       return false;
 
-    BB->u.localStore = BB->u.localStore->getWritableFrameList();
-    BB->u.localStore->es.noAliasOldObjects.erase(Obj);
+    BB->localStore = BB->localStore->getWritableFrameList();
+    BB->localStore->es.noAliasOldObjects.erase(Obj);
 
     return true;
 
@@ -2860,11 +2860,11 @@ struct SetTGVisitor : public ReachableObjectVisitor {
   virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
 
     // Don't explore objects reachable this way
-    if(!BB->u.localStore->es.threadLocalObjects.count(Obj))
+    if(!BB->localStore->es.threadLocalObjects.count(Obj))
       return false;
     
-    BB->u.localStore = BB->u.localStore->getWritableFrameList();
-    BB->u.localStore->es.threadLocalObjects.erase(Obj);
+    BB->localStore = BB->localStore->getWritableFrameList();
+    BB->localStore->es.threadLocalObjects.erase(Obj);
 
     return true;
 
@@ -3122,24 +3122,24 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
 void ShadowBB::setAllObjectsMayAliasOld() {
 
-  u.localStore = u.localStore->getWritableFrameList();
+  localStore = localStore->getWritableFrameList();
 
-  DenseSet<ShadowValue>* preservePtr[1] = { &u.localStore->es.unescapedObjects };
+  DenseSet<ShadowValue>* preservePtr[1] = { &localStore->es.unescapedObjects };
 
-  intersectSets(&u.localStore->es.noAliasOldObjects,
+  intersectSets(&localStore->es.noAliasOldObjects,
 		MutableArrayRef<DenseSet<ShadowValue>* >(preservePtr));
 
 }
 
 void ShadowBB::setAllObjectsThreadGlobal() {
 
-  u.localStore = u.localStore->getWritableFrameList();
+  localStore = localStore->getWritableFrameList();
 
   // Preserve unescaped objects from losing their thread-local status.
   
-  DenseSet<ShadowValue>* preservePtr[1] = { &u.localStore->es.unescapedObjects };
+  DenseSet<ShadowValue>* preservePtr[1] = { &localStore->es.unescapedObjects };
 
-  intersectSets(&u.localStore->es.threadLocalObjects, 
+  intersectSets(&localStore->es.threadLocalObjects, 
 		MutableArrayRef<DenseSet<ShadowValue>* >(preservePtr));
 
 }
@@ -3159,8 +3159,8 @@ void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose) {
     
   }
 
-  u.localStore = u.localStore->getEmptyMap();
-  u.localStore->allOthersClobbered = true;
+  localStore = localStore->getEmptyMap();
+  localStore->allOthersClobbered = true;
 
   for(std::vector<std::pair<ShadowValue, ImprovedValSet*> >::iterator it = SaveVals.begin(),
 	itend = SaveVals.end(); it != itend; ++it) {
@@ -3180,7 +3180,7 @@ void ShadowBB::clobberMayAliasOldObjects() {
   bool verbose = false;
   if(verbose)
     errs() << "Clobber old objects " << invar->BB->getName() << ":\n";
-  clobberAllExcept(u.localStore->es.noAliasOldObjects, verbose);
+  clobberAllExcept(localStore->es.noAliasOldObjects, verbose);
   if(verbose)
     errs() << "---\n\n";
 
@@ -3191,7 +3191,7 @@ void ShadowBB::clobberGlobalObjects() {
   bool verbose = false;
   if(verbose)
     errs() << "Clobber global objects at " << invar->BB->getName() << ":\n";
-  clobberAllExcept(u.localStore->es.threadLocalObjects, verbose);
+  clobberAllExcept(localStore->es.threadLocalObjects, verbose);
   if(verbose)
     errs() << "---\n\n";
   
@@ -3199,10 +3199,10 @@ void ShadowBB::clobberGlobalObjects() {
 
 static void pointerEscaped(ShadowValue V, ShadowBB* BB) {
 
-  if(BB->u.localStore->es.unescapedObjects.count(V)) {
+  if(BB->localStore->es.unescapedObjects.count(V)) {
 
-    BB->u.localStore = BB->u.localStore->getWritableFrameList();
-    BB->u.localStore->es.unescapedObjects.erase(V);
+    BB->localStore = BB->localStore->getWritableFrameList();
+    BB->localStore->es.unescapedObjects.erase(V);
 
   }
 
@@ -3368,8 +3368,8 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
       
       // Start with a plain local store map giving no locations except unescaped objects that cannot alias this one.
       noteBarrierInst(WriteSI);
-      StoreBB->clobberAllExcept(StoreBB->u.localStore->es.unescapedObjects, false);
-      LFV3(errs() << "Write through overdef; local map " << StoreBB->u.localStore << " clobbered\n");
+      StoreBB->clobberAllExcept(StoreBB->localStore->es.unescapedObjects, false);
+      LFV3(errs() << "Write through overdef; local map " << StoreBB->localStore << " clobbered\n");
 
     }
 
@@ -4143,7 +4143,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
   V.doMerge();
 
   if(!V.newMap) {
-    BB->u.localStore = 0;
+    BB->localStore = 0;
     return false;
   }
 
@@ -4153,7 +4153,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
     V.newMap = V.newMap->getEmptyMap();
   }
 
-  BB->u.localStore = V.newMap;
+  BB->localStore = V.newMap;
 
   return true;
 
@@ -4177,16 +4177,16 @@ void InlineAttempt::popAllocas(OrdinaryLocalStore* map) {
 
 void ShadowBB::popStackFrame() {
 
-  u.localStore = u.localStore->getWritableFrameList();
-  u.localStore->popStackFrame();
-  IA->popAllocas(u.localStore);
+  localStore = localStore->getWritableFrameList();
+  localStore->popStackFrame();
+  IA->popAllocas(localStore);
 
 }
 
 void ShadowBB::pushStackFrame(InlineAttempt* IA) {
 
-  u.localStore = u.localStore->getWritableFrameList();
-  u.localStore->pushStackFrame(IA);
+  localStore = localStore->getWritableFrameList();
+  localStore->pushStackFrame(IA);
 
 }
 
@@ -4221,7 +4221,7 @@ void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
     V.newMap = V.newMap->getEmptyMap();
   }
 
-  CallerBB->u.localStore = V.newMap;
+  CallerBB->localStore = V.newMap;
 
 }
 

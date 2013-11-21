@@ -28,7 +28,7 @@ void InlineAttempt::sharingInit() {
     if(!sharing)
       sharing = new SharingState();
 
-    sharing->storeAtEntry = BBs[0]->u.localStore;
+    sharing->storeAtEntry = BBs[0]->localStore;
     sharing->storeAtEntry->refCount++;
 
     clearExternalDependencies();

@@ -38,7 +38,7 @@ TLMapPointer llvm::TLEmptyMapPtr(&TLEmptyMap);
 
 TLLocalStore* TLMapPointer::getMapForBlock(ShadowBB* BB) {
 
-  return BB->u.tlStore;
+  return BB->tlStore;
 
 }
 
@@ -91,9 +91,9 @@ void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, S
 
 TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
-  u.tlStore = u.tlStore->getWritableFrameList();
+  tlStore = tlStore->getWritableFrameList();
   bool isNewStore;
-  TLMapPointer* ret = u.tlStore->getOrCreateStoreFor(O, &isNewStore);
+  TLMapPointer* ret = tlStore->getOrCreateStoreFor(O, &isNewStore);
 
   if(isNewStore)
     ret->M = new TLMapTy(TLMapAllocator);
@@ -104,8 +104,8 @@ TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
 static void markAllObjectsTentative(ShadowBB* BB) {
 
-  BB->u.tlStore = BB->u.tlStore->getEmptyMap();
-  BB->u.tlStore->allOthersClobbered = true;
+  BB->tlStore = BB->tlStore->getEmptyMap();
+  BB->tlStore->allOthersClobbered = true;
   BB->IA->yieldState = BARRIER_HERE;
 
 }
@@ -129,7 +129,7 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
     return;
 
   // If allOthersClobbered is false then no object is tentative.
-  if(!BB->u.tlStore->allOthersClobbered)
+  if(!BB->tlStore->allOthersClobbered)
     return;
 
   std::pair<ValSetType, ImprovedVal> PtrTarget;
@@ -141,7 +141,7 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
 
   SmallVector<std::pair<uint64_t, uint64_t>, 1> addRanges;
 
-  TLMapPointer* store = BB->u.tlStore->getReadableStoreFor(PtrTarget.second.V);
+  TLMapPointer* store = BB->tlStore->getReadableStoreFor(PtrTarget.second.V);
   uint64_t start = PtrTarget.second.Offset + Offset;
   uint64_t stop = PtrTarget.second.Offset + Offset + Len;
 
@@ -245,7 +245,7 @@ static void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
   IA->visitLiveReturnBlocks(V);
   V.doMerge();
   
-  BB->u.tlStore = V.newMap;
+  BB->tlStore = V.newMap;
 
 }
 
@@ -262,7 +262,7 @@ static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB
     if(it->stackIdx != stackIdx)
       continue;
     
-    it->IA->BBs[0]->u.tlStore = BB->u.tlStore;
+    it->IA->BBs[0]->tlStore = BB->tlStore;
     // Path conditions can be treated like committed code, as the user is responsible for checking
     // their applicability.
     it->IA->findTentativeLoads(/* commitDisabledHere = */false, secondPass);
@@ -425,11 +425,11 @@ static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
   if(verbose)
     errs() << "Read from " << itcache(Ptr.V) << ":\n";
 
-  TLMapPointer* Map = BB->u.tlStore->getReadableStoreFor(Ptr.V);
+  TLMapPointer* Map = BB->tlStore->getReadableStoreFor(Ptr.V);
   if(!Map) {
     if(verbose)
-      errs() << "Whole map: " << BB->u.tlStore->allOthersClobbered << "\n";
-    return BB->u.tlStore->allOthersClobbered;
+      errs() << "Whole map: " << BB->tlStore->allOthersClobbered << "\n";
+    return BB->tlStore->allOthersClobbered;
   }
 
   if(verbose) {
@@ -595,20 +595,20 @@ static void doTLStoreMerge(ShadowBB* BB) {
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
-  BB->u.tlStore = V.newMap;
+  BB->tlStore = V.newMap;
 
 }
 
 void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass) {
 
   if(isRootMainCall()) {
-    BBs[0]->u.tlStore = new TLLocalStore(0);
-    BBs[0]->u.tlStore->allOthersClobbered = false;
+    BBs[0]->tlStore = new TLLocalStore(0);
+    BBs[0]->tlStore->allOthersClobbered = false;
   }
 
   if(invarInfo->frameSize != -1 || !Callers.size()) {
-    BBs[0]->u.tlStore = BBs[0]->u.tlStore->getWritableFrameList();
-    BBs[0]->u.tlStore->pushStackFrame(this);
+    BBs[0]->tlStore = BBs[0]->tlStore->getWritableFrameList();
+    BBs[0]->tlStore->pushStackFrame(this);
   }
 
   findTentativeLoadsInLoop(0, commitDisabledHere, secondPass);
@@ -644,7 +644,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
 
-	LPA->Iterations[0]->BBs[0]->u.tlStore = getBB(NewLInfo->preheaderIdx)->u.tlStore;
+	LPA->Iterations[0]->BBs[0]->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
 	bool commitDisabled = commitDisabledHere || !LPA->isEnabled();
 	uint32_t latchIdx = NewLInfo->latchIdx;
 
@@ -652,7 +652,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
 	  LPA->Iterations[j]->findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabled, secondPass);
 	  if(j + 1 != jlim)
-	    LPA->Iterations[j + 1]->BBs[0]->u.tlStore = LPA->Iterations[j]->getBB(latchIdx)->u.tlStore;
+	    LPA->Iterations[j + 1]->BBs[0]->tlStore = LPA->Iterations[j]->getBB(latchIdx)->tlStore;
 
 	}
 	
@@ -660,7 +660,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       else {
 
 	// Give header its store:
-	BB->u.tlStore = getBB(NewLInfo->preheaderIdx)->u.tlStore;
+	BB->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
 
 	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
 
@@ -668,7 +668,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 	    // Passing true for the last parameter causes the store to be given to the header from the latch
 	    // and not to any exit blocks. 
 	    findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), false, true);
-	    BB->u.tlStore = getBB(NewLInfo->latchIdx)->u.tlStore;
+	    BB->tlStore = getBB(NewLInfo->latchIdx)->tlStore;
 	  }
 	  findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), true);
 
@@ -723,11 +723,11 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
 	if(InlineAttempt* IA = getInlineAttempt(&SI)) {
 
-	  IA->BBs[0]->u.tlStore = BB->u.tlStore;
+	  IA->BBs[0]->tlStore = BB->tlStore;
 	  IA->findTentativeLoads(commitDisabledHere || !IA->isEnabled(), secondPass);
 	  doTLCallMerge(BB, IA);
 
-	  if(!BB->u.tlStore) {
+	  if(!BB->tlStore) {
 
 	    // Call exit unreachable
 	    brokeOnUnreachableCall = true;
@@ -741,7 +741,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
     }
 
-    if(!BB->u.tlStore) {
+    if(!BB->tlStore) {
 
       // Block doesn't have a store due to a never-returns call.
       // Can't have any successors either in this case.
@@ -772,7 +772,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       }
 
       // Create a store reference for each live successor
-      ++BB->u.tlStore->refCount;
+      ++BB->tlStore->refCount;
 
     }
 
@@ -781,8 +781,8 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
     if(BB->invar->succIdxs.size() == 0) {
 
       if(invarInfo->frameSize != -1) {
-	BB->u.tlStore = BB->u.tlStore->getWritableFrameList();
-	BB->u.tlStore->popStackFrame();
+	BB->tlStore = BB->tlStore->getWritableFrameList();
+	BB->tlStore->popStackFrame();
       }
 
     }
@@ -790,7 +790,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
     // Drop the reference belonging to this block.
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
-      BB->u.tlStore->dropReference();
+      BB->tlStore->dropReference();
     
   }
 
