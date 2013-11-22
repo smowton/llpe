@@ -71,7 +71,10 @@ struct ShadowValue {
     ShadowInstruction* I;
     ShadowGV* GV;
     Value* V;
-    uint64_t idx;
+    struct {
+      int32_t frame;
+      uint32_t idx;
+    } PtrOrFd;
   } u;
 
 ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
@@ -79,6 +82,7 @@ ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
 ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST) { u.I = _I; }
 ShadowValue(ShadowGV* _GV) : t(SHADOWVAL_GV) { u.GV = _GV; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
+ShadowValue(int32_t frame, uint32_t idx) : t(SHADOWVAL_IDX) { u.PtrOrFd.frame = frame; u.PtrOrFd.idx = idx; }
 
   bool isInval() {
     return t == SHADOWVAL_INVAL;
@@ -94,6 +98,9 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   }
   bool isGV() {
     return t == SHADOWVAL_GV;
+  }
+  bool isPtrOrFd() {
+    return t == SHADOWVAL_IDX;
   }
   ShadowArg* getArg() {
     return t == SHADOWVAL_ARG ? u.A : 0;
@@ -121,10 +128,12 @@ ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
   bool objectAvailable();
   const MDNode* getTBAATag();
   uint64_t getAllocSize();
-  LocStore& getBaseStore();
   int32_t getFrameNo();
   int32_t getHeapKey();
-  int32_t getFramePos();
+  int32_t getFramePos() {
+    release_assert(isPtrOrFd() && "getFramePos on non-ptr");
+    return getHeapKey();
+  }
   bool isNullOrConst();
 
 };
@@ -749,6 +758,9 @@ class OrdinaryStoreExtraState;
 template<class, class> class LocalStoreMap;
 template<class, class> class MergeBlockVisitor;
 
+class LocStore;
+extern LocStore NormalEmptyMapPtr;
+
 struct LocStore {
 
   ImprovedValSet* store;
@@ -757,9 +769,9 @@ LocStore(ImprovedValSet* s) : store(s) {}
 LocStore() : store(0) {}
 LocStore(const LocStore& other) : store(other.store) {}
 
-  static LocStore& getBaseStoreFor(ShadowValue V) {
+  static LocStore& getEmptyStore() {
 
-    return V.getBaseStore();
+    return NormalEmptyMapPtr;
 
   }
 
@@ -803,7 +815,6 @@ enum AllocTestedState {
 
 struct AllocData {
 
-  LocStore store;
   uint64_t storeSize;
   int32_t allocIdx;
   bool allocVague;
@@ -1004,12 +1015,8 @@ DSEMapPointer() : M(0), A(0) {}
 DSEMapPointer(DSEMapTy* _M, TrackedAlloc* _A) : M(_M), A(_A) {}
 DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
 
-  static DSEMapPointer& getBaseStoreFor(ShadowValue V) {
+  static DSEMapPointer& getEmptyStore() {
 
-    // The default map used for a value not mentioned in a given block.
-    // For DSE this is just an empty map, and the given object
-    // is never modified (it is either getReadableCopy'd or used as a merge-from store)
-    // so just return a statically allocated pointer.
     return DSEEmptyMapPtr;
 
   }
@@ -1070,12 +1077,8 @@ TLMapPointer() : M(0) {}
 TLMapPointer(TLMapTy* _M) : M(_M) {}
 TLMapPointer(const TLMapPointer& other) : M(other.M) {}
 
-  static TLMapPointer& getBaseStoreFor(ShadowValue V) {
+  static TLMapPointer& getEmptyStore() {
 
-    // Like DSE, objects all have the same 'base value':
-    // an empty intervalmap representing all bytes of all objects
-    // in the tentative state.
-    
     return TLEmptyMapPtr;
 
   }

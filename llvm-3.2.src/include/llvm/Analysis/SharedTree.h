@@ -249,7 +249,7 @@ void SharedTreeNode<ChildType, ExtraState>
 	if((*it) && (*it)->children[i]) {
 
 	  if(height == 0)
-	    children[i] = new ChildType(ChildType::getBaseStoreFor(MergeV).getReadableCopy());
+	    children[i] = new ChildType(ChildType::getEmptyStore().getReadableCopy());
 	  else
 	    children[i] = new SharedTreeNode();
 
@@ -306,7 +306,7 @@ void SharedTreeNode<ChildType, ExtraState>
 
 	ChildType* mergeFromStore;
 	if(!*it)
-	  mergeFromStore = &ChildType::getBaseStoreFor(MergeV);
+	  mergeFromStore = &ChildType::getEmptyStore();
 	else
 	  mergeFromStore = (ChildType*)(**it);
 
@@ -1065,7 +1065,7 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
       for(uint32_t i = 0, ilim = mergeFromStore.size(); i != ilim; ++i) {
 	  
 	if(mergeFromStore[i].isValid() && !mergeToStore[i].isValid()) {
-	  mergeToStore[i] = ChildType::getBaseStoreFor(getStackAllocationWithIndex(thisFrameIA, i)).getReadableCopy();
+	  mergeToStore[i] = ChildType::getEmptyStore().getReadableCopy();
 	  mergeToFrame->empty = false;
 	}
 	
@@ -1101,7 +1101,7 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
       if(mergeFromFrame->store.size() > i && mergeFromFrame->store[i].isValid())
 	mergeFromLoc = &(mergeFromFrame->store[i]);
       else
-	mergeFromLoc = &(ChildType::getBaseStoreFor((*incit)->IA->getAllocaWithIdx(i)));
+	mergeFromLoc = &(ChildType::getEmptyStore());
 
       incomingStores.push_back(mergeFromLoc);
 
