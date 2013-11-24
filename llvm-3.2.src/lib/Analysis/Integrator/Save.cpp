@@ -388,6 +388,7 @@ void IntegrationAttempt::commitCFG() {
 
 	    }
 
+	    IA->activeCaller = SI;
 	    IA->commitCFG();
 	    continue;
 
@@ -454,18 +455,13 @@ void IntegrationAttempt::commitCFG() {
 
 }
 
-Value* llvm::getCommittedValue(ShadowValue SV) {
+Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
 
   switch(SV.t) {
   case SHADOWVAL_OTHER:
     return SV.u.V;
   case SHADOWVAL_GV:
     return SV.u.GV->G;
-  default:
-    break;
-  }
-
-  switch(SV.t) {
   case SHADOWVAL_INST: 
     {
       release_assert(SV.u.I->committedVal && "Instruction depends on uncommitted instruction");
@@ -475,6 +471,12 @@ Value* llvm::getCommittedValue(ShadowValue SV) {
     {
       release_assert(SV.u.A->committedVal && "Instruction depends on uncommitted instruction");
       return SV.u.A->committedVal;
+    }
+  case SHADOWVAL_IDX:
+    {
+      AllocData* AD = getAllocData(SV);
+      release_assert((!AD->commitGlobalised) && "Forwarding via global should be accounted for already");
+      return AD->committedVal;
     }
   default:
     release_assert(0 && "Bad SV type");
@@ -1386,6 +1388,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
       }
 
       if(!IA->instructionsCommitted) {
+	IA->activeCaller = I;
 	IA->commitArgsAndInstructions();
 	IA->instructionsCommitted = true;
       }
@@ -1464,20 +1467,36 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
-  DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit = pass->globalisedAllocations.find(I);
-  if(findit != pass->globalisedAllocations.end()) {
+  // If it's an allocation instruction, either store it to a global if globalised
+  // or just record the emitted allocation otherwise.
+  ShadowValue Base;
+  AllocData* AD;
+  if(getBaseObject(ShadowValue(I), Base) && 
+     Base.isPtrOrFd() && 
+     (AD = getAllocData(Base)) && 
+     AD->allocValue.u.I == I) {
 
-    // This allocation is used in other functions: store it to a corresponding global.
-    // Cast to i8* if need be:
-    Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
-    Instruction* StoreI;
+    if(AD->commitGlobalised) {
+      
+      // This allocation is used in other functions: store it to a corresponding global.
+      // Cast to i8* if need be:
+      Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
+      Instruction* StoreI;
+      
+      if(newI->getType() != VoidPtr)
+	StoreI = new BitCastInst(newI, VoidPtr, "", emitBB);
+      else
+	StoreI = newI;
+      
+      new StoreInst(StoreI, AD->committedVal, emitBB);
 
-    if(newI->getType() != VoidPtr)
-      StoreI = new BitCastInst(newI, VoidPtr, "", emitBB);
-    else
-      StoreI = newI;
+    }
+    else {
 
-    new StoreInst(StoreI, findit->second, emitBB);
+      // Not (yet) used out-of-function; just note the allocation.
+      AD->committedVal = newI;
+
+    }
 
   }
 
@@ -1548,8 +1567,20 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
   if(Offset == LLONG_MAX)
     return false;
   
-  if(I && Base == *I)
-    return false;
+  // If it points to itself then this is an allocation instruction.
+  if(I) {
+
+    if(Base.isPtrOrFd()) {
+
+      AllocData* AD = getAllocData(Base);
+      if((!AD->committedVal) && AD->allocValue == *I)
+	return false;
+
+    }
+    else if(Base == *I)
+      return false;
+
+  }
 
   if(!Base.objectAvailable())
     return false;
@@ -1563,6 +1594,24 @@ namespace llvm {
   Type* FindElementAtOffset(Type *Ty, int64_t Offset,
 			    SmallVectorImpl<Value*> &NewIndices,
 			    DataLayout* TD);
+
+}
+
+InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
+
+  // frameSize == -1 means no stack frame and the allocation really belongs to our caller.
+  if(stack_depth == frameIdx && invarInfo->frameSize != -1)
+    return this;
+  else
+    return activeCaller->parent->IA->getFunctionRoot()->getStackFrameCtx(frameIdx);
+
+}
+
+IntegrationAttempt* IntegrationAttempt::getCtx(ShadowValue V) {
+
+  if(!V.isPtrOrFd())
+    return V.getCtx();
+  return getAllocData(V)->allocContext;
 
 }
 
@@ -1585,12 +1634,12 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
   else {
 
     Value* BaseI;
-    if(Base.isVal() || Base.getCtx()->getFunctionRoot()->CommitF == getFunctionRoot()->CommitF)
+    if(Base.isVal() || getCtx(Base)->getFunctionRoot()->CommitF == getFunctionRoot()->CommitF)
       BaseI = getCommittedValue(Base);
     else {
       GlobalVariable* FwdGlobal;
-      if(Base.isInst())
-	FwdGlobal = pass->globalisedAllocations[Base.u.I];
+      if(Base.isPtrOrFd())
+	FwdGlobal = cast<GlobalVariable>(getAllocData(Base)->committedVal);
       else
 	FwdGlobal = pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV;
       release_assert(FwdGlobal && "Used out of function but not forwarded?");

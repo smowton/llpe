@@ -980,8 +980,8 @@ bool InlineAttempt::isRootMainCall() {
 bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
   switch(V.t) {
-  case SHADOWVAL_INST:
-    return GlobalIHP->allocations.count(V.u.I);
+  case SHADOWVAL_IDX:
+    return true;
   case SHADOWVAL_ARG:
     return V.u.A->IA->isRootMainCall();
   case SHADOWVAL_GV:
@@ -2684,6 +2684,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->useDSA = UseDSA;
   this->verbosePCs = VerbosePathConditions;
   this->programSingleThreaded = SingleThreaded;
+  this->useGlobalInitialisers = UseGlobalInitialisers;
   this->omitChecks = OmitChecks;
   if(this->omitChecks && !this->programSingleThreaded) {
 
@@ -2733,13 +2734,6 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
   RootIA->runDIE();
   
   errs() << "\n";
-
-}
-
-LocStore& IntegrationHeuristicsPass::getArgStore(ShadowArg* A) {
-
-  release_assert(A->IA == RootIA && "ShadowArg used as object but not root IA?");
-  return argStores[A->invar->A->getArgNo()].store;
 
 }
 
@@ -2958,7 +2952,6 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
 	// Register the new global:
 	shadowGlobals[newGVIndex].G = NewGV;
 	shadowGlobalsIdx[NewGV] = newGVIndex;
-	shadowGlobals[newGVIndex].store.store = 0;
 	shadowGlobals[newGVIndex].storeSize = 0;
 	++newGVIndex;
 	break;
@@ -3138,9 +3131,11 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
 	    else if(!anyNonGlobals) {
 
 	      // Create location:
-	      ImprovedValSetSingle* initialVal = new ImprovedValSetSingle(ValSetTypeOldOverdef, false);
-	      argStores[i] = ArgStore(LocStore(initialVal), heap.size());
-	      heap.push_back(ShadowValue(&IA->argShadows[i]));
+	      argStores[i] = ArgStore(heap.size());
+	      heap.push_back(AllocData());
+	      heap.back().allocIdx = heap.size() - 1;
+	      heap.back().allocContext = 0;
+	      heap.back().allocValue = ShadowValue(&IA->argShadows[i]);
 	      anyNonGlobals = true;
 
 	    }
@@ -3370,36 +3365,16 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
 	itend = specialLocations.end(); it != itend; ++it) {
 
     it->second.heapIdx = (int32_t)heap.size();
-    heap.push_back(ShadowValue(it->first));
+    heap.push_back(AllocData());
+    heap.back().allocIdx = heap.size() - 1;
+    heap.back().allocContext = 0;
+    heap.back().allocValue = ShadowValue(it->first);
 
   }
 
 }
 
-void IntegrationHeuristicsPass::releaseStoreMemory() {
-
-  // Release base stores maintained for each instruction.
-
-  uint32_t releasedSingles = 0;
-  uint32_t releasedMultis = 0;
-  uint32_t retainedMultis = 0;
-
-  for(DenseMap<ShadowInstruction*, AllocData>::iterator it = allocations.begin(),
-	itend = allocations.end(); it != itend; ++it) {
-
-    release_assert(it->second.store.store);
-    if(isa<ImprovedValSetSingle>(it->second.store.store))
-      ++releasedSingles;
-    else if(cast<ImprovedValSetMulti>(it->second.store.store)->MapRefCount)
-      ++releasedMultis;
-    else
-      ++retainedMultis;
-    it->second.store.store->dropReference();
-    it->second.store.store = 0;
-
-  }
-
-}
+Type* llvm::GInt8Ptr;
 
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
@@ -3414,6 +3389,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "done\n";
   }
   GlobalIHP = this;
+  GInt8Ptr = Type::getInt8PtrTy(M.getContext());
   initMRInfo(&M);
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {
@@ -3455,7 +3431,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   populateGVCaches(&M);
   initSpecialFunctionsMap(M);
   // Last parameter: reserve extra GV slots for the constants that path condition parsing will produce.
-  initShadowGlobals(M, UseGlobalInitialisers, PathConditionsString.size());
+  initShadowGlobals(M, PathConditionsString.size());
   initBlacklistedFunctions(M);
 
   InlineAttempt* IA = new InlineAttempt(this, F, 0, 0);
@@ -3490,8 +3466,11 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     ImprovedValSetSingle* NewIVS = newIVS();
     NewIVS->set(ImprovedVal(ShadowValue(&IA->argShadows[argvIdx]), 0), ValSetTypePB);
     IA->argShadows[argvIdx].i.PB = NewIVS;
-    argStores[argvIdx] = ArgStore(LocStore(new ImprovedValSetSingle(ValSetTypeUnknown, true)), heap.size());
-    heap.push_back(ShadowValue(&IA->argShadows[argvIdx]));
+    argStores[argvIdx] = ArgStore(heap.size());
+    heap.push_back(AllocData());
+    heap.back().allocIdx = heap.size() - 1;
+    heap.back().allocContext = 0;
+    heap.back().allocValue = ShadowValue(&IA->argShadows[argvIdx]);
 
   }
 
@@ -3501,7 +3480,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   errs() << "Interpreting";
   IA->analyse();
-  releaseStoreMemory();
+
   gatherIndirectUsers();
   errs() << "\n";
 

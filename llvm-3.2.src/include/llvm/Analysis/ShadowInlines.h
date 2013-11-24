@@ -62,6 +62,39 @@ class ShadowInstruction;
 class ShadowGV;
 class InstArgImprovement;
 class LocStore;
+class AllocData;
+
+template<class, class> class LocalStoreMap;
+template<class, class> class MergeBlockVisitor;
+class LocStore;
+class DSEMapPointer;
+class TLMapPointer;
+class OrdinaryStoreExtraState;
+class DSEStoreExtraState;
+class TLStoreExtraState;
+
+typedef LocalStoreMap<LocStore, OrdinaryStoreExtraState> OrdinaryLocalStore;
+typedef LocalStoreMap<DSEMapPointer, DSEStoreExtraState> DSELocalStore;
+typedef LocalStoreMap<TLMapPointer, TLStoreExtraState> TLLocalStore;
+
+typedef MergeBlockVisitor<LocStore, OrdinaryStoreExtraState> OrdinaryMerger;
+typedef MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState> DSEMerger;
+typedef MergeBlockVisitor<TLMapPointer, TLStoreExtraState> TLMerger;
+
+enum ValSetType {
+
+  ValSetTypeUnknown,
+  ValSetTypePB, // Pointers; the Offset member is set, and the values must be of idx type.
+  ValSetTypeScalar, // Ordinary constants
+  ValSetTypeScalarSplat, // Constant splat, used to cheaply express memset(block, size), Offset == size
+  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque. Values are idx type.
+  ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie. Values are instruction type.
+  ValSetTypeOverdef, // Useful for disambiguating empty PB from Overdef; never actually used in PB.
+  ValSetTypeDeallocated, // Special single value signifying an object that is deallocted on a given path.
+  ValSetTypeOldOverdef // A special case of Overdef where the value is known not to alias objects
+                       // created since specialisation started.
+
+};
 
 struct ShadowValue {
 
@@ -127,14 +160,18 @@ ShadowValue(int32_t frame, uint32_t idx) : t(SHADOWVAL_IDX) { u.PtrOrFd.frame = 
   void setCommittedVal(Value* V);
   bool objectAvailable();
   const MDNode* getTBAATag();
-  uint64_t getAllocSize();
+  uint64_t getAllocSize(OrdinaryLocalStore*);
+  uint64_t getAllocSize(IntegrationAttempt*);
   int32_t getFrameNo();
   int32_t getHeapKey();
   int32_t getFramePos() {
     release_assert(isPtrOrFd() && "getFramePos on non-ptr");
     return getHeapKey();
   }
+  AllocData* getAllocData(OrdinaryLocalStore* Map);
   bool isNullOrConst();
+  bool isNullPointer();
+  uint64_t getValSize(ValSetType);
 
 };
 
@@ -153,7 +190,7 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
   case SHADOWVAL_OTHER:
     return V1.u.V == V2.u.V;
   case SHADOWVAL_IDX:
-    return V1.u.idx == V2.u.idx;
+    return V1.u.PtrOrFd.frame == V2.u.PtrOrFd.frame && V1.u.PtrOrFd.idx == V2.u.PtrOrFd.idx;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -179,7 +216,10 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
   case SHADOWVAL_OTHER:
     return V1.u.V < V2.u.V;
   case SHADOWVAL_IDX:
-    return V1.u.idx < V2.u.idx;
+    if(V1.u.PtrOrFd.frame == V2.u.PtrOrFd.frame)
+      return V1.u.PtrOrFd.idx < V2.u.PtrOrFd.idx;
+    else
+      return V1.u.PtrOrFd.frame < V2.u.PtrOrFd.frame;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -227,7 +267,8 @@ template<> struct DenseMapInfo<ShadowValue> {
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
     case SHADOWVAL_IDX:
-      hashPtr = (void*)V.u.idx; break;
+      // Should work due to the union.
+      hashPtr = V.u.V; break;
     default:
       release_assert(0 && "Bad value type");
       hashPtr = 0;
@@ -249,21 +290,6 @@ template<> struct DenseMapInfo<ShadowValue> {
 // Note Value members may be null (signifying a null pointer) without being Overdef.
 
 #define PBMAX 16
-
-enum ValSetType {
-
-  ValSetTypeUnknown,
-  ValSetTypePB, // Pointers; the Offset member is set, and the values must be of idx type.
-  ValSetTypeScalar, // Ordinary constants
-  ValSetTypeScalarSplat, // Constant splat, used to cheaply express memset(block, size), Offset == size
-  ValSetTypeFD, // File descriptors; can only be copied, otherwise opaque. Values are idx type.
-  ValSetTypeVarArg, // Special tokens representing a vararg or VA-related cookie. Values are instruction type.
-  ValSetTypeOverdef, // Useful for disambiguating empty PB from Overdef; never actually used in PB.
-  ValSetTypeDeallocated, // Special single value signifying an object that is deallocted on a given path.
-  ValSetTypeOldOverdef // A special case of Overdef where the value is known not to alias objects
-                       // created since specialisation started.
-
-};
 
 bool functionIsBlacklisted(Function*);
 
@@ -670,7 +696,6 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   uint64_t CoveredBytes;
   uint64_t AllocSize;
 
-  ImprovedValSetMulti(ShadowValue& V);
   ImprovedValSetMulti(uint64_t ASize);
   ImprovedValSetMulti(const ImprovedValSetMulti& other);
 
@@ -792,14 +817,14 @@ LocStore(const LocStore& other) : store(other.store) {}
   bool isValid() { return !!store; }
 
   // Insert checkStore here to verify store after each merge:
-  void checkMergedResult(ShadowValue&) {  }
+  void checkMergedResult() {  }
 
   // Simple forwards:
   LocStore getReadableCopy() { return LocStore(store->getReadableCopy());  }
   void dropReference() {  store->dropReference();  }
   void print(raw_ostream& RSO, bool brief) { store->print(RSO, brief); }
 
-  static void mergeStores(LocStore* mergeFrom, LocStore* mergeTo, ShadowValue& MergeV, MergeBlockVisitor<LocStore, OrdinaryStoreExtraState>*);
+  static void mergeStores(LocStore* mergeFrom, LocStore* mergeTo, uint64_t ASize, MergeBlockVisitor<LocStore, OrdinaryStoreExtraState>*);
 
   static void simplifyStore(LocStore*);
 
@@ -819,6 +844,14 @@ struct AllocData {
   int32_t allocIdx;
   bool allocVague;
   AllocTestedState allocTested;
+  IntegrationAttempt* allocContext;
+  ShadowValue allocValue;
+  // Note that if allocContext->isCommitted() then allocValue is invalid.
+  // commitGlobalised may be set before or after commit: in the former case it represents
+  // a need to globalise when committed; in the latter it signals that committedVal points
+  // to a global variable already.
+  bool commitGlobalised;
+  Value* committedVal;
 
 };
 
@@ -878,8 +911,6 @@ struct ShadowInstruction {
   bool resolved();
   bool isCopyInst();
 
-  AllocData* getAllocData();
-
 };
 
 template<class X> inline bool inst_is(ShadowInstruction* SI) {
@@ -904,7 +935,6 @@ struct ShadowArgInvar {
 struct ShadowGV {
 
   GlobalVariable* G;
-  LocStore store;
   uint64_t storeSize;
   int32_t allocIdx;
 
@@ -1035,13 +1065,13 @@ DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
 
   static LocalStoreMap<DSEMapPointer, DSEStoreExtraState>* getMapForBlock(ShadowBB* BB);
   bool isValid() { return !!M; }
-  void checkMergedResult(ShadowValue&) { }
+  void checkMergedResult() { }
   DSEMapPointer getReadableCopy();
   void dropReference();
   void release();
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
-			  ShadowValue& V, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
+			  uint64_t ASize, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
   static void simplifyStore(DSEMapPointer*) { }
   void useWriters(int64_t Offset, uint64_t Size);
   void setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* SI);
@@ -1097,12 +1127,12 @@ TLMapPointer(const TLMapPointer& other) : M(other.M) {}
 
   static LocalStoreMap<TLMapPointer, TLStoreExtraState>* getMapForBlock(ShadowBB* BB);
   bool isValid() { return !!M; }
-  void checkMergedResult(ShadowValue&) { }
+  void checkMergedResult() { }
   TLMapPointer getReadableCopy();
   void dropReference();
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, 
-			  ShadowValue& V, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
+			  uint64_t ASize, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
   static void simplifyStore(TLMapPointer*) { }
   
 };
@@ -1121,14 +1151,6 @@ struct TLStoreExtraState {
 };
 
 #include "SharedTree.h"
-
-typedef LocalStoreMap<LocStore, OrdinaryStoreExtraState> OrdinaryLocalStore;
-typedef LocalStoreMap<DSEMapPointer, DSEStoreExtraState> DSELocalStore;
-typedef LocalStoreMap<TLMapPointer, TLStoreExtraState> TLLocalStore;
-
-typedef MergeBlockVisitor<LocStore, OrdinaryStoreExtraState> OrdinaryMerger;
-typedef MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState> DSEMerger;
-typedef MergeBlockVisitor<TLMapPointer, TLStoreExtraState> TLMerger;
 
 struct CommittedBlock {
 
@@ -1192,6 +1214,7 @@ struct ShadowBB {
   BasicBlock* getCommittedBreakBlockAt(uint32_t);
   DSEMapPointer* getWritableDSEStore(ShadowValue O);
   TLMapPointer* getWritableTLStore(ShadowValue O);
+  uint64_t getAllocSize(ShadowValue);
 
 };
 
@@ -1245,6 +1268,8 @@ uint32_t ShadowBBInvar::succs_size() {
   return succIdxs.size();
 }
 
+extern Type* GInt8Ptr;
+
 inline Type* ShadowValue::getType() {
 
   switch(t) {
@@ -1257,7 +1282,7 @@ inline Type* ShadowValue::getType() {
   case SHADOWVAL_OTHER:
     return u.V->getType();
   case SHADOWVAL_IDX:
-    release_assert(0 && "Can't directly query type of idx");
+    return GInt8Ptr;
   default:
     release_assert(0 && "Bad SV type");
     return 0;
@@ -1346,7 +1371,7 @@ inline LLVMContext& ShadowValue::getLLVMContext() {
   case SHADOWVAL_GV:
     return u.GV->G->getContext();
   case SHADOWVAL_IDX:
-    release_assert(0 && "Bad value type in getLLVMContext");
+    return GInt8Ptr->getContext();
   default:
     return u.V->getContext();
   }
@@ -1799,8 +1824,21 @@ inline bool ShadowValue::isNullOrConst() {
 
   if(t == SHADOWVAL_GV)
     return u.GV->G->isConstant();
+  else if(t == SHADOWVAL_IDX)
+    return false;
 
   return isa<ConstantPointerNull>(getBareVal());
+
+}
+
+inline bool ShadowValue::isNullPointer() {
+
+  switch(t) {
+  case SHADOWVAL_OTHER:
+    return isa<ConstantPointerNull>(u.V);
+  default:
+    return false;
+  }
 
 }
 

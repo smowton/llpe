@@ -689,23 +689,32 @@ public:
 
 static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
 
-  // I know V is a heap allocation, therefore a call instruction.
-  ShadowInstruction* I = V.getInst();
+  // I know V is a heap allocation, therefore a heap index.
+  uint32_t heapIdx = V.getHeapKey();
+  AllocData& AD = GlobalIHP->heap[heapIdx];
 
   // Has the allocation already been tested?
-  if(I->getAllocData()->allocTested == AllocTested)
+  if(AD.allocTested == AllocTested)
     return true;
-  else if(I->getAllocData()->allocTested == AllocEscaped)
+  else if(AD.allocTested == AllocEscaped)
     return false;
+
+  if(AD.allocContext->isCommitted()) {
+
+    AD.allocTested = AllocEscaped;
+    errs() << "Unable to perform all-paths search for " << itcache(V) << ": allocating context already committed\n";
+    return false;
+
+  }
   
   // Determine if this test dominates all other tests. Instructions are visited in
   // topological order, so this must be the first test. Walk forwards starting at the allocation,
   // and determine whether we reach TestI or a control flow split first.
 
-  FindTestWalker W(I, TestI);
+  FindTestWalker W(AD.allocValue.getInst(), TestI);
   W.walk();
 
-  I->getAllocData()->allocTested = W.Result;
+  AD.allocTested = W.Result;
   if(W.Result == AllocEscaped) {
 
      errs() << "Heap allocation " << itcache(V) << " does not appear to be locally tested and so all null comparisons will be checked\n";
@@ -740,9 +749,9 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   bool op1UGO = isGlobalIdentifiedObject(op1);
 
   bool comparingHeapPointer = false;
-  if(op0UGO && val_is<CallInst>(op0))
+  if(op0UGO && op0.isPtrOrFd() && op0.u.PtrOrFd.frame == -1)
     comparingHeapPointer = true;
-  else if(op1UGO && val_is<CallInst>(op1))
+  else if(op1UGO && op1.isPtrOrFd() && op1.u.PtrOrFd.frame == -1)
     comparingHeapPointer = true;
 
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
@@ -758,12 +767,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   Constant* op0Arg = 0, *op1Arg = 0;
   if(op0C && op0C->isNullValue())
     op0Arg = zero;
-  else if(op0.getType()->isPointerTy() && (op0UGO || op0Fun))
+  else if(op0UGO || op0Fun)
     op0Arg = one;
   
   if(op1C && op1C->isNullValue())
     op1Arg = zero;
-  else if(op1.getType()->isPointerTy() && (op1UGO || op1Fun))
+  else if(op1UGO || op1Fun)
     op1Arg = one;
 
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {

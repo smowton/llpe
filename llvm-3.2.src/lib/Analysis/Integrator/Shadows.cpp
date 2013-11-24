@@ -103,7 +103,7 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
 }
 
-void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialisers, uint32_t extraSlots) {
+void IntegrationHeuristicsPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
 
   uint32_t i = 0;
   uint32_t nGlobals = std::distance(M.global_begin(), M.global_end());
@@ -125,48 +125,24 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, bool useInitialiser
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     if(it->isConstant()) {
-      shadowGlobals[i].store.store = 0;
       shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(shadowGlobals[i].G->getType());
       continue;
     }
 
     shadowGlobals[i].allocIdx = (int32_t)heap.size();
-    heap.push_back(ShadowValue(&(shadowGlobals[i])));
-
-    ImprovedValSetSingle* Init = new ImprovedValSetSingle();
-
-    if(useInitialisers && it->hasDefinitiveInitializer()) {
-
-      Constant* I = it->getInitializer();
-      if(isa<ConstantAggregateZero>(I)) {
-
-	Init->SetType = ValSetTypeScalarSplat;
-	Type* I8 = Type::getInt8Ty(M.getContext());
-	Constant* I8Z = Constant::getNullValue(I8);
-	Init->insert(ImprovedVal(I8Z));
-
-      }
-      else {
-
-	std::pair<ValSetType, ImprovedVal> InitIV = getValPB(I);
-	(*Init) = ImprovedValSetSingle(InitIV.second, InitIV.first);
-
-      }
-
-    }
-    else {
-
-      // Start off overdef, and known-older-than-specialisation.
-      Init->SetType = ValSetTypeOldOverdef;
-
-    }
+    
+    heap.push_back(AllocData());
+    AllocData& AD = heap.back();
+    AD.allocIdx = heap.size() - 1;
+    AD.storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
+    AD.allocContext = 0;
+    AD.allocValue = ShadowValue(&(shadowGlobals[i]));
 
     //errs() << "Init store for " << *it << " -> ";
     //printPB(errs(), *Init);
     //errs() << "\n";
 
-    shadowGlobals[i].store.store = Init;
-    shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
+    shadowGlobals[i].storeSize = AD.storeSize;
 
   }
 
@@ -746,6 +722,13 @@ bool ShadowValue::objectAvailable() {
     if(!u.I->parent->IA->allAncestorsEnabled())
       return false;
     return true;
+  case SHADOWVAL_IDX:
+    // Stack-allocated members are necessarily available from any context
+    // that can conceivably reach them.
+    if(u.PtrOrFd.frame != -1)
+      return true;
+    else
+      return getAllocData((OrdinaryLocalStore*)0)->allocValue.objectAvailable();
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
     llvm_unreachable();

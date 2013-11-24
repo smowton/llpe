@@ -201,6 +201,7 @@ template<class Base> struct IndirectComp {
 };
 
 ShadowValue& getAllocWithIdx(int32_t);
+uint64_t getHeapAllocSize(ShadowValue V);
 
 template<class ChildType, class ExtraState> 
 void SharedTreeNode<ChildType, ExtraState>
@@ -240,8 +241,6 @@ void SharedTreeNode<ChildType, ExtraState>
     // Populate this node with base versions of nodes that are missing but present in any other tree. 
     // Just add blank nodes for now and then the recursion will catch the rest.
     for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
-
-      ShadowValue& MergeV = getAllocWithIdx(idx + i);
 
       for(typename SmallVector<SharedTreeNode<ChildType, ExtraState>*, 4>::iterator it = others.begin(), 
 	    itend = others.end(); it != itend && !children[i]; ++it) {
@@ -302,7 +301,7 @@ void SharedTreeNode<ChildType, ExtraState>
 	if(*it == &(children[i]))
 	  continue;
 
-	ShadowValue& MergeV = getAllocWithIdx(idx + i);
+	uint64_t ASize = getHeapAllocSize(ShadowValue(-1, idx + i));
 
 	ChildType* mergeFromStore;
 	if(!*it)
@@ -311,8 +310,8 @@ void SharedTreeNode<ChildType, ExtraState>
 	  mergeFromStore = (ChildType*)(**it);
 
 	// mergeStores takes care of CoW break if necessary.
-	ChildType::mergeStores(mergeFromStore, (ChildType*)children[i], MergeV, visitor);
-	((ChildType*)children[i])->checkMergedResult(MergeV);
+	ChildType::mergeStores(mergeFromStore, (ChildType*)children[i], ASize, visitor);
+	((ChildType*)children[i])->checkMergedResult();
       
       }
 
@@ -677,7 +676,7 @@ ChildType* LocalStoreMap<ChildType, ExtraState>::getOrCreateStoreFor(ShadowValue
 
     std::vector<ChildType>& frameMap = getWritableFrame(frameNo);
     frames[frameNo]->empty = false;
-    int32_t framePos = V.u.I->getAllocData()->allocIdx;
+    int32_t framePos = V.getFramePos();
     release_assert(framePos >= 0 && "Stack entry without an index?");
     if(frameMap.size() <= (uint32_t)framePos)
       frameMap.resize(framePos + 1);
@@ -701,7 +700,7 @@ template<class ChildType, class ExtraState> ChildType* LocalStoreMap<ChildType, 
   else {
 
     std::vector<ChildType>& frame = frames[frameNo]->store;
-    uint32_t frameIdx = V.u.I->getAllocData()->allocIdx;
+    uint32_t frameIdx = V.getFramePos();
     if(frame.size() <= frameIdx)
       return 0;
 
@@ -999,6 +998,8 @@ void MergeBlockVisitor<ChildType, ExtraState>::
 
 }
 
+uint64_t getAllocSize(InlineAttempt*, uint32_t idx);
+
 template<class ChildType, class ExtraState>
 void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typename SmallVector<MapType*, 4>::iterator fromBegin, typename SmallVector<MapType*, 4>::iterator fromEnd, uint32_t idx) {
 
@@ -1086,7 +1087,7 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
 
     ChildType* mergeToLoc = &(mergeToStore[i]);
 
-    ShadowValue mergeSV = ShadowValue(getStackAllocationWithIndex(thisFrameIA, i));
+    uint64_t mergeSize = getAllocSize(thisFrameIA, i);
 
     SmallVector<ChildType*, 4> incomingStores;
 
@@ -1117,8 +1118,8 @@ void MergeBlockVisitor<ChildType, ExtraState>::mergeFrames(MapType* toMap, typen
       ChildType* mergeFromLoc = *incit;
 
       // Right, merge it->second and mergeFromLoc.
-      ChildType::mergeStores(mergeFromLoc, mergeToLoc, mergeSV, this);
-      mergeToLoc->checkMergedResult(mergeSV);
+      ChildType::mergeStores(mergeFromLoc, mergeToLoc, mergeSize, this);
+      mergeToLoc->checkMergedResult();
 
     }
 

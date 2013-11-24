@@ -2229,12 +2229,12 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
 
     if(IVS->SetType == ValSetTypePB && 
        IVS->Values[j].Offset == LLONG_MAX && 
-       IVS->Values[j].V.getAllocSize() != ULONG_MAX) {
+       IVS->Values[j].V.getAllocSize(this) != ULONG_MAX) {
 
       ImprovedVal BaseVal = IVS->Values[j];
       BaseVal.Offset = 0;
       ImprovedVal LimitVal = IVS->Values[j];
-      LimitVal.Offset = IVS->Values[j].V.getAllocSize();
+      LimitVal.Offset = IVS->Values[j].V.getAllocSize(this);
 
       Value* Base = trySynthVal(0, realInst->getType(), IVS->SetType, BaseVal, emitBB);
       release_assert(Base && "Couldn't synth base");

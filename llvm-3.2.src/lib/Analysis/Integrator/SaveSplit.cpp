@@ -17,13 +17,16 @@ void IntegrationAttempt::checkNonLocalReference(ShadowValue V) {
   ImprovedValSetSingle* IVS;
   if(getBaseObject(V, Base)) {
 
-    if(Base.isInst() && Base.objectAvailable() && Base.u.I->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+    if(Base.isPtrOrFd() && Base.objectAvailable() && getAllocCtx(Base)->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+      
+      AllocData* AD = getAllocData(Base);
 
       // Base has a nonlocal user.
-      if(!pass->globalisedAllocations.count(Base.u.I)) {
+      if(!AD->commitGlobalised) {
 
 	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
-	pass->globalisedAllocations[Base.u.I] = NewGV;
+	AD->commitGlobalised = true;
+	AD->committedVal = NewGV;
 
       }
 

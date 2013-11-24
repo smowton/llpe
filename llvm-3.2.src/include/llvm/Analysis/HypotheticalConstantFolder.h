@@ -374,12 +374,11 @@ GlobalStats() : dynamicFunctions(0), dynamicContexts(0), dynamicBlocks(0), dynam
 
 struct ArgStore {
 
-  LocStore store;
   uint32_t heapIdx;
   GlobalVariable* fwdGV;
 
-ArgStore() : store(), heapIdx(0), fwdGV(0) {}
-ArgStore(LocStore s, uint32_t hi) : store(s), heapIdx(hi), fwdGV(0) {}
+ArgStore() : heapIdx(0), fwdGV(0) {}
+ArgStore(uint32_t hi) : heapIdx(hi), fwdGV(0) {}
 
 };
 
@@ -458,7 +457,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<CallInst*, std::vector<GlobalVariable*>, 4> lockDomains;
    SmallSet<CallInst*, 4> pessimisticLocks;
 
-   DenseMap<ShadowInstruction*, AllocData> allocations;
    // Of an allocation or FD, record instructions that may use it in the emitted program.
    DenseMap<ShadowInstruction*, std::vector<ShadowValue> > indirectDIEUsers;
    // Of a successful copy instruction, records the values read.
@@ -469,7 +467,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<ShadowInstruction*, SeekFile> resolvedSeekCalls;
    DenseMap<ShadowInstruction*, CloseFile> resolvedCloseCalls;
 
-   DenseMap<ShadowInstruction*, GlobalVariable*> globalisedAllocations;
    DenseMap<ShadowInstruction*, GlobalVariable*> globalisedFDs;
   
    void addSharableFunction(InlineAttempt*);
@@ -481,7 +478,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    ShadowGV* shadowGlobals;
 
-   std::vector<ShadowValue> heap;
+   std::vector<AllocData> heap;
 
    RecyclingAllocator<BumpPtrAllocator, ImprovedValSetSingle> IVSAllocator;
 
@@ -489,6 +486,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool enableSharing;
    bool verboseSharing;
    bool verbosePCs;
+   bool useGlobalInitialisers;
 
    Function* llioPreludeFn;
    int llioPreludeStackIdx;
@@ -603,12 +601,10 @@ class IntegrationHeuristicsPass : public ModulePass {
 		    const Loop* L,
 		    DominatorTree*);
 
-   void initShadowGlobals(Module&, bool useInitialisers, uint32_t extraSlots);
+   void initShadowGlobals(Module&, uint32_t extraSlots);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
      return shadowGlobalsIdx[GV];
    }
-
-   LocStore& getArgStore(ShadowArg*);
 
    uint64_t getSeq() {
      return SeqNumber++;
@@ -634,8 +630,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void initMRInfo(Module*);
    IHPFunctionInfo* getMRInfo(Function*);
-
-   void releaseStoreMemory();
 
    void postCommitStats();
 
@@ -764,27 +758,6 @@ inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
     release_assert(0 && "getImprovedValSetSingle on uninit value");
     llvm_unreachable();
 
-  }
-
-}
-
-inline LocStore& ShadowValue::getBaseStore() {
-
-  switch(t) {
-  case SHADOWVAL_INST:
-    return u.I->getAllocData()->store;
-  case SHADOWVAL_GV:
-    return u.GV->store;
-  case SHADOWVAL_OTHER:
-    {
-      Function* KeyF = cast<Function>(u.V);
-      return GlobalIHP->specialLocations[KeyF].store;
-    }
-  case SHADOWVAL_ARG:
-    return GlobalIHP->getArgStore(u.A);
-  default:
-    assert(0 && "getBaseStore on non-inst, non-GV value");
-    llvm_unreachable();
   }
 
 }
@@ -1288,6 +1261,10 @@ protected:
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*, uint32_t);
   ShadowValue getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx);
 
+  AllocData* getAllocData(ShadowValue);
+  ShadowInstruction* getAllocInst(ShadowValue V);
+  IntegrationAttempt* getAllocCtx(ShadowValue V);
+
   // Support functions for the generic IA graph walkers:
   void visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor*, void* Ctx, bool& firstPred);
   virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) = 0;
@@ -1429,6 +1406,11 @@ protected:
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
+  bool isCommitted() { 
+    return false;
+  }
+  IntegrationAttempt* getCtx(ShadowValue);
+  Value* getCommittedValue(ShadowValue SV);
 
   // Function sharing
 
@@ -1742,8 +1724,8 @@ class InlineAttempt : public IntegrationAttempt {
 
   ImmutableArray<ShadowArg> argShadows;
 
-  std::vector<ShadowInstruction*> localAllocas;
-  ShadowInstruction* getAllocaWithIdx(uint32_t i) {
+  std::vector<AllocData> localAllocas;
+  AllocData& getAllocaWithIdx(uint32_t i) {
     return localAllocas[i];
   }
 
@@ -1914,6 +1896,7 @@ class InlineAttempt : public IntegrationAttempt {
   void splitCommitHere();
 
   virtual void gatherIndirectUsers();
+  InlineAttempt* getStackFrameCtx(int32_t);
   
 };
 
@@ -1928,7 +1911,7 @@ inline bool hasNoCallers(InlineAttempt* IA) {
 }
 
 inline ShadowValue getStackAllocationWithIndex(InlineAttempt* IA, uint32_t i) {
-  return IA->getAllocaWithIdx(i);
+  return IA->getAllocaWithIdx(i).allocValue;
 }
 
 inline IntegrationAttempt* ShadowValue::getCtx() {
@@ -1983,13 +1966,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
    SVPartialAlias,
    SVMustAlias
  };
-
- SVAAResult tryResolveImprovedValSetSingles(ImprovedValSetSingle& PB1, uint64_t V1Size, ImprovedValSetSingle& PB2, uint64_t V2Size, bool usePBKnowledge);
- SVAAResult tryResolveImprovedValSetSingles(ShadowValue V1Base, int64_t V1Offset, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
- SVAAResult tryResolveImprovedValSetSingles(ShadowValue V1, uint64_t V1Size, ShadowValue V2, uint64_t V2Size, bool usePBKnowledge);
  
- bool basesAlias(ShadowValue, ShadowValue);
-
  bool tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed);
 
  bool willBeDeleted(ShadowValue);
@@ -2033,11 +2010,11 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n);
  bool canTruncate(ImprovedValSetSingle& S);
 
- void readValRangeMultiFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore);
+ void readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore, uint64_t ASize);
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);
  void executeMemcpyInst(ShadowInstruction* MemcpySI);
  void executeVaCopyInst(ShadowInstruction* SI);
- void executeAllocInst(ShadowInstruction* SI, Type* AllocType, uint64_t AllocSize, bool trackAlloc);
+ void executeAllocInst(ShadowInstruction* SI, AllocData&, Type* AllocType, uint64_t AllocSize, int32_t frame, uint32_t idx);
  void executeAllocaInst(ShadowInstruction* SI);
  void executeMallocLikeInst(ShadowInstruction* SI);
  void executeReallocInst(ShadowInstruction* SI, Function*);
@@ -2052,18 +2029,16 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
 
- void commitStoreToBase(OrdinaryLocalStore* Map);
- void commitFrameToBase(SharedStoreMap<LocStore, OrdinaryStoreExtraState>* Map);
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
  void doCallStoreMerge(ShadowBB* BB, InlineAttempt* IA);
- 
+
  void initSpecialFunctionsMap(Module& M);
  
  void printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief = false);
 
  ShadowValue& getAllocWithIdx(int32_t);
- void addHeapAlloc(ShadowInstruction*);
+ AllocData& addHeapAlloc(ShadowInstruction*);
 
  IntegratorTag* searchFunctions(IntegratorTag* thisTag, std::string&, IntegratorTag*& startAt);
 
@@ -2073,7 +2048,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  uint32_t findBlock(ShadowFunctionInvar* SFI, StringRef name);
  InlineAttempt* getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth);
 
- Value* getCommittedValue(ShadowValue SV);
  Constant* getConstAsType(Constant*, Type*);
  Value* getValAsType(Value* V, Type* Ty, Instruction* insertBefore);
  Value* getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd);
@@ -2107,12 +2081,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  extern DenseMap<Function*, specialfunctions> SpecialFunctionMap;
    
- struct IntAAProxy {
-
-   virtual bool isNoAliasPBs(ShadowValue Ptr1Base, int64_t Ptr1Offset, uint64_t Ptr1Size, ShadowValue Ptr2, uint64_t Ptr2Size);
-
- };
-
  inline bool functionIsBlacklisted(Function* F) {
    
    return GlobalIHP->blacklistedFunctions.count(F);

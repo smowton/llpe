@@ -59,7 +59,7 @@ void TLMapPointer::dropReference() {
 
 }
 
-void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, ShadowValue& V, TLMerger* Visitor) {
+void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, uint64_t ASize, TLMerger* Visitor) {
 
   // Intersect the sets per byte. The values are just booleans, so overwriting without erasing is fine.
 
@@ -301,7 +301,10 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
   if(inst_is<AllocaInst>(SI)) {
 
-    markGoodBytes(ShadowValue(SI), SI->getAllocData()->storeSize, contextEnabled, SI->parent);
+    ShadowValue SV(SI);
+    ShadowValue Base;
+    getBaseObject(SV, Base);
+    markGoodBytes(ShadowValue(SI), SI->parent->IA->getFunctionRoot()->localAllocas[Base.u.PtrOrFd.idx].storeSize, contextEnabled, SI->parent);
 
   }
   else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
@@ -359,7 +362,15 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
 	case SF_MALLOC:
 	  
-	  markGoodBytes(ShadowValue(SI), SI->getAllocData()->storeSize, contextEnabled, SI->parent);
+	  {
+	  
+	    ShadowValue SV(SI);
+	    ShadowValue Base;
+	    getBaseObject(SV, Base);
+
+	    markGoodBytes(SV, GlobalIHP->heap[Base.u.PtrOrFd.idx].storeSize, contextEnabled, SI->parent);
+
+	  }
 
 	default:
 	  break;
@@ -412,7 +423,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
 
   // Read from null?
-  if(val_is<ConstantPointerNull>(Ptr.V))
+  if(Ptr.V.isNullPointer())
     return false;
 
   // Read from constant global?

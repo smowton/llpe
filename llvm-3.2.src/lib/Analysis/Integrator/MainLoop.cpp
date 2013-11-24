@@ -68,6 +68,59 @@ bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t 
 
 }
 
+static void initialiseStore(ShadowBB* BB) {
+
+  for(uint32_t i = 0, ilim = GlobalIHP->heap.size(); i != ilim; ++i) {
+
+    AllocData& AD = GlobalIHP->heap[i];
+    ImprovedValSetSingle* Init = new ImprovedValSetSingle();
+
+    if(AD.allocValue.isGV()) {
+
+      GlobalVariable* G = AD.allocValue.getGV()->G;
+
+      if(GlobalIHP->useGlobalInitialisers && G->hasDefinitiveInitializer()) {
+
+	Constant* I = G->getInitializer();
+	if(isa<ConstantAggregateZero>(I)) {
+
+	  Init->SetType = ValSetTypeScalarSplat;
+	  Type* I8 = Type::getInt8Ty(BB->invar->BB->getContext());
+	  Constant* I8Z = Constant::getNullValue(I8);
+	  Init->insert(ImprovedVal(I8Z));
+
+	}
+	else {
+
+	  std::pair<ValSetType, ImprovedVal> InitIV = getValPB(I);
+	  (*Init) = ImprovedValSetSingle(InitIV.second, InitIV.first);
+
+	}
+
+      }
+      else {
+
+	// Start off overdef, and known-older-than-specialisation.
+	Init->SetType = ValSetTypeOldOverdef;
+
+      }
+
+    }
+    else {
+
+      // All non-GVs initialise to an old value.
+      Init->SetType = ValSetTypeOldOverdef;
+
+    }
+
+    LocStore& LS = BB->getWritableStoreFor(AD.allocValue, 0, AD.storeSize, true);
+    LS.store->dropReference();
+    LS.store = Init;
+
+  }
+
+}
+
 void InlineAttempt::getInitialStore() {
 
   // Take our caller's store; they will make a new one
@@ -75,8 +128,10 @@ void InlineAttempt::getInitialStore() {
 
   if(Callers.size())
     BBs[0]->localStore = activeCaller->parent->localStore;
-  else
+  else {
     BBs[0]->localStore = new OrdinaryLocalStore(0);
+    initialiseStore(BBs[0]);
+  }
 
   if(invarInfo->frameSize != -1 || !Callers.size())
     BBs[0]->pushStackFrame(this);

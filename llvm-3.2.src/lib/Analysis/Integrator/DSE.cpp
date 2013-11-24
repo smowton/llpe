@@ -269,7 +269,7 @@ static void setAllNeeded(DSELocalStore* store) {
 
 }
 
-void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, ShadowValue& V, DSEMerger* Visitor) {
+void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, uint64_t ASize, DSEMerger* Visitor) {
 
   // Just union the two stores together. They can't be the same store.
   release_assert(mergeFrom != mergeTo && mergeFrom->M != mergeTo->M);
@@ -542,7 +542,7 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
 
   for(uint64_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
 
-    if(val_is<ConstantPointerNull>(IVS.Values[i].V))
+    if(IVS.Values[i].V.isNullPointer())
       continue;
 
     ShadowGV* GV;
@@ -577,7 +577,7 @@ void IntegrationAttempt::DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, Shadow
   if(!getBaseAndConstantOffset(PtrOp, Ptr, Offset))
     return;
 
-  if(val_is<ConstantPointerNull>(Ptr))
+  if(Ptr.isNullPointer())
     return;
 
   DSEMapPointer* store = BB->getWritableDSEStore(Ptr);
@@ -731,7 +731,9 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
       }
       else if(inst_is<AllocaInst>(I)) {
 
-	DSEMapPointer* store = BB->getWritableDSEStore(ShadowValue(I));
+	ShadowValue Base;
+	getBaseObject(ShadowValue(I), Base);
+	DSEMapPointer* store = BB->getWritableDSEStore(Base);
 	store->A = new TrackedAlloc(I);
 
       }
@@ -775,7 +777,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	      if(!getBaseAndConstantOffset(PtrOp, Ptr, Offset))
 		continue;
 	      
-	      if(val_is<ConstantPointerNull>(Ptr))
+	      if(Ptr.isNullPointer())
 		continue;
 
 	      DSEMapPointer* store = BB->getWritableDSEStore(Ptr);
@@ -786,7 +788,9 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	      // Track the allocation to determine if it is unused everywhere.
 	      
-	      DSEMapPointer* store = BB->getWritableDSEStore(ShadowValue(I));
+	      ShadowValue Base;
+	      getBaseObject(ShadowValue(I), Base);
+	      DSEMapPointer* store = BB->getWritableDSEStore(Base);
 	      store->A = new TrackedAlloc(I);
 
 	    }
@@ -873,7 +877,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 	  if(IVS->SetType == ValSetTypePB || IVS->SetType == ValSetTypeFD) {
 
 	    ShadowValue Base = IVS->Values[0].V;
-	    if((!Base.getCtx()) || Base.objectAvailable())
+	    if(Base.objectAvailable())
 	      continue;
 
 	  }

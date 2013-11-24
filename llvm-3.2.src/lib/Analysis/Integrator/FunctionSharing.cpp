@@ -187,7 +187,7 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
 
   LocStore* saveStore = Root->sharing->storeAtEntry->getReadableStoreFor(V);
   if(!saveStore)
-    saveStore = &(V.getBaseStore());
+    return;
 
   it.first->second = saveStore->store->getReadableCopy();
 
@@ -263,7 +263,7 @@ bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
     // in order to facilitate creating a copy of the store at function entry.
     LocStore* callsiteStore = SI->parent->getReadableStoreFor(it->first);
     if(!callsiteStore)
-      callsiteStore = &(it->first.getBaseStore());
+      return false;
 
     if(!IVsEqualShallow(callsiteStore->store, it->second))
       return false;
