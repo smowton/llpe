@@ -1030,11 +1030,12 @@ struct OrdinaryStoreExtraState {
 
 struct TrackedStore {
 
-  ShadowInstruction* I;
+  ShadowInstruction* I; // Invalid if IA is committed
+  IntegrationAttempt* IA;
   uint64_t outstandingBytes;
   bool isNeeded;
 
-  TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), outstandingBytes(ob), isNeeded(false) {}
+  TrackedStore(ShadowInstruction* _I, uint64_t ob);
   void derefBytes(uint64_t nBytes);
 
 };
@@ -1045,13 +1046,14 @@ typedef IntervalMap<uint64_t, DSEMapEntry, IntervalMapImpl::NodeSizer<uint64_t, 
 
 struct TrackedAlloc {
 
-  ShadowInstruction* SI;
+  ShadowInstruction* SI; // Invalid if IA is committed
+  IntegrationAttempt* IA;
   uint64_t nRefs;
   bool isNeeded;
 
   void dropReference();
 
-  TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), nRefs(1), isNeeded(false) {}
+  TrackedAlloc(ShadowInstruction* _SI);
 
 };
 

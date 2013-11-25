@@ -39,12 +39,14 @@ static void DSEInstructionDead(ShadowInstruction* SI) {
 
 }
 
+TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->parent->IA), outstandingBytes(ob), isNeeded(false) {}
+
 void TrackedStore::derefBytes(uint64_t nBytes) {
 
   release_assert(nBytes <= outstandingBytes);
   if(!(outstandingBytes -= nBytes)) {
-
-    if(!isNeeded)
+    
+    if((!isNeeded) && (!IA->isCommitted()))
       DSEInstructionDead(I);
 
     delete this;
@@ -63,11 +65,13 @@ DSELocalStore* DSEMapPointer::getMapForBlock(ShadowBB* BB) {
   
 }
 
+TrackedAlloc::TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), IA(_SI->parent->IA), nRefs(1), isNeeded(false) {}
+
 void TrackedAlloc::dropReference() {
 
   if(!(--nRefs)) {
     
-    if(!isNeeded)
+    if((!isNeeded) && (!IA->isCommitted()))
       DSEInstructionDead(SI);
 
     delete this;
@@ -85,7 +89,7 @@ static bool GCStores(DSEMapTy::iterator argit) {
   for(DSEMapEntry::iterator entryit = entry.begin(); entryit != entry.end(); ++entryit) {
 
     TrackedStore* thisStore = *entryit;
-    if(thisStore->isNeeded) {
+    if(thisStore->isNeeded || thisStore->IA->isCommitted()) {
 
       thisStore->derefBytes(entrySize);
 
