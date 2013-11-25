@@ -2147,7 +2147,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
 static bool willUseIndirectly(ImprovedValSet* IV) {
 
-  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV)) {
+  if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(IV)) {
 
     if((IVS->SetType == ValSetTypeFD || IVS->SetType == ValSetTypePB) && IVS->Values.size() == 1)
       return true;
@@ -2158,16 +2158,28 @@ static bool willUseIndirectly(ImprovedValSet* IV) {
 
 }
 
-void llvm::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
+void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
 
   if(willUseIndirectly(NewPB)) {
 	
     ImprovedValSetSingle* NewIVS = cast<ImprovedValSetSingle>(NewPB);
-    if(ShadowInstruction* WillUse = NewIVS->Values[0].V.getInst()) {
+    if(NewIVS->Values[0].V.isPtrIdx()) {
 
-      std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[WillUse];
-      Users.push_back(V);
+      AllocData* AD = getAllocData(NewIVS->Values[0].V);
+      if(AD->allocValue.isInst() && !AD->allocContext->isCommitted()) {
+	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[AD->allocValue.getInst()];
+	Users.push_back(V);
+      }
 
+    }
+    else if(NewIVS->Values[0].V.isFdIdx()) {
+      
+      FDGlobalState& FDS = pass->fds[NewIVS->Values[0].V.getFd()];
+      if(!FDS.IA->isCommitted()) {
+	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[FDS.SI];
+	Users.push_back(V);
+      }
+      
     }
       
   }

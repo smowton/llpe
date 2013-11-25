@@ -246,6 +246,13 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
       anyChange |= analyseLoop(BBL, inLoopAnalyser);
 
+      if(!inLoopAnalyser) {
+
+	// Run other passes over the whole loop
+	gatherIndirectUsersInLoop(BBL);
+	
+      }
+
     }
     else {
 
@@ -381,6 +388,11 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
     }
 
     anyChange |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
+
+    if(!inLoopAnalyser) {
+      // In the loop analysis case we reach a fixed point before running other passes.
+      noteIndirectUse(ShadowValue(SI), SI->i.PB);
+    }
 
   }
 

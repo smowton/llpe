@@ -1220,10 +1220,11 @@ FDStore(const FDStore& Other) : refCount(1), fds(Other.fds) {}
 struct FDGlobalState {
 
   ShadowInstruction* SI;
+  IntegrationAttempt* IA;
   Value* CommittedVal;
   bool Globalised;
 
-FDGlobalState(ShadowInstruction* _SI) : SI(_SI), CommittedVal(0), Globalised(false) {}
+  FDGlobalState(ShadowInstruction* _SI);
 
 };
 

@@ -621,8 +621,6 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void saveSplitPhase();
 
-   void gatherIndirectUsers();
-
 };
 
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
@@ -1306,7 +1304,8 @@ protected:
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   bool shouldCheckPB(ShadowValue);
   void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-  virtual void gatherIndirectUsers();
+  void gatherIndirectUsersInLoop(const Loop*);
+  void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
 
   // Enabling / disabling exploration:
 
@@ -1879,7 +1878,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void inheritCommitFunction();
   void splitCommitHere();
 
-  virtual void gatherIndirectUsers();
+  void gatherIndirectUsers();
   InlineAttempt* getStackFrameCtx(int32_t);
   
 };
@@ -2045,7 +2044,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks);
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
  
- void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
  void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped);
  void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param);
  void escapePercent(std::string&);

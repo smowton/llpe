@@ -640,34 +640,6 @@ void IntegrationAttempt::runDIE() {
 
 }
 
-void IntegrationHeuristicsPass::gatherIndirectUsers() {
-
-  RootIA->gatherIndirectUsers();
-  
-  for(std::vector<PathFunc>::iterator it = pathConditions.FuncPathConditions.begin(),
-	itend = pathConditions.FuncPathConditions.end(); it != itend; ++it)
-    if(it->IA)
-      it->IA->gatherIndirectUsers();
-
-  for(DenseMap<Function*, ShadowFunctionInvar*>::iterator it = functionInfo.begin(),
-	itend = functionInfo.end(); it != itend; ++it) {
-    
-    if(it->second->pathConditions) {
-
-      for(std::vector<PathFunc>::iterator it2 = it->second->pathConditions->FuncPathConditions.begin(),
-	    itend2 = it->second->pathConditions->FuncPathConditions.end(); it2 != itend2; ++it2) {
-
-	if(it2->IA)
-	  it2->IA->gatherIndirectUsers();
-
-      }
-
-    }
-
-  }
-
-}
-
 void InlineAttempt::gatherIndirectUsers() {
 
   for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {
@@ -677,52 +649,28 @@ void InlineAttempt::gatherIndirectUsers() {
 
   }
 
-  IntegrationAttempt::gatherIndirectUsers();
+  gatherIndirectUsersInLoop(0);
 
 }
 
-void IntegrationAttempt::gatherIndirectUsers() {
+// Called only for unbounded loops, which cannot contain unexpanded subloops, so no need to check.
+void IntegrationAttempt::gatherIndirectUsersInLoop(const Loop* L) {
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(uint32_t bbi = invarInfo->LInfo[L]->headerIdx, bblim = BBsOffset + nBBs; 
+      bbi != bblim && ((!L) || L->contains(getBBInvar(bbi)->naturalScope)); ++bbi) {
 
-    it->second->gatherIndirectUsers();
-
-  }
-  
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isTerminated())
-      continue;
-
-    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
-      it->second->Iterations[i]->gatherIndirectUsers();
-
-  }
-
-  for(uint32_t bbi = BBsOffset, bblim = BBsOffset + nBBs; bbi != bblim; ++bbi) {
-
-    ShadowBBInvar* BBI = getBBInvar(bbi);
-    if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
-
-      DenseMap<const Loop*, PeelAttempt*>::iterator findit = peelChildren.find(immediateChildLoop(L, BBI->naturalScope));
-      if(findit != peelChildren.end() && findit->second->isTerminated()) {
-
-	while(bbi != bblim && BBI->naturalScope->contains(getBBInvar(bbi)->naturalScope))
-	  ++bbi;
-	--bbi;
-	continue;
-
-      }
-
-    }
-
-    ShadowBB* BB = getBB(*BBI);
+    ShadowBB* BB = getBB(bbi);
     if(!BB)
       continue;
     
     for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
+
+      InlineAttempt* IA;
+      if(inst_is<CallInst>(&BB->insts[i]) && (IA = getInlineAttempt(&BB->insts[i]))) {
+
+	IA->gatherIndirectUsers();
+
+      }
 
       if(BB->insts[i].i.PB)
 	noteIndirectUse(ShadowValue(&BB->insts[i]), BB->insts[i].i.PB);

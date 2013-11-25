@@ -3484,8 +3484,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   errs() << "Interpreting";
   IA->analyse();
-
-  gatherIndirectUsers();
   errs() << "\n";
 
   // Function sharing is now decided, and hence the graph structure, so create
