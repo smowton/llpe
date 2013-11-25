@@ -127,28 +127,30 @@ void InlineAttempt::getInitialStore() {
   // upon return.
 
   if(Callers.size())
-    BBs[0]->localStore = activeCaller->parent->localStore;
+    BBs[0]->takeStoresFrom(activeCaller->parent);
+  
   else {
     BBs[0]->localStore = new OrdinaryLocalStore(0);
     initialiseStore(BBs[0]);
+    BBs[0]->fdStore = new FDStore();
   }
-
+  
   if(invarInfo->frameSize != -1 || !Callers.size())
     BBs[0]->pushStackFrame(this);
-
+  
 }
 
 void PeelIteration::getInitialStore() {
   
   if(iterationCount == 0) {
 
-    BBs[0]->localStore = parent->getBB(parentPA->invarInfo->preheaderIdx)->localStore;
+    BBs[0]->takeStoresFrom(parent->getBB(parentPA->invarInfo->preheaderIdx));
 
   }
   else {
 
     // Take the previous latch's store
-    BBs[0]->localStore = parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx)->localStore;
+    BBs[0]->takeStoresFrom(parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx));
 
   } 
 
@@ -233,7 +235,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
 	// Give the preheader an extra reference in case we need that store
 	// to calculate a general version of the loop body if it doesn't terminate.
-	getBB(LPA->invarInfo->preheaderIdx)->localStore->refCount++;
+	getBB(LPA->invarInfo->preheaderIdx)->refStores();
 	LPA->analyse(stack_depth);
 
       }
@@ -250,7 +252,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       // The loop preheader's local store was copied by the loop analysis assuming we'd
       // need it to analyse the loop body, but we've found the loop terminates; drop the extra ref.
       ShadowLoopInvar* LInfo = invarInfo->LInfo[BBL];
-      getBB(LInfo->preheaderIdx)->localStore->dropReference();
+      getBB(LInfo->preheaderIdx)->derefStores();
 
       // Copy edges found always dead to local scope, to accelerate edgeIsDead queries without
       // checking every iteration every time.
@@ -456,7 +458,7 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
     if(pass->latchStoresRetained.erase(std::make_pair(this, L))) {
       ShadowBB* LBB = getBB(LInfo->latchIdx);
       release_assert("Releasing store from dead latch?");
-      LBB->localStore->dropReference();
+      LBB->derefStores();
     }
   }
 
@@ -485,7 +487,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
     // Give the preheader store an extra reference to ensure it is never modified.
     // This ref corresponds to ph retaining its reference (h has already been given one by ph's successor code).
-    PHBB->localStore->refCount++;
+    PHBB->refStores();
 
     {
 
@@ -502,7 +504,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 	     && (!shouldIgnoreEdge(BB->invar, getBBInvar(it->second)))) {
 
 	    LFV3(errs() << "Drop exit edge " << BB->invar->BB->getName() << " -> " << getBBInvar(it->second)->BB->getName() << " with store " << BB->localStore << "\n");
-	    BB->localStore->dropReference();
+	    BB->derefStores();
 
 	    // Drop a pendingEdges count at the same time, for the same reason:
 	    release_assert(pendingEdges && "Reducing pending edges below zero");
@@ -522,24 +524,30 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
       }
 
       OrdinaryMerger V(false);
+      FDStoreMerger V2;
 
       if(!firstIter) {
 
 	// Merge the latch store with the preheader store:
 	release_assert(LBB && "Iterating on a loop with a dead latch block?");
 	V.visit(LBB, 0, false);
+	V2.visit(LBB, 0, false);
 	V.visit(PHBB, 0, false);
+	V2.visit(PHBB, 0, false);
 
       }
       else {
 
 	// Give the header block the store from the preheader
 	V.visit(PHBB, 0, false);
+	V2.visit(PHBB, 0, false);
 
       }
 
       V.doMerge();
       HBB->localStore = V.newMap;
+      V2.doMerge();
+      HBB->fdStore = V2.newStore;
 
     }
 
@@ -579,7 +587,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
     release_assert(iters == 1 && "Loop analysis found the latch dead but not first time around?");
 
   // Release the preheader store that was held for merging in each iteration:
-  PHBB->localStore->dropReference();
+  PHBB->derefStores();
 
   // If this is a nested loop, hang onto the reference given from latch to header
   // for use in the next iteration of analysing this loop.
@@ -588,7 +596,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
     
     releaseLatchStores(L);
     if(thisLatchAlive)
-      LBB->localStore->dropReference();
+      LBB->derefStores();
 
   }
   else {
@@ -628,7 +636,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
 
     ShadowBB* LBB = getBB(LInfo->latchIdx);
     release_assert(LBB && "Executed loop with retained latch, but not available?");
-    LBB->localStore->dropReference();
+    LBB->derefStores();
 
   }
 
@@ -673,7 +681,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
   // Drop extra ref given to the header block if one was granted.
   ShadowBB* LBB = getBB(LInfo->latchIdx);
   if(LBB && !edgeIsDead(LBB->invar, HBB->invar))
-    LBB->localStore->dropReference();
+    LBB->derefStores();
 
 }
 
@@ -799,11 +807,11 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
       continue;
 
     // Create a store reference for each live successor
-    ++BB->localStore->refCount;
+    BB->refStores();
 	
   }
 
   // Drop ref belonging to this block.
-  BB->localStore->dropReference();
+  BB->derefStores();
 
 }

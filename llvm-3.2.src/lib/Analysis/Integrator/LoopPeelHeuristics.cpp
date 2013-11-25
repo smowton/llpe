@@ -980,7 +980,7 @@ bool InlineAttempt::isRootMainCall() {
 bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
   
   switch(V.t) {
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     return true;
   case SHADOWVAL_ARG:
     return V.u.A->IA->isRootMainCall();
@@ -3375,6 +3375,8 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
 }
 
 Type* llvm::GInt8Ptr;
+Type* llvm::GInt32;
+Type* llvm::GInt64;
 
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
@@ -3390,6 +3392,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
+  GInt32 = Type::getInt32Ty(M.getContext());
+  GInt64 = Type::getInt64Ty(M.getContext());
   initMRInfo(&M);
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {

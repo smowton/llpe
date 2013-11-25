@@ -301,7 +301,7 @@ void SharedTreeNode<ChildType, ExtraState>
 	if(*it == &(children[i]))
 	  continue;
 
-	uint64_t ASize = getHeapAllocSize(ShadowValue(-1, idx + i));
+	uint64_t ASize = getHeapAllocSize(ShadowValue::getPtrIdx(-1, idx + i));
 
 	ChildType* mergeFromStore;
 	if(!*it)
@@ -869,12 +869,11 @@ template<class ChildType, class ExtraState> struct MergeBlockVisitor : public Sh
   typedef SharedTreeNode<ChildType, ExtraState> NodeType;
    
   MapType* newMap;
-  bool mergeToBase;
   bool useVarargMerge;
   SmallVector<ShadowBB*, 4> incomingBlocks;
   bool verbose;
    
- MergeBlockVisitor(bool mtb, bool uvm = false, bool v = false) : ShadowBBVisitor(true), newMap(0), mergeToBase(mtb), useVarargMerge(uvm), verbose(v) { }
+ MergeBlockVisitor(bool uvm = false, bool v = false) : ShadowBBVisitor(true), newMap(0), useVarargMerge(uvm), verbose(v) { }
    
   void mergeFrames(MapType* toMap, typename SmallVector<MapType*, 4>::iterator fromBegin, typename SmallVector<MapType*, 4>::iterator fromEnd, uint32_t idx);
   void mergeHeaps(MapType* toMap, typename SmallVector<MapType*, 4>::iterator fromBegin, typename SmallVector<MapType*, 4>::iterator fromEnd);

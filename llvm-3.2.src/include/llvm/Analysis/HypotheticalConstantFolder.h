@@ -278,45 +278,33 @@ struct OpenStatus {
 
   std::string Name;
   bool success;
-  bool MayDelete;
 
-OpenStatus(std::string N, bool Success) : Name(N), success(Success), MayDelete(false) { }
-OpenStatus() : Name(""), success(false), MayDelete(false) {}
+OpenStatus(std::string N, bool Success) : Name(N), success(Success) { }
+OpenStatus() : Name(""), success(false) {}
 
 };
 
 struct ReadFile {
 
-  struct OpenStatus* openArg;
+  std::string name;
   uint64_t incomingOffset;
   uint32_t readSize;
   bool needsSeek;
 
-ReadFile(struct OpenStatus* O, uint64_t IO, uint32_t RS) : openArg(O), incomingOffset(IO), readSize(RS), needsSeek(true) { }
+ReadFile(std::string n, uint64_t IO, uint32_t RS) : name(n), incomingOffset(IO), readSize(RS), needsSeek(true) { }
 
-ReadFile() : openArg(0), incomingOffset(0), readSize(0), needsSeek(true) { }
+ReadFile() : name(), incomingOffset(0), readSize(0), needsSeek(true) { }
 
 };
 
 struct SeekFile {
 
-  struct OpenStatus* openArg;
+  std::string name;
   uint64_t newOffset;
   bool MayDelete;
 
-SeekFile(struct OpenStatus* O, uint64_t Off) : openArg(O), newOffset(Off), MayDelete(false) { }
-SeekFile() : openArg(0), newOffset(0), MayDelete(false) { }
-
-};
-
-struct CloseFile {
-
-  struct OpenStatus* openArg;
-  bool MayDelete;
-  ShadowInstruction* openInst;
-
-CloseFile(struct OpenStatus* O, ShadowInstruction* I) : openArg(O), MayDelete(false), openInst(I) {}
-CloseFile() : openArg(0), MayDelete(false), openInst(0) {}
+SeekFile(std::string n, uint64_t Off) : name(n), newOffset(Off), MayDelete(false) { }
+SeekFile() : name(), newOffset(0), MayDelete(false) { }
 
 };
 
@@ -465,10 +453,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<ShadowInstruction*, OpenStatus*> forwardableOpenCalls;
    DenseMap<ShadowInstruction*, ReadFile> resolvedReadCalls;
    DenseMap<ShadowInstruction*, SeekFile> resolvedSeekCalls;
-   DenseMap<ShadowInstruction*, CloseFile> resolvedCloseCalls;
 
-   DenseMap<ShadowInstruction*, GlobalVariable*> globalisedFDs;
-  
    void addSharableFunction(InlineAttempt*);
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
@@ -479,6 +464,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    ShadowGV* shadowGlobals;
 
    std::vector<AllocData> heap;
+   std::vector<FDGlobalState> fds;
 
    RecyclingAllocator<BumpPtrAllocator, ImprovedValSetSingle> IVSAllocator;
 
@@ -1277,7 +1263,6 @@ protected:
 
   // VFS call forwarding:
 
-  virtual int64_t tryGetIncomingOffset(ShadowInstruction*);
   virtual ReadFile* tryGetReadFile(ShadowInstruction* CI);
   bool tryPromoteOpenCall(ShadowInstruction* CI);
   void tryPromoteAllCalls();
@@ -1289,7 +1274,6 @@ protected:
   bool isResolvedVFSCall(ShadowInstruction*);
   bool VFSCallWillUseFD(ShadowInstruction*);
   bool isUnusedReadCall(ShadowInstruction*);
-  bool isCloseCall(ShadowInstruction*);
   OpenStatus& getOpenStatus(ShadowInstruction*);
   void tryKillAllVFSOps();
   void markCloseCall(ShadowInstruction*);
@@ -2021,7 +2005,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void executeFreeInst(ShadowInstruction* SI, Function*);
  void executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& SrcPtrSet, uint64_t Size, ShadowInstruction*);
  void executeVaStartInst(ShadowInstruction* SI);
- void executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size);
+ void executeReadInst(ShadowInstruction* ReadSI, std::string& Filename, uint64_t FileOffset, uint64_t Size);
  void executeUnexpandedCall(ShadowInstruction* SI);
  bool clobberSyscallModLocations(Function* F, ShadowInstruction* SI);
  void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction*);
@@ -2032,6 +2016,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
  void doCallStoreMerge(ShadowBB* BB, InlineAttempt* IA);
+
+ void doBlockFDStoreMerge(ShadowBB* BB);
+ void doCallFDStoreMerge(ShadowBB* BB, InlineAttempt* IA);
 
  void initSpecialFunctionsMap(Module& M);
  

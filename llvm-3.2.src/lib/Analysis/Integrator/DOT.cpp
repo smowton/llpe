@@ -182,7 +182,7 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
     else {
       DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(SI);
       if(it != pass->resolvedReadCalls.end())
-	Out << it->second.openArg->Name << " (" << it->second.incomingOffset << "-" << it->second.incomingOffset + (it->second.readSize - 1) << ")";
+	Out << it->second.name << " (" << it->second.incomingOffset << "-" << it->second.incomingOffset + (it->second.readSize - 1) << ")";
     }
   }
 

@@ -650,7 +650,9 @@ int32_t ShadowValue::getHeapKey() {
   case SHADOWVAL_INST:
     release_assert(0 && "Unsafe reference to heap key of instruction");
     llvm_unreachable();
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
     return u.PtrOrFd.idx;
   default:
     return -1;
@@ -662,7 +664,7 @@ int32_t ShadowValue::getHeapKey() {
 uint64_t ShadowValue::getAllocSize(OrdinaryLocalStore* M) {
 
   switch(t) {
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     return getAllocData(M)->storeSize;
   case SHADOWVAL_GV:
     return u.GV->storeSize;
@@ -694,7 +696,7 @@ uint64_t llvm::getAllocSize(InlineAttempt* IA, uint32_t idx) {
 uint64_t ShadowValue::getAllocSize(IntegrationAttempt* IA) {
 
   switch(t) {
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     if(u.PtrOrFd.frame == -1)
       return getAllocSize((OrdinaryLocalStore*)0);
     else {
@@ -722,7 +724,7 @@ ShadowValue& llvm::getAllocWithIdx(int32_t idx) {
 int32_t ShadowValue::getFrameNo() {
 
   release_assert((!isInst()) && "Unsafe reference to alloc instruction");
-  if(isPtrOrFd())
+  if(isPtrIdx())
     return u.PtrOrFd.frame;
   else
     return -1;
@@ -1386,17 +1388,16 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   
 }
 
-uint64_t ShadowValue::getValSize(ValSetType VST) {
+uint64_t ShadowValue::getValSize() {
 
   switch(t) {
 
-  case SHADOWVAL_IDX:
-    if(VST == ValSetTypeFD)
-      return 4;
-    else if(VST == ValSetTypePB)
-      return GlobalTD->getPointerSize();
-    else
-      release_assert(0 && "Bad IDX type");
+  case SHADOWVAL_FDIDX:
+    return 4;
+  case SHADOWVAL_FDIDX64:
+    return 8;
+  case SHADOWVAL_PTRIDX:
+    return GlobalTD->getPointerSize();
   default:
     Type* SrcTy = getType();
     return GlobalAA->getTypeStoreSize(SrcTy);
@@ -1423,7 +1424,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
     return;
   default:
     if(Offset == 0) {
-      uint64_t SrcSize = Src.Values[0].V.getValSize(Src.SetType);
+      uint64_t SrcSize = Src.Values[0].V.getValSize();
       if(Size == SrcSize) {
 	Dest.push_back(IVSR(OffsetAbove + Offset, OffsetAbove + Offset + Size, Src));
 	return;
@@ -2177,7 +2178,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, AllocData& AD, Type* AllocTyp
     initVal = new ImprovedValSetSingle(ValSetTypeUnknown, true);
   }
   
-  ShadowValue AllocSV(frame, idx);
+  ShadowValue AllocSV = ShadowValue::getPtrIdx(frame, idx);
   LocStore& localStore = SI->parent->getWritableStoreFor(AllocSV, 0, AllocSize, /* willWriteSingle = */ true);
   localStore.store->dropReference();
   localStore.store = initVal;
@@ -2540,7 +2541,7 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
 
 }
 
-void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t FileOffset, uint64_t Size) {
+void llvm::executeReadInst(ShadowInstruction* ReadSI, std::string& Filename, uint64_t FileOffset, uint64_t Size) {
 
   LFV3(errs() << "Start read inst\n");
 
@@ -2561,7 +2562,7 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, OpenStatus& OS, uint64_t F
     std::vector<Constant*> constBytes;
     std::string errors;
     LLVMContext& Context = Ptr.getLLVMContext();
-    if(getFileBytes(OS.Name, FileOffset, Size, constBytes, Context,  errors)) {
+    if(getFileBytes(Filename, FileOffset, Size, constBytes, Context,  errors)) {
       ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
       Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
       WriteIVS = ImprovedValSetSingle(ImprovedVal(ByteArray, 0), ValSetTypeScalar);
@@ -3030,7 +3031,10 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
     //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
     ImprovedValSetSingle OD(ValSetTypeUnknown, true);
     executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
-
+    // Functions that clobber FD state happen to be the same.
+    FDStore* FDS = SI->parent->getWritableFDStore();
+    FDS->fds.clear();
+    
   }
     
   // Args to an unhandled call escape, may be stored in old object, and may be visible from other threads.
@@ -3222,7 +3226,7 @@ static bool isVagueAllocation(ShadowValue V, ShadowBB* CtxBB) {
     // Always single objects, or non-object pointers such as nulls.
     return false;
 
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     return V.getAllocData(CtxBB->localStore)->allocVague;
     
   default:
@@ -3563,10 +3567,7 @@ void LocStore::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, uin
   ImprovedValSet *LHSAncestor, *RHSAncestor;
   {
     SmallPtrSet<ImprovedValSetMulti*, 4> Seen;
-    // If we're making a new base store, flatten entirely.
-    if(Visitor->mergeToBase)
-      LFV3(errs() << "Not using ancestor because target is base object\n");
-    if(Visitor->mergeToBase || !getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
+    if(!getCommonAncestor(mergeToStore->store, mergeFromStore->store, LHSAncestor, RHSAncestor, Seen)) {
 
       LHSAncestor = 0;
       RHSAncestor = 0;
@@ -3947,12 +3948,6 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   LFV3(errs() << "Start block store merge\n");
 
-  bool mergeToBase = BB->status == BBSTATUS_CERTAIN && (!BB->inAnyLoop) && !BB->IA->pass->enableSharing;
-  if(mergeToBase) {
-
-    LFV3(errs() << "MERGE to base store for " << BB->IA->F.getName() << " / " << BB->IA->SeqNumber << " / " << BB->invar->BB->getName() << "\n");
-
-  }
   // This BB is a merge of all that has gone before; merge to values' base stores
   // rather than a local map.
 
@@ -3963,7 +3958,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   }
 
-  OrdinaryMerger V(mergeToBase, BB->useSpecialVarargMerge, /* verbose = */ verbose);
+  OrdinaryMerger V(BB->useSpecialVarargMerge, /* verbose = */ verbose);
 
   if(verbose)
     errs() << "\n\n";
@@ -3978,6 +3973,8 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   BB->localStore = V.newMap;
 
+  doBlockFDStoreMerge(BB);
+
   return true;
 
 }
@@ -3988,7 +3985,7 @@ void InlineAttempt::popAllocas(OrdinaryLocalStore* map) {
 
   for(uint32_t i = 0, ilim = localAllocas.size(); i != ilim; ++i) {
 
-    ShadowValue SV(stack_depth, i);
+    ShadowValue SV = ShadowValue::getPtrIdx(stack_depth, i);
     map->es.unescapedObjects.erase(SV);
     map->es.noAliasOldObjects.erase(SV);
     map->es.threadLocalObjects.erase(SV);
@@ -4025,18 +4022,13 @@ void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
   LFV3(errs() << "Start call-return store merge\n");
 
-  bool mergeToBase = CallerBB->status == BBSTATUS_CERTAIN && (!CallerBB->inAnyLoop) && !CallerBB->IA->pass->enableSharing;
-  if(mergeToBase) {
-
-    LFV3(errs() << "MERGE to base store for " << CallerBB->IA->F.getName() << " / " << CallerBB->IA->SeqNumber << " / " << CallerBB->invar->BB->getName() << "\n");
-
-  }
-
-  OrdinaryMerger V(mergeToBase);
+  OrdinaryMerger V;
   CallIA->visitLiveReturnBlocks(V);
   V.doMerge();
 
   CallerBB->localStore = V.newMap;
+
+  doCallFDStoreMerge(CallerBB, CallIA);
 
 }
 
@@ -4056,7 +4048,7 @@ bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
 
 AllocData* ShadowValue::getAllocData(OrdinaryLocalStore* Map) {
 
-  release_assert(isPtrOrFd());
+  release_assert(isPtrIdx());
   if(u.PtrOrFd.frame == -1)
     return &GlobalIHP->heap[u.PtrOrFd.idx];
   else
@@ -4066,7 +4058,7 @@ AllocData* ShadowValue::getAllocData(OrdinaryLocalStore* Map) {
 
 AllocData* IntegrationAttempt::getAllocData(ShadowValue V) {
 
-  release_assert(V.isPtrOrFd());
+  release_assert(V.isPtrIdx());
   
   if(V.u.PtrOrFd.frame == -1)
     return &GlobalIHP->heap[V.u.PtrOrFd.idx];

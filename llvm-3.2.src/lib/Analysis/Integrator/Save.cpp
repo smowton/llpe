@@ -472,11 +472,18 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
       release_assert(SV.u.A->committedVal && "Instruction depends on uncommitted instruction");
       return SV.u.A->committedVal;
     }
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     {
       AllocData* AD = getAllocData(SV);
       release_assert((!AD->commitGlobalised) && "Forwarding via global should be accounted for already");
       return AD->committedVal;
+    }
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
+    {
+      FDGlobalState& FDS = pass->fds[SV.u.PtrOrFd.idx];
+      release_assert(!FDS.Globalised);
+      return FDS.CommittedVal;
     }
   default:
     release_assert(0 && "Bad SV type");
@@ -1076,7 +1083,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  std::string message;
 	  {
 	    raw_string_ostream RSO(message);
-	    RSO << "Denied permission to use specialised files reading " << it->second.openArg->Name << " in " << emitBB->getName() << "\n";
+	    RSO << "Denied permission to use specialised files reading " << it->second.name << " in " << emitBB->getName() << "\n";
 	  }
 	
 	  emitRuntimePrint(breakBlock, message, 0);
@@ -1111,9 +1118,9 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	// Create a memcpy from a constant, since someone is still using the read data.
 	std::vector<Constant*> constBytes;
 	std::string errors;
-	if(!getFileBytes(it->second.openArg->Name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors)) {
+	if(!getFileBytes(it->second.name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors)) {
 
-	  errs() << "Failed to read file " << it->second.openArg->Name << " in commit\n";
+	  errs() << "Failed to read file " << it->second.name << " in commit\n";
 	  exit(1);
 
 	}
@@ -1176,31 +1183,19 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
     DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(I);
     if(it != pass->forwardableOpenCalls.end()) {
+
       if(it->second->success && I->dieStatus == INSTSTATUS_ALIVE) {
 
-	emitInst(BB, I, emitBB);
-
+	Value* committed = emitInst(BB, I, emitBB);
+	FDGlobalState& FDS = pass->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
+	if(FDS.Globalised)
+	  new StoreInst(committed, cast<GlobalValue>(FDS.CommittedVal), emitBB);
+	else
+	  FDS.CommittedVal = committed;
+	
       }
 
       return true;
-    }
-
-  }
-
-  {
-    
-    DenseMap<ShadowInstruction*, CloseFile>::iterator it = pass->resolvedCloseCalls.find(I);
-    if(it != pass->resolvedCloseCalls.end()) {
-
-      if(it->second.MayDelete && it->second.openArg->MayDelete) {
-	if(it->second.openInst->dieStatus == INSTSTATUS_DEAD)
-	  return true;
-      }
-
-      emitInst(BB, I, emitBB);
-
-      return true;
-
     }
 
   }
@@ -1472,7 +1467,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   ShadowValue Base;
   AllocData* AD;
   if(getBaseObject(ShadowValue(I), Base) && 
-     Base.isPtrOrFd() && 
+     Base.isPtrIdx() && 
      (AD = getAllocData(Base)) && 
      AD->allocValue.u.I == I) {
 
@@ -1497,19 +1492,6 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
       AD->committedVal = newI;
 
     }
-
-  }
-
-  DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit2 = pass->globalisedFDs.find(I);
-  if(findit2 != pass->globalisedFDs.end()) {
-
-    new StoreInst(newI, findit2->second, emitBB);
-
-  }
-
-  if(isa<StoreInst>(newI)) {
-
-    release_assert(newI->getOperand(0)->getType() == cast<PointerType>(newI->getOperand(1)->getType())->getElementType());
 
   }
 
@@ -1570,7 +1552,7 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
   // If it points to itself then this is an allocation instruction.
   if(I) {
 
-    if(Base.isPtrOrFd()) {
+    if(Base.isPtrIdx()) {
 
       AllocData* AD = getAllocData(Base);
       if((!AD->committedVal) && AD->allocValue == *I)
@@ -1609,7 +1591,7 @@ InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
 
 IntegrationAttempt* IntegrationAttempt::getCtx(ShadowValue V) {
 
-  if(!V.isPtrOrFd())
+  if(!V.isPtrIdx())
     return V.getCtx();
   return getAllocData(V)->allocContext;
 
@@ -1638,7 +1620,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
       BaseI = getCommittedValue(Base);
     else {
       GlobalVariable* FwdGlobal;
-      if(Base.isPtrOrFd())
+      if(Base.isPtrIdx())
 	FwdGlobal = cast<GlobalVariable>(getAllocData(Base)->committedVal);
       else
 	FwdGlobal = pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV;
@@ -1705,8 +1687,9 @@ bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, Improv
 
   if(Ty == ValSetTypeScalar)
     return true;
-  else if(Ty == ValSetTypeFD)
-    return (I != IV.V.getInst() && IV.V.objectAvailable());
+  else if(Ty == ValSetTypeFD) {
+    return I != pass->fds[IV.V.u.PtrOrFd.idx].SI && IV.V.objectAvailable();
+  }
   else if(Ty == ValSetTypePB) {
     ShadowValue SV;
     if(I)
@@ -1724,16 +1707,16 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
     return IV.V.getVal();
   else if(Ty == ValSetTypeFD) {
     
-    if(I != IV.V.getInst() && 
-       IV.V.objectAvailable()) {
+    if(canSynthVal(I, Ty, IV)) {
       
-      DenseMap<ShadowInstruction*, GlobalVariable*>::iterator findit = pass->globalisedFDs.find(IV.V.u.I);
-      if(findit != pass->globalisedFDs.end()) {
-	return new LoadInst(findit->second, "fwdfd", emitBB);
+      FDGlobalState& FDS = pass->fds[IV.V.u.PtrOrFd.idx];
+      release_assert(FDS.CommittedVal && "Trying to synth pointer dependent on dead allocation");
+
+      if(FDS.Globalised) {
+	return new LoadInst(FDS.CommittedVal, "fwdfd", emitBB);
       }
       else {
-	release_assert(IV.V.getInst()->committedVal && "Trying to synth pointer dependent on dead allocation");
-	return IV.V.getInst()->committedVal;
+	return FDS.CommittedVal;
       }
 
     }

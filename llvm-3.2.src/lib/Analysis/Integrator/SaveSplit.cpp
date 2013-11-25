@@ -17,7 +17,7 @@ void IntegrationAttempt::checkNonLocalReference(ShadowValue V) {
   ImprovedValSetSingle* IVS;
   if(getBaseObject(V, Base)) {
 
-    if(Base.isPtrOrFd() && Base.objectAvailable() && getAllocCtx(Base)->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+    if(Base.isPtrIdx() && Base.objectAvailable() && getAllocCtx(Base)->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
       
       AllocData* AD = getAllocData(Base);
 
@@ -47,14 +47,19 @@ void IntegrationAttempt::checkNonLocalReference(ShadowValue V) {
 	  IVS->SetType == ValSetTypeFD &&
 	  IVS->Values.size() == 1) {
 
-    ShadowInstruction* FDI = IVS->Values[0].V.u.I;
+    release_assert(IVS->Values[0].V.isFdIdx());
+    uint32_t FD = IVS->Values[0].V.u.PtrOrFd.idx;
+    ShadowInstruction* FDI = pass->fds[FD].SI;
 
     if(FDI->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
 
-      if(!pass->globalisedFDs.count(FDI)) {
+      FDGlobalState& FDS = pass->fds[FD];
+
+      if(!FDS.Globalised) {
 
 	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), Int32, false, GlobalVariable::InternalLinkage, UndefValue::get(Int32), "specglobalfd");
-	pass->globalisedFDs[FDI] = NewGV;
+	FDS.CommittedVal = NewGV;
+	FDS.Globalised = true;
 	    
       }
 

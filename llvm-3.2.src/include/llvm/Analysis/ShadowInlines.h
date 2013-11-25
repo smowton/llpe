@@ -42,7 +42,9 @@ enum ShadowValType {
   SHADOWVAL_INST,
   SHADOWVAL_GV,
   SHADOWVAL_OTHER,
-  SHADOWVAL_IDX,
+  SHADOWVAL_PTRIDX,
+  SHADOWVAL_FDIDX,
+  SHADOWVAL_FDIDX64, /* FD stored in an int64 */
   SHADOWVAL_INVAL
 
 };
@@ -115,7 +117,11 @@ ShadowValue(ShadowArg* _A) : t(SHADOWVAL_ARG) { u.A = _A; }
 ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST) { u.I = _I; }
 ShadowValue(ShadowGV* _GV) : t(SHADOWVAL_GV) { u.GV = _GV; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
-ShadowValue(int32_t frame, uint32_t idx) : t(SHADOWVAL_IDX) { u.PtrOrFd.frame = frame; u.PtrOrFd.idx = idx; }
+ShadowValue(ShadowValType Ty, int32_t frame, uint32_t idx) : t(Ty) { u.PtrOrFd.frame = frame; u.PtrOrFd.idx = idx; }
+
+  static ShadowValue getPtrIdx(int32_t f, uint32_t i) { return ShadowValue(SHADOWVAL_PTRIDX, f, i); }
+  static ShadowValue getFdIdx(uint32_t i) { return ShadowValue(SHADOWVAL_FDIDX, -1, i); }
+  static ShadowValue getFdIdx64(uint32_t i) { return ShadowValue(SHADOWVAL_FDIDX64, -1, i); }
 
   bool isInval() {
     return t == SHADOWVAL_INVAL;
@@ -132,8 +138,11 @@ ShadowValue(int32_t frame, uint32_t idx) : t(SHADOWVAL_IDX) { u.PtrOrFd.frame = 
   bool isGV() {
     return t == SHADOWVAL_GV;
   }
-  bool isPtrOrFd() {
-    return t == SHADOWVAL_IDX;
+  bool isPtrIdx() {
+    return t == SHADOWVAL_PTRIDX;
+  }
+  bool isFdIdx() {
+    return t == SHADOWVAL_FDIDX || t == SHADOWVAL_FDIDX64;
   }
   ShadowArg* getArg() {
     return t == SHADOWVAL_ARG ? u.A : 0;
@@ -165,13 +174,22 @@ ShadowValue(int32_t frame, uint32_t idx) : t(SHADOWVAL_IDX) { u.PtrOrFd.frame = 
   int32_t getFrameNo();
   int32_t getHeapKey();
   int32_t getFramePos() {
-    release_assert(isPtrOrFd() && "getFramePos on non-ptr");
     return getHeapKey();
   }
+  int32_t getFd() {
+    switch(t) {
+    case SHADOWVAL_FDIDX:
+    case SHADOWVAL_FDIDX64:
+      return getHeapKey();
+    default:
+      return -1;
+    }
+  }
+  
   AllocData* getAllocData(OrdinaryLocalStore* Map);
   bool isNullOrConst();
   bool isNullPointer();
-  uint64_t getValSize(ValSetType);
+  uint64_t getValSize();
 
 };
 
@@ -189,7 +207,9 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
     return V1.u.GV == V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V == V2.u.V;
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
     return V1.u.PtrOrFd.frame == V2.u.PtrOrFd.frame && V1.u.PtrOrFd.idx == V2.u.PtrOrFd.idx;
   default:
     release_assert(0 && "Bad SV type");
@@ -215,7 +235,9 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
     return V1.u.GV < V2.u.GV;
   case SHADOWVAL_OTHER:
     return V1.u.V < V2.u.V;
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
     if(V1.u.PtrOrFd.frame == V2.u.PtrOrFd.frame)
       return V1.u.PtrOrFd.idx < V2.u.PtrOrFd.idx;
     else
@@ -266,7 +288,9 @@ template<> struct DenseMapInfo<ShadowValue> {
       hashPtr = V.u.GV; break;
     case SHADOWVAL_OTHER:
       hashPtr = V.u.V; break;
-    case SHADOWVAL_IDX:
+    case SHADOWVAL_PTRIDX:
+    case SHADOWVAL_FDIDX:
+    case SHADOWVAL_FDIDX64:
       // Should work due to the union.
       hashPtr = V.u.V; break;
     default:
@@ -1152,6 +1176,55 @@ struct TLStoreExtraState {
 
 #include "SharedTree.h"
 
+struct FDState {
+
+  std::string filename;
+  uint64_t pos;
+
+FDState() : filename(""), pos((uint64_t)-1) {}
+FDState(std::string fn) : filename(fn), pos(0) {}
+FDState(const FDState& Other) : filename(Other.filename), pos(Other.pos) {}
+
+};
+
+struct FDStore {
+
+  uint32_t refCount;
+  std::vector<FDState> fds;
+
+  void dropReference() {
+
+    if(!(--refCount))
+      delete this;
+
+  }
+
+  FDStore* getWritable() {
+
+    if(refCount == 1)
+      return this;
+
+    release_assert(refCount);
+    refCount--;
+    return new FDStore(*this);
+
+  }
+  
+FDStore() : refCount(1), fds() {}
+FDStore(const FDStore& Other) : refCount(1), fds(Other.fds) {}
+
+};
+
+struct FDGlobalState {
+
+  ShadowInstruction* SI;
+  Value* CommittedVal;
+  bool Globalised;
+
+FDGlobalState(ShadowInstruction* _SI) : SI(_SI), CommittedVal(0), Globalised(false) {}
+
+};
+
 struct CommittedBlock {
 
   BasicBlock* specBlock;
@@ -1174,6 +1247,7 @@ struct ShadowBB {
   OrdinaryLocalStore* localStore;
   DSELocalStore* dseStore;
   TLLocalStore* tlStore;
+  FDStore* fdStore;
 
   SmallVector<CommittedBlock, 1> committedBlocks;
   
@@ -1215,6 +1289,32 @@ struct ShadowBB {
   DSEMapPointer* getWritableDSEStore(ShadowValue O);
   TLMapPointer* getWritableTLStore(ShadowValue O);
   uint64_t getAllocSize(ShadowValue);
+  FDStore* getWritableFDStore();
+
+  void refStores() {
+    ++localStore->refCount;
+    ++fdStore->refCount;
+  }
+  void derefStores() {
+    localStore->dropReference();
+    fdStore->dropReference();
+  }
+
+  void takeStoresFrom(ShadowBB* Other) {
+    localStore = Other->localStore;
+    fdStore = Other->fdStore;
+  }
+
+};
+
+struct FDStoreMerger : public ShadowBBVisitor {
+
+  FDStore* newStore;
+
+  SmallVector<ShadowBB*, 4> incomingBlocks;
+  void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) { incomingBlocks.push_back(BB); }
+  void doMerge();
+  void merge2(FDStore* to, FDStore* from);
 
 };
 
@@ -1269,6 +1369,8 @@ uint32_t ShadowBBInvar::succs_size() {
 }
 
 extern Type* GInt8Ptr;
+extern Type* GInt32;
+extern Type* GInt64;
 
 inline Type* ShadowValue::getType() {
 
@@ -1281,8 +1383,12 @@ inline Type* ShadowValue::getType() {
     return u.GV->G->getType();
   case SHADOWVAL_OTHER:
     return u.V->getType();
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     return GInt8Ptr;
+  case SHADOWVAL_FDIDX:
+    return GInt32;
+  case SHADOWVAL_FDIDX64:
+    return GInt64;
   default:
     release_assert(0 && "Bad SV type");
     return 0;
@@ -1370,7 +1476,9 @@ inline LLVMContext& ShadowValue::getLLVMContext() {
     return u.A->invar->A->getContext();
   case SHADOWVAL_GV:
     return u.GV->G->getContext();
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
     return GInt8Ptr->getContext();
   default:
     return u.V->getContext();
@@ -1824,7 +1932,7 @@ inline bool ShadowValue::isNullOrConst() {
 
   if(t == SHADOWVAL_GV)
     return u.GV->G->isConstant();
-  else if(t == SHADOWVAL_IDX)
+  else if(t == SHADOWVAL_PTRIDX)
     return false;
 
   return isa<ConstantPointerNull>(getBareVal());

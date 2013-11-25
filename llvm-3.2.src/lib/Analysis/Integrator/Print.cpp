@@ -101,11 +101,17 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
   else if(ShadowGV* GV = V.getGV()) {
     printValue(Stream, GV->G, brief);
   }
-  else if(V.isPtrOrFd()) {
+  else if(V.isPtrIdx()) {
     if(V.u.PtrOrFd.frame == -1)
       Stream << "G/H alloc " << V.u.PtrOrFd.idx;
     else
       Stream << "S alloc " << V.u.PtrOrFd.frame << " / " << V.u.PtrOrFd.idx;
+  }
+  else if(V.isFdIdx()) {
+    Stream << "FD ";
+    if(V.t == SHADOWVAL_FDIDX64)
+      Stream << "[64] ";
+    Stream << V.u.PtrOrFd.idx;
   }
 
 }

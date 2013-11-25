@@ -722,13 +722,16 @@ bool ShadowValue::objectAvailable() {
     if(!u.I->parent->IA->allAncestorsEnabled())
       return false;
     return true;
-  case SHADOWVAL_IDX:
+  case SHADOWVAL_PTRIDX:
     // Stack-allocated members are necessarily available from any context
     // that can conceivably reach them.
     if(u.PtrOrFd.frame != -1)
       return true;
     else
       return getAllocData((OrdinaryLocalStore*)0)->allocValue.objectAvailable();
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64:
+    return true;
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
     llvm_unreachable();

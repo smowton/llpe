@@ -421,15 +421,15 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
   ValSetType CmpIntType;
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
-  ShadowInstruction* op0I = op0.getInst();
-  ShadowInstruction* op1I = op1.getInst();
+  int32_t op0I = op0.getFd();
+  int32_t op1I = op1.getFd();
 
-  if(op0I && Ops[0].first == ValSetTypeFD) {
+  if(op0I != -1 && Ops[0].first == ValSetTypeFD) {
     flip = false;
     CmpInt = dyn_cast_or_null<ConstantInt>(op1.getVal());
     CmpIntType = Ops[1].first;
   }
-  else if(op1I && Ops[1].first == ValSetTypeFD) {
+  else if(op1I != -1 && Ops[1].first == ValSetTypeFD) {
     flip = true;
     CmpInt = dyn_cast_or_null<ConstantInt>(op0.getVal());
     CmpIntType = Ops[0].first;
@@ -749,9 +749,9 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   bool op1UGO = isGlobalIdentifiedObject(op1);
 
   bool comparingHeapPointer = false;
-  if(op0UGO && op0.isPtrOrFd() && op0.u.PtrOrFd.frame == -1)
+  if(op0UGO && op0.isPtrIdx() && op0.u.PtrOrFd.frame == -1)
     comparingHeapPointer = true;
-  else if(op1UGO && op1.isPtrOrFd() && op1.u.PtrOrFd.frame == -1)
+  else if(op1UGO && op1.isPtrIdx() && op1.u.PtrOrFd.frame == -1)
     comparingHeapPointer = true;
 
   // Don't check the types here because we need to accept cases like comparing a ptrtoint'd pointer
@@ -1202,6 +1202,14 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       // Pass FDs, pointers, vararg cookies through. This includes ptrtoint and inttoptr.
       ImpType = Ops[0].first;
       Improved = Ops[0].second;
+
+      if(ImpType == ValSetTypeFD) {
+	if(DestTy->isIntegerTy(32))
+	  Improved.V.t = SHADOWVAL_FDIDX;
+	else
+	  Improved.V.t = SHADOWVAL_FDIDX64;
+      }
+
       return;
 
     }

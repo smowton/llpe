@@ -11,7 +11,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/System/Path.h"
 #include "llvm/Support/CFG.h"
-
 #include <fcntl.h> // For O_RDONLY et al
 #include <unistd.h>
 #include <sys/types.h>
@@ -104,6 +103,136 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
 }
 
+FDStore* ShadowBB::getWritableFDStore() {
+
+  fdStore = fdStore->getWritable();
+  return fdStore;
+
+}
+
+void FDStoreMerger::merge2(FDStore* mergeTo, FDStore* mergeFrom)  {
+
+  // Simple merge rule: FDs only defined on one path or the other go away entirely,
+  // FDs with conflicting positions go to pos -1 (unknown), all others stay.
+
+  mergeTo->fds.resize(std::min(mergeTo->fds.size(), mergeFrom->fds.size()));
+
+  for(uint32_t i = 0, ilim = mergeTo->fds.size(); i != ilim; ++i) {
+
+    if(mergeFrom->fds[i].pos != mergeTo->fds[i].pos)
+      mergeTo->fds[i].pos = (uint64_t)-1;
+
+  }
+
+}
+
+void FDStoreMerger::doMerge() {
+
+  if(incomingBlocks.empty())
+    return;
+
+  // Discard wholesale block duplicates:
+  SmallVector<FDStore*, 4> incomingStores;
+  incomingStores.reserve(std::distance(incomingBlocks.begin(), incomingBlocks.end()));
+
+  for(SmallVector<ShadowBB*, 4>::iterator it = incomingBlocks.begin(), itend = incomingBlocks.end();
+      it != itend; ++it) {
+
+    incomingStores.push_back((*it)->fdStore);
+
+  }
+  
+  std::sort(incomingStores.begin(), incomingStores.end());
+  typename SmallVector<FDStore*, 4>::iterator uniqend = std::unique(incomingStores.begin(), incomingStores.end());
+
+  FDStore* retainMap;
+  
+  if(std::distance(incomingStores.begin(), uniqend) > 1) {
+
+    // At least some stores differ; need to make a new one.
+
+    // See if we can avoid a CoW break by using a writable incoming store as the target.
+    for(typename SmallVector<FDStore*, 4>::iterator it = incomingStores.begin(); it != uniqend; ++it) {
+      
+      if((*it)->refCount == 1) {
+
+	if(it != incomingStores.begin())
+	  std::swap(incomingStores[0], *it);
+	break;
+
+      }
+
+    }
+
+    // Position 0 is the target; the rest should be merged in. CoW break if still necessary:
+    // Note retainMap is set to the original map rather than the new one as the CoW break drops
+    // a reference to it so it should not be unref'd again below.
+    retainMap = incomingStores[0];
+    FDStore* mergeMap = incomingStores[0] = incomingStores[0]->getWritable();
+
+    SmallVector<FDStore*, 4>::iterator firstMergeFrom = incomingStores.begin();
+    ++firstMergeFrom;
+
+    for(SmallVector<FDStore*, 4>::iterator it = firstMergeFrom; it != uniqend; ++it) {
+
+      merge2(mergeMap, *it);
+
+    }
+
+    newStore = mergeMap;
+
+  }
+  else {
+
+    // No stores differ; just use #0
+    newStore = incomingStores[0];
+    retainMap = newStore;
+
+  }
+
+  // Drop refs against each incoming store apart from the store that was either used or
+  // implicitly unref'd as part of the CoW break at getWritableFrameMap.
+
+  for(SmallVector<ShadowBB*, 4>::iterator it = incomingBlocks.begin(), itend = incomingBlocks.end();
+      it != itend; ++it) {
+
+    FDStore* thisMap = (*it)->fdStore;
+    if(thisMap == retainMap)
+      retainMap = 0;
+    else
+      thisMap->dropReference();
+
+  }
+
+}
+
+void llvm::doBlockFDStoreMerge(ShadowBB* BB) {
+
+  // We're entering BB; one or more live predecessor blocks exist and we must produce an appropriate
+  // localStore from them.
+
+  LFV3(errs() << "Start block store merge\n");
+
+  // This BB is a merge of all that has gone before; merge to values' base stores
+  // rather than a local map.
+
+  FDStoreMerger V;
+  BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
+  V.doMerge();
+  BB->fdStore = V.newStore;
+
+}
+
+void llvm::doCallFDStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
+
+  FDStoreMerger V;
+  CallIA->visitLiveReturnBlocks(V);
+  V.doMerge();
+
+  CallerBB->fdStore = V.newStore;
+
+}
+
 static bool filenameIsForbidden(std::string& s) {
 
   return s.find("/proc/") == 0 || s.find("/sys/") == 0 || s.find("/dev/") == 0;
@@ -149,8 +278,18 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  bool exists = sys::Path(Filename).exists();
 	  pass->forwardableOpenCalls[SI] = new OpenStatus(Filename, exists);
 	  if(exists) {
-	    cast<ImprovedValSetSingle>(SI->i.PB)->set(ImprovedVal(ShadowValue(SI)), ValSetTypeFD);
+
+	    FDStore* FDS = SI->parent->getWritableFDStore();
+	    uint32_t newId = pass->fds.size();
+	    pass->fds.push_back(FDGlobalState(SI));
+	    if(FDS->fds.size() <= newId)
+	      FDS->fds.resize(newId + 1);
+	    FDS->fds[newId] = FDState(Filename);
+	    
+	    cast<ImprovedValSetSingle>(SI->i.PB)->set(ImprovedVal(ShadowValue::getFdIdx(newId)), ValSetTypeFD);
+
 	    LPDEBUG("Successfully promoted open of file " << Filename << ": queueing initial forward attempt\n");
+
 	  }
 	  else {
 	    Constant* negOne = ConstantInt::get(SI->invar->I->getType(), (uint64_t)-1, true);
@@ -195,70 +334,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
 }
 
-class FindVFSPredecessorWalker : public BackwardIAWalker {
-
-  ShadowInstruction* SourceOp;
-  IntegrationAttempt* IA;
-  ShadowInstruction* FD;
-
-public:
-
-  int64_t uniqueIncomingOffset;
-
-  FindVFSPredecessorWalker(ShadowInstruction* CI, ShadowInstruction* _FD) 
-    : BackwardIAWalker(CI->invar->idx, CI->parent, /*skipFirst=*/true, 0, 0, /*doIgnoreEdges=*/true), SourceOp(CI), FD(_FD),
-      uniqueIncomingOffset(-1) { 
-    IA = SourceOp->parent->IA;
-  }
-  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*, void*);
-  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
-
-};
-
-WalkInstructionResult FindVFSPredecessorWalker::walkInstruction(ShadowInstruction* I, void*) {
-
-  // Determine whether this instruction is a VFS call using our FD.
-  // No need to worry about call instructions, just return WIRContinue and we'll enter it if need be.
-
-  IntegrationAttempt* IA = I->parent->IA;
-
-  if(inst_is<CallInst>(I)) {
-
-    WalkInstructionResult WIR = IA->isVfsCallUsingFD(I, FD, true);
-    if(WIR == WIRStopThisPath) {
-
-      // Call definitely uses this FD. Find the incoming offset if possible.
-      int64_t incomingOffset = IA->tryGetIncomingOffset(I);
-      if(incomingOffset == -1) {
-	
-	return WIRStopWholeWalk;
-	
-      }
-      else if(uniqueIncomingOffset == -1) {
-
-	uniqueIncomingOffset = incomingOffset;
-
-      }
-      else if(uniqueIncomingOffset != incomingOffset) {
-
-	// Conflict!
-	uniqueIncomingOffset = -1;
-	return WIRStopWholeWalk;
-
-      }
-
-    }
-
-    return WIR;
-
-  }
-
-  return WIRContinue;
-
-}
-
-static ShadowInstruction* getFD(ShadowValue V) {
+static uint32_t getFD(ShadowValue V) {
 
   if(V.isVal())
     return 0;
@@ -270,7 +346,7 @@ static ShadowInstruction* getFD(ShadowValue V) {
   if(VPB.Overdef || VPB.Values.size() != 1 || VPB.SetType != ValSetTypeFD)
     return 0;
 
-  return VPB.Values[0].V.getInst();
+  return VPB.Values[0].V.u.PtrOrFd.idx;
 
 }
 
@@ -298,77 +374,6 @@ static AliasAnalysis::AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD
   }
 
   return AliasAnalysis::NoAlias;
-
-}
-
-static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
-
-  CallInst* CI = cast_inst<CallInst>(SI);
-
- // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
-  
-  Function* calledF = getCalledFunction(SI);
-
-  // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
-  if(IntrinsicInst* II = dyn_cast<IntrinsicInst>(CI)) {
-
-    switch(II->getIntrinsicID()) {
-
-    case Intrinsic::vastart:
-    case Intrinsic::vacopy:
-    case Intrinsic::vaend:
-    case Intrinsic::memcpy:
-    case Intrinsic::memmove:
-    case Intrinsic::memset:
-    case Intrinsic::dbg_declare:
-    case Intrinsic::dbg_value:
-    case Intrinsic::lifetime_start:
-    case Intrinsic::lifetime_end:
-    case Intrinsic::invariant_start:
-    case Intrinsic::invariant_end:
-      return false;
-
-    default:
-      break;
-
-    }
-
-  }
-  else if(calledF && functionIsBlacklisted(calledF))
-   return false;
-  
-  return true;
-
-}
-
-bool FindVFSPredecessorWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
-
-  return callMayUseFD(SI, FD);
-	    
-}
-
-bool FindVFSPredecessorWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
-
-  // If we get to here and the call is a syscall then it doesn't alter the FD position.
-  if(Function* F = getCalledFunction(SI)) {
-
-    if(GlobalIHP->getMRInfo(F))
-      return false;
-
-    if(SpecialFunctionMap.count(F))
-      return false;
-
-    if(GlobalIHP->specialLocations.count(F))
-      return false;
-
-    // Certain intrinsics should be ignored too:
-    if(F->onlyReadsMemory())
-      return false;
-
-  }
-
-  uniqueIncomingOffset = -1;
-  return true;
 
 }
 
@@ -459,12 +464,23 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   }
 
+  FDStore* fdStore = SI->parent->getWritableFDStore();
+
   // All calls beyond here operate on FDs.
-  ShadowInstruction* OpenCall = getFD(SI->getCallArgOperand(0));
-  if(!OpenCall)
+
+  uint32_t FD = getFD(SI->getCallArgOperand(0));
+ 
+  // Operates on an unknown FD?
+  if(FD == (uint32_t)-1) {
+    fdStore->fds.clear();
+    return true;
+  }
+
+  // Operates on an FD not opened on this path?
+  if(SI->parent->fdStore->fds.size() <= FD)
     return true;
 
-  OpenStatus& OS = OpenCall->parent->IA->getOpenStatus(OpenCall);
+  FDState& FDS = SI->parent->fdStore->fds[FD];
 
   if(F->getName() == "isatty") {
 
@@ -479,24 +495,27 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     Constant* whence = getConstReplacement(SI->getCallArgOperand(2));
     Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
     
-    if((!newOffset) || (!whence))
+    if((!newOffset) || (!whence)) {
+      FDS.pos = (uint32_t)-1;
       return true;
+    }
 
     uint64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
     int32_t seekWhence = (int32_t)cast<ConstantInt>(whence)->getSExtValue();
     
-    bool needsWalk = false;
     switch(seekWhence) {
     case SEEK_CUR:
       {
-	// Needs the incoming offset. Go to walk:
-	needsWalk = true;
+	// Unknown position?
+	if(FDS.pos == (uint64_t)-1)
+	  return true;
+	intOffset += FDS.pos;
 	break;
       }
     case SEEK_END:
       {
 	struct stat file_stat;
-	if(::stat(OS.Name.c_str(), &file_stat) == -1) {
+	if(::stat(FDS.filename.c_str(), &file_stat) == -1) {
 	  
 	  LPDEBUG("Failed to stat " << OS.Name << "\n");
 	  return true;
@@ -512,63 +531,56 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
       return true;
     }
 
-    if(!needsWalk) {
+    noteVFSOp();
 
-      noteVFSOp();
-
-      // Doesn't matter what came before, resolve this call here.
-      setReplacement(SI, ConstantInt::get(FT->getParamType(1), intOffset));
-      resolveSeekCall(SI, SeekFile(&OS, intOffset));
-      return true;
-
-    }
-    // Else fall through to the walk phase.
+    // Doesn't matter what came before, resolve this call here.
+    setReplacement(SI, ConstantInt::get(FT->getParamType(1), intOffset));
+    resolveSeekCall(SI, SeekFile(FDS.filename, intOffset));
+    FDS.pos = intOffset;
+    return true;
 
   }
   else if(F->getName() == "fstat") {
 
-    return executeStatCall(SI, F, OS.Name);
+    return executeStatCall(SI, F, FDS.filename);
 
   }
   else if(F->getName() == "close") {
 
     noteVFSOp();
-
-    pass->resolvedCloseCalls[SI] = CloseFile(&OS, OpenCall);    
     setReplacement(SI, ConstantInt::get(FT->getReturnType(), 0));
     return true;
 
   }
-  // Else it's a read call or relative seek, and we need the incoming file offset.
-
-  FindVFSPredecessorWalker Walk(SI, OpenCall);
-  Walk.walk();
-
-  if(Walk.uniqueIncomingOffset == -1)
-    return true;
-
-  if(F->getName() == "read") {
+  else if(F->getName() == "read") {
 
     ShadowValue readBytes = SI->getCallArgOperand(2);
     ConstantInt* intBytes = cast_or_null<ConstantInt>(getConstReplacement(readBytes));
-    if(!intBytes)
+    if(!intBytes) {
+      FDS.pos = (uint64_t)-1;
       return true;
+    }
     
     int64_t cBytes = intBytes->getLimitedValue();
 
-    if(filenameIsForbidden(OS.Name))
-      return true;
-
-    struct stat file_stat;
-    if(::stat(OS.Name.c_str(), &file_stat) == -1) {
-      LPDEBUG("Failed to stat " << OS.Name << "\n");
+    if(filenameIsForbidden(FDS.filename)) {
+      FDS.pos = (uint64_t)-1;
       return true;
     }
 
-    if(!(file_stat.st_mode & S_IFREG))
+    struct stat file_stat;
+    if(::stat(FDS.filename.c_str(), &file_stat) == -1) {
+      LPDEBUG("Failed to stat " << OS.Name << "\n");
+      FDS.pos = (uint64_t)-1;
       return true;
+    }
 
-    int64_t bytesAvail = file_stat.st_size - Walk.uniqueIncomingOffset;
+    if(!(file_stat.st_mode & S_IFREG)) {
+      FDS.pos = (uint64_t)-1;
+      return true;
+    }
+
+    int64_t bytesAvail = file_stat.st_size - FDS.pos;
     if(cBytes > bytesAvail) {
       LPDEBUG("Desired read of " << cBytes << " truncated to " << bytesAvail << " (EOF)\n");
       cBytes = bytesAvail;
@@ -579,56 +591,22 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     
     noteVFSOp();
 
-    resolveReadCall(SI, ReadFile(&OS, Walk.uniqueIncomingOffset, cBytes));
+    resolveReadCall(SI, ReadFile(FDS.filename, FDS.pos, cBytes));
     
     // The number of bytes read is also the return value of read.
     setReplacement(SI, ConstantInt::get(Type::getInt64Ty(F->getContext()), cBytes));
 
-    executeReadInst(SI, OS, Walk.uniqueIncomingOffset, cBytes);
+    executeReadInst(SI, FDS.filename, FDS.pos, cBytes);
 
-    noteLLIODependency(OS.Name);
+    FDS.pos += cBytes;
+
+    noteLLIODependency(FDS.filename);
     SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
-
-  }
-  else {
-
-    // It's a seek call, with SEEK_CUR.
-    Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
-    int64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
-    intOffset += Walk.uniqueIncomingOffset;
-
-    noteVFSOp();
-
-    resolveSeekCall(SI, SeekFile(&OS, intOffset));
-
-    // Return value: new file offset.
-    setReplacement(SI, ConstantInt::get(FT->getParamType(1), intOffset));
 
   }
 
   return true;
   
-}
-
-int64_t IntegrationAttempt::tryGetIncomingOffset(ShadowInstruction* CI) {
-
-  if(pass->forwardableOpenCalls.count(CI))
-    return 0;
-
-  {
-    DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(CI);
-    if(it != pass->resolvedReadCalls.end())
-      return it->second.incomingOffset + it->second.readSize;
-  }
-
-  {
-    DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(CI);
-    if(it != pass->resolvedSeekCalls.end())
-      return it->second.newOffset;
-  } 
-
-  return -1;
-
 }
 
 ReadFile* IntegrationAttempt::tryGetReadFile(ShadowInstruction* CI) {
@@ -701,12 +679,6 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
   
 }
 
-bool IntegrationAttempt::isCloseCall(ShadowInstruction* CI) {
-
-  return pass->resolvedCloseCalls.count(CI);
-
-}
-
 void IntegrationAttempt::resolveReadCall(ShadowInstruction* CI, struct ReadFile RF) {
 
   pass->resolvedReadCalls[CI] = RF;
@@ -723,7 +695,7 @@ bool IntegrationAttempt::isResolvedVFSCall(ShadowInstruction* I) {
   
   if(inst_is<CallInst>(I)) {
 
-    return pass->forwardableOpenCalls.count(I) || pass->resolvedReadCalls.count(I) || pass->resolvedSeekCalls.count(I) || pass->resolvedCloseCalls.count(I);
+    return pass->forwardableOpenCalls.count(I) || pass->resolvedReadCalls.count(I) || pass->resolvedSeekCalls.count(I);
 
   }
 
@@ -744,13 +716,6 @@ bool IntegrationAttempt::VFSCallWillUseFD(ShadowInstruction* CI) {
     DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(CI);
     if(it != pass->resolvedSeekCalls.end())
       return !it->second.MayDelete;
-  }
-
-  {
-    DenseMap<ShadowInstruction*, CloseFile>::iterator it = pass->resolvedCloseCalls.find(CI);
-    if(it != pass->resolvedCloseCalls.end())
-      return !(it->second.MayDelete && it->second.openArg->MayDelete && 
-	       it->second.openInst->dieStatus == INSTSTATUS_DEAD);
   }
 
   return true;
@@ -778,88 +743,6 @@ OpenStatus& IntegrationAttempt::getOpenStatus(ShadowInstruction* CI) {
 
 }
 
-//// Implement a forward walker that determines whether an open instruction may have any remaining uses.
-
-class OpenInstructionUnusedWalker : public ForwardIAWalker {
-
-  ShadowInstruction* OpenInst;
-
-public:
-
-  SmallVector<ShadowInstruction*, 4> CloseInstructions;
-  SmallVector<ShadowInstruction*, 4> UserInstructions;
-  bool residualUserFound;
-
-  OpenInstructionUnusedWalker(ShadowInstruction* I) : ForwardIAWalker(I->invar->idx, I->parent, true, 0, false), OpenInst(I), residualUserFound(false) { }
-
-  virtual WalkInstructionResult walkInstruction(ShadowInstruction*, void*);
-  virtual bool shouldEnterCall(ShadowInstruction*, void*);
-  virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
-  virtual void hitIgnoredEdge() { residualUserFound = true; }
-  virtual bool shouldContinue() { return !residualUserFound; }
-
-};
-
-bool OpenInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
-
-  return callMayUseFD(SI, OpenInst);
-
-}
-
-bool OpenInstructionUnusedWalker::blockedByUnexpandedCall(ShadowInstruction* SI, void*) {
-
-  residualUserFound = true;
-  return true;
-
-}
-
-WalkInstructionResult OpenInstructionUnusedWalker::walkInstruction(ShadowInstruction* I, void*) {
-
-  CallInst* CI = dyn_cast_inst<CallInst>(I);
-  if(!CI)
-    return WIRContinue;
-
-  WalkInstructionResult WIR = I->parent->IA->isVfsCallUsingFD(I, OpenInst, false);
-
-  if(WIR == WIRContinue)
-    return WIR;
-  else if(WIR == WIRStopThisPath) {
-
-    // This call definitely uses this FD.
-    if(!I->parent->IA->isResolvedVFSCall(I)) {
-
-      // But apparently we couldn't understand it. Perhaps some of its arguments are vague.
-      residualUserFound = true;
-      return WIRStopWholeWalk;
-
-    }
-    else {
-
-      // We'll be able to remove this instruction: reads will be replaced by memcpy from constant buffer,
-      // seeks will disappear entirely leaving just a numerical return value, closes will be deleted.
-      Function* F = getCalledFunction(I);
-      UserInstructions.push_back(I);
-
-      if(F->getName() == "close") {
-	CloseInstructions.push_back(I);
-	return WIRStopThisPath;
-      }
-      else
-	return WIRContinue;
-
-    }
-
-  }
-  else {
-
-    // This call may use this FD.
-    residualUserFound = true;
-    return WIRStopWholeWalk;
-
-  }
-
-}
-
 //// Implement a closely related walker that determines whether a seek call can be elim'd or a read call's
 //// implied SEEK_CUR can be omitted when residualising.
 
@@ -879,6 +762,46 @@ public:
   virtual bool blockedByUnexpandedCall(ShadowInstruction*, void*);
 
 };
+
+static bool callMayUseFD(ShadowInstruction* SI, ShadowInstruction* FD) {
+
+  CallInst* CI = cast_inst<CallInst>(SI);
+
+ // This call cannot affect the FD we're pursuing unless (a) it uses the FD, or (b) the FD escapes (is stored) and the function is non-pure.
+  
+  Function* calledF = getCalledFunction(SI);
+
+  // None of the blacklisted syscalls not accounted for under vfsCallBlocksOpen mess with FDs in a way that's important to us.
+  if(IntrinsicInst* II = dyn_cast<IntrinsicInst>(CI)) {
+
+    switch(II->getIntrinsicID()) {
+
+    case Intrinsic::vastart:
+    case Intrinsic::vacopy:
+    case Intrinsic::vaend:
+    case Intrinsic::memcpy:
+    case Intrinsic::memmove:
+    case Intrinsic::memset:
+    case Intrinsic::dbg_declare:
+    case Intrinsic::dbg_value:
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+    case Intrinsic::invariant_start:
+    case Intrinsic::invariant_end:
+      return false;
+
+    default:
+      break;
+
+    }
+
+  }
+  else if(calledF && functionIsBlacklisted(calledF))
+   return false;
+  
+  return true;
+
+}
 
 bool SeekInstructionUnusedWalker::shouldEnterCall(ShadowInstruction* SI, void*) {
 
@@ -949,10 +872,10 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	{
 	  DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(SI);
 	  if(it != pass->resolvedReadCalls.end()) {
-	    ShadowInstruction* FD = getFD(SI->getCallArgOperand(0));
-	    if(!FD)
+	    int32_t FD = getFD(SI->getCallArgOperand(0));
+	    if(FD == -1)
 	      continue;
-	    SeekInstructionUnusedWalker Walk(FD, SI);
+	    SeekInstructionUnusedWalker Walk(pass->fds[FD].SI, SI);
 	    Walk.walk();
 	    if(!Walk.seekNeeded) {
 	      it->second.needsSeek = false;
@@ -963,53 +886,15 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	{
 	  DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(SI);
 	  if(it != pass->resolvedSeekCalls.end()) {
-	    ShadowInstruction* FD = getFD(SI->getCallArgOperand(0));
-	    if(!FD)
+	    int32_t FD = getFD(SI->getCallArgOperand(0));
+	    if(FD == -1)
 	      continue;
-	    SeekInstructionUnusedWalker Walk(FD, SI);
+	    SeekInstructionUnusedWalker Walk(pass->fds[FD].SI, SI);
 	    Walk.walk();
 	    if(!Walk.seekNeeded) {
 	      it->second.MayDelete = true;
 	    }
 	  }
-	}
-
-      }
-
-    }
-
-  }
-
-
-  for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
-
-    ShadowBB* BB = BBs[i];
-    if(!BB)
-      continue;
-
-    for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
-
-      ShadowInstruction* SI = &(BB->insts[j]);
-      if(inst_is<CallInst>(SI)) {
-
-	DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(SI);
-	if(it == pass->forwardableOpenCalls.end())
-	  continue;
-	// Skip failed opens, we can always delete those
-	if(!it->second->success)
-	  continue;
-
-	OpenInstructionUnusedWalker Walk(SI);
-	Walk.walk();
-	if(!Walk.residualUserFound) {
-
-	  it->second->MayDelete = true;
-	  for(unsigned i = 0; i < Walk.CloseInstructions.size(); ++i) {
-
-	    Walk.CloseInstructions[i]->parent->IA->markCloseCall(Walk.CloseInstructions[i]);
-
-	  }
-
 	}
 
       }
@@ -1030,12 +915,6 @@ void IntegrationAttempt::tryKillAllVFSOps() {
     for(unsigned i = 0; i < it->second->Iterations.size(); ++i)
       it->second->Iterations[i]->tryKillAllVFSOps();
   }
-
-}
-
-void IntegrationAttempt::markCloseCall(ShadowInstruction* CI) {
-
-  pass->resolvedCloseCalls[CI].MayDelete = true;
 
 }
 
