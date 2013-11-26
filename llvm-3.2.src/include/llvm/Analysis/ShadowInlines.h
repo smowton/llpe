@@ -1297,15 +1297,27 @@ struct ShadowBB {
   void refStores() {
     ++localStore->refCount;
     ++fdStore->refCount;
+    if(tlStore)
+      ++tlStore->refCount;
   }
   void derefStores() {
     localStore->dropReference();
     fdStore->dropReference();
+    if(tlStore)
+      tlStore->dropReference();
   }
 
-  void takeStoresFrom(ShadowBB* Other) {
+  void takeStoresFrom(ShadowBB* Other, bool inLoopAnalyser) {
     localStore = Other->localStore;
     fdStore = Other->fdStore;
+    if(!inLoopAnalyser) {
+      tlStore = Other->tlStore;
+
+    }
+    else {
+      tlStore = 0;
+
+    }
   }
 
 };

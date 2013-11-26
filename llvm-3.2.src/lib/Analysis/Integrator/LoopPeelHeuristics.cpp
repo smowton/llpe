@@ -672,6 +672,12 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 
     doCallStoreMerge(SI);
 
+    if(!inLoopAnalyser) {
+	    
+      doTLCallMerge(SI->parent, IA);
+	    
+    }
+
   }
 
   return !!IA;
@@ -3490,7 +3496,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   // graph tags for the GUI.
   rootTag = RootIA->createTag(0);
 
-  if(!SkipDIE) {
+  if(/*!SkipDIE*/0) {
 
     runDSEAndDIE();
 
@@ -3504,11 +3510,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     errs() << "\n";
   }
 
+  /*
   if(!SkipTL) {  
     errs() << "Finding tentative loads";
     IA->findTentativeLoads(false, false);
     errs() << "\n";
   }
+  */
 
   // Finding any tentative loads may bring stored values and loaded pointers back to life.
   mustRecomputeDIE = true;

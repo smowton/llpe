@@ -121,36 +121,47 @@ static void initialiseStore(ShadowBB* BB) {
 
 }
 
-void InlineAttempt::getInitialStore() {
+void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
 
   // Take our caller's store; they will make a new one
   // upon return.
 
   if(Callers.size())
-    BBs[0]->takeStoresFrom(activeCaller->parent);
+    BBs[0]->takeStoresFrom(activeCaller->parent, inLoopAnalyser);
   
   else {
     BBs[0]->localStore = new OrdinaryLocalStore(0);
     initialiseStore(BBs[0]);
     BBs[0]->fdStore = new FDStore();
+    BBs[0]->tlStore = new TLLocalStore(0);
+    BBs[0]->tlStore->allOthersClobbered = false;
   }
   
-  if(invarInfo->frameSize != -1 || !Callers.size())
+  if(invarInfo->frameSize != -1 || !Callers.size()) {
+   
     BBs[0]->pushStackFrame(this);
+    if(BBs[0]->tlStore) {
+
+      BBs[0]->tlStore = BBs[0]->tlStore->getWritableFrameList();
+      BBs[0]->tlStore->pushStackFrame(this);
+
+    }
+
+  }
   
 }
 
-void PeelIteration::getInitialStore() {
+void PeelIteration::getInitialStore(bool inLoopAnalyser) {
   
   if(iterationCount == 0) {
 
-    BBs[0]->takeStoresFrom(parent->getBB(parentPA->invarInfo->preheaderIdx));
+    BBs[0]->takeStoresFrom(parent->getBB(parentPA->invarInfo->preheaderIdx), inLoopAnalyser);
 
   }
   else {
 
     // Take the previous latch's store
-    BBs[0]->takeStoresFrom(parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx));
+    BBs[0]->takeStoresFrom(parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx), inLoopAnalyser);
 
   } 
 
@@ -164,7 +175,7 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t n
 
   anyChange |= createEntryBlock();
 
-  getInitialStore();
+  getInitialStore(inLoopAnalyser);
 
   sharingInit();
 
@@ -230,15 +241,13 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     // Now explore the loop, if possible.
     // At the moment can't ever happen inside the loop analyser.
     PeelAttempt* LPA = 0;
-    if(!inLoopAnalyser) {
-      if((LPA = getOrCreatePeelAttempt(BBL))) {
+    if((!inLoopAnalyser) && (LPA = getOrCreatePeelAttempt(BBL))) {
 
-	// Give the preheader an extra reference in case we need that store
-	// to calculate a general version of the loop body if it doesn't terminate.
-	getBB(LPA->invarInfo->preheaderIdx)->refStores();
-	LPA->analyse(stack_depth);
+      // Give the preheader an extra reference in case we need that store
+      // to calculate a general version of the loop body if it doesn't terminate.
+      getBB(LPA->invarInfo->preheaderIdx)->refStores();
+      LPA->analyse(stack_depth);
 
-      }
     }
 
     // Analyse for invariants if we didn't establish that the loop terminates.
@@ -251,8 +260,10 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 	// Run other passes over the whole loop
 	gatherIndirectUsersInLoop(BBL);
 	
-      }
+	findTentativeLoadsInUnboundedLoop(BBL, /* commit disabled here = */ false, /* second pass = */ false);
 
+      }
+	
     }
     else {
 
@@ -295,22 +306,33 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     if(!doBlockStoreMerge(BB))
       return false;
 
+    if(!inLoopAnalyser) {
+
+      doTLStoreMerge(BB);
+
+    }
+
   }
 
   // As-expected checks may also be noted duirng analyseBlockInstructions:
   // they are cleared each time around because the flag might not make sense anymore if the instruction's
   // operands have degraded to the point that the instruction will no longer be resolved.
+  // The noteAsExpected function here only tags those which are mentioned in path conditions.
 
   applyMemoryPathConditions(BB);
   clearAsExpectedChecks(BB);
   noteAsExpectedChecks(BB);
 
+  if(!inLoopAnalyser) {
+
+    TLWalkPathConditions(BB, true, false);
+
+  }
+
   LFV3(errs() << nestingIndent() << "Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 
   // Else we should just analyse this block here.
-  anyChange |= analyseBlockInstructions(BB, 
-					/* skip successor creation = */ false, 
-					inLoopAnalyser, inAnyLoop);
+  anyChange |= analyseBlockInstructions(BB, inLoopAnalyser, inAnyLoop);
 
   LFV3(errs() << nestingIndent() << "End block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
 
@@ -318,8 +340,73 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
 }
 
+bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, bool& loadedVarargsHere, bool& bail) {
+
+  ShadowInstructionInvar* SII = SI->invar;
+  Instruction* I = SII->I;
+
+  if(inst_is<TerminatorInst>(SI)) {
+    // Call tryEvalTerminator regardless of scope.
+    return tryEvaluateTerminator(SI, loadedVarargsHere);
+  }
+
+  bool changed = false;
+
+  switch(I->getOpcode()) {
+
+  case Instruction::Alloca:
+    executeAllocaInst(SI);
+    return false;
+  case Instruction::Store:
+    executeStoreInst(SI);
+    return false;
+  case Instruction::Call: 
+    {
+	
+      // Certain intrinsics manifest as calls but fold like ordinary instructions.
+      if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
+	if(canConstantFoldCallTo(F))
+	  break;
+      }
+
+      if(tryPromoteOpenCall(SI))
+	return false;
+      if(tryResolveVFSCall(SI))
+	return false;
+      
+      if(analyseExpandableCall(SI, changed, inLoopAnalyser, inAnyLoop)) {
+	  
+	if(!SI->parent->localStore) {
+
+	  // Call must have ended in unreachable.
+	  // Don't bother analysing the rest of this path.
+	  bail = true;
+	  return changed;
+
+	}
+
+      }
+      else {
+
+	// For special calls like malloc this might define a return value.
+	executeUnexpandedCall(SI);
+	return false;
+
+      }
+
+    }
+
+    // Fall through to try to get the call's return value
+
+  }
+
+  changed |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
+  return changed;
+
+}
+
 // Returns true if there was any change
-bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTerminatorEval, bool inLoopAnalyser, bool inAnyLoop) {
+bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
   bool loadedVarargsHere = false;
@@ -327,71 +414,21 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool skipTermina
   for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
     ShadowInstruction* SI = &(BB->insts[i]);
-    ShadowInstructionInvar* SII = SI->invar;
-    Instruction* I = SII->I;
-
-    if(inst_is<TerminatorInst>(SI)) {
-      if(skipTerminatorEval)
-	return anyChange;
-      // Call tryEvalTerminator regardless of scope.
-      anyChange |= tryEvaluateTerminator(SI, loadedVarargsHere);
-      continue;
-    }
-
-    switch(I->getOpcode()) {
-
-    case Instruction::Alloca:
-      executeAllocaInst(SI);
-      continue;
-    case Instruction::Store:
-      executeStoreInst(SI);
-      continue;
-    case Instruction::Call: 
-      {
-	
-	// Certain intrinsics manifest as calls but fold like ordinary instructions.
-	if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
-	  if(canConstantFoldCallTo(F))
-	    break;
-	}
-
-	if(tryPromoteOpenCall(SI))
-	  continue;
-	if(tryResolveVFSCall(SI))
-	  continue;
-      
-	bool changed;
-	if(analyseExpandableCall(SI, changed, inLoopAnalyser, inAnyLoop)) {
-	  
-	  anyChange |= changed;
-	  if(!SI->parent->localStore) {
-
-	    // Call must have ended in unreachable.
-	    // Don't bother analysing the rest of this path.
-	    return anyChange;
-
-	  }
-
-	}
-	else {
-
-	  // For special calls like malloc this might define a return value.
-	  executeUnexpandedCall(SI);
-	  continue;
-
-	}
-
-      }
-
-      // Fall through to try to get the call's return value
-
-    }
-
-    anyChange |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
+    bool bail = false;
+    anyChange |= analyseInstruction(SI, inLoopAnalyser, inAnyLoop, loadedVarargsHere, bail);
+    if(bail)
+      return anyChange;
 
     if(!inLoopAnalyser) {
+
       // In the loop analysis case we reach a fixed point before running other passes.
+
+      // Check if this uses an FD or allocation:
       noteIndirectUse(ShadowValue(SI), SI->i.PB);
+      
+      // Check if this load or memcpy should be checked at runtime:
+      TLAnalyseInstruction(*SI, /* commit disabled = */ false, /* second pass = */ false);
+
     }
 
   }
@@ -703,7 +740,7 @@ void IntegrationAttempt::execute(uint32_t new_stack_depth) {
 
   stack_depth = new_stack_depth;
 
-  getInitialStore();
+  getInitialStore(false);
   for(uint32_t i = 0; i < nBBs; ++i) {
 
     if(!BBs[i])

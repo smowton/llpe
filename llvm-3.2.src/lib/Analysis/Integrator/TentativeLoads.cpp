@@ -239,7 +239,7 @@ static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>
 
 }
 
-static void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
+void llvm::doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
   TLMerger V(false);
   IA->visitLiveReturnBlocks(V);
@@ -272,7 +272,7 @@ static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB
 
 }
 
-static void walkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass) {
+void llvm::TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass) {
 
   InlineAttempt* IA = BB->IA->getFunctionRoot();
   
@@ -600,7 +600,7 @@ bool ShadowInstruction::isCopyInst() {
 
 }
 
-static void doTLStoreMerge(ShadowBB* BB) {
+void llvm::doTLStoreMerge(ShadowBB* BB) {
 
   TLMerger V(false);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
@@ -623,6 +623,54 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
   }
 
   findTentativeLoadsInLoop(0, commitDisabledHere, secondPass);
+
+}
+
+void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commitDisabledHere, bool secondPass) {
+
+  // Known always good (as opposed to TLS_NOCHECK, resulting from a previous tentative loads run?)
+  if(SI.isThreadLocal == TLS_NEVERCHECK)
+    return;
+
+  if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+
+    // Known that we must check when this block is reached from a loop preheader?
+    // If so whether it is tentative from the latch is irrelevant.
+    if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
+      return;
+
+    SI.isThreadLocal = shouldCheckLoad(SI);
+
+  }
+  
+  updateTLStore(&SI, !commitDisabledHere);
+
+}
+
+void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const Loop* UL, bool commitDisabledHere, bool secondPass) {
+
+  ShadowLoopInvar* NewLInfo = invarInfo->LInfo[UL];
+  ShadowBB* BB = getBB(NewLInfo->headerIdx);
+
+  // Give header its store:
+  BB->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
+  
+  if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
+
+    if(!secondPass) {
+      // Passing true for the last parameter causes the store to be given to the header from the latch
+      // and not to any exit blocks. 
+      findTentativeLoadsInLoop(UL, commitDisabledHere, false, true);
+      BB->tlStore = getBB(NewLInfo->latchIdx)->tlStore;
+    }
+    findTentativeLoadsInLoop(UL, commitDisabledHere, true);
+
+  }
+  else {
+
+    findTentativeLoadsInLoop(UL, commitDisabledHere, secondPass);
+
+  }
 
 }
 
@@ -670,25 +718,9 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       }
       else {
 
-	// Give header its store:
-	BB->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
-
-	if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
-
-	  if(!secondPass) {
-	    // Passing true for the last parameter causes the store to be given to the header from the latch
-	    // and not to any exit blocks. 
-	    findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), false, true);
-	    BB->tlStore = getBB(NewLInfo->latchIdx)->tlStore;
-	  }
-	  findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), true);
-
-	}
-	else {
-
-	  findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabledHere || (LPA && !LPA->isEnabled()), secondPass);
-
-	}
+	findTentativeLoadsInUnboundedLoop(BB->invar->naturalScope, 
+					  commitDisabledHere || (LPA && !LPA->isEnabled()),
+					  secondPass);
 
       }
 
@@ -705,31 +737,15 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
     }
 
-    walkPathConditions(BB, !commitDisabledHere, secondPass);
+    TLWalkPathConditions(BB, !commitDisabledHere, secondPass);
 
     bool brokeOnUnreachableCall = false;
 
     for(uint32_t j = 0, jlim = BB->invar->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction& SI = BB->insts[j];
+      TLAnalyseInstruction(SI, commitDisabledHere, secondPass);
       
-      // Known always good (as opposed to TLS_NOCHECK, resulting from a previous tentative loads run?)
-      if(SI.isThreadLocal == TLS_NEVERCHECK)
-	continue;
-
-      if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
-
-	// Known that we must check when this block is reached from a loop preheader?
-	// If so whether it is tentative from the latch is irrelevant.
-	if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
-	  continue;
-
-	SI.isThreadLocal = shouldCheckLoad(SI);
-
-      }
-
-      updateTLStore(&SI, !commitDisabledHere);
-
       if(inst_is<CallInst>(&SI)) {
 
 	if(InlineAttempt* IA = getInlineAttempt(&SI)) {

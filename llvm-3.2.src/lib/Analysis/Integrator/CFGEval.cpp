@@ -272,9 +272,18 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   // Return instruction breaks early to avoid the refcount juggling below:
   // a live return always has one successor, the call-merge.
   if(inst_is<ReturnInst>(SI)) {
+
     // Drop local allocas from the store:
-    if(invarInfo->frameSize != -1)
+    if(invarInfo->frameSize != -1) {
+
       SI->parent->popStackFrame();
+      if(SI->parent->tlStore) {
+	SI->parent->tlStore = SI->parent->tlStore->getWritableFrameList();
+	SI->parent->tlStore->popStackFrame();
+      }
+
+    }
+    
     return false;
   }
 

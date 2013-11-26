@@ -1168,15 +1168,15 @@ protected:
   void analyse();
   bool analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t new_stack_depth);
   bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL);
-  bool analyseBlockInstructions(ShadowBB* BB, bool skipSuccessorCreation, bool inLoopAnalyser, bool inAnyLoop);
+  bool analyseBlockInstructions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop);
+  bool analyseInstruction(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, bool& loadedVarargsHere, bool& bail);
   bool analyseLoop(const Loop*, bool nestedLoop);
   void releaseLatchStores(const Loop*);
-  virtual void getInitialStore() = 0;
+  virtual void getInitialStore(bool inLoopAnalyser) = 0;
   // Toplevel, execute-only version:
   void execute(uint32_t new_stack_depth);
   void executeBlock(ShadowBB*);
   void executeLoop(const Loop*);
-
 
   // Constant propagation:
 
@@ -1448,6 +1448,8 @@ protected:
   ThreadLocalState shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
   ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
   void findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
+  void findTentativeLoadsInUnboundedLoop(const Loop* L, bool commitDisabledHere, bool secondPass);
+  void TLAnalyseInstruction(ShadowInstruction&, bool commitDisabledHere, bool secondPass);
   void resetTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
   bool containsTentativeLoads();
@@ -1562,7 +1564,7 @@ public:
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
-  virtual void getInitialStore();
+  virtual void getInitialStore(bool inLoopAnalyser);
 
   virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
   virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
@@ -1805,7 +1807,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   void resetDeadArgsAndInstructions();
 
-  virtual void getInitialStore();
+  virtual void getInitialStore(bool inLoopAnalyser);
 
   // Function sharing:
 
@@ -1880,7 +1882,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   void gatherIndirectUsers();
   InlineAttempt* getStackFrameCtx(int32_t);
-  
+
 };
 
 inline int32_t getFrameSize(InlineAttempt* IA) {
@@ -2074,6 +2076,10 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  void noteBarrierInst(ShadowInstruction*);
  void executeSameObject(ShadowInstruction*);
+
+ void doTLStoreMerge(ShadowBB* BB);
+ void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA);
+ void TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass);
 
 } // Namespace LLVM
 
