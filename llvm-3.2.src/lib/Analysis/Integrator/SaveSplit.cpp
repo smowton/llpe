@@ -2,6 +2,7 @@
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Function.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/InstructionSimplify.h"
 
 using namespace llvm;
 
@@ -11,6 +12,12 @@ void llvm::patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs
 	itend = Refs.end(); it != itend; ++it) {
 
     it->first->setOperand(it->second, V);
+    // Note this would be unsafe if any of the patch recipients were listed more than
+    // once in patch lists.
+    if(Value* V = SimplifyInstruction(it->first)) {
+      it->first->replaceAllUsesWith(V);
+      it->first->eraseFromParent();
+    }
 
   }
 
@@ -127,12 +134,6 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
 
     if(!it->allocValue.isInst())
       continue;
-
-    if(!it->committedVal) {
-
-      errs() << itcache(it->allocValue) << " has no CV\n";
-      
-    }
 
     patchReferences(it->PatchRefs, it->committedVal);
     forwardReferences(it->committedVal, getGlobalModule());
@@ -283,6 +284,7 @@ void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI
   case SHADOWVAL_PTRIDX: {
     AllocData& AD = *getAllocData(Needed);
     AD.PatchRefs.push_back(PRQ);
+    release_assert(!AD.committedVal);
     break;
   }
 

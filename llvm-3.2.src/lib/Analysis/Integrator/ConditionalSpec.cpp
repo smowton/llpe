@@ -969,7 +969,7 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
   if(blockIdx == INVALID_BLOCK_IDX) {
 
     if(Argument* A = dyn_cast<Argument>(V))
-      return getFunctionRoot()->getArgCommittedValue(&getFunctionRoot()->argShadows[A->getArgNo()], InsertBefore);
+      return getFunctionRoot()->getCommittedValue(&getFunctionRoot()->argShadows[A->getArgNo()]);
     else
       return V;
 

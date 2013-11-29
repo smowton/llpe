@@ -312,7 +312,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   }
   else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
-    if(LI->isVolatile() && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
+    if(LI->isVolatile() && (!GlobalIHP->programSingleThreaded) && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
       markAllObjectsTentative(SI->parent);
     else
       markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
@@ -529,6 +529,9 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, 
 }
 
 ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
+
+  if(GlobalIHP->programSingleThreaded)
+    return TLS_NEVERCHECK;
 
   if(inst_is<LoadInst>(&SI)) {
 
