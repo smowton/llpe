@@ -406,17 +406,14 @@ IntegratorFrame::IntegratorFrame(const wxString& title, const wxPoint& pos, cons
   {
     raw_string_ostream ROS(dotpath);
     ROS << workdir << "/out.dot";
-    ROS.flush();
   }
   {
     raw_string_ostream ROS(pngpath);
     ROS << workdir << "/out.png";
-    ROS.flush();
   }
   {
     raw_string_ostream ROS(dotcommand);
     ROS << "dot " << dotpath << " -o " << pngpath << " -Tpng";
-    ROS.flush();
   }
 
   searchLastString = "";
@@ -521,8 +518,9 @@ void IntegratorFrame::redrawImage() {
   currentBitmap = 0;
 
   std::string error;
+  std::string otherpath;
   raw_fd_ostream RFO(dotpath.c_str(), error);
-  currentIA->describeAsDOT(RFO, brief);
+  currentIA->describeAsDOT(RFO, otherpath, brief);
   RFO.close();
 
   if(!error.empty()) {
@@ -532,9 +530,18 @@ void IntegratorFrame::redrawImage() {
   }
   else {
 
-    if(int ret = system(dotcommand.c_str()) != 0) {
+    std::string thiscmd;
+    if(otherpath.size()) {
+      raw_string_ostream RSO(thiscmd);
+      RSO << "dot " << otherpath << " -o " << pngpath << " -Tpng";
+    }
+    else {
+      thiscmd = dotcommand;
+    }
 
-      errs() << "Failed to run '" << dotcommand << "' (returned " << ret << ")\n";
+    if(int ret = system(thiscmd.c_str()) != 0) {
+
+      errs() << "Failed to run '" << thiscmd << "' (returned " << ret << ")\n";
 	
     }
     else {

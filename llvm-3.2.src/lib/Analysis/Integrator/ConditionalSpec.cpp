@@ -942,12 +942,12 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
 }
 
-Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* UseBlock) {
+Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* UseBlock, Instruction* InsertBefore) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
 
     // Pred is not an instruction. Use the same val whether consuming unspec or spec versions.
-    return getSpecValue(blockIdx, instIdx, V);
+    return getSpecValue(blockIdx, instIdx, V, InsertBefore);
 
   }
   else {
@@ -957,19 +957,19 @@ Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value*
 
     Value* Ret = tryGetLocalFailedValue(V, UseBlock);
     if(!Ret)
-      Ret = getSpecValue(blockIdx, instIdx, V);
+      Ret = getSpecValue(blockIdx, instIdx, V, InsertBefore);
     return Ret;
 
   }  
 
 }
 
-Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V) {
+Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
 
     if(Argument* A = dyn_cast<Argument>(V))
-      return getFunctionRoot()->getArgCommittedValue(&getFunctionRoot()->argShadows[A->getArgNo()]);
+      return getFunctionRoot()->getArgCommittedValue(&getFunctionRoot()->argShadows[A->getArgNo()], InsertBefore);
     else
       return V;
 
@@ -993,7 +993,7 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
 	 LPA->isTerminated() &&
 	 LPA->isEnabled()) {
 
-	return LPA->Iterations.back()->getSpecValueAnyType(blockIdx, instIdx, V);
+	return LPA->Iterations.back()->getSpecValueAnyType(blockIdx, instIdx, V, InsertBefore);
 	  
       }
       else {
@@ -1008,9 +1008,9 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
 
 }
 
-Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V) {
+Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore) {
 
-  Value* Ret = getSpecValueAnyType(blockIdx, instIdx, V);
+  Value* Ret = getSpecValueAnyType(blockIdx, instIdx, V, InsertBefore);
   if(!Ret)
     return 0;
 
@@ -1130,9 +1130,6 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
       ShadowInstIdx predOp = PNInfo->operandIdxs[i];
       Value* predV = OrigPN->getIncomingValue(i);
 
-      Value* unspecV = getUnspecValue(predOp.blockIdx, predOp.instIdx, predV, failedBlocks[predBlockIdx].back().first);
-      Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV);
-
       BasicBlock* specPred;
       if(isSpecToUnspecEdge(predBlockIdx, BBIdx))
 	specPred = getBB(predBlockIdx)->committedBlocks.back().breakBlock;
@@ -1150,16 +1147,19 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 	bool isMerge = isSpecToUnspecEdge(predBlockIdx, BBIdx);
 
 	if(isMerge) {
+	  Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, specPred->getTerminator());
 	  release_assert(specV && specPred);
 	  newPreds.push_back(std::make_pair(specV, specPred));
 	}
 
+	Value* unspecV = getUnspecValue(predOp.blockIdx, predOp.instIdx, predV, unspecPred, unspecPred->getTerminator());
 	release_assert(unspecV);
 	newPreds.push_back(std::make_pair(unspecV, unspecPred));
 
       }
       else if(specPred) {
 
+	Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, specPred->getTerminator());
 	release_assert(specV);
 	newPreds.push_back(std::make_pair(specV, specPred));
 
@@ -1230,8 +1230,8 @@ static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair
   for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = specPreds.begin(), itend = specPreds.end(); it != itend; ++it) {
 
     BasicBlock* PredBB = it->first;
-    Value* Op = getValAsType(it->second->getSpecValue(SI.parent->idx, SI.idx, SI.I), NewNode->getType(), 
-			     PredBB->getTerminator());
+    Value* Op = getValAsType(it->second->getSpecValue(SI.parent->idx, SI.idx, SI.I, PredBB->getTerminator()), 
+			     NewNode->getType(), PredBB->getTerminator());
     release_assert(Op);
     NewNode->addIncoming(Op, PredBB);
 
@@ -1501,11 +1501,6 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	}
 
 	// Further subdivisions of this block should use the new PHI
-	if(insertBlock->getName() == "xmlParseChunk-82 53 (failed).checksplit") {
-
-	  errs() << "Insert 1\n";
-
-	}
 	thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, insertBlock);
 	ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
 
@@ -1560,12 +1555,6 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // Not needed at this offset?
       if(it->second > predBlocks[i].second)
 	break;
-
-      if(it->first->getName() == "xmlParseChunk-82 53 (failed).checksplit") {
-	
-	errs() << "Insert 2\n";
-	
-      }
 
       // If a block break exists, then there must be some cause to merge.
       SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
@@ -1671,7 +1660,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	  
 	  ReturnInst* OrigRI = cast<ReturnInst>(SII.I);
 	  Value* V = OrigRI->getOperand(0);
-	  Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB);
+	  Value* Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB, RI);
 	  release_assert(Ret);
 	  failedReturnPHI->addIncoming(Ret, BB);
 
@@ -1684,6 +1673,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
       else {
 
 	// Out-of-line commit
+	release_assert(CommitF);
 	Value* Ret;
 	Value* FailFlag = ConstantInt::getFalse(BB->getContext());
 	
@@ -1693,7 +1683,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 
 	  ReturnInst* OrigRI = cast<ReturnInst>(SII.I);
 	  Value* V = OrigRI->getOperand(0);
-	  Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB);
+	  Ret = getUnspecValue(SII.operandIdxs[0].blockIdx, SII.operandIdxs[0].instIdx, V, BB, RI);
 	  StructType* retType = cast<StructType>(CommitF->getFunctionType()->getReturnType());
 	  Type* normalRet = Ret->getType();
 	  Constant* undefRet = UndefValue::get(normalRet);
@@ -1731,7 +1721,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	if(isa<BasicBlock>(V))
 	  Repl = (*failedBlockMap)[V];
 	else
-	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, BB);
+	  Repl = getUnspecValue(op.blockIdx, op.instIdx, V, BB, I);
 
 	release_assert(Repl);
 	((Use*)replit)->set(Repl);
@@ -1815,13 +1805,13 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 
 }
 
-static BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
-				       ValueToValueMapTy& VMap,
-				       const Twine &NameSuffix, 
-				       Function* F,
-				       uint32_t startIdx) {
+BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
+						    ValueToValueMapTy& VMap,
+						    const Twine &NameSuffix, 
+						    Function* F,
+						    uint32_t startIdx) {
 
-  BasicBlock *NewBB = BasicBlock::Create(BB->getContext(), "", F);
+  BasicBlock *NewBB = createBasicBlock(BB->getContext(), "", F);
   if (VerboseNames && BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
 
   // Loop over all instructions, and copy them over.
@@ -1901,6 +1891,7 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       BasicBlock* splitBlock = 
 	toSplit->splitBasicBlock(splitIterator, SplitName);
       failedBlocks[idx].push_back(std::make_pair(splitBlock, i + 1));
+      CommitBlocks.push_back(splitBlock);
 
       instsSinceLastSplit = 0;
 
@@ -2042,10 +2033,10 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
 
 	Value* origPredVal = OrigPN->getIncomingValue(i);
 	ShadowInstIdx predOp = PNInfo.operandIdxs[i];
-
-	Value* predVal = getUnspecValue(predOp.blockIdx, predOp.instIdx, 
-					origPredVal, failedBlocks[LInfo->latchIdx].back().first);
 	BasicBlock* predBlock = failedBlocks[LInfo->latchIdx].back().first;
+	
+	Value* predVal = getUnspecValue(predOp.blockIdx, predOp.instIdx, 
+					origPredVal, predBlock, predBlock->getTerminator());
 
 	PN->addIncoming(predVal, predBlock);
 
@@ -2189,7 +2180,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
 	  SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator predIt = it;
 	  --predIt;
 
-	  Value* NewV = getUnspecValue(idx, failedInst, failedI, it->first);
+	  Value* NewV = getUnspecValue(idx, failedInst, failedI, it->first, predIt->first->getTerminator());
 	  release_assert(NewV);
 	  NewPN->addIncoming(NewV, predIt->first);
 
@@ -2390,7 +2381,7 @@ Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* em
     Value* OffsetCI = ConstantInt::get(I64, (uint64_t)ThisOffset);
     Value* ElPtr = GetElementPtrInst::Create(writtenPtr, ArrayRef<Value*>(&OffsetCI, 1), "", emitBB);
 
-    Type* TargetType = PointerType::getUnqual(it->second.Values[0].V.getType());
+    Type* TargetType = PointerType::getUnqual(getValueType(it->second.Values[0].V));
     if(ElPtr->getType() != TargetType)
       ElPtr = new BitCastInst(ElPtr, TargetType, "", emitBB);
 
@@ -2466,7 +2457,7 @@ void llvm::escapePercent(std::string& msg) {
 void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* param) {
 
   Type* CharPtr = Type::getInt8PtrTy(emitBB->getContext());
-  Module* M = emitBB->getParent()->getParent();
+  Module* M = getGlobalModule();
 
   static Constant* Printf = 0;
   if(!Printf) {
@@ -2489,8 +2480,7 @@ void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* par
   Value* args[nParams];
 
   Constant* messageArray = ConstantDataArray::getString(emitBB->getContext(), message, true);
-  GlobalVariable* messageGlobal = new GlobalVariable(*(emitBB->getParent()->getParent()), 
-						     messageArray->getType(), true,
+  GlobalVariable* messageGlobal = new GlobalVariable(*M, messageArray->getType(), true,
 						     GlobalValue::InternalLinkage, messageArray);
   Constant* castMessage = ConstantExpr::getBitCast(messageGlobal, CharPtr);
 

@@ -5,146 +5,148 @@
 
 using namespace llvm;
 
-// Where a pointer is used in a context that will be committed to a different function,
-// create a global that will store the pointer.
+void llvm::patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs, Value* V) {
 
-void IntegrationAttempt::checkNonLocalReference(ShadowValue V) {
+  for(std::vector<std::pair<Instruction*, uint32_t> >::iterator it = Refs.begin(),
+	itend = Refs.end(); it != itend; ++it) {
 
-  PointerType* VoidPtr = cast<PointerType>(Type::getInt8PtrTy(F.getContext()));
-  PointerType* Int32 = cast<PointerType>(Type::getInt32Ty(F.getContext()));
-  
-  ShadowValue Base;
-  ImprovedValSetSingle* IVS;
-  if(getBaseObject(V, Base)) {
+    it->first->setOperand(it->second, V);
 
-    if(Base.isPtrIdx() && Base.objectAvailable() && getAllocCtx(Base)->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
+  }
+
+  Refs.clear();
+
+}
+
+static Instruction* getInsertLocation(Value* V) {
+
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+    BasicBlock::iterator BI(I);
+    ++BI;
+    release_assert(BI != I->getParent()->end());
+    return BI;
+
+  }
+  else if(Argument* A = dyn_cast<Argument>(V)) {
+    
+    return A->getParent()->getEntryBlock().begin();
+
+  }
+  else {
+
+    release_assert(0 && "Bad value type in getInsertLocation");
+    llvm_unreachable();
+
+  }
+
+}
+
+static Function* getFunctionFor(Value* V) {
+
+  if(Instruction* I = dyn_cast<Instruction>(V)) {
+
+    return I->getParent()->getParent();
+
+  }
+  else if(Argument* A = dyn_cast<Argument>(V)) {
+    
+    return A->getParent();
+
+  }
+  else {
+
+    release_assert(0 && "Bad value type in getFunctionFor");
+    llvm_unreachable();
+
+  }
+
+}
+
+void llvm::forwardReferences(Value* Fwd, Module* M) {
+
+  GlobalVariable* NewGV = 0;
+
+  for(Instruction::use_iterator UI = Fwd->use_begin(),
+	UE = Fwd->use_end(); UI != UE; ++UI) {
+
+    Use* U = &UI.getUse();
+    Value* V = *UI;
+
+    if(Instruction* UserI = dyn_cast<Instruction>(V)) {
+
+      if(UserI->getParent()->getParent() != getFunctionFor(Fwd)) {
+
+	// This user is non-local: replace it.
+
+	if(!NewGV) {
+
+	  // Create a global and a store at the definition site.
+	  NewGV = new GlobalVariable(*M, Fwd->getType(), false, GlobalVariable::InternalLinkage, 
+				     UndefValue::get(Fwd->getType()), "specglobalfwd");
+	  Instruction* InsertLoc = getInsertLocation(Fwd);
+	  new StoreInst(Fwd, NewGV, InsertLoc);
+
+	}
+
+	// Create a load before the user. TODO: fix this for phis.
+	Instruction* Fwd = new LoadInst(NewGV, "", UserI);
+	U->set(Fwd);
+
+      }
+
+    }
+
+  }
+
+}
+
+void InlineAttempt::fixNonLocalStackUses() {
+
+  // This context has been committed: patch any instruction that is "owed" a pointer
+  // to a stack allocation, and if any user is in a different function insert a forwarding
+  // global variable. This is valid even if neither of us has been given a target functionm
+  // yet, as we will inevitably end up colocated.
+
+  for(std::vector<AllocData>::iterator it = localAllocas.begin(),
+	itend = localAllocas.end(); it != itend; ++it) {
+    
+    patchReferences(it->PatchRefs, it->committedVal);
+    forwardReferences(it->committedVal, F.getParent());
+
+  }
+
+}
+
+void IntegrationHeuristicsPass::fixNonLocalUses() {
+
+  // Similar to the above, but also take care of FDs which are always global.
+
+  for(std::vector<AllocData>::iterator it = heap.begin(),
+	itend = heap.end(); it != itend; ++it) {
+
+    if(!it->allocValue.isInst())
+      continue;
+
+    if(!it->committedVal) {
+
+      errs() << itcache(it->allocValue) << " has no CV\n";
       
-      AllocData* AD = getAllocData(Base);
-
-      // Base has a nonlocal user.
-      if(!AD->commitGlobalised) {
-
-	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
-	AD->commitGlobalised = true;
-	AD->committedVal = NewGV;
-
-      }
-
-    }
-    else if(Base.isArg() && pass->RootIA->CommitF != getFunctionRoot()->CommitF) {
-
-      if(!pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV) {
-
-	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), VoidPtr, false, GlobalValue::InternalLinkage, UndefValue::get(VoidPtr), "specglobalptr");
-	pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV = NewGV;
-
-      }
-
     }
 
-  }
-  else if((IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V))) && 
-	  IVS->SetType == ValSetTypeFD &&
-	  IVS->Values.size() == 1) {
-
-    release_assert(IVS->Values[0].V.isFdIdx());
-    uint32_t FD = IVS->Values[0].V.u.PtrOrFd.idx;
-    ShadowInstruction* FDI = pass->fds[FD].SI;
-
-    if(FDI->parent->IA->getFunctionRoot()->CommitF != getFunctionRoot()->CommitF) {
-
-      FDGlobalState& FDS = pass->fds[FD];
-
-      if(!FDS.Globalised) {
-
-	GlobalVariable* NewGV = new GlobalVariable(*(F.getParent()), Int32, false, GlobalVariable::InternalLinkage, UndefValue::get(Int32), "specglobalfd");
-	FDS.CommittedVal = NewGV;
-	FDS.Globalised = true;
-	    
-      }
-
-    }
+    patchReferences(it->PatchRefs, it->committedVal);
+    forwardReferences(it->committedVal, getGlobalModule());
 
   }
 
-}
+  for(std::vector<FDGlobalState>::iterator it = fds.begin(),
+	itend = fds.end(); it != itend; ++it) {
 
-void InlineAttempt::findNonLocalPointers() {
+    patchReferences(it->PatchRefs, it->CommittedVal);
+    forwardReferences(it->CommittedVal, getGlobalModule());
 
-  for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {
-
-    if(argShadows[i].dieStatus != INSTSTATUS_ALIVE)
-      continue;
-    
-    ShadowValue SV(&argShadows[i]);
-    checkNonLocalReference(SV);
-
-  }
-
-  IntegrationAttempt::findNonLocalPointers();
-
-}
-
-void IntegrationAttempt::findNonLocalPointers() {
-
-  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
-    
-    ShadowBBInvar* BBI = getBBInvar(i);
-    if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
-
-      DenseMap<const Loop*, PeelAttempt*>::iterator findit = 
-	peelChildren.find(immediateChildLoop(L, BBI->naturalScope));
-
-      if(findit != peelChildren.end() && findit->second->isTerminated() && findit->second->isEnabled()) {
-
-	while(i != ilim && getBBInvar(i)->naturalScope && getBBInvar(i)->naturalScope->contains(BBI->naturalScope))
-	  ++i;
-	--i;
-	continue;
-
-      }
-
-    }
-
-    ShadowBB* BB = getBB(*BBI);
-    if(!BB)
-      continue;
-
-    for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
-
-      ShadowInstruction* SI = &BB->insts[j];
-      if(SI->dieStatus != INSTSTATUS_ALIVE)
-	continue;
-
-      ShadowValue SV(SI);
-      checkNonLocalReference(SV);
-
-    }
-    
   }
   
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    if((!it->second->isEnabled()) || !it->second->isTerminated())
-      continue;
-    
-    for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
-	  iteritend = it->second->Iterations.end(); iterit != iteritend; ++iterit)
-      (*iterit)->findNonLocalPointers();
-    
-  }
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isEnabled())
-      continue;
-
-    it->second->findNonLocalPointers();
-
-  }
-
 }
 
 void IntegrationAttempt::inheritCommitFunction() {
@@ -167,17 +169,32 @@ void IntegrationAttempt::inheritCommitFunction() {
     if(!it->second->isEnabled())
       continue;
 
-    it->second->inheritCommitFunction();
+    it->second->inheritCommitFunctionCall(false);
 
   }
 
 }
 
-void InlineAttempt::inheritCommitFunction() {
+void InlineAttempt::inheritCommitFunctionCall(bool onlyAdd) {
 
-  if(!CommitF)
-    CommitF = Callers[0]->parent->IA->getFunctionRoot()->CommitF;
-  IntegrationAttempt::inheritCommitFunction();
+  if(!onlyAdd) {
+    
+    if(CommitF)
+      return;
+    CommitF = uniqueParent->getFunctionRoot()->CommitF;
+
+  }
+
+  Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
+  
+  for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
+	itend = CommitBlocks.end(); it != itend; ++it) {
+
+    BBL.push_back(*it);
+
+  }
+
+  inheritCommitFunction();
 
 }
 
@@ -187,7 +204,10 @@ void InlineAttempt::inheritCommitFunction() {
 
 uint64_t IntegrationAttempt::findSaveSplits() {
 
-  uint64_t residualInstructionsHere = 0;
+  if(isCommitted())
+    return residualInstructionsHere;
+  
+  residualInstructionsHere = 0;
 
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
     
@@ -247,11 +267,47 @@ uint64_t IntegrationAttempt::findSaveSplits() {
 
 }
 
+void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp) {
+
+  std::pair<Instruction*, uint32_t> PRQ(PatchI, PatchOp);
+
+  switch(Needed.t) {
+
+  case SHADOWVAL_ARG: {
+    release_assert(Needed.u.A->IA->isRootMainCall());
+    ArgStore& AS = GlobalIHP->argStores[Needed.u.A->invar->A->getArgNo()];
+    AS.PatchRefs.push_back(PRQ);
+    break;
+  }
+
+  case SHADOWVAL_PTRIDX: {
+    AllocData& AD = *getAllocData(Needed);
+    AD.PatchRefs.push_back(PRQ);
+    break;
+  }
+
+  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX64: {
+    FDGlobalState& FDS = pass->fds[Needed.getFd()];
+    FDS.PatchRefs.push_back(PRQ);
+    break;
+  }
+
+  default:
+
+    release_assert(0 && "Bad type for patch request");
+
+  }
+
+}
+
 void InlineAttempt::splitCommitHere() {
 
   // Only split shared functions once.
   if(CommitF)
     return;
+  
+  residualInstructionsHere = 1;
   
   std::string Name;
   {
@@ -266,16 +322,18 @@ void InlineAttempt::splitCommitHere() {
     LT = GlobalValue::InternalLinkage;
   
   CommitF = cloneEmptyFunction(&F, LT, Name, hasFailedReturnPath() && !isRootMainCall());
-  
+
+  inheritCommitFunctionCall(true);
+
 }
 
 #define SPLIT_THRESHOLD 50000
 
 uint64_t InlineAttempt::findSaveSplits() {
 
-  uint64_t residuals = IntegrationAttempt::findSaveSplits();
-  
-  if(mustCommitOutOfLine() || residuals > SPLIT_THRESHOLD) {
+  uint64_t residuals;
+
+  if(mustCommitOutOfLine() || (residuals = IntegrationAttempt::findSaveSplits()) > SPLIT_THRESHOLD) {
     splitCommitHere();
     return 1;
   }
@@ -284,12 +342,4 @@ uint64_t InlineAttempt::findSaveSplits() {
     return residuals;
   }
     
-}
-
-void IntegrationHeuristicsPass::saveSplitPhase() {
-
-  RootIA->findSaveSplits();
-  RootIA->inheritCommitFunction();
-  RootIA->findNonLocalPointers();
-  
 }

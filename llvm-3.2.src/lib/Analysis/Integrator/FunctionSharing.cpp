@@ -319,6 +319,7 @@ InlineAttempt* IntegrationHeuristicsPass::findIAMatching(ShadowInstruction* SI) 
 
     if((*it)->matchesCallerEnvironment(SI)) {
       (*it)->Callers.push_back(SI);
+      (*it)->uniqueParent = 0;
       return *it;
     }
 

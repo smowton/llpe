@@ -137,9 +137,13 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     blocksReachableOnFailure = 0;
     CommitF = 0;
     targetCallInfo = 0;
+    integrationGoodnessValid = false;
+    backupTlStore = 0;
     DT = pass->DTs[&F];
-    if(_CI)
+    if(_CI) {
       Callers.push_back(_CI);
+      uniqueParent = _CI->parent->IA;
+    }
 
     prepareShadows();
 
@@ -160,7 +164,7 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
 			 const Loop* _L, int depth) 
   : pass(Pass), parent(P), F(_F), residualInstructions(-1), nesting_depth(depth), stack_depth(0), 
-    enabled(true), L(_L), totalIntegrationGoodness(0), nDependentLoads(0)
+    enabled(true), backupTlStore(0), L(_L), totalIntegrationGoodness(0), integrationGoodnessValid(false)
 {
 
   invarInfo = parent->invarInfo->LInfo[L];
@@ -172,29 +176,33 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 
 IntegrationAttempt::~IntegrationAttempt() {
 
-  for(uint32_t i = 0; i < nBBs; ++i) {
+  if(BBs) {
 
-    if(BBs[i]) {
+    for(uint32_t i = 0; i < nBBs; ++i) {
 
-      ShadowBB* BB = BBs[i];
+      if(BBs[i]) {
 
-      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+	ShadowBB* BB = BBs[i];
 
-	if(BB->insts[j].i.PB)
-	  deleteIV(BB->insts[j].i.PB);
+	for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+	  if(BB->insts[j].i.PB)
+	    deleteIV(BB->insts[j].i.PB);
+
+	}
+
+	// Delete ShadowInstruction array.
+	delete[] &(BB->insts[0]);
+	// Delete block itself.
+	delete BB;
 
       }
 
-      // Delete ShadowInstruction array.
-      delete[] &(BB->insts[0]);
-      // Delete block itself.
-      delete BB;
-
     }
 
-  }
+    delete[] BBs;
 
-  delete[] BBs;
+  }
 
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
     II->second->dropReferenceFrom(II->first);
@@ -248,9 +256,7 @@ const uint32_t mainPhaseProgressLimit = 1000;
 
 IntegrationAttempt* InlineAttempt::getUniqueParent() {
 
-  if(Callers.size() != 1)
-    return 0;
-  return Callers[0]->parent->IA;
+  return uniqueParent;
 
 }
 
@@ -625,6 +631,130 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
 }
 
+void InlineAttempt::releaseBackupStores() {
+
+  release_assert(backupTlStore);
+  backupTlStore->dropReference();
+  backupTlStore = 0;
+
+}
+
+void IntegrationAttempt::releaseMemoryPostCommit() {
+
+  if(commitState == COMMIT_FREED)
+    return;
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    if(it->second->isEnabled())
+      it->second->releaseMemoryPostCommit();
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isEnabled())
+      continue;
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
+
+      it->second->Iterations[i]->releaseMemoryPostCommit();
+
+    }
+
+  }
+
+  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
+
+    ShadowBB* BB = getBB(i);
+
+    if(BB) {
+
+      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+	ShadowInstruction* SI = &BB->insts[j];
+	if(SI->i.PB)
+	  deleteIV(SI->i.PB);
+
+      }
+
+      delete[] &BB->insts[0];
+      delete[] BB->succsAlive;
+      BB->committedBlocks.clear();
+      delete BB;
+
+      BB = 0;
+      
+    }
+
+  }
+
+  delete[] BBs;
+  BBs = 0;
+
+  commitState = COMMIT_FREED;
+
+}
+
+void InlineAttempt::finaliseAndCommit() {
+
+  countTentativeInstructions();
+  collectStats();
+	
+  // This call will disable the context if it's not a good idea.
+  findProfitableIntegration();
+
+  // Save a DOT representation if need be, for the GUI to use.
+  saveDOT();
+
+  if(isEnabled()) {
+
+    // The TL and DSE stores were backed up to deal with the possibility
+    // that the context would not be committed: we don't need those after all.
+    releaseBackupStores();
+
+    // Create residual blocks for disabled loops
+    prepareCommitCall();
+
+    if(!StatsFile.empty())
+      preCommitStats(true);
+
+    // Decide whether to commit in or out of line:
+    findSaveSplits();
+
+    // Note any tests that require failed blocks.
+    addCheckpointFailedBlocks();
+
+    // Finally, do it!
+    commitCFG();
+    commitArgsAndInstructions();
+
+  }
+  else {
+
+    commitState = COMMIT_DONE;
+
+    // Child contexts may have generated code that we no longer care
+    // to use. Delete it if so.
+    releaseCommittedChildren(0);
+
+    // Must rerun tentative load and DSE analyses accounting
+    // for the fact that the stage will not be committed.
+    rerunTentativeLoads(activeCaller, this);
+    //rerunDSE();
+
+    if(!StatsFile.empty())
+      preCommitStats(true);
+
+  }
+
+  // Free all ShadowBBs, ShadowInstructions and similar.
+  releaseMemoryPostCommit();
+
+}
+
 // Return true if we ended up with an InlineAttempt available for this call.
 bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop) {
 
@@ -646,7 +776,9 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       IA->active = true;
 
       changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop, stack_depth);
+      readsTentativeData |= IA->readsTentativeData;
       
+      inheritDiagnosticsFrom(IA);
       mergeChildDependencies(IA);
 
       if(created && !IA->isUnsharable())
@@ -662,20 +794,21 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 	getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->idx, SI->invar->idx + 1);
 
       }
+
+      doCallStoreMerge(SI);
+
+      if(!inLoopAnalyser) {
+	    
+	doTLCallMerge(SI->parent, IA);
+	IA->finaliseAndCommit();
+	
+      }
       
     }
     else {
 
       IA->executeCall(stack_depth);
 
-    }
-
-    doCallStoreMerge(SI);
-
-    if(!inLoopAnalyser) {
-	    
-      doTLCallMerge(SI->parent, IA);
-	    
     }
 
   }
@@ -1296,7 +1429,10 @@ void PeelAttempt::dumpMemoryUsage(int indent) {
 }
 
 std::string InlineAttempt::getShortHeader() {
-  
+ 
+  if(isCommitted())
+    return pass->shortHeaders[this];
+ 
   std::string ret;
   raw_string_ostream ROS(ret);
   printHeader(ROS);
@@ -1739,42 +1875,6 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
 
 void IntegrationHeuristicsPass::commit() {
 
-  RootIA->addCheckpointFailedBlocks();
-  mustRecomputeDIE = true;
-
-  if(!SkipTL) {
-    RootIA->rerunTentativeLoads();
-    if(DumpTL) {
-      TLDump(RootIA);
-      exit(0);
-    }
-  }
-  if(!SkipDIE) {
-    rerunDSEAndDIE();
-    if(DumpDSE) {
-      DSEDump(RootIA);
-      exit(0);
-    }
-  }
-
-  if(!StatsFile.empty())
-    RootIA->preCommitStats(true);
-
-  errs() << "Writing specialised module";
-
-  std::string Name;
-  {
-    raw_string_ostream RSO(Name);
-    RSO << RootIA->getCommittedBlockPrefix() << ".clone_root";
-  }
-
-  saveSplitPhase();
-
-  RootIA->returnBlock = 0;
-  RootIA->commitCFG();
-  RootIA->commitArgsAndInstructions();
-  errs() << "\n";
-
   if(!(omitChecks || llioDependentFiles.empty()))
     writeLliowdConfig();
 
@@ -1805,16 +1905,18 @@ void IntegrationHeuristicsPass::commit() {
       ++it;
 
     Type* Void = Type::getVoidTy(preludeBlock->getContext());
-    Constant* WDInit = preludeBlock->getParent()->getParent()->getOrInsertFunction("lliowd_init", Void, NULL);
+    Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
     CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
 
   }
 
   // Repair some of the more egregiously silly code we've generated:
-  postCommitOptimise();
+  //postCommitOptimise();
 
   if(!StatsFile.empty()) {
+
     postCommitStats();
+
     std::string error;
     raw_fd_ostream RFO(StatsFile.c_str(), error);
     if(!error.empty())
@@ -3384,7 +3486,14 @@ Type* llvm::GInt8Ptr;
 Type* llvm::GInt32;
 Type* llvm::GInt64;
 
+char llvm::ihp_workdir[] = "/tmp/ihp_XXXXXX";
+
 bool IntegrationHeuristicsPass::runOnModule(Module& M) {
+
+  if(!mkdtemp(ihp_workdir)) {
+    errs() << "Failed to create " << ihp_workdir << "\n";
+    exit(1);
+  }
 
   TD = getAnalysisIfAvailable<DataLayout>();
   GlobalTD = TD;
@@ -3490,52 +3599,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   errs() << "Interpreting";
   IA->analyse();
+  IA->finaliseAndCommit();
+  fixNonLocalUses();
   errs() << "\n";
 
   // Function sharing is now decided, and hence the graph structure, so create
   // graph tags for the GUI.
   rootTag = RootIA->createTag(0);
-
-  if(/*!SkipDIE*/0) {
-
-    runDSEAndDIE();
-
-  }
-
-  IA->collectStats();
-
-  if(!SkipBenefitAnalysis) {
-    errs() << "Picking integration candidates";
-    estimateIntegrationBenefit();
-    errs() << "\n";
-  }
-
-  /*
-  if(!SkipTL) {  
-    errs() << "Finding tentative loads";
-    IA->findTentativeLoads(false, false);
-    errs() << "\n";
-  }
-  */
-
-  // Finding any tentative loads may bring stored values and loaded pointers back to life.
-  mustRecomputeDIE = true;
-
-  // Collect some diagnostic information about optimisation barriers for the GUI
-  IA->noteChildBarriers();
-  IA->noteChildYields();
-  IA->countTentativeInstructions();
-
-  IA->prepareCommit();
-
-  if(!SkipDIE)
-    rerunDSEAndDIE();
-
-  if(!GraphOutputDirectory.empty()) {
-
-    IA->describeTreeAsDOT(GraphOutputDirectory);
-
-  }
     
   return false;
 
@@ -3559,3 +3629,8 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
 }
 
+Module* llvm::getGlobalModule() {
+
+  return GlobalIHP->RootIA->F.getParent();
+
+}

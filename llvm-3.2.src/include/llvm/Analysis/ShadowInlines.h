@@ -157,7 +157,7 @@ ShadowValue(ShadowValType Ty, int32_t frame, uint32_t idx) : t(Ty) { u.PtrOrFd.f
     return t == SHADOWVAL_GV ? u.GV : 0;
   }
 
-  Type* getType();
+  Type* getNonPointerType();
   ShadowValue stripPointerCasts();
   IntegrationAttempt* getCtx();
   Value* getBareVal();
@@ -871,10 +871,7 @@ struct AllocData {
   IntegrationAttempt* allocContext;
   ShadowValue allocValue;
   // Note that if allocContext->isCommitted() then allocValue is invalid.
-  // commitGlobalised may be set before or after commit: in the former case it represents
-  // a need to globalise when committed; in the latter it signals that committedVal points
-  // to a global variable already.
-  bool commitGlobalised;
+  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
   Value* committedVal;
 
 };
@@ -971,6 +968,7 @@ struct ShadowArg {
   InstArgImprovement i;  
   Value* committedVal;
   unsigned char dieStatus;
+  Instruction* patchInst;
 
   Type* getType() {
     return invar->A->getType();
@@ -1222,7 +1220,7 @@ struct FDGlobalState {
   ShadowInstruction* SI;
   IntegrationAttempt* IA;
   Value* CommittedVal;
-  bool Globalised;
+  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
 
   FDGlobalState(ShadowInstruction* _SI);
 
@@ -1312,11 +1310,9 @@ struct ShadowBB {
     fdStore = Other->fdStore;
     if(!inLoopAnalyser) {
       tlStore = Other->tlStore;
-
     }
     else {
       tlStore = 0;
-
     }
   }
 
@@ -1387,6 +1383,7 @@ extern Type* GInt8Ptr;
 extern Type* GInt32;
 extern Type* GInt64;
 
+/*
 inline Type* ShadowValue::getType() {
 
   switch(t) {
@@ -1399,7 +1396,7 @@ inline Type* ShadowValue::getType() {
   case SHADOWVAL_OTHER:
     return u.V->getType();
   case SHADOWVAL_PTRIDX:
-    return GInt8Ptr;
+    return getAllocType();
   case SHADOWVAL_FDIDX:
     return GInt32;
   case SHADOWVAL_FDIDX64:
@@ -1410,6 +1407,7 @@ inline Type* ShadowValue::getType() {
   }
 
 }
+*/
 
 inline const MDNode* ShadowValue::getTBAATag() {
 

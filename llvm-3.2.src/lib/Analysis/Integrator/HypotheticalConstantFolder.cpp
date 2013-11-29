@@ -110,23 +110,6 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
     Vals.push_back(I->getOperand(2));
 
   }
-  else if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
-
-    if(CI->getType()->isVoidTy())
-      return false;
-
-    if(InlineAttempt* IA = getInlineAttempt(I)) {
-
-      IA->getLiveReturnVals(Vals);
-
-    }
-    else {
-
-      return false;
-
-    }
-
-  }
   else {
 
     // I is a PHI node, but not a header PHI.
@@ -2100,8 +2083,10 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
     break;
   case Instruction::Call: 
     {
-      if(inlineChildren.count(SI))
-	tryMerge = true;
+      if(inlineChildren.count(SI)) {
+	NewPB = inlineChildren[SI]->returnValue;
+	return true;
+      }
       break;
     }
   case Instruction::Br:
@@ -2278,6 +2263,46 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   }
 
   return false;
+
+}
+
+Type* ShadowValue::getNonPointerType() {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return u.A->getType();
+  case SHADOWVAL_INST:
+    return u.I->getType();
+  case SHADOWVAL_GV:
+    return u.GV->G->getType();
+  case SHADOWVAL_OTHER:
+    return u.V->getType();
+  case SHADOWVAL_FDIDX:
+    return GInt32;
+  case SHADOWVAL_FDIDX64:
+    return GInt64;
+  default:
+    release_assert(0 && "Bad SV type");
+    return 0;
+  }
+
+
+}
+
+Type* IntegrationAttempt::getValueType(ShadowValue V) {
+
+  switch(V.t) {
+  case SHADOWVAL_PTRIDX:
+    {
+      AllocData* AD = getAllocData(V);
+      if(AD->allocContext->isCommitted())
+	return AD->committedVal->getType();
+      else
+	return getValueType(AD->allocValue);
+    }
+  default:
+    return V.getNonPointerType();
+  }
 
 }
 

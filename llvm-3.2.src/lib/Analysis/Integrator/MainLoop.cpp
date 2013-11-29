@@ -64,6 +64,14 @@ bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
   bool ret = analyse(inLoopAnalyser, inAnyLoop, new_stack_depth);
 
+  returnValue = 0;
+
+  if(!F.getFunctionType()->getReturnType()->isVoidTy()) {
+    SmallVector<ShadowValue, 4> Vals;
+    getLiveReturnVals(Vals);
+    getMergeValue(Vals, returnValue);
+  }
+
   return ret;
 
 }
@@ -128,13 +136,18 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
 
   if(Callers.size())
     BBs[0]->takeStoresFrom(activeCaller->parent, inLoopAnalyser);
-  
   else {
     BBs[0]->localStore = new OrdinaryLocalStore(0);
     initialiseStore(BBs[0]);
     BBs[0]->fdStore = new FDStore();
     BBs[0]->tlStore = new TLLocalStore(0);
     BBs[0]->tlStore->allOthersClobbered = false;
+  }
+
+  if(BBs[0]->tlStore) {
+    // Store a copy of the TL store for use if the context is disabled.
+    backupTlStore = BBs[0]->tlStore;
+    ++backupTlStore->refCount;
   }
   
   if(invarInfo->frameSize != -1 || !Callers.size()) {
@@ -148,7 +161,7 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
     }
 
   }
-  
+
 }
 
 void PeelIteration::getInitialStore(bool inLoopAnalyser) {
@@ -198,14 +211,22 @@ void IntegrationAttempt::analyse() {
 
 }
 
-bool PeelAttempt::analyse(uint32_t parent_stack_depth) {
+bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData) {
   
   bool anyChange = false;
   stack_depth = parent_stack_depth;
 
+  ShadowBB* PHBB = parent->getBB(invarInfo->preheaderIdx);
+  backupTlStore = PHBB->tlStore;
+  backupTlStore->refCount++;
+
+  readsTentativeData = false;
+
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
 
     anyChange |= PI->analyse(false, true, parent_stack_depth);
+    parent->inheritDiagnosticsFrom(PI);
+    readsTentativeData |= PI->readsTentativeData;
 
   }
 
@@ -215,6 +236,63 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth) {
  
   return anyChange;
 
+}
+
+void PeelIteration::setExitingTLStore(TLLocalStore* S, ShadowBBInvar* BBI, const Loop* exitLoop) {
+
+  PeelAttempt* LPA;
+
+  // Defer to child loop iterations?
+
+  if(BBI->naturalScope != L && 
+     (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) && 
+     LPA->isTerminated()) {
+
+    for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
+      LPA->Iterations[i]->setExitingTLStore(S, BBI, exitLoop);
+
+    return;
+
+  }
+
+  // For each live edge leaving the loop, replace the exiting block's tlStore with S.
+  ShadowBB* ExitingBB = getBB(*BBI);
+  if(!ExitingBB)
+    return;
+
+  uint32_t exitingEdges = 0;
+
+  for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim; ++i) {
+
+    ShadowBBInvar* ExitedBBI = getBBInvar(BBI->succIdxs[i]);
+    if(ExitingBB->succsAlive[i] && 
+       ((!ExitedBBI->naturalScope) || !exitLoop->contains(ExitedBBI->naturalScope))) {
+
+      ++exitingEdges;
+
+    }
+
+  }
+
+  for(uint32_t i = 0; i != exitingEdges; ++i) {
+    ExitingBB->tlStore->dropReference();
+    S->refCount++;
+  }
+
+  ExitingBB->tlStore = S;
+
+}
+
+void PeelIteration::setExitingTLStores(TLLocalStore* S) {
+
+  for(std::vector<uint32_t>::iterator it = parentPA->invarInfo->exitingBlocks.begin(),
+	itend = parentPA->invarInfo->exitingBlocks.end(); it != itend; ++it) {
+
+    ShadowBBInvar* ExitingBBI = getBBInvar(*it);
+    setExitingTLStore(S, ExitingBBI, L);
+
+  }
+  
 }
 
 bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL) {
@@ -246,7 +324,24 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       // Give the preheader an extra reference in case we need that store
       // to calculate a general version of the loop body if it doesn't terminate.
       getBB(LPA->invarInfo->preheaderIdx)->refStores();
-      LPA->analyse(stack_depth);
+
+      bool loopReadsTentativeData;
+      LPA->analyse(stack_depth, loopReadsTentativeData);
+      readsTentativeData |= loopReadsTentativeData;
+
+      // We're certainly not in the loop analyser, so pick whether to keep a terminated
+      // version of the loop now.
+
+      if(LPA->isTerminated()) {
+
+	LPA->findProfitableIntegration();
+	if(!LPA->isEnabled()) {
+	  LPA->Iterations.back()->setExitingTLStores(LPA->backupTlStore);
+	  LPA->backupTlStore->dropReference();
+	  LPA->backupTlStore = 0;
+	}
+
+      }
 
     }
 
@@ -572,7 +667,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 	firstIter = false;
       }
 
-      OrdinaryMerger V(false);
+      OrdinaryMerger V(this, false);
       FDStoreMerger V2;
 
       if(!firstIter) {

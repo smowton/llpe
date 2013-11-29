@@ -868,12 +868,13 @@ template<class ChildType, class ExtraState> struct MergeBlockVisitor : public Sh
   typedef SharedTreeRoot<ChildType, ExtraState> RootType;
   typedef SharedTreeNode<ChildType, ExtraState> NodeType;
    
+  IntegrationAttempt* originContext;
   MapType* newMap;
   bool useVarargMerge;
   SmallVector<ShadowBB*, 4> incomingBlocks;
   bool verbose;
    
- MergeBlockVisitor(bool uvm = false, bool v = false) : ShadowBBVisitor(true), newMap(0), useVarargMerge(uvm), verbose(v) { }
+ MergeBlockVisitor(IntegrationAttempt* origin, bool uvm = false, bool v = false) : ShadowBBVisitor(true), originContext(origin), newMap(0), useVarargMerge(uvm), verbose(v) { }
    
   void mergeFrames(MapType* toMap, typename SmallVector<MapType*, 4>::iterator fromBegin, typename SmallVector<MapType*, 4>::iterator fromEnd, uint32_t idx);
   void mergeHeaps(MapType* toMap, typename SmallVector<MapType*, 4>::iterator fromBegin, typename SmallVector<MapType*, 4>::iterator fromEnd);

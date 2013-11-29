@@ -512,7 +512,7 @@ static bool containsUncertainPointers(ImprovedValSetSingle& IVS) {
 
 static void doDSEStoreMerge(ShadowBB* BB) {
 
-  DSEMerger V(false);
+  DSEMerger V(BB->IA, false);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
@@ -522,7 +522,7 @@ static void doDSEStoreMerge(ShadowBB* BB) {
 
 static void doDSECallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
-  DSEMerger V(false);
+  DSEMerger V(BB->IA, false);
   IA->visitLiveReturnBlocks(V);
   V.doMerge();
   

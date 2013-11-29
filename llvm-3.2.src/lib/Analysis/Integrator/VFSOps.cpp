@@ -239,7 +239,7 @@ static bool filenameIsForbidden(std::string& s) {
 
 }
 
-FDGlobalState::FDGlobalState(ShadowInstruction* _SI) : SI(_SI), IA(SI->parent->IA), CommittedVal(0), Globalised(false) {}
+FDGlobalState::FDGlobalState(ShadowInstruction* _SI) : SI(_SI), IA(SI->parent->IA), CommittedVal(0) {}
 
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 

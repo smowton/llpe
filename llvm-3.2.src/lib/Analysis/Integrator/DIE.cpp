@@ -653,10 +653,16 @@ void InlineAttempt::gatherIndirectUsers() {
 
 }
 
-// Called only for unbounded loops, which cannot contain unexpanded subloops, so no need to check.
+// Called only for unbounded loops, which cannot contain expanded subloops, so no need to check.
 void IntegrationAttempt::gatherIndirectUsersInLoop(const Loop* L) {
 
-  for(uint32_t bbi = invarInfo->LInfo[L]->headerIdx, bblim = BBsOffset + nBBs; 
+  uint32_t bbi;
+  if(L)
+    bbi = invarInfo->LInfo[L]->headerIdx;
+  else
+    bbi = 0;
+
+  for(uint32_t bblim = BBsOffset + nBBs; 
       bbi != bblim && ((!L) || L->contains(getBBInvar(bbi)->naturalScope)); ++bbi) {
 
     ShadowBB* BB = getBB(bbi);

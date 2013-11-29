@@ -139,6 +139,9 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   if(PtrTarget.first != ValSetTypePB)
     return;
 
+  if(PtrTarget.second.V.isGV() &&  PtrTarget.second.V.u.GV->G->isConstant())
+    return;
+
   SmallVector<std::pair<uint64_t, uint64_t>, 1> addRanges;
 
   TLMapPointer* store = BB->tlStore->getReadableStoreFor(PtrTarget.second.V);
@@ -241,7 +244,7 @@ static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>
 
 void llvm::doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
-  TLMerger V(false);
+  TLMerger V(BB->IA, false);
   IA->visitLiveReturnBlocks(V);
   V.doMerge();
   
@@ -430,7 +433,6 @@ static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
   if(Ptr.V.isGV() && Ptr.V.u.GV->G->isConstant())
     return false;
 
-  //bool verbose = BB->IA->SeqNumber == 75 && BB->invar->BB->getName() == "9";
   bool verbose = false;
 
   if(verbose)
@@ -602,7 +604,7 @@ bool ShadowInstruction::isCopyInst() {
 
 void llvm::doTLStoreMerge(ShadowBB* BB) {
 
-  TLMerger V(false);
+  TLMerger V(BB->IA, false);
   BB->IA->visitNormalPredecessorsBW(BB, &V, /* ctx = */0);
   V.doMerge();
 
@@ -640,6 +642,9 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
       return;
 
     SI.isThreadLocal = shouldCheckLoad(SI);
+    
+    if(SI.isThreadLocal == TLS_MUSTCHECK)
+      readsTentativeData = true;
 
   }
   
@@ -847,17 +852,6 @@ void IntegrationAttempt::resetTentativeLoads() {
 
 }
 
-void InlineAttempt::rerunTentativeLoads() {
-
-  errs() << "Finding tentative loads";
-
-  resetTentativeLoads();
-  findTentativeLoads(false, false);
-
-  errs() << "\n";
-
-}
-
 // Our main interface to other passes:
 
 bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
@@ -873,6 +867,9 @@ bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
 }
 
 void IntegrationAttempt::countTentativeInstructions() {
+
+  if(isCommitted())
+    return;
 
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
 
@@ -951,70 +948,13 @@ bool PeelAttempt::containsTentativeLoads() {
 
 bool IntegrationAttempt::containsTentativeLoads() {
 
-  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
-
-    ShadowBBInvar* BBI = getBBInvar(i);
-    ShadowBB* BB = getBB(*BBI);
-    if(!BB)
-      continue;
-
-    if(BBI->naturalScope != L) {
-
-      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
-      PeelAttempt* LPA;
-      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
-
-	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
-	  ++i;
-	--i;
-	continue;
-
-      }
-
-    }
-
-    for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
-
-      ShadowInstructionInvar& SII = BBI->insts[j];
-      ShadowInstruction* SI = &BB->insts[j];
-
-      if(isa<LoadInst>(SII.I) || isa<MemTransferInst>(SII.I)) {
-
-	if(SI->isThreadLocal == TLS_MUSTCHECK)
-	  return true;
-
-      }
-
-    }
-
-  }
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
-
-    if(it->second->containsTentativeLoads())
-      return true;
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isTerminated())
-      continue;
-
-    if(it->second->containsTentativeLoads())
-      return true;
-
-  }
-
-  return false;
+  return readsTentativeData;
 
 }
 
 bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks) {
 
-  if(V.getType()->isVoidTy())
+  if(V.getNonPointerType()->isVoidTy())
     return false;
 
   // This indicates a member of a disabled loop that hasn't been analysed.
@@ -1065,6 +1005,9 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
 }
 
 void IntegrationAttempt::addCheckpointFailedBlocks() {
+
+  if(isCommitted())
+    return;
 
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
 
@@ -1127,32 +1070,25 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
 }
 
-bool IntegrationAttempt::noteChildYields() {
+void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  if(IA->readsTentativeData) {
 
-    if(it->second->noteChildYields() && yieldState == BARRIER_NONE)
-      yieldState = BARRIER_CHILD;
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isTerminated())
-      continue;
-
-    for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
-	  iterend = it->second->Iterations.end(); iterit != iterend; ++iterit) {
-
-      if((*iterit)->noteChildYields() && yieldState == BARRIER_NONE)
-	yieldState = BARRIER_CHILD;
-
-    }
+    // Conservatively assume that our inability to check where the data went
+    // means we must assume it clobbered everything.
+    errs() << "Warning: disabled context " << IA->SeqNumber << " reads tentative information\n";
+    SI->parent->tlStore = SI->parent->tlStore->getEmptyMap();
+    SI->parent->tlStore->allOthersClobbered = true;
 
   }
+  else {
 
-  return yieldState != BARRIER_NONE;
+    // As it does not read tentative information, the context simply has no effect.
+    // Use a copy of the TL map backed up on entry for this purpose.
+    release_assert(IA->backupTlStore);
+    SI->parent->tlStore->dropReference();
+    SI->parent->tlStore = IA->backupTlStore;
+
+  }
 
 }

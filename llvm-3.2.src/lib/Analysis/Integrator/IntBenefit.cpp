@@ -163,78 +163,33 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
 }
 
-void PeelAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty) {
+void PeelAttempt::findProfitableIntegration() {
+
+  if(integrationGoodnessValid)
+    return;
 
   totalIntegrationGoodness = 0;
-  int64_t itersGoodness = 0;
 
   for(unsigned i = 0; i < Iterations.size(); ++i) {
-    Iterations[i]->findProfitableIntegration(nonInliningPenalty);
-    itersGoodness += Iterations[i]->totalIntegrationGoodness;
+    Iterations[i]->findProfitableIntegration();
+    totalIntegrationGoodness += Iterations[i]->totalIntegrationGoodness;
   }
-
-  // This figure already includes penalties for forcing functions to stay alive.
-  // One possible argument against now is that we might bring loads of outside
-  // instructions to life by not unrolling:
-  
-  //int64_t daeBonus = extraInstructionPoints * parent->disablePeel(L, true);
-  //daeBonus += (extraInstructionPoints * nDependentLoads);
-
-  // Another possible argument: a non-terminated loop will necessarily retain a whole copy of the loop
-  // (i.e. will definitely increase code size).
-
-  int64_t nonTermPenalty = 0;
-
-  if(Iterations.back()->iterStatus != IterationStatusFinal) {
-
-    for(Loop::block_iterator it = L->block_begin(), it2 = L->block_end(); it != it2; ++it) {
-
-      nonTermPenalty += (extraInstructionPoints * (*it)->size());
-
-    }
-
-  }
-
-  totalIntegrationGoodness = itersGoodness - nonTermPenalty;
-
-  //errs() << getShortHeader() << ": goodness " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", nonterm penalty: " << nonTermPenalty << ", iters total: " << itersGoodness << ")\n";
 
   if(totalIntegrationGoodness < 0) {
 
     // Overall, not profitable to peel this loop.
     setEnabled(false, true);
 
-    // Decided to fold this context: deduct the penalty from parent contexts.
-    parent->reduceDependentLoads(nDependentLoads);
-
   }
 
-}
-
-void PeelAttempt::reduceDependentLoads(int64_t nLoads) {
-
-  nDependentLoads -= nLoads;
-  parent->reduceDependentLoads(nLoads);
+  integrationGoodnessValid = true;
 
 }
 
-void InlineAttempt::reduceDependentLoads(int64_t nLoads) {
+void IntegrationAttempt::findProfitableIntegration() {
 
-  nDependentLoads -= nLoads;
-  if(Callers.size() == 1) {
-    Callers[0]->parent->IA->reduceDependentLoads(nLoads);
-  }
-
-}
-
-void PeelIteration::reduceDependentLoads(int64_t nLoads) {
-
-  nDependentLoads -= nLoads;
-  parentPA->reduceDependentLoads(nLoads);
-
-}
-
-void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty) {
+  if(integrationGoodnessValid)
+    return;
 
   totalIntegrationGoodness = 0;
   int64_t childIntegrationGoodness = 0;
@@ -243,7 +198,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
     if(!it->second->isEnabled())
       continue;
-    it->second->findProfitableIntegration(nonInliningPenalty);
+    it->second->findProfitableIntegration();
     if(it->second->isEnabled()) {
       totalIntegrationGoodness += it->second->totalIntegrationGoodness;
       childIntegrationGoodness += it->second->totalIntegrationGoodness;
@@ -255,7 +210,7 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
     if(!it->second->isEnabled())
       continue;
-    it->second->findProfitableIntegration(nonInliningPenalty);
+    it->second->findProfitableIntegration();
     if(it->second->isEnabled()) {
       totalIntegrationGoodness += it->second->totalIntegrationGoodness;
       childIntegrationGoodness += it->second->totalIntegrationGoodness;
@@ -284,10 +239,10 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
     
     if(L != BBL && ((!L) || L->contains(BBL))) {
 
+      DenseMap<const Loop*, PeelAttempt*>::iterator findit = peelChildren.find(immediateChildLoop(L, BBL));
+
       // Count unexpanded loops as ours:
-      if(!peelChildren.count(immediateChildLoop(L, BBL)))
-	BBL = L;
-      else if(!peelChildren[immediateChildLoop(L, BBL)]->isEnabled())
+      if(findit == peelChildren.end() || (!findit->second->isEnabled()) || (!findit->second->isTerminated()))
 	BBL = L;
 
     }
@@ -308,13 +263,15 @@ void IntegrationAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>
 
   }
 
+  integrationGoodnessValid = true;
+
   intBenefitProgress();
 
   //errs() << getShortHeader() << ": int-goodness " << totalIntegrationGoodness << " (child: " << childIntegrationGoodness << ", codesize: " << newInstPenalty << ", timebonus: " << timeBonus << ")\n";
 
 }
 
-void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty) {
+void InlineAttempt::findProfitableIntegration() {
 
   if(isModel) {
 
@@ -322,242 +279,16 @@ void InlineAttempt::findProfitableIntegration(DenseMap<Function*, unsigned>& non
     return;
 
   }
+  else if(isShared()) {
 
-  IntegrationAttempt::findProfitableIntegration(nonInliningPenalty);
-
-  // Add goodness due to instructions that can be eliminated if we're inlined:
-  int64_t daeBonus = 0;
-  if(!Callers.empty()) {
-    daeBonus = (extraInstructionPoints * nDependentLoads);
-  //daeBonus += (extraInstructionPoints * parent->disableInline(CI, true));
-  }
-  totalIntegrationGoodness += daeBonus;
-
-  // See if the incentive to inline this function everywhere makes it worth inlining:
-  int64_t usedNIPenalty = 0;
-  if(totalIntegrationGoodness < 0) {
-
-    if(nonInliningPenalty.count(&F)) {
-
-      if(nonInliningPenalty[&F] > -totalIntegrationGoodness) {
-
-	// Deduct from the penalty to symbolise that inlining has had some cost.
-	// The second pass will see other callers moved back out-of-line in this case.
-	usedNIPenalty += -totalIntegrationGoodness;
-	// For now express our own goodness assuming we're the only obstacle
-	// to deleting the function entirely. If that doesn't turn out to be so,
-	// other uses will exhaust the credit for that function and we'll opt not to
-	// inline at the second pass.
-	totalIntegrationGoodness += nonInliningPenalty[&F];
-	nonInliningPenalty[&F] += totalIntegrationGoodness;
-
-      }
-      else {
-
-	nonInliningPenalty[&F] = 0;
-	
-      }
-
-    }
+    return;
 
   }
 
-  //errs() << getShortHeader() << ": adjusted total: " << totalIntegrationGoodness << " (dae bonus: " << daeBonus << ", NIPenalty used: " << usedNIPenalty << ")\n";
+  IntegrationAttempt::findProfitableIntegration();
 
-  IntegrationAttempt* Parent = getUniqueParent();
-
-  if(totalIntegrationGoodness < 0) {
-
-    if(Parent) {
-
-      setEnabled(false, true);
-      Parent->reduceDependentLoads(nDependentLoads);
-
-    }
-    else if(isShared()) {
-
-      errs() << "Didn't disable a context because it's shared\n";
-      return;
-
-    }
-
-  }
-
-}
-
-void PeelAttempt::countDependentLoads() {
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
-
-    (*it)->countDependentLoads();
-
-  }
-
-}
-
-void IntegrationAttempt::countDependentLoads() {
-
-  for(uint32_t i = 0; i < nBBs; ++i) {
-
-    ShadowBB* BB = BBs[i];
-    if(!BB)
-      continue;
-
-    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
-      
-      ShadowInstruction* I = &(BB->insts[j]);
-      if(inst_is<LoadInst>(I)) {
-
-	ShadowValue Base;
-	int64_t IgnOffset;
-	if(getBaseAndConstantOffset(ShadowValue(I), Base, IgnOffset)) {
-
-	  if(ShadowInstruction* ReplI = Base.getInst()) {
-	    
-	    ReplI->parent->IA->nDependentLoads++;
-
-	  }
-
-	}
-
-      }
-      
-    }
-
-  }
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
-    it->second->countDependentLoads();
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    it->second->countDependentLoads();
-
-  }
-
-}
-
-void PeelAttempt::propagateDependentLoads() {
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
-
-    (*it)->propagateDependentLoads();
-    nDependentLoads += (*it)->nDependentLoads;
-
-  }
-
-}
-
-void IntegrationAttempt::propagateDependentLoads() {
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
-
-    it->second->propagateDependentLoads();
-    nDependentLoads += it->second->nDependentLoads;
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    it->second->propagateDependentLoads();
-    nDependentLoads += it->second->nDependentLoads;
-
-  }
-
-}
-
-void IntegrationHeuristicsPass::estimateIntegrationBenefit() {
-
-  //errs() << "Selecting initial integration candidates...\n";
-
-  Module& M = RootIA->getModule();
-
-  DenseSet<Function*> ElimFunctions;
-  DenseMap<Function*, unsigned> TotalResidualInsts;
-
-  for(Module::iterator it = M.begin(), itend = M.end(); it != itend; ++it) {
-
-    if(it->isDeclaration())
-      continue;
-    ElimFunctions.insert(it);
-
-  }
-
-  RootIA->findResidualFunctions(ElimFunctions, TotalResidualInsts);
-
-  DEBUG(dbgs() << ElimFunctions.size() << " functions may be entirely eliminated:\n");
-  for(DenseSet<Function*>::iterator it = ElimFunctions.begin(), it2 = ElimFunctions.end(); it != it2; ++it) {
-    
-    DEBUG(dbgs() << (*it)->getName() << "\n");
-
-  }
-
-  // ElimFunctions now contains only those functions we think could be removed as dead post-integration.
-  // TotalResidualInsts should have the total number of instructions that will be residualised per-function.
-  // Now build a map from Function to the code size increase that would result from preventing inlining
-  // an instance of that function.
-
-  DenseMap<Function*, unsigned> nonInliningPenalty;
-
-  for(Module::iterator it = M.begin(), itend = M.end(); it != itend; ++it) {
-
-    if(it->isDeclaration())
-      continue;
-
-    unsigned totalInstructions = 0;
-
-    Function& F = *it;
-    for(Function::iterator Fit = F.begin(), Fend = F.end(); Fit != Fend; ++Fit) {
-
-      totalInstructions += Fit->size();
-
-    }
-
-    if(TotalResidualInsts[&F] < totalInstructions) {
-      DEBUG(dbgs() << "Function " << F.getName() << " non-inline penalty: " << totalInstructions - TotalResidualInsts[&F] << "\n");
-      nonInliningPenalty[&F] = totalInstructions - TotalResidualInsts[&F];
-    }
-    else {
-      DEBUG(dbgs() << "Function " << F.getName() << " will residualise more instructions (" << TotalResidualInsts[&F] << ") than its size (" << totalInstructions << ")\n");
-    }
-    
-  }
-
-  // Build an inverse map: this relates an integration context to how many loads which would otherwise would
-  // be eliminated must be executed for real if we fold this context.
-  // Tricky bit: if we're already decided not to integration some descendent contexts we shouldn't pay the penalty twice.
-  // To solve this, when we decide not to integrate some context we deduct its entry from each parent.
-  // e.g. if we had f calls g calls h, and f has 1 and 2 resolved loads dependent on pointers in g and h respectively,
-  // we initially map g -> 3, h -> 2. Then if we decide to leave h alone we deduct its penalty to leave g -> 1, the additional
-  // cost of declining to inline g.
-  // Rather than store this as a map there's a member 'nDependentLoads' of each IntegrationContext.
-
-  RootIA->countDependentLoads();
-  RootIA->propagateDependentLoads();
-
-  DenseMap<Function*, unsigned> savedInliningPenalties;
-  savedInliningPenalties.insert(nonInliningPenalty.begin(), nonInliningPenalty.end());
-
-  // Run once: some functions' nonInliningPenalty may be exhausted.
-  RootIA->findProfitableIntegration(nonInliningPenalty);
-
-  // Remove penalties for not inlining functions which were exhausted:
-  for(DenseMap<Function*, unsigned>::iterator it = nonInliningPenalty.begin(), it2 = nonInliningPenalty.end();
-      it != it2; ++it) {
-
-    if(it->second == 0) {
-      DEBUG(dbgs() << "After first round, removing incentive not to inline " << it->first->getName() << "\n");
-      savedInliningPenalties.erase(it->first);
-    }
-
-  }
-
-  RootIA->findProfitableIntegration(savedInliningPenalties);
-
-  RootIA->collectStats();
+  if(totalIntegrationGoodness < 0)
+    setEnabled(false, true);
 
 }
 
@@ -682,8 +413,10 @@ void IntegrationAttempt::collectStats() {
   collectAllBlockStats();
   collectAllLoopStats();
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it)
-    it->second->collectStats();
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+    if(!it->second->isCommitted())
+      it->second->collectStats();
+  }
 
   for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)
     it->second->collectStats();

@@ -40,16 +40,23 @@ static void SaveProgress() {
 // Prepare for the commit: remove instruction mappings that are (a) invalid to write to the final program
 // and (b) difficult to reason about once the loop structures start to be modified by unrolling and so on.
 
+void InlineAttempt::prepareCommitCall() {
+
+  if(isCommitted())
+    return;
+
+  IntegrationAttempt::prepareCommit();
+
+}
+
 void IntegrationAttempt::prepareCommit() {
   
-  localPrepareCommit();
-
   for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
 
     if(!it->second->isEnabled())
       continue;
 
-    it->second->prepareCommit();
+    it->second->prepareCommitCall();
 
   }
 
@@ -64,7 +71,6 @@ void IntegrationAttempt::prepareCommit() {
 
 	// Loop hasn't been analysed for the general case -- do a rough and ready approximation
 	// that emits any edge that is alive in any iteration.
-	
 
 	ShadowLoopInvar* LInfo = it->second->invarInfo;
 	for(uint32_t i = LInfo->headerIdx; i < nBBs && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
@@ -100,28 +106,6 @@ void IntegrationAttempt::prepareCommit() {
     }
 
   }  
-
-}
-
-void IntegrationAttempt::localPrepareCommit() {
-
-  for(uint32_t i = 0; i < nBBs; ++i) {
-
-    ShadowBB* BB = BBs[i];
-    if(!BB)
-      continue;
-
-    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
-
-      /*
-      ShadowInstruction* SI = &(BB->insts[j]);
-      if(mayBeReplaced(SI) && !willBeReplacedOrDeleted(ShadowValue(SI)))
-	SI->i.PB = ImprovedValSetSingle();
-      */
-
-    }
-
-  }
 
 }
 
@@ -196,9 +180,66 @@ bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
 }
 
+BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock) {
+
+  Function* AddTo;
+  if(isEntryBlock)
+    AddTo = 0;
+  else
+    AddTo = AddF;
+  BasicBlock* newBlock = BasicBlock::Create(Ctx, Name, AddTo);
+  if(!AddF)
+    getFunctionRoot()->CommitBlocks.push_back(newBlock);
+  else if(isEntryBlock)
+    AddF->getBasicBlockList().push_front(newBlock);
+  return newBlock;
+
+}
+
+void InlineAttempt::commitCFG() {
+
+  if(isCommitted())
+    return;
+
+  if(!commitsOutOfLine()) {
+
+    std::string Pref;
+    if(VerboseNames)
+      Pref = getCommittedBlockPrefix();
+    returnBlock = createBasicBlock(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CommitF);
+
+    if(hasFailedReturnPath()) {
+
+      Twine PreName;
+      if(VerboseNames)
+	PreName = "prereturn";
+      else
+	PreName = "";
+
+      failedReturnBlock = createBasicBlock(F.getContext(), PreName, CommitF);
+
+    }
+    else {
+
+      failedReturnBlock = 0;
+
+    }
+
+  }
+  else {
+
+    returnBlock = 0;
+    failedReturnBlock = 0;
+
+  }
+
+  IntegrationAttempt::commitCFG();
+
+}
+
 void IntegrationAttempt::commitCFG() {
 
-  SaveProgress();
+  commitState = COMMIT_STARTED;
 
   Function* CF = getFunctionRoot()->CommitF;
   const Loop* currentLoop = L;
@@ -245,7 +286,8 @@ void IntegrationAttempt::commitCFG() {
     // Can't go direct from one loop to another due to preheader.
     currentLoop = BB->invar->naturalScope;
     
-    bool isEntryBlock = (!L) && i == 0 && commitsOutOfLine();
+    bool isEntryBlock = (!L) && i == 0;
+    bool isCommittedEntryBlock = isEntryBlock && commitsOutOfLine();
 
     std::string Name;
     if(VerboseNames) {
@@ -254,15 +296,12 @@ void IntegrationAttempt::commitCFG() {
     }
     else if(isEntryBlock)
       Name = "entry";
-    BasicBlock* firstNewBlock = BasicBlock::Create(F.getContext(), Name);
+    
+    BasicBlock* firstNewBlock = createBasicBlock(F.getContext(), Name, CF, isCommittedEntryBlock);
 
     BB->committedBlocks.push_back(CommittedBlock(firstNewBlock, firstNewBlock, 0));
-
-    // The function entry block is just the first one listed: create at front if necessary.
     if(isEntryBlock)
-      CF->getBasicBlockList().push_front(firstNewBlock);
-    else
-      CF->getBasicBlockList().push_back(firstNewBlock);
+      getFunctionRoot()->entryBlock = firstNewBlock;
       
     // Create extra empty blocks for each path condition that's effective here:
     // If OmitChecks is specified, no tests are emitted and so no blocks are needed.
@@ -280,7 +319,7 @@ void IntegrationAttempt::commitCFG() {
 	  BlockName = BB->invar->BB->getName() + ".break";
 	else
 	  BlockName = "";
-	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BlockName, CF);
+	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BlockName, CF);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
@@ -292,7 +331,7 @@ void IntegrationAttempt::commitCFG() {
 	CondName = "";
 
       BasicBlock* newBlock = 
-	BasicBlock::Create(F.getContext(), CondName, CF);
+	createBasicBlock(F.getContext(), CondName, CF);
 
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
 
@@ -309,7 +348,7 @@ void IntegrationAttempt::commitCFG() {
 	else
 	  BreakName = "";
 
-	BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), BreakName, CF);
+	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BreakName, CF);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
@@ -321,7 +360,7 @@ void IntegrationAttempt::commitCFG() {
 	CheckName = "";
 
       BasicBlock* newBlock =
-	BasicBlock::Create(F.getContext(), CheckName, CF);	
+	createBasicBlock(F.getContext(), CheckName, CF);	
 
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
 
@@ -338,58 +377,39 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(IA->isEnabled()) {
 
+	    IA->activeCaller = SI;
+	    IA->commitCFG();
+
 	    std::string Pref;
 	    if(VerboseNames)
 	      Pref = IA->getCommittedBlockPrefix();
 
 	    if(!IA->commitsOutOfLine()) {
 
-	      // Split the specialised block:
-	      
-	      IA->returnBlock = 
-		BasicBlock::Create(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CF);
+	      // Adopt the return block:
 	      BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
 
 	      // Direct the call to the appropriate fail block:
-	      if(IA->hasFailedReturnPath()) {
+	      if(IA->failedReturnBlock) {
 
-		Twine PreName;
-		if(VerboseNames)
-		  PreName = "prereturn";
-		else
-		  PreName = "";
-
-		BasicBlock* preReturn = BasicBlock::Create(CF->getContext(), PreName, CF);
-		IA->failedReturnBlock = preReturn;
 		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
-		BranchInst::Create(targetBlock, preReturn);
-
-	      }
-	      else {
-
-		IA->failedReturnBlock = 0;
+		BranchInst::Create(targetBlock, IA->failedReturnBlock);
 
 	      }
 
 	    }
 	    else {
 
-	      // Out-of-line function (vararg, or shared).
-	      IA->returnBlock = 0;
-	      IA->failedReturnBlock = 0;
-
 	      // Requires a break afterwards if the target function might branch onto a failed path.
 	      if(IA->hasFailedReturnPath()) {
 
-		BasicBlock* newBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
+		BasicBlock* newBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
 		BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
 
 	      }
 
 	    }
 
-	    IA->activeCaller = SI;
-	    IA->commitCFG();
 	    continue;
 
 	  }
@@ -406,12 +426,12 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(pass->verbosePCs || requiresBreakCode(SI)) {
 
-	    BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".vfsbreak" : "", CF);
+	    BasicBlock* breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfsbreak" : "", CF);
 	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	  }
 
-	  BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF);
+	  BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF);
 	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j));
 
 	}
@@ -430,12 +450,12 @@ void IntegrationAttempt::commitCFG() {
 	if(pass->verbosePCs) {
 	
 	  // The previous block will break due to a tentative load. Give it a break block.
-	  BasicBlock* breakBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
+	  BasicBlock* breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
 	  BB->committedBlocks.back().breakBlock = breakBlock;
 
 	}
 
-	BasicBlock* newSpecBlock = BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF);
+	BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF);
 	BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j+1));
 
       }
@@ -447,7 +467,7 @@ void IntegrationAttempt::commitCFG() {
     if(pass->verbosePCs && hasLiveIgnoredEdges(BB)) {
 
       BB->committedBlocks.back().breakBlock = 
-	BasicBlock::Create(F.getContext(), VerboseNames ? StringRef(Name) + ".directbreak" : "", CF);
+	createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".directbreak" : "", CF);
 
     }
 
@@ -469,20 +489,21 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
     }
   case SHADOWVAL_ARG:
     {
-      release_assert(SV.u.A->committedVal && "Instruction depends on uncommitted instruction");
+      // It can be valid to find a root function argument without committed value
+      // as they are pseudo-allocations that will be patched in later.
+      release_assert((SV.u.A->committedVal || SV.u.A->IA->isRootMainCall()) && 
+		     "Instruction depends on uncommitted instruction");
       return SV.u.A->committedVal;
     }
   case SHADOWVAL_PTRIDX:
     {
       AllocData* AD = getAllocData(SV);
-      release_assert((!AD->commitGlobalised) && "Forwarding via global should be accounted for already");
       return AD->committedVal;
     }
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
     {
       FDGlobalState& FDS = pass->fds[SV.u.PtrOrFd.idx];
-      release_assert(!FDS.Globalised);
       return FDS.CommittedVal;
     }
   default:
@@ -492,13 +513,26 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
   
 }
 
-Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
+Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA, Instruction* insertBefore) {
+
+  return getArgCommittedValue2(SA, 0, insertBefore);
+
+}
+
+Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA, BasicBlock* emitBB) {
+
+  return getArgCommittedValue2(SA, emitBB, 0);
+
+}
+
+Value* InlineAttempt::getArgCommittedValue2(ShadowArg* SA, BasicBlock* emitBB, Instruction* insertBefore) {
 
   unsigned n = SA->invar->A->getArgNo();
 
-  if(commitsOutOfLine() || (!Callers.size()) || !isEnabled()) {
+  if(commitsOutOfLine() || !isEnabled()) {
 
     // Use corresponding argument:
+    release_assert(CommitF);
     Function::arg_iterator it = CommitF->arg_begin();
     for(unsigned i = 0; i < n; ++i)
       ++it;
@@ -508,9 +542,26 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
   }
   else {
 
-    // Inlined in place -- use the corresponding value of our call instruction.
-    // For sharing to work all arg values must match, so just use caller #0.
-    return getCommittedValue(Callers[0]->getCallArgOperand(n));
+    if(!uniqueParent->commitStarted()) {
+
+      // The function outwith this one isn't being committed at this point.
+      // Return a forwarding instruction and request that it be patched.
+      Value* True = ConstantInt::getTrue(F.getContext());
+      Value* UD = UndefValue::get(SA->getType());      
+      if(emitBB)
+	SA->patchInst = SelectInst::Create(True, UD, UD, "", emitBB);
+      else
+	SA->patchInst = SelectInst::Create(True, UD, UD, "", insertBefore);
+      return SA->patchInst;
+
+    }
+    else {
+
+      // Inlined in place -- use the corresponding value of our call instruction.
+      // For sharing to work all arg values must match, so just use caller #0.
+      return getCommittedValue(Callers[0]->getCallArgOperand(n));
+
+    }
 
   }
 
@@ -518,7 +569,7 @@ Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA) {
 
 BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
-  return BBs[0]->committedBlocks.front().specBlock;
+  return entryBlock;
 
 }
 
@@ -806,6 +857,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(!IA->returnBlock) {
 
+      // This is an out-of-line commit, so CommitF should be decided.
+      release_assert(getFunctionRoot()->CommitF);
+
       Value* retVal;
       if((!F.getFunctionType()->getReturnType()->isVoidTy()) && I->dieStatus != INSTSTATUS_ALIVE)
 	retVal = UndefValue::get(F.getReturnType());
@@ -929,7 +983,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	if(markUnreachable) {
 
 	  // Create an unreachable BB to branch to:
-	  BasicBlock* UBB = BasicBlock::Create(emitBB->getContext(), VerboseNames ? "LoopAssumeSink" : "", emitBB->getParent());
+	  BasicBlock* UBB = createBasicBlock(emitBB->getContext(), VerboseNames ? "LoopAssumeSink" : "", emitBB->getParent());
 	  new UnreachableInst(UBB->getContext(), UBB);
 	  newTerm->setOperand(i, UBB);
 
@@ -1040,7 +1094,7 @@ static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
   Type* Int32Ty = IntegerType::get(Context, 32);
   Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
 
-  Constant* SeekFn = emitBB->getParent()->getParent()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
+  Constant* SeekFn = getGlobalModule()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
 
   Value* CallArgs[] = { FD, NewOffset, SeekSet };
 
@@ -1130,7 +1184,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	// Create a const global for the array:
 
-	GlobalVariable *ArrayGlobal = new GlobalVariable(*(CI->getParent()->getParent()->getParent()), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
+	GlobalVariable *ArrayGlobal = new GlobalVariable(*getGlobalModule(), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
 
 	Type* Int64Ty = IntegerType::get(Context, 64);
 	Type *VoidPtrTy = Type::getInt8PtrTy(Context);
@@ -1188,10 +1242,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	Value* committed = emitInst(BB, I, emitBB);
 	FDGlobalState& FDS = pass->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
-	if(FDS.Globalised)
-	  new StoreInst(committed, cast<GlobalValue>(FDS.CommittedVal), emitBB);
-	else
-	  FDS.CommittedVal = committed;
+	FDS.CommittedVal = committed;
 	
       }
 
@@ -1261,28 +1312,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	// Branch from the current write BB to the call's entry block:
 	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
 
-	// Make a PHI node that will catch return values, and make it our committed
-	// value so that users get that instead of the call.
-	
-	bool isNonVoid = !IA->F.getFunctionType()->getReturnType()->isVoidTy();
-	bool createRetPHI = isNonVoid && !willBeReplacedOrDeleted(ShadowValue(I));
-	
-	if(createRetPHI) {
-	  I->committedVal = IA->returnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
-						    VerboseNames ? "retval" : "", IA->returnBlock);
-	}
-	else {
-	  I->committedVal = 0;
-	  IA->returnPHI = 0;
-	}
-
-	if(IA->hasFailedReturnPath() && isNonVoid) {
-	  IA->failedReturnPHI = makePHI(IA->F.getFunctionType()->getReturnType(), 
-					VerboseNames ? "failedretval" : "", IA->failedReturnBlock);
-	}
-	else {
-	  IA->failedReturnPHI = 0;
-	}
+	// Take the return PHI (or lack thereof) as this instruction's committed value.
+	I->committedVal = IA->returnPHI;
 
 	// Emit further instructions in this ShadowBB to the successor block:
 	++emitBBIter;
@@ -1345,8 +1376,9 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  AttributesVec.push_back(AttributeWithIndex::get(AttrListPtr::FunctionIndex,
 							  FnAttrs));
 	  
-	AttrListPtr NewCallPAL = AttrListPtr::get(IA->CommitF->getContext(), AttributesVec);
+	AttrListPtr NewCallPAL = AttrListPtr::get(emitBB->getContext(), AttributesVec);
 
+	release_assert(IA->CommitF);
 	CallInst* NewCI = cast<CallInst>(CallInst::Create(IA->CommitF, Args, "", emitBB));
 	NewCI->setCallingConv(OldCI->getCallingConv());
 	NewCI->setAttributes(NewCallPAL);
@@ -1389,13 +1421,13 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
       }
     
       if(!IA->commitsOutOfLine()) {
-
+	
 	if(IA->emittedAlloca) {
 
 	  // If the residual, inline function allocates stack memory, bound its lifetime
 	  // with stacksave/restore.
 
-	  Module *M = emitBB->getParent()->getParent();
+	  Module *M = getGlobalModule();
 
 	  Function *StackSave = Intrinsic::getDeclaration(M, Intrinsic::stacksave);
 	  Function *StackRestore=Intrinsic::getDeclaration(M, Intrinsic::stackrestore);
@@ -1471,27 +1503,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
      (AD = getAllocData(Base)) && 
      AD->allocValue.u.I == I) {
 
-    if(AD->commitGlobalised) {
-      
-      // This allocation is used in other functions: store it to a corresponding global.
-      // Cast to i8* if need be:
-      Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
-      Instruction* StoreI;
-      
-      if(newI->getType() != VoidPtr)
-	StoreI = new BitCastInst(newI, VoidPtr, "", emitBB);
-      else
-	StoreI = newI;
-      
-      new StoreInst(StoreI, AD->committedVal, emitBB);
-
-    }
-    else {
-
-      // Not (yet) used out-of-function; just note the allocation.
-      AD->committedVal = newI;
-
-    }
+    AD->committedVal = newI;
 
   }
 
@@ -1534,7 +1546,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, SmallVector<Commit
   if((!IVS) || IVS->SetType != ValSetTypePB || IVS->Values.size() != 1)
     return false;
 
-  bool ret = synthCommittedPointer(&I, I.getType(), IVS->Values[0], emitBB->specBlock, Result);
+  bool ret = synthCommittedPointer(&I, getValueType(I), IVS->Values[0], emitBB->specBlock, Result);
   if(ret)
     I.setCommittedVal(Result);
   return ret;
@@ -1615,19 +1627,19 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
   }
   else {
 
-    Value* BaseI;
-    if(Base.isVal() || getCtx(Base)->getFunctionRoot()->CommitF == getFunctionRoot()->CommitF)
-      BaseI = getCommittedValue(Base);
-    else {
-      GlobalVariable* FwdGlobal;
-      if(Base.isPtrIdx())
-	FwdGlobal = cast<GlobalVariable>(getAllocData(Base)->committedVal);
-      else
-	FwdGlobal = pass->argStores[Base.u.A->invar->A->getArgNo()].fwdGV;
-      release_assert(FwdGlobal && "Used out of function but not forwarded?");
-      BaseI = new LoadInst(FwdGlobal, "getfwdg", emitBB);
+    Value* BaseI = getCommittedValue(Base);
+    if(!BaseI) {
+
+      // Base has not been committed yet. Create a trivial select instruction that will be populated
+      // with the allocation when it is committed.
+      // This is rather wasteful, but it saves having every synthCommitedPointer do their
+      // own check and register.
+      Value* True = ConstantInt::getTrue(emitBB->getContext());
+      Value* UD = UndefValue::get(getValueType(Base));      
+      BaseI = SelectInst::Create(True, UD, UD, "", emitBB);
+      addPatchRequest(Base, cast<Instruction>(BaseI), 1);
+
     }
-    release_assert(BaseI && "Synthing pointer atop uncommitted allocation");
 
     // Try a few tricks to get the right pointer without using an i8 cast:
     
@@ -1701,6 +1713,8 @@ bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, Improv
 
 }
 
+
+
 Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar)
@@ -1710,14 +1724,16 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
     if(canSynthVal(I, Ty, IV)) {
       
       FDGlobalState& FDS = pass->fds[IV.V.u.PtrOrFd.idx];
-      release_assert(FDS.CommittedVal && "Trying to synth pointer dependent on dead allocation");
+      if(!FDS.CommittedVal) {
 
-      if(FDS.Globalised) {
-	return new LoadInst(FDS.CommittedVal, "fwdfd", emitBB);
+	Value* True = ConstantInt::getTrue(emitBB->getContext());
+	Value* UD = UndefValue::get(getValueType(IV.V));      
+	Instruction* Fwd = SelectInst::Create(True, UD, UD, "", emitBB);
+	addPatchRequest(IV.V, Fwd, 1);
+
       }
-      else {
+      else
 	return FDS.CommittedVal;
-      }
 
     }
     
@@ -1744,7 +1760,7 @@ static void emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* em
   Constant* MemcpySize = ConstantInt::get(Int64Ty, Size);
 
   Type *Tys[3] = {BytePtr, BytePtr, Int64Ty};
-  Function *MemCpyFn = Intrinsic::getDeclaration(emitBB->getParent()->getParent(),
+  Function *MemCpyFn = Intrinsic::getDeclaration(getGlobalModule(),
 						 Intrinsic::memcpy, 
 						 ArrayRef<Type*>(Tys, 3));
 
@@ -1768,8 +1784,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
   // Create pointer that should be written through:
   Type* targetType;
-  if(chunkSize == 1 && GlobalAA->getTypeStoreSize(chunkBegin->second.Values[0].V.getType()) <= 8)
-    targetType = PointerType::getUnqual(chunkBegin->second.Values[0].V.getType());
+  if(chunkSize == 1 && GlobalAA->getTypeStoreSize(getValueType(chunkBegin->second.Values[0].V)) <= 8)
+    targetType = PointerType::getUnqual(getValueType(chunkBegin->second.Values[0].V));
   else
     targetType = BytePtr;
 
@@ -1784,7 +1800,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
   if(chunkSize == 1) {
 
     ImprovedVal& IV = chunkBegin->second.Values[0];
-    Value* newVal = trySynthVal(I, IV.V.getType(), chunkBegin->second.SetType, IV, emitBB);
+    Value* newVal = trySynthVal(I, getValueType(IV.V), chunkBegin->second.SetType, IV, emitBB);
     uint64_t elSize = GlobalAA->getTypeStoreSize(newVal->getType());
 
     if(elSize > 8) {
@@ -1792,7 +1808,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
       release_assert(isa<Constant>(newVal));
 
       // Emit memcpy from single constant.
-      GlobalVariable* CopyFrom = new GlobalVariable(*(emitBB->getParent()->getParent()), newVal->getType(), 
+      GlobalVariable* CopyFrom = new GlobalVariable(*getGlobalModule(), newVal->getType(), 
 						    true, GlobalValue::InternalLinkage, cast<Constant>(newVal));
       Constant* CopyFromPtr = ConstantExpr::getBitCast(CopyFrom, BytePtr);
       emitMemcpyInst(targetPtrSynth, CopyFromPtr, elSize, emitBB);
@@ -1816,7 +1832,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
     for(SmallVector<IVSRange, 4>::iterator it = chunkBegin; it != chunkEnd; ++it) {
 
       ImprovedVal& IV = it->second.Values[0];
-      Value* newVal = trySynthVal(I, IV.V.getType(), it->second.SetType, IV, emitBB);
+      Value* newVal = trySynthVal(I, getValueType(IV.V), it->second.SetType, IV, emitBB);
       release_assert(!isa<Instruction>(newVal));
       Types.push_back(newVal->getType());
       Copy.push_back(cast<Constant>(newVal));
@@ -1826,7 +1842,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
     StructType* SType = StructType::get(emitBB->getContext(), Types, /*isPacked=*/true);
     Constant* CS = ConstantStruct::get(SType, Copy);
-    GlobalVariable* GCS = new GlobalVariable(*(emitBB->getParent()->getParent()), SType, 
+    GlobalVariable* GCS = new GlobalVariable(*getGlobalModule(), SType, 
 					     true, GlobalValue::InternalLinkage, CS);
     Constant* GCSPtr = ConstantExpr::getBitCast(GCS, BytePtr);
 
@@ -2117,27 +2133,59 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 void InlineAttempt::commitArgsAndInstructions() {
   
-  SmallVector<CommittedBlock, 1>::iterator emitBB = BBs[0]->committedBlocks.begin();
-  for(uint32_t i = 0; i < F.arg_size(); ++i) {
+  if(isCommitted()) {
 
-    ShadowArg* SA = &(argShadows[i]);
-    if(SA->dieStatus != INSTSTATUS_ALIVE)
-      continue;
+    // Patch arguments up, if needed.
+    for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
-    if(Constant* C = getConstReplacement(SA)) {
-      SA->committedVal = C;
-      continue;
+      ShadowArg* SA = &(argShadows[i]);
+      if(SA->patchInst)
+	SA->patchInst->replaceAllUsesWith(getArgCommittedValue(SA, (BasicBlock*)0));
+
     }
-    
-    if(synthCommittedPointer(ShadowValue(SA), emitBB))
-      continue;
-
-    // Finally just proxy whatever literal argument we're passed:
-    SA->committedVal = getArgCommittedValue(SA);
 
   }
+  else {
 
-  commitInstructions();
+    SmallVector<CommittedBlock, 1>::iterator emitBB = BBs[0]->committedBlocks.begin();
+    for(uint32_t i = 0; i < F.arg_size(); ++i) {
+
+      ShadowArg* SA = &(argShadows[i]);
+      if(SA->dieStatus != INSTSTATUS_ALIVE)
+	continue;
+
+      if(Constant* C = getConstReplacement(SA)) {
+	SA->committedVal = C;
+	continue;
+      }
+    
+      if(synthCommittedPointer(ShadowValue(SA), emitBB))
+	continue;
+
+      // Finally just proxy whatever literal argument we're passed:
+      SA->committedVal = getArgCommittedValue(SA, entryBlock);
+
+    }
+
+    bool isVoidTy = F.getFunctionType()->getReturnType()->isVoidTy();
+    Type* Ret = F.getFunctionType()->getReturnType();
+
+    // Create return PHI if needed
+    if(returnBlock && !isVoidTy)
+      returnPHI = makePHI(Ret, VerboseNames ? "retval" : "", returnBlock);
+    else
+      returnPHI = 0;
+
+    if(failedReturnBlock && !isVoidTy)
+      failedReturnPHI = makePHI(Ret, VerboseNames ? "failedretval" : "", failedReturnBlock);
+    else
+      failedReturnPHI = 0;
+
+    commitInstructions();
+
+    fixNonLocalStackUses();
+
+  }
 
 }
 
@@ -2162,21 +2210,12 @@ void IntegrationAttempt::commitInstructions() {
 
     }
 
-    // Emit a store to forwarding global for any arg-stores that are needed in other functions.
+    // Patch references to pseudo-allocations based on the root function's arguments.
     for(uint32_t i = 0, ilim = F.arg_size(); i != ilim; ++i) {
 
-      if(pass->argStores[i].fwdGV) {
-
-	Type* VoidPtr = Type::getInt8PtrTy(F.getContext());
-	Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
-	release_assert(StoreI && "Dead argument needed for cross-function forwarding global");
-	
-	if(StoreI->getType() != VoidPtr)
-	  StoreI = new BitCastInst(StoreI, VoidPtr, "", emitBB);
-
-	new StoreInst(StoreI, pass->argStores[i].fwdGV, emitBB);
-
-      }
+      Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
+      patchReferences(pass->argStores[i].PatchRefs, StoreI);
+      forwardReferences(StoreI, F.getParent());
 
     }
 
@@ -2188,5 +2227,72 @@ void IntegrationAttempt::commitInstructions() {
   // This should be the last reference to the failed block maps here: deallocate.
   finishFailedBlockCommit();
 
+  commitState = COMMIT_DONE;
+
 }
 
+void InlineAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
+
+  if(CommitF) {
+
+    if(CommitF != alreadyDeleted) {
+
+      // This (and children) already in a function: kill it.
+      CommitF->dropAllReferences();
+      CommitF->eraseFromParent();
+      CommitF = 0;
+
+    }
+
+  }
+  else {
+
+    // Blocks not added to a function yet
+    
+    for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
+	  itend = CommitBlocks.end(); it != itend; ++it) {
+
+      (*it)->dropAllReferences();
+
+    }
+
+    for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
+	  itend = CommitBlocks.end(); it != itend; ++it) {
+
+      delete *it;
+
+    }
+
+    CommitBlocks.clear();
+
+  }
+
+  IntegrationAttempt::releaseCommittedChildren(alreadyDeleted);
+
+}
+
+void IntegrationAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it) {
+
+    if(it->second->isEnabled())
+      it->second->releaseCommittedChildren(alreadyDeleted);
+
+  }
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    if(!it->second->isEnabled())
+      continue;
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
+
+      it->second->Iterations[i]->releaseCommittedChildren(alreadyDeleted);
+
+    }
+
+  }
+
+}

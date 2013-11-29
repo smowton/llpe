@@ -449,6 +449,8 @@ void InlineAttempt::prepareShadows() {
     argShadows[i].invar = &(invarInfo->Args[i]);
     argShadows[i].IA = this;
     argShadows[i].dieStatus = 0;
+    argShadows[i].patchInst = 0;
+    argShadows[i].committedVal = 0;
     
   }
 
@@ -457,7 +459,9 @@ void InlineAttempt::prepareShadows() {
     argShadows[i].invar = 0;
     argShadows[i].IA = this;
     argShadows[i].dieStatus = 0;
-    
+    argShadows[i].patchInst = 0;
+    argShadows[i].committedVal = 0;    
+
   }
 
 }
@@ -727,11 +731,13 @@ bool ShadowValue::objectAvailable() {
     // that can conceivably reach them.
     if(u.PtrOrFd.frame != -1)
       return true;
-    else
-      return getAllocData((OrdinaryLocalStore*)0)->allocValue.objectAvailable();
+    else {
+      AllocData* AD = getAllocData((OrdinaryLocalStore*)0);
+      return (!AD->allocContext->getFunctionRoot()->isPathCondition) && AD->allocContext->allAncestorsEnabled();
+    }
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
-    return true;
+    return GlobalIHP->fds[getFd()].IA->allAncestorsEnabled();
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
     llvm_unreachable();

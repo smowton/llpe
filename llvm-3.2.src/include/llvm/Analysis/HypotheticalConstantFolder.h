@@ -363,10 +363,10 @@ GlobalStats() : dynamicFunctions(0), dynamicContexts(0), dynamicBlocks(0), dynam
 struct ArgStore {
 
   uint32_t heapIdx;
-  GlobalVariable* fwdGV;
+  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
 
-ArgStore() : heapIdx(0), fwdGV(0) {}
-ArgStore(uint32_t hi) : heapIdx(hi), fwdGV(0) {}
+ArgStore() : heapIdx(0) {}
+ArgStore(uint32_t hi) : heapIdx(hi) {}
 
 };
 
@@ -488,6 +488,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    GlobalStats stats;
 
+   DenseMap<IntegrationAttempt*, std::string> shortHeaders;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -519,8 +521,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void parsePathConditions(cl::list<std::string>& L, PathConditionTypes Ty, InlineAttempt* IA);
    void createSpecialLocations();
    void createPointerArguments(InlineAttempt*);
-
-   void estimateIntegrationBenefit();
 
    virtual void getAnalysisUsage(AnalysisUsage &AU) const;
 
@@ -620,6 +620,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    void postCommitStats();
 
    void saveSplitPhase();
+
+   void fixNonLocalUses();
 
 };
 
@@ -1028,6 +1030,15 @@ enum BarrierState {
 
 };
 
+enum CommitState {
+
+  COMMIT_NOT_STARTED,
+  COMMIT_STARTED,
+  COMMIT_DONE,
+  COMMIT_FREED
+
+};
+
 class IntegrationAttempt {
 
 protected:
@@ -1061,7 +1072,8 @@ protected:
   ShadowFunctionInvar* invarInfo;
 
   int64_t totalIntegrationGoodness;
-  int64_t nDependentLoads;
+  bool integrationGoodnessValid;
+  uint64_t residualInstructionsHere;
 
   DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
@@ -1071,11 +1083,13 @@ protected:
   BarrierState barrierState;
 
   bool tentativeLoadsRun;
+  bool readsTentativeData;
 
   uint32_t checkedInstructionsHere;
   uint32_t checkedInstructionsChildren;
 
   BarrierState yieldState;
+  CommitState commitState;
 
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, int depth, int sdepth) : 
@@ -1088,15 +1102,17 @@ protected:
     F(_F),
     L(_L),
     totalIntegrationGoodness(0),
-    nDependentLoads(0),
+    integrationGoodnessValid(false),
     inlineChildren(1),
     peelChildren(1),
     pendingEdges(0),
     barrierState(BARRIER_NONE),
     tentativeLoadsRun(false),
+    readsTentativeData(false),
     checkedInstructionsHere(0),
     checkedInstructionsChildren(0),
-    yieldState(BARRIER_NONE)
+    yieldState(BARRIER_NONE),
+    commitState(COMMIT_NOT_STARTED)
       { 
       }
 
@@ -1179,7 +1195,6 @@ protected:
   void executeLoop(const Loop*);
 
   // Constant propagation:
-
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   bool tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg);
   bool getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB, bool& loadedVararg);
@@ -1206,6 +1221,7 @@ protected:
   bool tryGetAsDefPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result);
   virtual bool tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef);
   bool tryGetPathValueFrom(PathConditions& PC, uint32_t stackDepth, ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef);
+  Type* getValueType(ShadowValue);
 
   // CFG analysis:
 
@@ -1317,30 +1333,29 @@ protected:
 
   // Estimating inlining / unrolling benefit:
 
-  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&);
+  virtual void findProfitableIntegration();
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&);
   int64_t getResidualInstructions();
-  virtual void reduceDependentLoads(int64_t) = 0;
-  void countDependentLoads();
-  void propagateDependentLoads();
 
   // DOT export:
 
-  bool noteChildBarriers();
-  bool noteChildYields();
+  void inheritDiagnosticsFrom(IntegrationAttempt*);
   void countTentativeInstructions();
   void printRHS(ShadowValue, raw_ostream& Out);
   void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
   void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain = false);
   void describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges);
   void describeLoopAsDOT(const Loop* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
-  void describeAsDOT(raw_ostream& Out, bool brief);
+  void describeAsDOT(raw_ostream& Out, std::string& otherpath, bool brief);
   std::string getValueColour(ShadowValue, std::string& textColour, bool plain = false);
   std::string getGraphPath(std::string prefix);
   void describeTreeAsDOT(std::string path);
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) = 0;
   bool blockLiveInAnyScope(ShadowBBInvar* BB);
   virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
+  void getSavedDotName(bool brief, std::string& Out);
+  void saveDOT2(bool brief);
+  void saveDOT();
 
   void printWithCache(const Value* V, raw_ostream& ROS, bool brief = false) {
     pass->printValue(ROS, V, brief);
@@ -1364,9 +1379,8 @@ protected:
   // Saving our results as a bitcode file:
 
   void prepareCommit();
-  void localPrepareCommit();
   virtual std::string getCommittedBlockPrefix() = 0;
-  void commitCFG();
+  virtual void commitCFG();
   virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   ShadowBB* getBBFalling(ShadowBBInvar* BBI);
   virtual ShadowBB* getBBFalling2(ShadowBBInvar* BBI) = 0;
@@ -1390,10 +1404,22 @@ protected:
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();
   bool isCommitted() { 
-    return false;
+    return commitState == COMMIT_DONE || commitState == COMMIT_FREED;
+  }
+  bool commitStarted() {
+    return commitState != COMMIT_NOT_STARTED;
   }
   IntegrationAttempt* getCtx(ShadowValue);
   Value* getCommittedValue(ShadowValue SV);
+  void releaseMemoryPostCommit();
+  BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock = false);
+  BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
+				  ValueToValueMapTy& VMap,
+				  const Twine &NameSuffix, 
+				  Function* F,
+				  uint32_t startIdx);
+  void addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp);
+  void releaseCommittedChildren(Function* alreadyDeleted);
 
   // Function sharing
 
@@ -1412,8 +1438,8 @@ protected:
   virtual void initFailedBlockCommit();
   virtual void finishFailedBlockCommit();
   uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
-  Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V);
-  Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V);
+  Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore);
+  Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore);
   virtual void commitSimpleFailedBlock(uint32_t i);
   void getSplitInsts(ShadowBBInvar*, bool* splits);
   virtual void createFailedBlock(uint32_t idx);
@@ -1457,9 +1483,8 @@ protected:
 
   // Function splitting in the commit stage
   
-  virtual void findNonLocalPointers();
   virtual uint64_t findSaveSplits();
-  virtual void inheritCommitFunction();
+  void inheritCommitFunction();
   void checkNonLocalReference(ShadowValue);
   
   // Stat collection and printing:
@@ -1541,8 +1566,6 @@ public:
 
   virtual bool stackIncludesCallTo(Function*); 
 
-  virtual void reduceDependentLoads(int64_t); 
-
   virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx); 
   virtual bool queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc); 
 
@@ -1578,6 +1601,9 @@ public:
 
   virtual void printHeader(raw_ostream& OS) const;
 
+  void setExitingTLStores(TLLocalStore*);
+  void setExitingTLStore(TLLocalStore*, ShadowBBInvar*, const Loop*);
+
 };
 
 class ProcessExternalCallback;
@@ -1603,10 +1629,12 @@ class PeelAttempt {
 
  public:
 
+   TLLocalStore* backupTlStore;
+
    const Loop* L;
 
    int64_t totalIntegrationGoodness;
-   int64_t nDependentLoads;
+   bool integrationGoodnessValid;
 
    ShadowLoopInvar* invarInfo;
 
@@ -1615,7 +1643,7 @@ class PeelAttempt {
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
    ~PeelAttempt();
 
-   bool analyse(uint32_t parent_stack_depth);
+   bool analyse(uint32_t parent_stack_depth, bool& readsTentativeData);
 
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 
@@ -1640,14 +1668,10 @@ class PeelAttempt {
    bool isEnabled(); 
    void setEnabled(bool, bool skipStats); 
    
-   void reduceDependentLoads(int64_t); 
-
    void dumpMemoryUsage(int indent); 
 
    int64_t getResidualInstructions(); 
-   void findProfitableIntegration(DenseMap<Function*, unsigned>& nonInliningPenalty);
-   void countDependentLoads(); 
-   void propagateDependentLoads(); 
+   void findProfitableIntegration();
 
    bool isTerminated() {
      return Iterations.back()->iterStatus == IterationStatusFinal;
@@ -1700,8 +1724,11 @@ class InlineAttempt : public IntegrationAttempt {
 
   SmallVector<ShadowInstruction*, 1> Callers;
   ShadowInstruction* activeCaller;
+  IntegrationAttempt* uniqueParent;
 
   Function* CommitF;
+  std::vector<BasicBlock*> CommitBlocks;
+  BasicBlock* entryBlock;
   BasicBlock* returnBlock;
   PHINode* returnPHI;
   BasicBlock* failedReturnBlock;
@@ -1734,6 +1761,10 @@ class InlineAttempt : public IntegrationAttempt {
   // Indexes from CLONED instruction/block to replacement PHI node to use in that block.
   DenseMap<std::pair<Instruction*, BasicBlock*>, PHINode*>* PHIForwards;
   DenseSet<PHINode*>* ForwardingPHIs;
+
+  TLLocalStore* backupTlStore;
+
+  ImprovedValSet* returnValue;
 
   bool isUnsharable() {
     return hasVFSOps || isModel || (sharing && !sharing->escapingMallocs.empty()) || Callers.empty();
@@ -1773,8 +1804,6 @@ class InlineAttempt : public IntegrationAttempt {
   int64_t NonFPArgIdxToArgIdx(int64_t idx);
   int64_t FPArgIdxToArgIdx(int64_t idx);
 
-  virtual void reduceDependentLoads(int64_t); 
-
   virtual int getIterCount() {
     return -1;
   }
@@ -1782,7 +1811,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool stackIncludesCallTo(Function*); 
 
   virtual void findResidualFunctions(DenseSet<Function*>&, DenseMap<Function*, unsigned>&); 
-  virtual void findProfitableIntegration(DenseMap<Function*, unsigned>&); 
+  virtual void findProfitableIntegration(); 
 
   virtual WalkInstructionResult queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* ctx);
   virtual void queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* ctx);
@@ -1802,7 +1831,9 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void runDIE();
   virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
 
-  Value* getArgCommittedValue(ShadowArg* SA);
+  Value* getArgCommittedValue(ShadowArg* SA, BasicBlock* emitBB);
+  Value* getArgCommittedValue(ShadowArg* SA, Instruction* insertBefore);
+  Value* getArgCommittedValue2(ShadowArg* SA, BasicBlock* emitBB, Instruction* insertBefore);
   void commitArgsAndInstructions();
 
   void resetDeadArgsAndInstructions();
@@ -1853,7 +1884,7 @@ class InlineAttempt : public IntegrationAttempt {
   void createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruction* NewI);
   Value* getLocalFailedValue(Value* V, BasicBlock*);
   Value* tryGetLocalFailedValue(Value* V, BasicBlock*);
-  Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* BB);
+  Value* getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* BB, Instruction* InsertBefore);
   BasicBlock::iterator commitFailedPHIs(BasicBlock* BB, BasicBlock::iterator BI, uint32_t BBIdx);
   void remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, uint32_t blockIdx, uint32_t instIdx, bool skipTestedInst, bool skipTerm);
   virtual void commitSimpleFailedBlock(uint32_t i);
@@ -1866,7 +1897,6 @@ class InlineAttempt : public IntegrationAttempt {
   void tryKillStores(bool commitDisabledHere, bool disableWrites);
 
   void findTentativeLoads(bool commitDisabledHere, bool secondPass);
-  void rerunTentativeLoads();
 
   virtual void printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, ShadowBB* BB);
   virtual void noteAsExpectedChecks(ShadowBB* BB);
@@ -1875,13 +1905,19 @@ class InlineAttempt : public IntegrationAttempt {
 
   virtual void preCommitStats(bool enabledHere);
 
-  virtual void findNonLocalPointers();
   virtual uint64_t findSaveSplits();
-  virtual void inheritCommitFunction();
+  void inheritCommitFunctionCall(bool onlyAdd);
   void splitCommitHere();
 
   void gatherIndirectUsers();
   InlineAttempt* getStackFrameCtx(int32_t);
+  void prepareCommitCall();
+  void fixNonLocalStackUses();
+  virtual void commitCFG();
+  void releaseBackupStores();
+  void releaseCommittedChildren(Function* alreadyDeleted);
+
+  void finaliseAndCommit();
 
 };
 
@@ -2080,6 +2116,12 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void doTLStoreMerge(ShadowBB* BB);
  void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA);
  void TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass);
+ void rerunTentativeLoads(ShadowInstruction*, InlineAttempt*);
+ void patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs, Value* V);
+ void forwardReferences(Value* Fwd, Module* M);
+ Module* getGlobalModule();
+
+ extern char ihp_workdir[];
 
 } // Namespace LLVM
 

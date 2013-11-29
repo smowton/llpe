@@ -693,7 +693,69 @@ void IntegrationAttempt::describeScopeAsDOT(const Loop* DescribeL, uint32_t head
 
 }
 
-void IntegrationAttempt::describeAsDOT(raw_ostream& Out, bool brief) {
+void IntegrationAttempt::getSavedDotName(bool brief, std::string& Out) {
+
+  raw_string_ostream RSO(Out);
+  RSO << ihp_workdir << "/" << SeqNumber;
+  if(brief)
+    RSO << "-brief";
+  RSO << ".dot";
+
+}
+
+void IntegrationAttempt::saveDOT2(bool brief) {
+
+  std::string filename;
+  getSavedDotName(brief, filename);
+  std::string error;
+  raw_fd_ostream RFO(filename.c_str(), error);
+
+  if(error.size()) {
+
+    errs() << "Failed to open " << filename << ": " << error << "\n";
+    return;
+
+  }
+
+  describeAsDOT(RFO, error /* unused, just a dummy std::string */, brief);
+
+}
+
+void IntegrationAttempt::saveDOT() {
+
+  if(isCommitted())
+    return;
+
+  saveDOT2(true);
+  saveDOT2(false);
+
+  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
+	itend = inlineChildren.end(); it != itend; ++it)
+    it->second->saveDOT();
+
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
+      it->second->Iterations[i]->saveDOT();
+
+  }
+
+  // Also store a description of the context for the GUI to use.
+  if(!L)
+    pass->shortHeaders[this] = getShortHeader();
+
+}
+
+void IntegrationAttempt::describeAsDOT(raw_ostream& Out, std::string& othername, bool brief) {
+
+  if(isCommitted()) {
+
+    // Use existing DOT.
+    getSavedDotName(brief, othername);
+    return;
+
+  }
 
   std::string escapedName;
   raw_string_ostream RSO(escapedName);
@@ -745,7 +807,8 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
   }
 
-  describeAsDOT(os, false);
+  std::string ign;
+  describeAsDOT(os, ign, false);
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 

@@ -645,7 +645,7 @@ int32_t ShadowValue::getHeapKey() {
       return sd.heapIdx;
     }
   case SHADOWVAL_ARG:
-    release_assert((u.A->IA->Callers.empty()) && "getHeapKey on arg other than root argv?");
+    release_assert((u.A->IA->isRootMainCall()) && "getHeapKey on arg other than root argv?");
     return GlobalIHP->argStores[u.A->invar->A->getArgNo()].heapIdx;
   case SHADOWVAL_INST:
     release_assert(0 && "Unsafe reference to heap key of instruction");
@@ -1204,7 +1204,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
   if(SetType == ValSetTypePB && !onlyContainsNulls())
     return true;
 
-  Type* Source = Values[0].V.getType();
+  Type* Source = Values[0].V.getNonPointerType();
   
   // Allow implicit ptrtoint and bitcast between pointer types
   // without modifying anything:
@@ -1399,7 +1399,7 @@ uint64_t ShadowValue::getValSize() {
   case SHADOWVAL_PTRIDX:
     return GlobalTD->getPointerSize();
   default:
-    Type* SrcTy = getType();
+    Type* SrcTy = getNonPointerType();
     return GlobalAA->getTypeStoreSize(SrcTy);
 
   }
@@ -3185,34 +3185,12 @@ void llvm::noteBarrierInst(ShadowInstruction* SI) {
 
 }
 
-bool IntegrationAttempt::noteChildBarriers() {
+void IntegrationAttempt::inheritDiagnosticsFrom(IntegrationAttempt* Other) {
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
-
-    if(it->second->noteChildBarriers() && barrierState == BARRIER_NONE)
-      barrierState = BARRIER_CHILD;
-
-  }
-
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    bool terminated = it->second->isTerminated();
-
-    for(std::vector<PeelIteration*>::iterator iterit = it->second->Iterations.begin(),
-	  iterend = it->second->Iterations.end(); iterit != iterend; ++iterit) {
-
-      // If the loop isn't terminated, don't taint parent contexts;
-      // the general instance will do that if appropriate.
-      if((*iterit)->noteChildBarriers() && barrierState == BARRIER_NONE && terminated)
-	barrierState = BARRIER_CHILD;
-
-    }
-
-  }
-
-  return barrierState != BARRIER_NONE;
+  if(Other->barrierState != BARRIER_NONE && barrierState == BARRIER_NONE)
+    barrierState = BARRIER_CHILD;
+  if(Other->yieldState != BARRIER_NONE && yieldState == BARRIER_NONE)
+    yieldState = BARRIER_CHILD;
 
 }
 
@@ -3313,15 +3291,18 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
 	  if((!oldValSet.isWhollyUnknown()) && oldValSet.isInitialised()) {
 
-	    if(ValPB.canCoerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0, false)) {
+	    Type* oldType = WriteSI->parent->IA->getValueType(oldValSet.Values[0].V);
+	    Type* newType = WriteSI->parent->IA->getValueType(ValPB.Values[0].V);
 
-	      ValPB.coerceToType(oldValSet.Values[0].V.getType(), PtrSize, 0, false);
-	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldValSet.Values[0].V.getType()) << "\n");
+	    if(ValPB.canCoerceToType(oldType, PtrSize, 0, false)) {
+
+	      ValPB.coerceToType(oldType, PtrSize, 0, false);
+	      LFV3(errs() << "Read-modify-write failure coercing to type " << (*oldType) << "\n");
 
 	    }
-	    else if((!ValPB.isWhollyUnknown()) && ValPB.Values.size() > 0 && oldValSet.canCoerceToType(ValPB.Values[0].V.getType(), PtrSize, 0, false)) {
+	    else if((!ValPB.isWhollyUnknown()) && ValPB.Values.size() > 0 && oldValSet.canCoerceToType(newType, PtrSize, 0, false)) {
 		
-	      oldValSet.coerceToType(ValPB.Values[0].V.getType(), PtrSize, 0, false);
+	      oldValSet.coerceToType(newType, PtrSize, 0, false);
 
 	    }
 	    else {
@@ -3493,7 +3474,7 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
       // Asymmetry to avoid altering the read-only otherVal (consumeVal is mutable).
       if(consumeVal.onlyContainsZeroes()) {
 
-	Constant* newNull = Constant::getNullValue(otherVal.Values[0].V.getType());
+	Constant* newNull = Constant::getNullValue(Visitor->originContext->getValueType(otherVal.Values[0].V));
 	if(newNull->getType()->isPointerTy())
 	  consumeVal.set(ImprovedVal(newNull, 0), ValSetTypePB);
 	else
@@ -3504,7 +3485,7 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
       }
       else if(otherVal.onlyContainsZeroes()) {
 
-	Constant* newNull = Constant::getNullValue(consumeVal.Values[0].V.getType());	
+	Constant* newNull = Constant::getNullValue(Visitor->originContext->getValueType(consumeVal.Values[0].V));	
 	if(newNull->getType()->isPointerTy())
 	  consumeVal.mergeOne(ValSetTypePB, ImprovedVal(newNull, 0));
 	else
@@ -3958,7 +3939,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
   }
 
-  OrdinaryMerger V(BB->useSpecialVarargMerge, /* verbose = */ verbose);
+  OrdinaryMerger V(BB->IA, BB->useSpecialVarargMerge, /* verbose = */ verbose);
 
   if(verbose)
     errs() << "\n\n";
@@ -4022,7 +4003,7 @@ void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
   LFV3(errs() << "Start call-return store merge\n");
 
-  OrdinaryMerger V;
+  OrdinaryMerger V(CallerBB->IA);
   CallIA->visitLiveReturnBlocks(V);
   V.doMerge();
 
