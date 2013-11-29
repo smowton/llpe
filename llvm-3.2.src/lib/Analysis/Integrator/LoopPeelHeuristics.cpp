@@ -1911,7 +1911,7 @@ void IntegrationHeuristicsPass::commit() {
   }
 
   // Repair some of the more egregiously silly code we've generated:
-  //postCommitOptimise();
+  postCommitOptimise();
 
   if(!StatsFile.empty()) {
 
