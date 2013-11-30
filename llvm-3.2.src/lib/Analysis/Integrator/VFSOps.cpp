@@ -23,6 +23,8 @@
 
 using namespace llvm;
 
+static cl::opt<bool> ElimRedundantChecks("int-elim-read-checks");
+
 bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result) {
 
   StringRef RResult;
@@ -121,6 +123,8 @@ void FDStoreMerger::merge2(FDStore* mergeTo, FDStore* mergeFrom)  {
 
     if(mergeFrom->fds[i].pos != mergeTo->fds[i].pos)
       mergeTo->fds[i].pos = (uint64_t)-1;
+    if(!mergeFrom->fds[i].clean)
+      mergeTo->fds[i].clean = false;
 
   }
 
@@ -600,10 +604,14 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
     executeReadInst(SI, FDS.filename, FDS.pos, cBytes);
 
-    FDS.pos += cBytes;
-
     noteLLIODependency(FDS.filename);
-    SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
+
+    if(!FDS.clean)
+      SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
+
+    FDS.pos += cBytes;
+    if(ElimRedundantChecks)
+      FDS.clean = true;
 
   }
 

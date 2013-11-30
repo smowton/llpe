@@ -17,10 +17,15 @@ static cl::opt<bool> SkipPostCommit("int-skip-post-commit");
 
 static BasicBlock* getUniqueSuccessor(BasicBlock* BB) {
 
-  if(BB->getTerminator()->getNumSuccessors() != 1)
+  // We might run on blocks without a terminator when contexts are not yet committed.
+  TerminatorInst* TI = BB->getTerminator();
+  if(!TI)
     return 0;
 
-  return BB->getTerminator()->getSuccessor(0);
+  if(TI->getNumSuccessors() != 1)
+    return 0;
+
+  return TI->getSuccessor(0);
 
 }
 
@@ -50,15 +55,13 @@ static BasicBlock* getChainNext(BasicBlock* BB) {
 
 }
 
-void IntegrationHeuristicsPass::postCommitOptimiseF(Function* F) {
-
-  errs() << ".";
+template<class T, class Callback> void postCommitOptimiseBlocks(T it, T itend, Callback& CB) {
 
   std::vector<std::vector<BasicBlock*> > Chains;
 
   DenseSet<BasicBlock*> Seen;
 
-  for(Function::iterator it = F->begin(), itend = F->end(); it != itend; ++it) {
+  for(; it != itend; ++it) {
 
     BasicBlock* BB = it;
     if(!Seen.insert(BB).second)
@@ -111,36 +114,93 @@ void IntegrationHeuristicsPass::postCommitOptimiseF(Function* F) {
 
     std::vector<BasicBlock*>& Chain = *chainit;
 
-    bool isEntry = Chain[0] == &Chain[0]->getParent()->getEntryBlock();
+    BasicBlock* Start = Chain[0];
+    CB.willReplace(Start);
     
     for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i)
       MergeBasicBlockIntoOnlyPred(Chain[i]);
 
-    if(isEntry && Chain.back() != &Chain.back()->getParent()->getEntryBlock())
-      Chain.back()->moveBefore(&Chain.back()->getParent()->getEntryBlock());
+    CB.replaced(Start, Chain.back());
 
   }
 
 }
 
-void IntegrationHeuristicsPass::postCommitOptimise() {
+struct PCOFunctionCB {
 
-  // Just one post-save optimisation at the moment: specialisation commonly produces
-  // long chains of blocks with a single predecessor and a unique successor.
-  // For each such chain, merge into a single large block.
+  bool isEntryBlock;
 
-  if(SkipPostCommit)
-    return;
+  void willReplace(BasicBlock* Old) {
 
-  errs() << "Post-commit optimisation";
-
-  for(SmallVector<Function*, 4>::iterator it = commitFunctions.begin(),
-	itend = commitFunctions.end(); it != itend; ++it) {
-
-    postCommitOptimiseF(*it);
+    isEntryBlock = Old == &Old->getParent()->getEntryBlock();
 
   }
 
-  errs() << "\n";
+  void replaced(BasicBlock* Old, BasicBlock* New) {
 
+    if(isEntryBlock && New != &New->getParent()->getEntryBlock())
+      New->moveBefore(&New->getParent()->getEntryBlock());
+
+  }
+
+};
+
+struct PCOBBsCB {
+
+  InlineAttempt* IA;
+  bool isEntryBlock;
+
+  PCOBBsCB(InlineAttempt* _IA) : IA(_IA) {} 
+
+  void willReplace(BasicBlock* Old) {
+
+    isEntryBlock = Old == IA->entryBlock;
+
+  }
+
+  void replaced(BasicBlock* Old, BasicBlock* New) {
+
+    if(isEntryBlock)
+      IA->entryBlock = New;
+
+  }
+
+};
+
+struct DerefAdaptor {
+
+  std::vector<BasicBlock*>::iterator inner;
+  
+  DerefAdaptor(std::vector<BasicBlock*>::iterator _inner) : inner(_inner) {}
+  DerefAdaptor(const DerefAdaptor& Other) : inner(Other.inner) {}
+
+  DerefAdaptor& operator++() {
+    ++inner;
+    return *this;
+  }
+
+  bool operator==(const DerefAdaptor& Other) { return inner == Other.inner; }
+  bool operator!=(const DerefAdaptor& Other) { return inner != Other.inner; }
+
+  operator BasicBlock*() {
+    return *inner;
+  }
+
+};
+
+void InlineAttempt::postCommitOptimise() {
+
+  if(CommitF) {
+    
+    PCOFunctionCB CB;
+    postCommitOptimiseBlocks(CommitF->begin(), CommitF->end(), CB);
+
+  }
+  else {
+
+    //    PCOBBsCB CB(this);
+    //    postCommitOptimiseBlocks(DerefAdaptor(CommitBlocks.begin()), DerefAdaptor(CommitBlocks.end()), CB);
+
+  }
+   
 }

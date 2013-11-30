@@ -723,6 +723,9 @@ void IntegrationAttempt::saveDOT2(bool brief) {
 
 void IntegrationAttempt::saveDOT() {
 
+  if(!IHPSaveDOTFiles)
+    return;
+  
   if(isCommitted())
     return;
 

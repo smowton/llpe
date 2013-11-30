@@ -632,6 +632,7 @@ bool IntegratorPass::runOnModule(Module& M) {
 
 void IntegratorPass::getAnalysisUsage(AnalysisUsage& AU) const {
 
+  IHPSaveDOTFiles = !AcceptAllInt;
   AU.addRequired<IntegrationHeuristicsPass>();
 
 }

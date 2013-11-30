@@ -9,6 +9,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/raw_ostream.h"
@@ -89,9 +90,22 @@ static void DeleteDeadInstruction(Instruction *I) {
       if(isa<SelectInst>(Op))
 	continue;
 
-      if (Instruction *OpI = dyn_cast<Instruction>(Op))
+      if (Instruction *OpI = dyn_cast<Instruction>(Op)) {
         if (isInstructionTriviallyDead(OpI, GlobalTLI))
           NowDeadInsts.push_back(OpI);
+      }
+      else if(Constant* C = dyn_cast<Constant>(Op)) {
+
+	if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(GetUnderlyingObject(C))) {
+	  
+	  GV->removeDeadConstantUsers();
+	  if(GV->use_empty() && GV->isDiscardableIfUnused())
+	    GV->eraseFromParent();
+
+	}
+
+      }
+
     }
     
     DeadInst->eraseFromParent();

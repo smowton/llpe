@@ -1114,7 +1114,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
       
       LLVMContext& Context = CI->getContext();
 
-      if(!pass->omitChecks) {
+      if(I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !pass->omitChecks) {
 
 	// Emit a check that file specialisations are still admissible:
 	// (TODO: avoid these more often)
@@ -1209,7 +1209,16 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  ConstantInt::get(Type::getInt1Ty(Context), 0)
 	};
 	
-	CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+	Instruction* ReadMemcpy = CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+
+	DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(I);
+	if(findit != pass->trackedStores.end()) {
+
+	  findit->second->committedInsts = new Instruction*[1];
+	  findit->second->committedInsts[0] = ReadMemcpy;
+	  findit->second->nCommittedInsts = 1;
+
+	}
 	
       }
 
@@ -2156,7 +2165,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 }
 
 void InlineAttempt::commitArgsAndInstructions() {
-  
+
   if(isCommitted()) {
 
     // Patch arguments up, if needed.
@@ -2217,7 +2226,7 @@ void IntegrationAttempt::commitInstructions() {
 
   SaveProgress();
   
-  if(this == getFunctionRoot() && getFunctionRoot()->isRootMainCall()) {
+  if((!L) && getFunctionRoot()->isRootMainCall()) {
 
     BasicBlock* emitBB = BBs[0]->committedBlocks[0].specBlock;
 
@@ -2234,19 +2243,24 @@ void IntegrationAttempt::commitInstructions() {
 
     }
 
+  }
+
+  uint32_t i = 0;
+  commitLoopInstructions(L, i);
+
+  if((!L) && getFunctionRoot()->isRootMainCall()) {
+
     // Patch references to pseudo-allocations based on the root function's arguments.
     for(uint32_t i = 0, ilim = F.arg_size(); i != ilim; ++i) {
 
       Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
+
       patchReferences(pass->argStores[i].PatchRefs, StoreI);
       forwardReferences(StoreI, F.getParent());
 
     }
 
   }
-
-  uint32_t i = 0;
-  commitLoopInstructions(L, i);
 
   // This should be the last reference to the failed block maps here: deallocate.
   finishFailedBlockCommit();

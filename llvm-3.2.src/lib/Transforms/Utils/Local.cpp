@@ -521,7 +521,10 @@ void llvm::MergeBasicBlockIntoOnlyPred(BasicBlock *DestBB, Pass *P) {
     }
   }
   // Nuke BB.
-  PredBB->eraseFromParent();
+  if(PredBB->getParent())
+    PredBB->eraseFromParent();
+  else
+    delete PredBB;
 }
 
 /// CanPropagatePredecessorsForPHIs - Return true if we can fold BB, an

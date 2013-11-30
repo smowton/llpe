@@ -614,9 +614,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    int64_t parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr);
    void writeLliowdConfig();
 
-   void postCommitOptimise();
-   void postCommitOptimiseF(Function* F);
-
    void initMRInfo(Module*);
    IHPFunctionInfo* getMRInfo(Function*);
 
@@ -1928,6 +1925,7 @@ class InlineAttempt : public IntegrationAttempt {
   void releaseBackupStores();
   void releaseCommittedChildren(Function* alreadyDeleted);
 
+  void postCommitOptimise();
   void finaliseAndCommit();
 
 };
@@ -2138,6 +2136,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void setAllNeededTop(DSELocalStore*);
 
  extern char ihp_workdir[];
+ extern bool IHPSaveDOTFiles;
 
 } // Namespace LLVM
 

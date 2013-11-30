@@ -1185,10 +1185,11 @@ struct FDState {
 
   std::string filename;
   uint64_t pos;
+  bool clean;
 
-FDState() : filename(""), pos((uint64_t)-1) {}
-FDState(std::string fn) : filename(fn), pos(0) {}
-FDState(const FDState& Other) : filename(Other.filename), pos(Other.pos) {}
+FDState() : filename(""), pos((uint64_t)-1), clean(false) {}
+FDState(std::string fn) : filename(fn), pos(0), clean(false) {}
+FDState(const FDState& Other) : filename(Other.filename), pos(Other.pos), clean(Other.clean) {}
 
 };
 

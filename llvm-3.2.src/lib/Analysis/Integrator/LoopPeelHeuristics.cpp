@@ -733,11 +733,11 @@ void InlineAttempt::finaliseAndCommit() {
     if(!StatsFile.empty())
       preCommitStats(true);
 
-    // Decide whether to commit in or out of line:
-    findSaveSplits();
-
     // Note any tests that require failed blocks.
     addCheckpointFailedBlocks();
+
+    // Decide whether to commit in or out of line:
+    findSaveSplits();
 
     runDIE();
 
@@ -747,6 +747,8 @@ void InlineAttempt::finaliseAndCommit() {
     // Finally, do it!
     commitCFG();
     commitArgsAndInstructions();
+
+    postCommitOptimise();
 
   }
   else {
@@ -1745,6 +1747,18 @@ void IntegrationHeuristicsPass::releaseMemory(void) {
     delete RootIA;
     RootIA = 0;
   }
+
+  std::string command;
+  raw_string_ostream ROS(command);
+  ROS << "rm -rf " << ihp_workdir;
+  ROS.flush();
+  
+  if(system(command.c_str()) != 0) {
+
+    errs() << "Warning: failed to delete " << ihp_workdir << "\n";
+
+  }
+  
 }
 
 /*
@@ -1935,9 +1949,6 @@ void IntegrationHeuristicsPass::commit() {
     CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
 
   }
-
-  // Repair some of the more egregiously silly code we've generated:
-  postCommitOptimise();
 
   if(!StatsFile.empty()) {
 
@@ -3660,3 +3671,5 @@ Module* llvm::getGlobalModule() {
   return GlobalIHP->RootIA->F.getParent();
 
 }
+
+bool llvm::IHPSaveDOTFiles = true;

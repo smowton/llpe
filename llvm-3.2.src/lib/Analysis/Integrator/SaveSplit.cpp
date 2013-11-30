@@ -37,6 +37,7 @@ static Instruction* getInsertLocation(Value* V) {
   }
   else if(Argument* A = dyn_cast<Argument>(V)) {
     
+    release_assert(A->getParent() && A->getParent()->getEntryBlock().size());
     return A->getParent()->getEntryBlock().begin();
 
   }
@@ -74,6 +75,8 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 
   GlobalVariable* NewGV = 0;
 
+  SmallVector<std::pair<Use*, Instruction*>, 4> replaceUses;
+
   for(Instruction::use_iterator UI = Fwd->use_begin(),
 	UE = Fwd->use_end(); UI != UE; ++UI) {
 
@@ -84,7 +87,7 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 
       if(UserI->getParent()->getParent() != getFunctionFor(Fwd)) {
 
-	// This user is non-local: replace it.
+	// This user is non-local: replace it. Use aux list because Use::set invalidates a use_iterator.
 
 	if(!NewGV) {
 
@@ -98,11 +101,18 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 
 	// Create a load before the user. TODO: fix this for phis.
 	Instruction* Fwd = new LoadInst(NewGV, "", UserI);
-	U->set(Fwd);
+	replaceUses.push_back(std::make_pair(U, Fwd));
 
       }
 
     }
+
+  }
+
+  for(SmallVector<std::pair<Use*, Instruction*>, 4>::iterator it = replaceUses.begin(),
+	itend = replaceUses.end(); it != itend; ++it) {
+
+    it->first->set(it->second);
 
   }
 
