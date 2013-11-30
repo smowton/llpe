@@ -1030,7 +1030,8 @@ struct TrackedStore {
 
   ShadowInstruction* I; // Invalid if IA is committed
   IntegrationAttempt* IA;
-  Instruction* committedInst; // Valid if the store was live when committed.
+  Instruction** committedInsts; // Valid if the store was live when committed.
+  uint64_t nCommittedInsts;
   uint64_t outstandingBytes;
   bool isNeeded;
 

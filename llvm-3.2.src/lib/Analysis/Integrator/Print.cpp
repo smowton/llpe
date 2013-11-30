@@ -146,10 +146,17 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
       else {
 	if(!TS->IA->isCommitted())
 	  RSO << itcache(TS->I, brief);
-	else if(!TS->committedInst)
+	else if(!TS->committedInsts)
 	  RSO << "[committed-unknown]";
-	else
-	  RSO << "[committed] " << (*TS->committedInst);
+	else {
+	  RSO << "[committed] ";
+	  for(uint32_t i = 0, ilim = TS->nCommittedInsts; i != ilim; ++i) {
+	    if(i != 0)
+	      RSO << ", ";
+	    RSO << (*(TS->committedInsts[i]));
+	  }
+	  RSO << " in block " << TS->committedInsts[0]->getParent()->getName();	  
+	}
 	RSO << " (" << TS->outstandingBytes << ")";
       }
 

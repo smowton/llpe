@@ -425,6 +425,12 @@ public:
       }
 
     }
+    else if(inst_is<MemTransferInst>(UserI) && UserI->parent->IA->canSynthMTI(UserI)) {
+
+      // Memcpy et al won't use their arguments if they're to be synthesised.
+      return;
+
+    }
     else if(willBeReplacedOrDeleted(ShadowValue(UserI)))
       return;
     else {

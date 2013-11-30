@@ -1509,8 +1509,11 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   // If it's a store that is tracked by DSE, note the committed instruction.
   DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
-  if(findit != GlobalIHP->trackedStores.end())
-    findit->second->committedInst = newI;
+  if(findit != GlobalIHP->trackedStores.end()) {
+    findit->second->committedInsts = new Instruction*[1];
+    findit->second->committedInsts[0] = newI;
+    findit->second->nCommittedInsts = 1;
+  }
 
   return newI;
 
@@ -1758,7 +1761,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 
 }
 
-static void emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* emitBB) {
+static Instruction* emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* emitBB) {
 
   Type* BytePtr = Type::getInt8PtrTy(emitBB->getContext());
   Type* Int64Ty = Type::getInt64Ty(emitBB->getContext());
@@ -1775,11 +1778,11 @@ static void emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* em
     ConstantInt::get(Type::getInt1Ty(emitBB->getContext()), 0)
   };
 	
-  CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+  return CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
 
 }
 
-void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd) {
+void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions) {
 
   uint32_t chunkSize = std::distance(chunkBegin, chunkEnd);
   if(chunkSize == 0)
@@ -1816,14 +1819,14 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
       GlobalVariable* CopyFrom = new GlobalVariable(*getGlobalModule(), newVal->getType(), 
 						    true, GlobalValue::InternalLinkage, cast<Constant>(newVal));
       Constant* CopyFromPtr = ConstantExpr::getBitCast(CopyFrom, BytePtr);
-      emitMemcpyInst(targetPtrSynth, CopyFromPtr, elSize, emitBB);
+      newInstructions.push_back(emitMemcpyInst(targetPtrSynth, CopyFromPtr, elSize, emitBB));
 
     }
     else {
 
       // Emit as simple store.
       release_assert(newVal->getType() == cast<PointerType>(targetPtrSynth->getType())->getElementType());
-      new StoreInst(newVal, targetPtrSynth, emitBB);
+      newInstructions.push_back(new StoreInst(newVal, targetPtrSynth, emitBB));
 
     }
       
@@ -1851,7 +1854,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 					     true, GlobalValue::InternalLinkage, CS);
     Constant* GCSPtr = ConstantExpr::getBitCast(GCS, BytePtr);
 
-    emitMemcpyInst(targetPtrSynth, GCSPtr, lastOffset - chunkBegin->first.first, emitBB);
+    newInstructions.push_back(emitMemcpyInst(targetPtrSynth, GCSPtr, lastOffset - chunkBegin->first.first, emitBB));
 
   }
 
@@ -1900,6 +1903,7 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   // memcpy from it. For non-constant pointers and FDs, produce stores.
 
   SmallVector<IVSRange, 4>& Vals = GlobalIHP->memcpyValues[I];
+  SmallVector<Instruction*, 4> newInstructions;
 
   SmallVector<IVSRange, 4>::iterator chunkBegin = Vals.begin();
 
@@ -1916,12 +1920,12 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
     else {
 
       // Emit the chunk.
-      emitChunk(I, emitBB, chunkBegin, it);
+      emitChunk(I, emitBB, chunkBegin, it, newInstructions);
 
       // Emit this item (simple store, same as a singleton chunk).
       SmallVector<IVSRange, 4>::iterator nextit = it;
       ++nextit;
-      emitChunk(I, emitBB, it, nextit);
+      emitChunk(I, emitBB, it, nextit, newInstructions);
 
       // Next chunk starts /after/ this.
       chunkBegin = nextit;
@@ -1931,7 +1935,14 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   }
 
   // Emit the rest if any.
-  emitChunk(I, emitBB, chunkBegin, Vals.end());
+  emitChunk(I, emitBB, chunkBegin, Vals.end(), newInstructions);
+  
+  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
+  if(findit != GlobalIHP->trackedStores.end()) {
+    findit->second->committedInsts = new Instruction*[newInstructions.size()];
+    memcpy(findit->second->committedInsts, &newInstructions[0], sizeof(Instruction*) * newInstructions.size());
+    findit->second->nCommittedInsts = newInstructions.size();
+  }
 
   return true;
 

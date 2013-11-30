@@ -40,7 +40,7 @@ static void DSEInstructionDead(ShadowInstruction* SI) {
 
 }
 
-TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->parent->IA), committedInst(0), outstandingBytes(ob), isNeeded(false) {
+TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->parent->IA), committedInsts(0), nCommittedInsts(0), outstandingBytes(ob), isNeeded(false) {
 
   GlobalIHP->trackedStores[_I] = this;
   
@@ -49,6 +49,9 @@ TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->p
 TrackedStore::~TrackedStore() {
 
   GlobalIHP->trackedStores.erase(I);
+  // Just deletes the array, not the instructions
+  if(committedInsts)
+    delete[] committedInsts;
 
 }
 
@@ -57,7 +60,7 @@ bool TrackedStore::canKill() {
   if(isNeeded)
     return false;
   if(IA->isCommitted())
-    return !!committedInst;
+    return !!committedInsts;
 
   return true;
 
@@ -102,10 +105,13 @@ void TrackedStore::kill() {
   if(!IA->isCommitted())
     DSEInstructionDead(I);
   else {
-    release_assert(committedInst && "Should have a committed instruction");
-    release_assert(committedInst->use_empty());
-    DeleteDeadInstruction(committedInst);
-    committedInst = 0;
+    release_assert(committedInsts && "Should have a committed instructions");
+    for(uint32_t i = 0, ilim = nCommittedInsts; i != ilim; ++i) {
+      release_assert(committedInsts[i]->use_empty());
+      DeleteDeadInstruction(committedInsts[i]);
+    }
+    delete[] committedInsts;
+    committedInsts = 0;
   }
 
 }
@@ -772,6 +778,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 	    return;
 
 	  DSEMapPointer* store = BB->getWritableDSEStore(Ptr);
+
 	  store->release();
 	      
 	}

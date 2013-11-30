@@ -1401,7 +1401,7 @@ protected:
   bool canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV);
   bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
   bool canSynthMTI(ShadowInstruction* I);
-  void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd);
+  void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions);
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
   Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
