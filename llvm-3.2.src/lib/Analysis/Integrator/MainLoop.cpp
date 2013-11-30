@@ -141,13 +141,19 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
     initialiseStore(BBs[0]);
     BBs[0]->fdStore = new FDStore();
     BBs[0]->tlStore = new TLLocalStore(0);
+    BBs[0]->dseStore = new DSELocalStore(0);
     BBs[0]->tlStore->allOthersClobbered = false;
+    BBs[0]->dseStore->allOthersClobbered = false;
   }
 
   if(BBs[0]->tlStore) {
     // Store a copy of the TL store for use if the context is disabled.
     backupTlStore = BBs[0]->tlStore;
     ++backupTlStore->refCount;
+  }
+  if(BBs[0]->dseStore) {
+    backupDSEStore = BBs[0]->dseStore;
+    ++backupDSEStore->refCount;
   }
   
   if(invarInfo->frameSize != -1 || !Callers.size()) {
@@ -157,6 +163,12 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
 
       BBs[0]->tlStore = BBs[0]->tlStore->getWritableFrameList();
       BBs[0]->tlStore->pushStackFrame(this);
+
+    }
+    if(BBs[0]->dseStore) {
+
+      BBs[0]->dseStore = BBs[0]->dseStore->getWritableFrameList();
+      BBs[0]->dseStore->pushStackFrame(this);
 
     }
 
@@ -216,10 +228,6 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData)
   bool anyChange = false;
   stack_depth = parent_stack_depth;
 
-  ShadowBB* PHBB = parent->getBB(invarInfo->preheaderIdx);
-  backupTlStore = PHBB->tlStore;
-  backupTlStore->refCount++;
-
   readsTentativeData = false;
 
   for(PeelIteration* PI = Iterations[0]; PI; PI = PI->getOrCreateNextIteration()) {
@@ -238,7 +246,7 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData)
 
 }
 
-void PeelIteration::setExitingTLStore(TLLocalStore* S, ShadowBBInvar* BBI, const Loop* exitLoop) {
+void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const Loop* exitLoop, StoreKind kind) {
 
   PeelAttempt* LPA;
 
@@ -249,13 +257,13 @@ void PeelIteration::setExitingTLStore(TLLocalStore* S, ShadowBBInvar* BBI, const
      LPA->isTerminated()) {
 
     for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-      LPA->Iterations[i]->setExitingTLStore(S, BBI, exitLoop);
+      LPA->Iterations[i]->setExitingStore(S, BBI, exitLoop, kind);
 
     return;
 
   }
 
-  // For each live edge leaving the loop, replace the exiting block's tlStore with S.
+  // For each live edge leaving the loop, replace the exiting block's store with S.
   ShadowBB* ExitingBB = getBB(*BBI);
   if(!ExitingBB)
     return;
@@ -274,22 +282,38 @@ void PeelIteration::setExitingTLStore(TLLocalStore* S, ShadowBBInvar* BBI, const
 
   }
 
-  for(uint32_t i = 0; i != exitingEdges; ++i) {
-    ExitingBB->tlStore->dropReference();
-    S->refCount++;
-  }
+  if(kind == StoreKindTL) {
 
-  ExitingBB->tlStore = S;
+    for(uint32_t i = 0; i != exitingEdges; ++i) {
+      
+      ExitingBB->tlStore->dropReference();
+      ((TLLocalStore*)S)->refCount++;
+    }
+    
+    ExitingBB->tlStore = (TLLocalStore*)S;
+
+  }
+  else if(kind == StoreKindDSE) {
+
+    for(uint32_t i = 0; i != exitingEdges; ++i) {
+      
+      ExitingBB->dseStore->dropReference();
+      ((DSELocalStore*)S)->refCount++;
+    }
+    
+    ExitingBB->dseStore = (DSELocalStore*)S;
+
+  }
 
 }
 
-void PeelIteration::setExitingTLStores(TLLocalStore* S) {
+void PeelIteration::setExitingStores(void* S, StoreKind SK) {
 
   for(std::vector<uint32_t>::iterator it = parentPA->invarInfo->exitingBlocks.begin(),
 	itend = parentPA->invarInfo->exitingBlocks.end(); it != itend; ++it) {
 
     ShadowBBInvar* ExitingBBI = getBBInvar(*it);
-    setExitingTLStore(S, ExitingBBI, L);
+    setExitingStore(S, ExitingBBI, L, SK);
 
   }
   
@@ -323,7 +347,8 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
       // Give the preheader an extra reference in case we need that store
       // to calculate a general version of the loop body if it doesn't terminate.
-      getBB(LPA->invarInfo->preheaderIdx)->refStores();
+      ShadowBB* PHBB = getBB(LPA->invarInfo->preheaderIdx);
+      PHBB->refStores();
 
       bool loopReadsTentativeData;
       LPA->analyse(stack_depth, loopReadsTentativeData);
@@ -336,9 +361,35 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
 	LPA->findProfitableIntegration();
 	if(!LPA->isEnabled()) {
-	  LPA->Iterations.back()->setExitingTLStores(LPA->backupTlStore);
-	  LPA->backupTlStore->dropReference();
-	  LPA->backupTlStore = 0;
+
+	  // The preheader already has a copy of the TL and DSE stores
+	  // in case the loop didn't terminate -- give it to each exiting block.
+
+	  TLLocalStore* backupTlStore;
+	  bool dropTlRef;
+	  if(readsTentativeData) {
+	    backupTlStore = new TLLocalStore(stack_depth);
+	    backupTlStore->allOthersClobbered = true;
+	    dropTlRef = true;
+	  }
+	  else {
+	    backupTlStore = PHBB->tlStore;
+	    dropTlRef = false;
+	  }
+
+	  LPA->Iterations.back()->setExitingStores(backupTlStore, StoreKindTL);
+	  
+	  if(dropTlRef)
+	    backupTlStore->dropReference();
+
+	  DSELocalStore* backupDSEStore = PHBB->dseStore;
+
+	  setAllNeededTop(backupDSEStore);
+	  DSELocalStore* emptyStore = new DSELocalStore(stack_depth);
+	  emptyStore->allOthersClobbered = true;
+	  LPA->Iterations.back()->setExitingStores(emptyStore, StoreKindDSE);
+	  emptyStore->dropReference();
+
 	}
 
       }
@@ -356,6 +407,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 	gatherIndirectUsersInLoop(BBL);
 	
 	findTentativeLoadsInUnboundedLoop(BBL, /* commit disabled here = */ false, /* second pass = */ false);
+	tryKillStoresInUnboundedLoop(BBL, /* commit disabled here = */ false, /* disable writes = */ false);
 
       }
 	
@@ -404,6 +456,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
     if(!inLoopAnalyser) {
 
       doTLStoreMerge(BB);
+      doDSEStoreMerge(BB);
 
     }
 
@@ -421,7 +474,11 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   if(!inLoopAnalyser) {
 
     TLWalkPathConditions(BB, true, false);
-
+    if(pass->countPathConditionsAtBlockStart(BB->invar, BB->IA)) {
+      setAllNeededTop(BB->dseStore);
+      BB->dseStore = BB->dseStore->getEmptyMap();
+    }
+     
   }
 
   LFV3(errs() << nestingIndent() << "Start block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
@@ -523,6 +580,11 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool inLoopAnaly
       
       // Check if this load or memcpy should be checked at runtime:
       TLAnalyseInstruction(*SI, /* commit disabled = */ false, /* second pass = */ false);
+
+      // Update the DSE store:
+      DSEAnalyseInstruction(SI, /* commit disabled = */false, 
+			    /*disable writes=*/false, 
+			    /*enter calls =*/false, bail);
 
     }
 

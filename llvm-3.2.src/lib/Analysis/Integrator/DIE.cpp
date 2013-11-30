@@ -547,6 +547,9 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 // Everything should be killed in reverse topological order.
 void InlineAttempt::runDIE() {
 
+  if(isCommitted())
+    return;
+
   // First try to kill our instructions:
   IntegrationAttempt::runDIE();
 

@@ -1030,10 +1030,14 @@ struct TrackedStore {
 
   ShadowInstruction* I; // Invalid if IA is committed
   IntegrationAttempt* IA;
+  Instruction* committedInst; // Valid if the store was live when committed.
   uint64_t outstandingBytes;
   bool isNeeded;
 
   TrackedStore(ShadowInstruction* _I, uint64_t ob);
+  ~TrackedStore();
+  bool canKill();
+  void kill();
   void derefBytes(uint64_t nBytes);
 
 };
@@ -1297,12 +1301,16 @@ struct ShadowBB {
     ++fdStore->refCount;
     if(tlStore)
       ++tlStore->refCount;
+    if(dseStore)
+      ++dseStore->refCount;
   }
   void derefStores() {
     localStore->dropReference();
     fdStore->dropReference();
     if(tlStore)
       tlStore->dropReference();
+    if(dseStore)
+      dseStore->dropReference();
   }
 
   void takeStoresFrom(ShadowBB* Other, bool inLoopAnalyser) {
@@ -1310,9 +1318,11 @@ struct ShadowBB {
     fdStore = Other->fdStore;
     if(!inLoopAnalyser) {
       tlStore = Other->tlStore;
+      dseStore = Other->dseStore;
     }
     else {
       tlStore = 0;
+      dseStore = 0;
     }
   }
 

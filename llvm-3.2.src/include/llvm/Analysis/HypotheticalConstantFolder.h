@@ -74,6 +74,7 @@ class ShadowLoopInvar;
 class TargetLibraryInfo;
 class EQTDDataStructures;
 class ShadowBB;
+class TrackedStore;
 
 inline void release_assert_fail(const char* str) {
 
@@ -489,6 +490,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    GlobalStats stats;
 
    DenseMap<IntegrationAttempt*, std::string> shortHeaders;
+
+   DenseMap<ShadowInstruction*, TrackedStore*> trackedStores;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -1302,6 +1305,8 @@ protected:
   void DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowBB* BB);
   void DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, ShadowInstruction* Writer, ShadowBB* BB);
   void tryKillStoresInLoop(const Loop* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader = false);
+  void tryKillStoresInUnboundedLoop(const Loop* UL, bool commitDisabledHere, bool disableWrites);
+  void DSEAnalyseInstruction(ShadowInstruction* I, bool commitDisabledHere, bool disableWrites, bool enterCalls, bool& bail);
 
   // User visitors:
   
@@ -1514,6 +1519,13 @@ protected:
 
 };
 
+enum StoreKind {
+
+  StoreKindTL,
+  StoreKindDSE
+
+};
+
 class PeelIteration : public IntegrationAttempt {
 
   int iterationCount;
@@ -1522,8 +1534,8 @@ class PeelIteration : public IntegrationAttempt {
 public:
 
   PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, int iter, int depth);
-
-  IntegrationAttempt* parent;
+ 
+ IntegrationAttempt* parent;
 
   IterationStatus iterStatus;
 
@@ -1601,8 +1613,8 @@ public:
 
   virtual void printHeader(raw_ostream& OS) const;
 
-  void setExitingTLStores(TLLocalStore*);
-  void setExitingTLStore(TLLocalStore*, ShadowBBInvar*, const Loop*);
+  void setExitingStores(void*, StoreKind);
+  void setExitingStore(void*, ShadowBBInvar*, const Loop*, StoreKind);
 
 };
 
@@ -1628,8 +1640,6 @@ class PeelAttempt {
    bool enabled;
 
  public:
-
-   TLLocalStore* backupTlStore;
 
    const Loop* L;
 
@@ -1763,6 +1773,7 @@ class InlineAttempt : public IntegrationAttempt {
   DenseSet<PHINode*>* ForwardingPHIs;
 
   TLLocalStore* backupTlStore;
+  DSELocalStore* backupDSEStore;
 
   ImprovedValSet* returnValue;
 
@@ -2115,11 +2126,16 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  void doTLStoreMerge(ShadowBB* BB);
  void doTLCallMerge(ShadowBB* BB, InlineAttempt* IA);
+
+ void doDSEStoreMerge(ShadowBB* BB);
+ void doDSECallMerge(ShadowBB* BB, InlineAttempt* IA);
+
  void TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass);
  void rerunTentativeLoads(ShadowInstruction*, InlineAttempt*);
  void patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs, Value* V);
  void forwardReferences(Value* Fwd, Module* M);
  Module* getGlobalModule();
+ void setAllNeededTop(DSELocalStore*);
 
  extern char ihp_workdir[];
 

@@ -134,12 +134,24 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
 
     for(DSEMapEntry::iterator eit = entry.begin(), eend = entry.end(); eit != eend; ++eit) {
 
+      TrackedStore* TS = *eit;
+
       if(eit != entry.begin())
 	RSO << ", ";
-      if(!*eit)
+      if(!TS)
 	RSO << "NULL!";
-      else
-	RSO << itcache((*eit)->I, brief);
+      else if(TS->isNeeded) {
+	RSO << "[needed]";
+      }
+      else {
+	if(!TS->IA->isCommitted())
+	  RSO << itcache(TS->I, brief);
+	else if(!TS->committedInst)
+	  RSO << "[committed-unknown]";
+	else
+	  RSO << "[committed] " << (*TS->committedInst);
+	RSO << " (" << TS->outstandingBytes << ")";
+      }
 
     }
 

@@ -281,6 +281,10 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 	SI->parent->tlStore = SI->parent->tlStore->getWritableFrameList();
 	SI->parent->tlStore->popStackFrame();
       }
+      if(SI->parent->dseStore) {
+	SI->parent->dseStore = SI->parent->dseStore->getWritableFrameList();
+	SI->parent->dseStore->popStackFrame();
+      }
 
     }
     

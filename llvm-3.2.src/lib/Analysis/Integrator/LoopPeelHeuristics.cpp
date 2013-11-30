@@ -139,6 +139,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     targetCallInfo = 0;
     integrationGoodnessValid = false;
     backupTlStore = 0;
+    backupDSEStore = 0;
     DT = pass->DTs[&F];
     if(_CI) {
       Callers.push_back(_CI);
@@ -164,7 +165,7 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
 			 const Loop* _L, int depth) 
   : pass(Pass), parent(P), F(_F), residualInstructions(-1), nesting_depth(depth), stack_depth(0), 
-    enabled(true), backupTlStore(0), L(_L), totalIntegrationGoodness(0), integrationGoodnessValid(false)
+    enabled(true), L(_L), totalIntegrationGoodness(0), integrationGoodnessValid(false)
 {
 
   invarInfo = parent->invarInfo->LInfo[L];
@@ -636,6 +637,9 @@ void InlineAttempt::releaseBackupStores() {
   release_assert(backupTlStore);
   backupTlStore->dropReference();
   backupTlStore = 0;
+  release_assert(backupDSEStore);
+  backupDSEStore->dropReference();
+  backupDSEStore = 0;
 
 }
 
@@ -698,6 +702,17 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
 }
 
+class ClobberDSEVisitor : public ShadowBBVisitor {
+
+  virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
+
+    BB->dseStore = BB->dseStore->getEmptyMap();
+    BB->dseStore->allOthersClobbered = true;
+
+  }
+
+};
+
 void InlineAttempt::finaliseAndCommit() {
 
   countTentativeInstructions();
@@ -705,9 +720,6 @@ void InlineAttempt::finaliseAndCommit() {
 	
   // This call will disable the context if it's not a good idea.
   findProfitableIntegration();
-
-  // Save a DOT representation if need be, for the GUI to use.
-  saveDOT();
 
   if(isEnabled()) {
 
@@ -727,12 +739,20 @@ void InlineAttempt::finaliseAndCommit() {
     // Note any tests that require failed blocks.
     addCheckpointFailedBlocks();
 
+    runDIE();
+
+    // Save a DOT representation if need be, for the GUI to use.
+    saveDOT();
+
     // Finally, do it!
     commitCFG();
     commitArgsAndInstructions();
 
   }
   else {
+
+    // Save a DOT representation if need be, for the GUI to use.
+    saveDOT();
 
     commitState = COMMIT_DONE;
 
@@ -743,7 +763,11 @@ void InlineAttempt::finaliseAndCommit() {
     // Must rerun tentative load and DSE analyses accounting
     // for the fact that the stage will not be committed.
     rerunTentativeLoads(activeCaller, this);
-    //rerunDSE();
+
+    // For now this is simply a barrier to DSE.
+    setAllNeededTop(backupDSEStore);
+    ClobberDSEVisitor V;
+    visitLiveReturnBlocks(V);
 
     if(!StatsFile.empty())
       preCommitStats(true);
@@ -800,8 +824,10 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       if(!inLoopAnalyser) {
 	    
 	doTLCallMerge(SI->parent, IA);
+	doDSECallMerge(SI->parent, IA);
+
 	IA->finaliseAndCommit();
-	
+
       }
       
     }

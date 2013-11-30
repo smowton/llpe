@@ -1507,6 +1507,11 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  // If it's a store that is tracked by DSE, note the committed instruction.
+  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
+  if(findit != GlobalIHP->trackedStores.end())
+    findit->second->committedInst = newI;
+
   return newI;
 
 }
@@ -1951,9 +1956,17 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
   
 }
 
+// Identify functions like llvm.uadd.with.overflow which are essentially arithmetic instructions.
+static bool isPureCall(ShadowInstruction* SI) {
+
+  Function* CalledF = getCalledFunction(SI);
+  return CalledF && CalledF->doesNotAccessMemory();
+
+}
+
 void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB) {
 
-  if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I)) {
+  if(inst_is<CallInst>(I) && (!inst_is<MemIntrinsic>(I)) && !isPureCall(I)) {
     emitCall(BB, I, emitBB);
     if(I->committedVal)
       return;
@@ -1983,7 +1996,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
   }
 
   // Already emitted calls above:
-  if(inst_is<CallInst>(I) && !inst_is<MemIntrinsic>(I))
+  if(inst_is<CallInst>(I) && (!inst_is<MemIntrinsic>(I)) && !isPureCall(I))
     return;
 
   // We'll emit an instruction. Is it special?
