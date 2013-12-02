@@ -955,37 +955,37 @@ bool IntegrationAttempt::containsTentativeLoads() {
 
 bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks) {
 
-  if(V.getNonPointerType()->isVoidTy())
+  release_assert(V.isInst());
+  ShadowInstruction* SI = V.u.I;
+
+  if(SI->getType()->isVoidTy())
     return false;
 
   // This indicates a member of a disabled loop that hasn't been analysed.
-  if(!V.u.I->i.PB)
+  if(!SI->i.PB)
     return false;
 
-  {
-    ShadowInstruction* SI;
-    if((SI = V.getInst()) && SI->needsRuntimeCheck == RUNTIME_CHECK_AS_EXPECTED)
-      return true;
-    if(SI && includeSpecialChecks && SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
-      return true;
-  }
+  if(SI->needsRuntimeCheck == RUNTIME_CHECK_AS_EXPECTED)
+    return true;
+  if(includeSpecialChecks && SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
+    return true;
 
-  if(val_is<LoadInst>(V) || val_is<MemTransferInst>(V)) {
+  if(inst_is<LoadInst>(SI) || inst_is<MemTransferInst>(SI)) {
     
-    if(V.u.I->isThreadLocal == TLS_MUSTCHECK)
+    if(SI->isThreadLocal == TLS_MUSTCHECK)
       return true;
     
   }
-  else if (val_is<CallInst>(V)) {
+  else if (inst_is<CallInst>(SI)) {
       
-    InlineAttempt* IA = getInlineAttempt(V.u.I);
+    InlineAttempt* IA = getInlineAttempt(SI);
     if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
-      return !V.u.I->i.PB->isWhollyUnknown();
+      return !SI->i.PB->isWhollyUnknown();
 
   }
-  else if(val_is<PHINode>(V)) {
+  else if(inst_is<PHINode>(SI)) {
 
-    ShadowBB* BB = V.u.I->parent;
+    ShadowBB* BB = SI->parent;
     for(uint32_t i = 0, ilim = BB->invar->predIdxs.size(); i != ilim; ++i) {
 
       ShadowBBInvar* predBBI = getBBInvar(BB->invar->predIdxs[i]);
@@ -993,7 +993,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
 
 	PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope));
 	if(LPA && LPA->isTerminated() && (!LPA->isEnabled()) && LPA->containsTentativeLoads())
-	  return !V.u.I->i.PB->isWhollyUnknown();
+	  return !SI->i.PB->isWhollyUnknown();
 
       }
 

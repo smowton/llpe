@@ -681,6 +681,11 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 	ShadowInstruction* SI = &BB->insts[j];
 	if(SI->i.PB)
 	  deleteIV(SI->i.PB);
+	pass->indirectDIEUsers.erase(SI);
+	pass->memcpyValues.erase(SI);
+	pass->forwardableOpenCalls.erase(SI);
+	pass->resolvedReadCalls.erase(SI);
+	pass->resolvedSeekCalls.erase(SI);
 
       }
 
