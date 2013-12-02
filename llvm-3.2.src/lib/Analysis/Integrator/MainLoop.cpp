@@ -140,6 +140,7 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
     BBs[0]->localStore = new OrdinaryLocalStore(0);
     initialiseStore(BBs[0]);
     BBs[0]->fdStore = new FDStore();
+    initialiseFDStore(BBs[0]->fdStore);
     BBs[0]->tlStore = new TLLocalStore(0);
     BBs[0]->dseStore = new DSELocalStore(0);
     BBs[0]->tlStore->allOthersClobbered = false;

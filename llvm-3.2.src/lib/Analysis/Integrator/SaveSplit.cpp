@@ -162,7 +162,9 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
 
     if(!it->CommittedVal) {
 
-      errs() << "Warning: some FD not committed\n";
+      if(it->SI)
+	errs() << "Warning: some FD not committed\n";
+
       continue;
 
     }

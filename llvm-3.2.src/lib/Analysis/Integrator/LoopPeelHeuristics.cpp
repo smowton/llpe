@@ -1925,38 +1925,41 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
 
 void IntegrationHeuristicsPass::commit() {
 
-  if(!(omitChecks || llioDependentFiles.empty()))
+  if(!(omitChecks || llioDependentFiles.empty())) {
+
     writeLliowdConfig();
 
-  BasicBlock* preludeBlock = 0;
-  
-  if(llioPreludeStackIdx != -1) {
+    BasicBlock* preludeBlock = 0;
 
-    release_assert(llioPreludeStackIdx < (int)targetCallStackIAs.size());
-    preludeBlock = targetCallStackIAs[llioPreludeStackIdx]->BBs[0]->committedBlocks[0].specBlock;
+    if(llioPreludeStackIdx != -1) {
 
-  }
-  else {
+      release_assert(llioPreludeStackIdx < (int)targetCallStackIAs.size());
+      preludeBlock = targetCallStackIAs[llioPreludeStackIdx]->BBs[0]->committedBlocks[0].specBlock;
 
-    Function* writePreludeFn = llioPreludeFn;
-    if(llioPreludeFn == &RootIA->F)
-      writePreludeFn = RootIA->CommitF;
+    }
+    else {
 
-    if(writePreludeFn)
-      preludeBlock = &writePreludeFn->getEntryBlock();
+      Function* writePreludeFn = llioPreludeFn;
+      if(llioPreludeFn == &RootIA->F)
+	writePreludeFn = RootIA->CommitF;
 
-  }
+      if(writePreludeFn)
+	preludeBlock = &writePreludeFn->getEntryBlock();
 
-  // Add an lliowd_init() prelude to the beginning of the requested function:
-  if(preludeBlock) {
+    }
 
-    BasicBlock::iterator it = preludeBlock->begin();
-    while(it != preludeBlock->end() && isa<AllocaInst>(it))
-      ++it;
+    // Add an lliowd_init() prelude to the beginning of the requested function:
+    if(preludeBlock) {
 
-    Type* Void = Type::getVoidTy(preludeBlock->getContext());
-    Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
-    CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+      BasicBlock::iterator it = preludeBlock->begin();
+      while(it != preludeBlock->end() && isa<AllocaInst>(it))
+	++it;
+
+      Type* Void = Type::getVoidTy(preludeBlock->getContext());
+      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
+      CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+
+    }
 
   }
 
@@ -3645,6 +3648,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
 
   createPointerArguments(IA);
+  initGlobalFDStore();
 
   RootIA = IA;
 

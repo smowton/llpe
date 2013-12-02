@@ -921,7 +921,8 @@ enum ThreadLocalState {
 
 #define RUNTIME_CHECK_NONE 0
 #define RUNTIME_CHECK_AS_EXPECTED 1
-#define RUNTIME_CHECK_SPECIAL 2
+#define RUNTIME_CHECK_READ_LLIOWD 2
+#define RUNTIME_CHECK_READ_MEMCMP 3
 
 struct ShadowInstruction {
 
@@ -1261,8 +1262,10 @@ struct FDGlobalState {
   IntegrationAttempt* IA;
   Value* CommittedVal;
   std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
+  bool isFifo;
 
-  FDGlobalState(ShadowInstruction* _SI);
+  FDGlobalState(ShadowInstruction* _SI, bool _isFifo);
+  FDGlobalState(bool _isFifo);
 
 };
 

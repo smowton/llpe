@@ -927,8 +927,9 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
   // It does if this instruction requires an as-expected check ("requiresRuntimeCheck"), 
   // OR if the NEXT instruction requires a special check.
   if((!added) && 
-     (requiresRuntimeCheck(ShadowValue(SI), false) || 
-      (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL))) {
+     (requiresRuntimeCheck(ShadowValue(SI), false) ||
+      (SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) ||
+      (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD))) {
 
     edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
     added = true;
@@ -1785,7 +1786,7 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 	  continue;
 
 	// Special checks require a split BEFORE the block:
-	if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+	if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
 
 	  if(i != 0)
 	    splitInsts[i - 1] = true;
@@ -2072,7 +2073,7 @@ bool IntegrationAttempt::instSpecialTest(uint32_t blockIdx, uint32_t instIdx) {
 
   if(ShadowBB* BB = getBB(*BBI)) {
 
-    if(BB->insts[instIdx].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
+    if(BB->insts[instIdx].needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD)
       return true;
 
   }

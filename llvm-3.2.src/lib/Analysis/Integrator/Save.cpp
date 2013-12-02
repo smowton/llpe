@@ -175,7 +175,7 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 // Return true if it will be necessary to insert code on the path leading from specialised to unspecialised code.
 bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
-  return SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
+  return SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && 
     pass->resolvedReadCalls.count(SI);
 
 }
@@ -338,7 +338,7 @@ void IntegrationAttempt::commitCFG() {
     }
 
     // Create one extra top block if there's a special check at the beginning
-    if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !pass->omitChecks) {
+    if(BB->insts[0].needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && !pass->omitChecks) {
 
       if(pass->verbosePCs || requiresBreakCode(&BB->insts[0])) {
 	
@@ -420,7 +420,7 @@ void IntegrationAttempt::commitCFG() {
 
       // If we need a check *before* this instruction (at the moment only true if it's a read 
       // call that will require an inline check) then add a break.
-      if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !GlobalIHP->omitChecks) {
+      if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && !GlobalIHP->omitChecks) {
 
 	if(j != 0) {
 
@@ -442,7 +442,7 @@ void IntegrationAttempt::commitCFG() {
       // then insert a break for a check.
       // This path also handles path conditions that are checked as they are defined,
       // rather than at the top of a block that may be remote from the definition site.
-      if(requiresRuntimeCheck(SI, false)) {
+      if(requiresRuntimeCheck(SI, true) && SI->needsRuntimeCheck != RUNTIME_CHECK_READ_LLIOWD) {
 
 	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
@@ -1090,6 +1090,28 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 }
 
+static GlobalVariable* getFileBytesGlobal(ReadFile& RF) {
+
+  // Create a memcpy from a constant, since someone is still using the read data.
+  std::vector<Constant*> constBytes;
+  std::string errors;
+  LLVMContext& Context = GInt8->getContext();
+  if(!getFileBytes(RF.name, RF.incomingOffset, RF.readSize, constBytes, Context, errors)) {
+
+    errs() << "Failed to read file " << RF.name << " in commit\n";
+    exit(1);
+
+  }
+
+  ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
+  Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
+
+  // Create a const global for the array:
+
+  return new GlobalVariable(*getGlobalModule(), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
+
+}
+
 static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
 
   LLVMContext& Context = FD->getContext();
@@ -1119,22 +1141,55 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
       
       LLVMContext& Context = CI->getContext();
 
-      if(I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && !pass->omitChecks) {
-
-	// Emit a check that file specialisations are still admissible:
-	// (TODO: avoid these more often)
-	Type* Int32Ty = IntegerType::get(Context, 32);
-	Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
-	Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
-      
-	Constant* Zero32 = Constant::getNullValue(Int32Ty);
-	Value* CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
+      if((I->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD || 
+	  I->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) 
+	 && !pass->omitChecks) {
 
 	BasicBlock* breakBlock = emitBBIter->breakBlock;
+	Value* CheckTest;
 
-	// Seek to the right position in the break block:
-	emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
-		   it->second.incomingOffset, breakBlock);
+	if(it->second.isFifo) {
+
+	  // As a fifo, we must (a) do the read as usual, then (b) use memcmp to check
+	  // that the results are the way we expect.
+
+	  CallInst* readInst = cast<CallInst>(emitInst(BB, I, emitBB));
+
+	  Value* readBuffer = readInst->getArgOperand(1);
+	  if(readBuffer->getType() != GInt8Ptr)
+	    readBuffer = new BitCastInst(readBuffer, GInt8Ptr, VerboseNames ? "readcast" : "", emitBB);
+
+	  Value* checkBuffer = getFileBytesGlobal(it->second);
+	  if(checkBuffer->getType() != GInt8Ptr)
+	    checkBuffer = new BitCastInst(checkBuffer, GInt8Ptr, VerboseNames ? "readcast" : "", emitBB);
+
+	  Constant* MemcmpSize = ConstantInt::get(GInt64, it->second.readSize);
+
+	  Value *MemCmpFn = F.getParent()->getOrInsertFunction("memcmp", GInt32, GInt8Ptr, GInt8Ptr, GInt64, (Type*)0);
+	  
+	  Value *CallArgs[] = { readBuffer, checkBuffer, MemcmpSize };
+	  Instruction* ReadMemcmp = CallInst::Create(MemCmpFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
+	  // CheckTest must be true on failure, so we test memcmp(...) != 0
+	  
+	  Constant* Zero32 = Constant::getNullValue(GInt32);
+	  CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_NE, ReadMemcmp, Zero32);
+	  
+	}
+	else {
+
+	  // Emit a check that file specialisations are still admissible:
+	  Type* Int32Ty = IntegerType::get(Context, 32);
+	  Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+	  Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
+      
+	  Constant* Zero32 = Constant::getNullValue(Int32Ty);
+	  CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
+
+	  // Seek to the right position in the break block:
+	  emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
+		     it->second.incomingOffset, breakBlock);
+
+	}
       
 	// Print failure notice if building a verbose specialisation:
 	if(pass->verbosePCs) {
@@ -1155,8 +1210,17 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
 	BasicBlock* successTarget = emitBBIter->specBlock;
       
-	BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
-	BranchInst::Create(failTarget, breakBlock);
+	if(breakBlock != emitBB) {
+
+	  BranchInst::Create(breakBlock, successTarget, CheckTest, emitBB);
+	  BranchInst::Create(failTarget, breakBlock);
+
+	}
+	else {
+
+	  BranchInst::Create(failTarget, successTarget, CheckTest, emitBB);
+
+	}
       
 	// Emit the rest of the read implementation in the next specialised block:
 	emitBB = successTarget;
@@ -1172,33 +1236,22 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  
       }
 
-      if(it->second.readSize > 0 && !(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
+      /* If it's a read from a fifo then the copy was emitted *before* the check. */
+
+      if(it->second.readSize > 0 && 
+	 (!(it->second.isFifo && !pass->omitChecks)) && 
+	 !(I->dieStatus & INSTSTATUS_UNUSED_WRITER)) {
 	
-	// Create a memcpy from a constant, since someone is still using the read data.
-	std::vector<Constant*> constBytes;
-	std::string errors;
-	if(!getFileBytes(it->second.name, it->second.incomingOffset, it->second.readSize, constBytes, Context,  errors)) {
-
-	  errs() << "Failed to read file " << it->second.name << " in commit\n";
-	  exit(1);
-
-	}
-      
-	ArrayType* ArrType = ArrayType::get(IntegerType::get(Context, 8), constBytes.size());
-	Constant* ByteArray = ConstantArray::get(ArrType, constBytes);
-
-	// Create a const global for the array:
-
-	GlobalVariable *ArrayGlobal = new GlobalVariable(*getGlobalModule(), ArrType, true, GlobalValue::InternalLinkage, ByteArray, "");
+	GlobalVariable *ArrayGlobal = getFileBytesGlobal(it->second);
 
 	Type* Int64Ty = IntegerType::get(Context, 64);
-	Type *VoidPtrTy = Type::getInt8PtrTy(Context);
+	Type* VoidPtrTy = Type::getInt8PtrTy(Context);
 
 	Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
 	Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
 	Constant* CopySource = ConstantExpr::getGetElementPtr(ArrayGlobal, Idxs, 2);
       
-	Constant* MemcpySize = ConstantInt::get(Int64Ty, constBytes.size());
+	Constant* MemcpySize = ConstantInt::get(Int64Ty, it->second.readSize);
 
 	Type *Tys[3] = {VoidPtrTy, VoidPtrTy, Int64Ty};
 	Function *MemCpyFn = Intrinsic::getDeclaration(F.getParent(),
@@ -1267,7 +1320,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   Function* CalledF = getCalledFunction(I);
 
-  if((!pass->omitChecks) && I->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL && 
+  if((!pass->omitChecks) && I->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && 
      (CalledF->getName() == "stat" || CalledF->getName() == "fstat")) {
 
     LLVMContext& Context = emitBB->getContext();

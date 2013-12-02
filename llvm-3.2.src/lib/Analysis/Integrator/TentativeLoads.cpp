@@ -967,7 +967,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
 
   if(SI->needsRuntimeCheck == RUNTIME_CHECK_AS_EXPECTED)
     return true;
-  if(includeSpecialChecks && SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL)
+  if(includeSpecialChecks && (SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP))
     return true;
 
   if(inst_is<LoadInst>(SI) || inst_is<MemTransferInst>(SI)) {
@@ -1042,7 +1042,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
       ShadowInstruction* SI = &BB->insts[j];
       InlineAttempt* IA;
 
-      if(requiresRuntimeCheck2(ShadowValue(SI), false)) {
+      if(requiresRuntimeCheck2(ShadowValue(SI), false) || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) {
 
 	// Treat tested exit PHIs as a block.
 	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))
@@ -1051,7 +1051,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 	getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
 
       }
-      else if(SI->needsRuntimeCheck == RUNTIME_CHECK_SPECIAL) {
+      else if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
 
 	// Special checks *precede* the instruction
 	getFunctionRoot()->markBlockAndSuccsFailed(i, j);

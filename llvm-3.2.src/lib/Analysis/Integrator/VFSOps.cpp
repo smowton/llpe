@@ -24,6 +24,7 @@
 using namespace llvm;
 
 static cl::opt<bool> ElimRedundantChecks("int-elim-read-checks");
+static cl::opt<std::string> SpecStdIn("int-spec-stdin");
 
 bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result) {
 
@@ -239,11 +240,13 @@ void llvm::doCallFDStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
 static bool filenameIsForbidden(std::string& s) {
 
-  return s.find("/proc/") == 0 || s.find("/sys/") == 0 || s.find("/dev/") == 0;
+  return s.empty() || s.find("/proc/") == 0 || s.find("/sys/") == 0 || s.find("/dev/") == 0;
 
 }
 
-FDGlobalState::FDGlobalState(ShadowInstruction* _SI) : SI(_SI), IA(SI->parent->IA), CommittedVal(0) {}
+FDGlobalState::FDGlobalState(ShadowInstruction* _SI, bool _isFifo) : SI(_SI), IA(SI->parent->IA), CommittedVal(0), isFifo(_isFifo) {}
+
+FDGlobalState::FDGlobalState(bool _isFifo) : SI(0), IA(0), CommittedVal(0), isFifo(_isFifo) {}
 
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
@@ -288,7 +291,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
 	    FDStore* FDS = SI->parent->getWritableFDStore();
 	    uint32_t newId = pass->fds.size();
-	    pass->fds.push_back(FDGlobalState(SI));
+	    pass->fds.push_back(FDGlobalState(SI, /* not a fifo */ false));
 	    if(FDS->fds.size() <= newId)
 	      FDS->fds.resize(newId + 1);
 	    FDS->fds[newId] = FDState(Filename);
@@ -343,15 +346,21 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
 static uint32_t getFD(ShadowValue V) {
 
-  if(V.isVal())
-    return 0;
+  uint64_t CI;
+  if(tryGetConstantIntReplacement(V, CI)) {
+    // Reads stdin?
+    if(CI == 0)
+      return 0;
+    else
+      return (uint32_t)-1;
+  }
 
   ImprovedValSetSingle VPB;
   if(!getImprovedValSetSingle(V, VPB))
-    return 0;
+    return (uint32_t)-1;
 
   if(VPB.Overdef || VPB.Values.size() != 1 || VPB.SetType != ValSetTypeFD)
-    return 0;
+    return (uint32_t)-1;
 
   return VPB.Values[0].V.u.PtrOrFd.idx;
 
@@ -403,7 +412,7 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
     return false;
 
   noteLLIODependency(Filename);
-  SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
+  SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
 
   if(stat_ret == 0) {
 
@@ -602,20 +611,27 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     
     noteVFSOp();
 
-    resolveReadCall(SI, ReadFile(FDS.filename, FDS.pos, cBytes));
+    bool isFifo = pass->fds[FD].isFifo;
+
+    resolveReadCall(SI, ReadFile(FDS.filename, FDS.pos, cBytes, isFifo));
+    if(isFifo)
+      pass->resolvedReadCalls[SI].needsSeek = false;
     
     // The number of bytes read is also the return value of read.
     setReplacement(SI, ConstantInt::get(Type::getInt64Ty(F->getContext()), cBytes));
 
     executeReadInst(SI, FDS.filename, FDS.pos, cBytes);
 
-    noteLLIODependency(FDS.filename);
+    if(!isFifo)
+      noteLLIODependency(FDS.filename);
 
-    if(!FDS.clean)
-      SI->needsRuntimeCheck = RUNTIME_CHECK_SPECIAL;
+    if(isFifo)
+      SI->needsRuntimeCheck = RUNTIME_CHECK_READ_MEMCMP;
+    else if(!FDS.clean)
+      SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
 
     FDS.pos += cBytes;
-    if(ElimRedundantChecks)
+    if(ElimRedundantChecks && !isFifo)
       FDS.clean = true;
 
   }
@@ -973,5 +989,22 @@ bool llvm::getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t
   fclose(fp);
 
   return true;
+
+}
+
+void IntegrationHeuristicsPass::initGlobalFDStore() {
+
+  // Reserve a slot for stdin.
+  fds.push_back(FDGlobalState(true /* is a fifo */));
+
+}
+
+void IntegrationAttempt::initialiseFDStore(FDStore* S) {
+
+  // Initialise stdin with position 0
+  S->fds.push_back(FDState());
+  S->fds[0].filename = SpecStdIn;
+  S->fds[0].pos = 0;
+  S->fds[0].clean = false;
 
 }

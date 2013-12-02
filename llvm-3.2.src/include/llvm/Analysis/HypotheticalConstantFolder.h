@@ -291,8 +291,9 @@ struct ReadFile {
   uint64_t incomingOffset;
   uint32_t readSize;
   bool needsSeek;
+  bool isFifo;
 
-ReadFile(std::string n, uint64_t IO, uint32_t RS) : name(n), incomingOffset(IO), readSize(RS), needsSeek(true) { }
+ReadFile(std::string n, uint64_t IO, uint32_t RS, bool _isFifo) : name(n), incomingOffset(IO), readSize(RS), needsSeek(true), isFifo(_isFifo) { }
 
 ReadFile() : name(), incomingOffset(0), readSize(0), needsSeek(true) { }
 
@@ -622,6 +623,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    void saveSplitPhase();
 
    void fixNonLocalUses();
+   void initGlobalFDStore();
 
 };
 
@@ -1302,6 +1304,7 @@ protected:
   OpenStatus& getOpenStatus(ShadowInstruction*);
   void tryKillAllVFSOps();
   void markCloseCall(ShadowInstruction*);
+  void initialiseFDStore(FDStore*);
 
   // Load forwarding extensions for varargs:
   virtual void getVarArg(int64_t, ImprovedValSet*&) = 0;
