@@ -289,10 +289,9 @@ void llvm::TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPa
 
 static void walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue LenSV, bool contextEnabled, ShadowBB* BB) {
 
-  ConstantInt* LenC = cast_or_null<ConstantInt>(getConstReplacement(LenSV));
-  if(!LenC)
+  uint64_t Len;
+  if(!tryGetConstantInt(LenSV, Len))
     return;
-  uint64_t Len = LenC->getLimitedValue(); 
 
   markGoodBytes(CopyTo, Len, contextEnabled, BB);
   markGoodBytes(CopyFrom, Len, contextEnabled, BB);
@@ -332,10 +331,9 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
     if(inst_is<MemSetInst>(SI)) {
 
-      ConstantInt* LengthCI = cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(2)));
-      if(!LengthCI)
+      uint64_t MemSize;
+      if(!tryGetConstantInt(SI->getCallArgOperand(2), MemSize))
 	return;
-      uint64_t MemSize = LengthCI->getLimitedValue();
 
       markGoodBytes(SI->getCallArgOperand(0), MemSize, contextEnabled, SI->parent);
 
@@ -464,13 +462,13 @@ static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
 
 ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, ShadowValue PtrOp, ShadowValue LenSV) {
 
-  ConstantInt* LenC = cast_or_null<ConstantInt>(getConstReplacement(LenSV));
+  uint64_t Len;
+  bool LenValid = tryGetConstantInt(LenSV, Len);
   std::pair<ValSetType, ImprovedVal> Ptr;
 
-  if((!LenC) || (!tryGetUniqueIV(PtrOp, Ptr)) || Ptr.first != ValSetTypePB)
+  if((!LenValid) || (!tryGetUniqueIV(PtrOp, Ptr)) || Ptr.first != ValSetTypePB)
     return TLS_NEVERCHECK;
 
-  uint64_t Len = LenC->getLimitedValue();
   if(Len == 0)
     return TLS_NEVERCHECK;
 

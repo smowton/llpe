@@ -87,6 +87,9 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
   if(V.isInval()) {
     Stream << "NULL";
   }
+  else if(V.isConstantInt()) {
+    Stream << (*V.getNonPointerType()) << " " << V.u.CI;
+  }
   else if(Value* V2 = V.getVal()) {
     printValue(Stream, V2, brief);
   }

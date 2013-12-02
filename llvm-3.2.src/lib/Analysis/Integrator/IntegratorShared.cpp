@@ -107,9 +107,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(Op1.first == ValSetTypeScalar && Op2.first == ValSetTypeScalar) {
 
 	  if(CE->getOpcode() == Instruction::Add)
-	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getAdd(cast<Constant>(Op1.second.V.getVal()), cast<Constant>(Op2.second.V.getVal()))));
+	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getAdd(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
 	  else
-	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getSub(cast<Constant>(Op1.second.V.getVal()), cast<Constant>(Op2.second.V.getVal()))));
+	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getSub(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
 
 	}
 
@@ -185,6 +185,11 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
   else if(C->getType()->isPointerTy() && C->isNullValue()) {
 
     return std::make_pair(ValSetTypePB, ImprovedVal(ShadowValue(C), 0));
+
+  }
+  else if(ConstantInt* CI = dyn_cast<ConstantInt>(C)) {
+
+    return std::make_pair(ValSetTypeScalar, ShadowValue::getInt(CI->getType(), CI->getLimitedValue()));
 
   }
   else {

@@ -325,7 +325,7 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
 	if(!BB)
 	  improvedInstructions++;
-	else if(getConstReplacement(&(BB->insts[i])))
+	else if(hasConstReplacement(&(BB->insts[i])))
 	  improvedInstructions++;
 	else if(BB->insts[i].dieStatus != INSTSTATUS_ALIVE)
 	  improvedInstructions++;

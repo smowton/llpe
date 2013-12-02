@@ -445,7 +445,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
       }
       
       // getConstSubVal does the merge with Result.
-      getConstSubVal(GV->getInitializer(), Ptr.Offset, LoadSize, LoadI->getType(), Result);
+      getConstSubVal(ShadowValue(GV->getInitializer()), Ptr.Offset, LoadSize, LoadI->getType(), Result);
       return true;
 
     }
@@ -861,7 +861,7 @@ bool llvm::addIVToPartialVal(ImprovedVal& IV, ValSetType SetType, uint64_t IVOff
     return false;
 
   PartialVal NewPV;
-  Constant* DefC = cast<Constant>(IV.V.getVal());
+  Constant* DefC = getSingleConstant(IV.V);
   if(SetType == ValSetTypeScalar) {
     NewPV = PartialVal::getPartial(DefC, IVOffset);
   }
@@ -952,7 +952,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
 	for(uint32_t i = 0, endi = IVS->Values.size(); i != endi; ++i) {
 	
-	  Constant* bigConst = cast<Constant>(IVS->Values[i].V.getVal());
+	  Constant* bigConst = getSingleConstant(IVS->Values[i].V);
 	  Constant* smallConst = extractAggregateMemberAt(bigConst, Offset, 0, Size, GlobalTD);
 	  if(smallConst) {
 
@@ -1224,7 +1224,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
   // Finally reinterpret cast each member:
   for(uint32_t i = 0, iend = Values.size(); i != iend; ++i) {
 
-    Constant* FromC = cast<Constant>(Values[i].V.getVal());
+    Constant* FromC = getSingleConstant(Values[i].V);
     if(FromC->getType() == Target)
       continue;
 
@@ -1271,6 +1271,7 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 }
 
 #define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+#define AddIVSSV(x, y, z) do { Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(ImprovedVal(z), ValSetTypeScalar))); } while(0);
 #define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
 
 static bool mayContainPointers(ImprovedValSet* IV) {
@@ -1438,7 +1439,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
   if(Src.Values.size() == 1) {
 
     // Grab sub-constants:
-    getConstSubVals(cast_val<Constant>(Src.Values[0].V), Offset, Size, OffsetAbove, Dest);
+    getConstSubVals(Src.Values[0].V, Offset, Size, OffsetAbove, Dest);
 
   }
   else {
@@ -1450,8 +1451,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
 
     for(uint32_t i = 0, endi = Src.Values.size(); i != endi; ++i) {
 	
-      Constant* bigConst = cast<Constant>(Src.Values[i].V.getVal());
-    
+      Constant* bigConst = getSingleConstant(Src.Values[i].V);
       Constant* smallConst = getSubConst(bigConst, Offset, Size);
       if(!smallConst) {
 	DestSingle.setOverdef();
@@ -1487,19 +1487,23 @@ void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Siz
 // Writes Overdef extents where we couldn't read the source constant.
 // OffsetAbove specifies all recorded extents should have OffsetAbove added; saves post-processing when
 // making a subquery.
-void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
+void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
-  uint64_t FromSize = GlobalAA->getTypeStoreSize(FromC->getType());
+  release_assert(FromSV.isVal() || FromSV.isConstantInt());
+
+  uint64_t FromSize = GlobalAA->getTypeStoreSize(FromSV.getNonPointerType());
 
   if(Offset == 0 && TargetSize == FromSize) {
-    AddIVSConst(0, TargetSize, FromC);
+    AddIVSSV(0, TargetSize, FromSV);
     return;
   }
+
+  Constant* FromC = getSingleConstant(FromSV);
 
   if(Offset + TargetSize > FromSize) {
 
     // Out of bounds read on the right. Define as much as we can:
-    getConstSubVals(FromC, Offset, FromSize - Offset, OffsetAbove, Dest);
+    getConstSubVals(FromSV, Offset, FromSize - Offset, OffsetAbove, Dest);
     // ...then overdef the rest.
     Dest.push_back(IVSR(FromSize, (Offset + TargetSize) - FromSize, ImprovedValSetSingle(ValSetTypeUnknown, true)));
     return;
@@ -1530,7 +1534,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
       else
 	ThisReadSize = ESize - StartOff;
 
-      getConstSubVals(CA->getAggregateElement(StartE), StartOff, ThisReadSize, OffsetAbove + (ESize * StartE), Dest);
+      getConstSubVals(ShadowValue(CA->getAggregateElement(StartE)), StartOff, ThisReadSize, OffsetAbove + (ESize * StartE), Dest);
 
       if(StartE == EndE)
 	return;
@@ -1562,7 +1566,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
 
     // Read final subelement
     if(EndOff)
-      getConstSubVals(CA->getAggregateElement(EndE), 0, EndOff, OffsetAbove + (ESize * EndE), Dest);
+      getConstSubVals(ShadowValue(CA->getAggregateElement(EndE)), 0, EndOff, OffsetAbove + (ESize * EndE), Dest);
 
   }
   else if(ConstantStruct* CS = dyn_cast<ConstantStruct>(FromC)) {
@@ -1591,7 +1595,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
       else
 	ThisReadSize = StartCSize - StartOff;
 
-      getConstSubVals(StartC, StartOff, ThisReadSize, OffsetAbove + SL->getElementOffset(StartE), Dest);
+      getConstSubVals(ShadowValue(StartC), StartOff, ThisReadSize, OffsetAbove + SL->getElementOffset(StartE), Dest);
 
       if(StartE == EndE)
 	return;
@@ -1630,7 +1634,7 @@ void llvm::getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize
     // Read final subelement
     if(EndOff) {
       Constant* E = CS->getAggregateElement(EndE);
-      getConstSubVals(E, 0, EndOff, OffsetAbove + SL->getElementOffset(EndE), Dest);
+      getConstSubVals(ShadowValue(E), 0, EndOff, OffsetAbove + SL->getElementOffset(EndE), Dest);
     }
 
   }
@@ -1676,7 +1680,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
   }
 
   if(subVals.size() == 1)
-    return cast_val<Constant>(subVals[0].second.Values[0].V);
+    return getSingleConstant(subVals[0].second.Values[0].V);
 
   // Otherwise attempt a big synthesis from bytes.
   SmallVector<uint8_t, 16> buffer(TargetSize);
@@ -1685,7 +1689,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
       it != itend; ++it) {
 
     uint8_t* ReadPtr = &(buffer.data()[it->first.first]);
-    if(!ReadDataFromGlobal(cast_val<Constant>(it->second.Values[0].V), 0, ReadPtr, it->first.second - it->first.first, *GlobalTD))
+    if(!ReadDataFromGlobal(getSingleConstant(it->second.Values[0].V), 0, ReadPtr, it->first.second - it->first.first, *GlobalTD))
       return 0;
 
   }
@@ -1703,10 +1707,12 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
 
 }
 
-void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
+void llvm::getConstSubVal(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
+
+  release_assert(FromSV.isVal() || FromSV.isConstantInt());
 
   SmallVector<IVSRange, 4> subVals;
-  getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
+  getConstSubVals(FromSV, Offset, TargetSize, -((int64_t)Offset), subVals);
 
   if(subVals.size() != 1) {
 
@@ -1737,7 +1743,7 @@ void llvm::getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize,
 Constant* llvm::getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType) {
   
   SmallVector<IVSRange, 4> subVals;
-  getConstSubVals(FromC, Offset, TargetSize, -((int64_t)Offset), subVals);
+  getConstSubVals(ShadowValue(FromC), Offset, TargetSize, -((int64_t)Offset), subVals);
 
   return valsToConst(subVals, TargetSize, targetType);
 
@@ -1893,8 +1899,8 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
   if(S.Values.size() == 1) {
 
     SmallVector<IVSRange, 4> SubVals;
-    Constant* OldC = cast<Constant>(S.Values[0].V.getVal());
-    getConstSubVals(OldC, off, size, /* reporting offset = */ it.start(), SubVals);
+    Constant* OldC = getSingleConstant(S.Values[0].V);
+    getConstSubVals(ShadowValue(OldC), off, size, /* reporting offset = */ it.start(), SubVals);
     if(SubVals.size() == 1)
       S = SubVals[0].second;
     else {
@@ -1920,7 +1926,7 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
 
   for(uint32_t i = 0; i < S.Values.size(); ++i) {
 
-    Constant* OldC = cast<Constant>(S.Values[i].V.getVal());
+    Constant* OldC = getSingleConstant(S.Values[i].V);
     Constant* NewC = getSubConst(OldC, off, size);
     if(NewC)
       S.Values[i].V = ShadowValue(NewC);
@@ -1968,7 +1974,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
     return;
   }
 
-  Constant* C = cast<Constant>(S.Values[0].V.getVal());
+  Constant* C = getSingleConstant(S.Values[0].V);
   uint64_t CSize = GlobalAA->getTypeStoreSize(C->getType());
   truncateConstVal(it, CSize - n, n);
 
@@ -2100,7 +2106,7 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
     
     if(G->G->isConstant()) {
 
-      getConstSubVals(G->G->getInitializer(), Offset, Size, 0, Results);
+      getConstSubVals(ShadowValue(G->G->getInitializer()), Offset, Size, 0, Results);
       return;
 
     }
@@ -3447,14 +3453,14 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
     // Expand scalar splats if the other argument is not a splat.
     if(consumeVal.SetType == ValSetTypeScalarSplat && consumeVal.Values.size() && otherVal.SetType == ValSetTypeScalar && otherVal.Values.size()) {
 
-      scalarSplatToScalar(consumeVal, otherVal.Values[0].V.getVal()->getType());
+      scalarSplatToScalar(consumeVal, otherVal.Values[0].V.getNonPointerType());
       // Fall through to merge
 
     }
     else if(consumeVal.SetType == ValSetTypeScalar && consumeVal.Values.size() && otherVal.SetType == ValSetTypeScalarSplat && otherVal.Values.size()) {
 
       ImprovedValSetSingle Copy(otherVal);
-      scalarSplatToScalar(Copy, consumeVal.Values[0].V.getVal()->getType());
+      scalarSplatToScalar(Copy, consumeVal.Values[0].V.getNonPointerType());
       consumeVal.merge(Copy);
       return;
 

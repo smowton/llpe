@@ -709,12 +709,9 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
   }
 
   if(inst_is<MemIntrinsic>(I)) {
-	
-    ConstantInt* SizeC = cast_or_null<ConstantInt>(getConstReplacement(I->getCallArgOperand(2)));
+
     uint64_t MISize;
-    if(SizeC)
-      MISize = SizeC->getZExtValue();
-    else
+    if(!tryGetConstantInt(I->getCallArgOperand(2), MISize))
       MISize = AliasAnalysis::UnknownSize;
 
     if(inst_is<MemTransferInst>(I)) {

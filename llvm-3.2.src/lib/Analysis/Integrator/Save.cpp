@@ -506,6 +506,11 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
       FDGlobalState& FDS = pass->fds[SV.u.PtrOrFd.idx];
       return FDS.CommittedVal;
     }
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return getSingleConstant(SV);
   default:
     release_assert(0 && "Bad SV type");
     llvm_unreachable();
@@ -1734,8 +1739,9 @@ bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, Improv
 
 Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
-  if(Ty == ValSetTypeScalar)
-    return IV.V.getVal();
+  if(Ty == ValSetTypeScalar) {
+    return getSingleConstant(IV.V);
+  }
   else if(Ty == ValSetTypeFD) {
     
     if(canSynthVal(I, Ty, IV)) {

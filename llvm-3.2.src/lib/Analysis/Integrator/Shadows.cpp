@@ -594,19 +594,6 @@ ShadowInstruction* PeelIteration::getInstFalling(ShadowBBInvar* BB, uint32_t ins
 
 }
 
-bool ShadowInstruction::resolved() {
-  
-  if(getConstReplacement(this))
-    return true;
-  ShadowValue Ign1;
-  int64_t Ign2;
-  if(getBaseAndConstantOffset(ShadowValue(this), Ign1, Ign2))
-    return true;
-
-  return false;
-
-}
-
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;
@@ -638,6 +625,21 @@ ShadowInstruction* IntegrationAttempt::getInst(ShadowInstructionInvar* SII) {
 
 }
 
+ShadowValue ShadowValue::getInt(Type* CIT, uint64_t CIVal) {
+
+  if(CIT->isIntegerTy(8))
+    return ShadowValue::getInt8((uint8_t)CIVal);
+  else if(CIT->isIntegerTy(16))
+    return ShadowValue::getInt16((uint16_t)CIVal);
+  else if(CIT->isIntegerTy(32))
+    return ShadowValue::getInt32((uint32_t)CIVal);
+  else if(CIT->isIntegerTy(64))
+    return ShadowValue::getInt64(CIVal);
+  else
+    return ShadowValue(ConstantInt::get(CIT, CIVal));
+
+}
+
 // Get the ShadowValue for this instruction's operand.
 // For most kinds of ShadowValue they're just passed through,
 // but for ShadowInstructions we must make sure if the operand is
@@ -656,6 +658,9 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
     }
     else if(Argument* A = dyn_cast<Argument>(ArgV)) {
       return ShadowValue(&(parent->IA->getFunctionRoot()->argShadows[A->getArgNo()]));
+    }
+    else if(ConstantInt* CI = dyn_cast<ConstantInt>(ArgV)) {
+      return ShadowValue::getInt(CI->getType(), CI->getLimitedValue());
     }
     else {
       return ShadowValue(ArgV);

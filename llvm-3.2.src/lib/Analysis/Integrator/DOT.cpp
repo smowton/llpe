@@ -61,11 +61,10 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
       return "pink";
   }
 
-  if(getConstReplacement(SV))
-    return "green";
-
   if(IAI->PB) {
     ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IAI->PB);
+    if(IVS && IVS->Values.size() == 1)
+      return "green";
     if((!IVS) || (IVS->Values.size() != 0 && !IVS->Overdef))
       return "darkgreen";
   }
@@ -141,7 +140,13 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
 
   ShadowInstruction* SI = SV.getInst();
 
-  if(Constant* C = getConstReplacement(SV)) {
+  uint64_t SVi;
+  if(tryGetConstantInt(SV, SVi)) {
+
+    Out << (*SV.getNonPointerType()) << " " << SVi;
+
+  }
+  else if(Constant* C = getConstReplacement(SV)) {
     if(isa<Function>(C))
       Out << "@" << C->getName();
     else

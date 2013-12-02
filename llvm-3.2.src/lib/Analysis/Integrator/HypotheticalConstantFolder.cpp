@@ -323,12 +323,7 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
 
 }
 
-static ShadowValue getOpenCmpResult(CmpInst* CmpI, ConstantInt* CmpInt, bool flip) {
-
-  if(CmpInt->getBitWidth() > 64) {
-    LPDEBUG("Using an int wider than int64 for an FD\n");
-    return ShadowValue();
-  }
+static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
 
   CmpInst::Predicate Pred = CmpI->getPredicate();
 
@@ -352,8 +347,6 @@ static ShadowValue getOpenCmpResult(CmpInst* CmpI, ConstantInt* CmpInt, bool fli
     }
 
   }
-
-  int64_t CmpVal = CmpInt->getSExtValue();
 
   switch(Pred) {
 
@@ -400,7 +393,8 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
     return false;
 
   bool flip;
-  ConstantInt* CmpInt = 0;
+  bool CmpIntValid;
+  uint64_t CmpInt = 0;
   ValSetType CmpIntType;
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
@@ -409,21 +403,21 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   if(op0I != -1 && Ops[0].first == ValSetTypeFD) {
     flip = false;
-    CmpInt = dyn_cast_or_null<ConstantInt>(op1.getVal());
+    CmpIntValid = tryGetConstantInt(op1, CmpInt);
     CmpIntType = Ops[1].first;
   }
   else if(op1I != -1 && Ops[1].first == ValSetTypeFD) {
     flip = true;
-    CmpInt = dyn_cast_or_null<ConstantInt>(op0.getVal());
+    CmpIntValid = tryGetConstantInt(op0, CmpInt);
     CmpIntType = Ops[0].first;
   }
   else {
     return false;
   }
 
-  if(CmpInt) {
+  if(CmpIntValid) {
     
-    Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
+    Improved.V = getOpenCmpResult(CmpI, (int64_t)CmpInt, flip);
     if(!Improved.V.isInval()) {
       LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
       ImpType = ValSetTypeScalar;
@@ -489,6 +483,25 @@ static unsigned getReversePred(unsigned Pred) {
 
 }
 
+static bool SVNull(ShadowValue& SV) {
+
+  uint64_t CI;
+  if(tryGetConstantInt(SV, CI))
+    return CI == 0;
+  
+  Constant* V = dyn_cast_or_null<Constant>(SV.getVal());
+  if(V) {
+    
+    if(isa<Function>(V))
+      V = cast<Constant>(V->stripPointerCasts());
+    return V->isNullValue();
+
+  }
+  
+  return false;
+
+}
+
 bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
@@ -507,22 +520,26 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
     break;
   }
 
-  Constant* Op0C = dyn_cast_or_null<Constant>(Ops[0].second.V.getVal());
-  Constant* Op1C = dyn_cast_or_null<Constant>(Ops[1].second.V.getVal());
-  ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C);
-  ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C);
+  bool Op0Null = SVNull(Ops[0].second.V);
+  bool Op1Null = SVNull(Ops[1].second.V);
+  uint64_t Op0CI, Op1CI;
+  APInt Op0AP, Op1AP;
+  bool Op0CIValid, Op1CIValid;
+  if((Op0CIValid = tryGetConstantInt(Ops[0].second.V, Op0CI)))
+    Op0AP = APInt(cast<IntegerType>(Ops[0].second.V.getNonPointerType())->getBitWidth(), Op0CI);
+  if((Op1CIValid = tryGetConstantInt(Ops[1].second.V, Op1CI)))
+    Op1AP = APInt(cast<IntegerType>(Ops[1].second.V.getNonPointerType())->getBitWidth(), Op1CI);
 
   // Only handle constant vs. nonconstant here; 2 constants is handled elsewhere.
-  if((!!Op0C) == (!!Op1C))
+  if((Op0Null || Op0CIValid) == (Op1Null || Op1CIValid))
     return false;
 
-  if(!Op1C) {
-    std::swap(Op0C, Op1C);
+  if(!(Op1Null || Op1CIValid)) {
+    std::swap(Op0Null, Op1Null);
     std::swap(Op0CI, Op1CI);
+    std::swap(Op0CIValid, Op1CIValid);
     Pred = getReversePred(Pred);
   }
-
-  assert(Op1C);
 
   // OK, we have a nonconst LHS against a const RHS.
   // Note that the operands to CmpInst must be of the same type.
@@ -534,56 +551,56 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
     break;
   case CmpInst::ICMP_UGT:
     // Never u> ~0
-    if(Op1CI && Op1CI->isAllOnesValue()) {
+    if(Op1CIValid && Op1AP.isMaxValue()) {
       Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_UGE:
     // Always u>= 0
-    if(Op1C->isNullValue()) {
+    if(Op1Null) {
       Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULT:
     // Never u< 0
-    if(Op1C->isNullValue()) {
+    if(Op1Null) {
       Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_ULE:
     // Always u<= ~0
-    if(Op1CI && Op1CI->isAllOnesValue()) {
+    if(Op1CIValid && Op1AP.isMaxValue()) {
       Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGT:
     // Never s> maxint
-    if(Op1CI && Op1CI->isMaxValue(true)) {
+    if(Op1CIValid && Op1AP.isMaxSignedValue()) {
       Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SGE:
     // Always s>= minint
-    if(Op1CI && Op1CI->isMinValue(true)) {
+    if(Op1CIValid && Op1AP.isMinSignedValue()) {
       Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLT:
     // Never s< minint
-    if(Op1CI && Op1CI->isMinValue(true)) {
+    if(Op1CIValid && Op1AP.isMinSignedValue()) {
       Improved.V = ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
       return true;
     }
     break;
   case CmpInst::ICMP_SLE:
     // Always s<= maxint
-    if(Op1CI && Op1CI->isMaxValue(true)) {
+    if(Op1CIValid && Op1AP.isMaxSignedValue()) {
       Improved.V = ShadowValue(ConstantInt::getTrue(CmpI->getContext()));
       return true;     
     }
@@ -600,11 +617,15 @@ static bool isIDOrConst(ShadowValue& op) {
   if(isGlobalIdentifiedObject(op))
     return true;
 
-  if(val_is<ConstantPointerNull>(op))
-    return true;
+  if(op.isVal()) {
 
-  if(ConstantExpr* CE = dyn_cast_val<ConstantExpr>(op))
-    return CE->getOpcode() == Instruction::IntToPtr && isa<Constant>(CE->getOperand(0));
+    if(val_is<ConstantPointerNull>(op))
+      return true;
+
+    if(ConstantExpr* CE = dyn_cast_val<ConstantExpr>(op))
+      return CE->getOpcode() == Instruction::IntToPtr && isa<Constant>(CE->getOperand(0));
+
+  }
 
   return false;
 
@@ -722,11 +743,11 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
 
-  Constant* op0C = dyn_cast_or_null<Constant>(op0.getVal());
-  Constant* op1C = dyn_cast_or_null<Constant>(op1.getVal());
+  bool op0Null = SVNull(op0);
+  bool op1Null = SVNull(op1);
 
-  bool op0Fun = (op0C && isa<Function>(op0C->stripPointerCasts()));
-  bool op1Fun = (op1C && isa<Function>(op1C->stripPointerCasts()));
+  bool op0Fun = (op0.isVal() && isa<Function>(op0.u.V->stripPointerCasts()));
+  bool op1Fun = (op1.isVal() && isa<Function>(op1.u.V->stripPointerCasts()));
 
   bool op0UGO = isGlobalIdentifiedObject(op0);
   bool op1UGO = isGlobalIdentifiedObject(op1);
@@ -748,12 +769,12 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   // 1. Comparison between two null pointers, or a null pointer and a resolved pointer:
 
   Constant* op0Arg = 0, *op1Arg = 0;
-  if(op0C && op0C->isNullValue())
+  if(op0Null)
     op0Arg = zero;
   else if(op0UGO || op0Fun)
     op0Arg = one;
   
-  if(op1C && op1C->isNullValue())
+  if(op1Null)
     op1Arg = zero;
   else if(op1UGO || op1Fun)
     op1Arg = one;
@@ -852,14 +873,15 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
     if(!Op1Ptr) {
 
-      ConstantInt* Op1I = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
+      uint64_t Op1I;
+      bool Op1Valid = tryGetConstantInt(Ops[1].second.V, Op1I);
 
       ImpType = ValSetTypePB;
       Improved.V = Ops[0].second.V;
-      if(Ops[0].second.Offset == LLONG_MAX || !Op1I)
+      if(Ops[0].second.Offset == LLONG_MAX || !Op1Valid)
 	Improved.Offset = LLONG_MAX;
       else
-	Improved.Offset = Ops[0].second.Offset - Op1I->getSExtValue();
+	Improved.Offset = Ops[0].second.Offset - ((int64_t)Op1I);
 
       return true;
 
@@ -869,7 +891,7 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       // Subtracting pointers with a common base.
       if(Ops[0].second.Offset != LLONG_MAX && Ops[1].second.Offset != LLONG_MAX) {
 	ImpType = ValSetTypeScalar;
-	Improved = ShadowValue(ConstantInt::getSigned(BOp->getType(), Ops[0].second.Offset - Ops[1].second.Offset));
+	Improved = ShadowValue::getInt(BOp->getType(), (uint64_t)(Ops[0].second.Offset - Ops[1].second.Offset));
 	return true;
       }
 
@@ -904,8 +926,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       if((!checkOp.isInst()) || checkOp.u.I->invar->I->getOpcode() != Instruction::Sub)
 	return false;
 
-      ConstantInt* SubOp0 = dyn_cast_or_null<ConstantInt>(getConstReplacement(checkOp.u.I->getOperand(0)));
-      if(!SubOp0)
+      uint64_t SubOp0;
+      if(!tryGetConstantInt(checkOp.u.I->getOperand(0), SubOp0))
 	return false;
 
       ShadowInstruction* SubOp1 = checkOp.u.I->getOperand(1).getInst();
@@ -924,22 +946,23 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       // (or commute the topmost + operator) = c1 + c2 - c3.
 
       ImpType = ValSetTypeScalar;
-      int64_t NewVal = (Ops[otherOp].second.Offset + ((int64_t)SubOp0->getLimitedValue())) - SubOp1Offset;
-      Improved.V = ShadowValue(ConstantInt::getSigned(BOp->getType(), NewVal));
+      int64_t NewVal = (Ops[otherOp].second.Offset + ((int64_t)SubOp0)) - SubOp1Offset;
+      Improved.V = ShadowValue::getInt(BOp->getType(), (uint64_t)NewVal);
 
       return true;
 
     }
     
     std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0] : Ops[1];
-    ConstantInt* NumC = dyn_cast_or_null<ConstantInt>(Op0Ptr ? Ops[1].second.V.getVal() : Ops[0].second.V.getVal());
+    uint64_t NumC;
+    bool NumCValid = tryGetConstantInt(Op0Ptr ? Ops[1].second.V : Ops[0].second.V, NumC);
 
     ImpType = ValSetTypePB;
     Improved.V = PtrV.second.V;
-    if(PtrV.second.Offset == LLONG_MAX || !NumC)
+    if(PtrV.second.Offset == LLONG_MAX || !NumCValid)
       Improved.Offset = LLONG_MAX;
     else
-      Improved.Offset = PtrV.second.Offset + NumC->getSExtValue();
+      Improved.Offset = PtrV.second.Offset + (int64_t)NumC;
     
     return true;
 
@@ -954,8 +977,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       if((!Op0Ptr) || Op1Ptr)
 	break;
 
-      ConstantInt* MaskC = dyn_cast_or_null<ConstantInt>(Ops[1].second.V.getVal());
-      if(!MaskC)
+      uint64_t MaskC;
+      if(!tryGetConstantInt(Ops[1].second.V, MaskC))
 	break;
 
       if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
@@ -981,12 +1004,10 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
       }
 
-      uint64_t Mask = MaskC->getLimitedValue();
-	
-      if(Align > Mask) {
+      if(Align > MaskC) {
       
 	ImpType = ValSetTypeScalar;
-	Improved.V = ShadowValue(ConstantInt::get(BOp->getType(), Mask & UOff));
+	Improved.V = ShadowValue::getInt(BOp->getType(), MaskC & UOff);
 	return true;
 
       }
@@ -1096,13 +1117,13 @@ namespace llvm {
   case Instruction::Or:
     break;
   }
-
-  Constant* Op0C = cast_or_null<Constant>(Ops[0].second.V.getVal());
-  Constant* Op1C = cast_or_null<Constant>(Ops[1].second.V.getVal());
+  
+  bool Op0Null = SVNull(Ops[0].second.V);
+  bool Op1Null = SVNull(Ops[1].second.V);
 
   if(BOp->getOpcode() == Instruction::And) {
 
-    if((Op0C && Op0C->isNullValue()) || (Op1C && Op1C->isNullValue())) {
+    if(Op0Null || Op1Null) {
 
       ImpType = ValSetTypeScalar;
       Improved.V = ShadowValue(Constant::getNullValue(BOp->getType()));
@@ -1115,17 +1136,24 @@ namespace llvm {
 
     bool allOnes = false;
 
-    if(ConstantInt* Op0CI = dyn_cast_or_null<ConstantInt>(Op0C)) {
+    uint64_t Op0CI;
+    if(tryGetConstantInt(Ops[0].second.V, Op0CI)) {
 
-      if(Op0CI->isAllOnesValue())
+      APInt Op0AP(cast<IntegerType>(Ops[0].second.V.getNonPointerType())->getBitWidth(), Op0CI);
+
+      if(Op0AP.isMaxValue())
 	allOnes = true;
-
+      
     }
       
     if(!allOnes) {
-      if(ConstantInt* Op1CI = dyn_cast_or_null<ConstantInt>(Op1C)) {
+      
+      uint64_t Op1CI;
+      if(tryGetConstantInt(Ops[1].second.V, Op1CI)) {
 
-	if(Op1CI->isAllOnesValue())
+	APInt Op1AP(cast<IntegerType>(Ops[1].second.V.getNonPointerType())->getBitWidth(), Op1CI);
+
+	if(Op1AP.isMaxValue())
 	  allOnes = true;
 
       }
@@ -1227,20 +1255,21 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	gep_type_iterator GTI = gep_type_begin(GEP);
 	for (uint32_t i = 1, ilim = SI->getNumOperands(); i != ilim; ++i, ++GTI) {
       
-	  if(Ops[i].first != ValSetTypeScalar) {
+	  uint64_t OpC;	  
+	  
+	  if(Ops[i].first != ValSetTypeScalar || !tryGetConstantInt(Ops[i].second.V, OpC)) {
 	    // Uncertain
 	    Improved.Offset = LLONG_MAX;
 	    break;
 	  }
 	  else {
-	    ConstantInt* OpC = cast<ConstantInt>(Ops[i].second.V.getVal());
-	    if (OpC->isZero()) continue;
+	    if (!OpC) continue;
 	    // Handle a struct and array indices which add their offset to the pointer.
 	    if (StructType *STy = dyn_cast<StructType>(*GTI)) {
-	      Improved.Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
+	      Improved.Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC);
 	    } else {
 	      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
-	      Improved.Offset += OpC->getSExtValue()*Size;
+	      Improved.Offset += ((int64_t)OpC) * Size;
 	    }
 	  }
 	}
@@ -1320,6 +1349,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       return;
     }
 
+    release_assert(Ops[0].second.V.isVal());
     Constant* Agg = cast<Constant>(Ops[0].second.V.u.V);
     Constant* Ext = ConstantFoldExtractValueInstruction(Agg, cast<ExtractValueInst>(SI->invar->I)->getIndices());
     if(Ext) {
@@ -1333,10 +1363,33 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   }
 
+  // Try the special constant folder that avoids creating ConstantInts
+  // These are uniqued and stay alive forever, which can consume a *lot* of memory,
+  // so this path handles the common case of integer unary and binary operations.
+
+  SmallVector<uint64_t, 4> intOperands;
+  bool allOpsInts = true;
+
+  for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim && allOpsInts; i++) {
+
+    uint64_t opInt;
+    if(Ops[i].first != ValSetTypeScalar || !tryGetConstantInt(Ops[i].second.V, opInt))
+      allOpsInts = false;
+    else
+      intOperands.push_back(opInt);
+
+  }
+
+  if(allOpsInts) {
+
+    if(IHPFoldIntOp(SI, Ops, intOperands, ImpType, Improved))
+      return;
+
+  }
+  
   // Try ordinary constant folding?
 
   SmallVector<Constant*, 4> instOperands;
-
   bool allOpsAvailable = true;
 
   for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim; i++) {
@@ -1364,8 +1417,11 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	return;
       }
     }
+    else {
 
-    instOperands.push_back(cast<Constant>(Ops[i].second.V.getVal()));
+      instOperands.push_back(getSingleConstant(Ops[i].second.V));
+
+    }
 
   }
 
@@ -1492,6 +1548,14 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
   case SHADOWVAL_GV:
 
     Ops[OpIdx] = std::make_pair(ValSetTypePB, ImprovedVal(OpV, 0));
+    return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
+
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+
+    Ops[OpIdx] = std::make_pair(ValSetTypeScalar, ImprovedVal(OpV));
     return tryEvaluateOrdinaryInst(SI, NewPB, Ops, OpIdx+1);
 
   default:
@@ -1623,7 +1687,7 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
 	MCRHere = MCRMAYBE;
 	break;
       }
-      Constant* ThisC = cast_val<Constant>(ThisV.V);
+      Constant* ThisC = getSingleConstant(ThisV.V);
       MultiCmpResult thisResult = ThisC->isNullValue() ? MCRFALSE : MCRTRUE;
 
       if(i == 0)
@@ -2280,6 +2344,14 @@ Type* ShadowValue::getNonPointerType() {
   case SHADOWVAL_FDIDX:
     return GInt32;
   case SHADOWVAL_FDIDX64:
+    return GInt64;
+  case SHADOWVAL_CI8:
+    return GInt8;
+  case SHADOWVAL_CI16:
+    return GInt16;
+  case SHADOWVAL_CI32:
+    return GInt32;
+  case SHADOWVAL_CI64:
     return GInt64;
   default:
     release_assert(0 && "Bad SV type");

@@ -45,6 +45,10 @@ enum ShadowValType {
   SHADOWVAL_PTRIDX,
   SHADOWVAL_FDIDX,
   SHADOWVAL_FDIDX64, /* FD stored in an int64 */
+  SHADOWVAL_CI8,
+  SHADOWVAL_CI16,
+  SHADOWVAL_CI32,
+  SHADOWVAL_CI64,
   SHADOWVAL_INVAL
 
 };
@@ -110,6 +114,7 @@ struct ShadowValue {
       int32_t frame;
       uint32_t idx;
     } PtrOrFd;
+    uint64_t CI;
   } u;
 
 ShadowValue() : t(SHADOWVAL_INVAL) { u.V = 0; }
@@ -118,10 +123,16 @@ ShadowValue(ShadowInstruction* _I) : t(SHADOWVAL_INST) { u.I = _I; }
 ShadowValue(ShadowGV* _GV) : t(SHADOWVAL_GV) { u.GV = _GV; }
 ShadowValue(Value* _V) : t(SHADOWVAL_OTHER) { u.V = _V; }
 ShadowValue(ShadowValType Ty, int32_t frame, uint32_t idx) : t(Ty) { u.PtrOrFd.frame = frame; u.PtrOrFd.idx = idx; }
+ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
 
   static ShadowValue getPtrIdx(int32_t f, uint32_t i) { return ShadowValue(SHADOWVAL_PTRIDX, f, i); }
   static ShadowValue getFdIdx(uint32_t i) { return ShadowValue(SHADOWVAL_FDIDX, -1, i); }
   static ShadowValue getFdIdx64(uint32_t i) { return ShadowValue(SHADOWVAL_FDIDX64, -1, i); }
+  static ShadowValue getInt8(uint8_t i) { return ShadowValue(SHADOWVAL_CI8, i); }
+  static ShadowValue getInt16(uint16_t i) { return ShadowValue(SHADOWVAL_CI16, i); }
+  static ShadowValue getInt32(uint32_t i) { return ShadowValue(SHADOWVAL_CI32, i); }
+  static ShadowValue getInt64(uint64_t i) { return ShadowValue(SHADOWVAL_CI64, i); }
+  static ShadowValue getInt(Type*, uint64_t i);
 
   bool isInval() {
     return t == SHADOWVAL_INVAL;
@@ -144,6 +155,9 @@ ShadowValue(ShadowValType Ty, int32_t frame, uint32_t idx) : t(Ty) { u.PtrOrFd.f
   bool isFdIdx() {
     return t == SHADOWVAL_FDIDX || t == SHADOWVAL_FDIDX64;
   }
+  bool isConstantInt() {
+    return t == SHADOWVAL_CI8 || t == SHADOWVAL_CI16 || t == SHADOWVAL_CI32 || t == SHADOWVAL_CI64;
+  }
   ShadowArg* getArg() {
     return t == SHADOWVAL_ARG ? u.A : 0;
   }
@@ -155,6 +169,12 @@ ShadowValue(ShadowValType Ty, int32_t frame, uint32_t idx) : t(Ty) { u.PtrOrFd.f
   }
   ShadowGV* getGV() {
     return t == SHADOWVAL_GV ? u.GV : 0;
+  }
+  bool getCI(uint64_t& Out) {
+    bool isci = isConstantInt();
+    if(isci)
+      Out = u.CI;
+    return isci;
   }
 
   Type* getNonPointerType();
@@ -211,6 +231,11 @@ inline bool operator==(ShadowValue V1, ShadowValue V2) {
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
     return V1.u.PtrOrFd.frame == V2.u.PtrOrFd.frame && V1.u.PtrOrFd.idx == V2.u.PtrOrFd.idx;
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return V1.u.CI == V2.u.CI;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -242,6 +267,11 @@ inline bool operator<(ShadowValue V1, ShadowValue V2) {
       return V1.u.PtrOrFd.idx < V2.u.PtrOrFd.idx;
     else
       return V1.u.PtrOrFd.frame < V2.u.PtrOrFd.frame;
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return V1.u.CI < V2.u.CI;
   default:
     release_assert(0 && "Bad SV type");
     return false;
@@ -293,6 +323,11 @@ template<> struct DenseMapInfo<ShadowValue> {
     case SHADOWVAL_FDIDX64:
       // Should work due to the union.
       hashPtr = V.u.V; break;
+    case SHADOWVAL_CI8:
+    case SHADOWVAL_CI16:
+    case SHADOWVAL_CI32:
+    case SHADOWVAL_CI64:
+      hashPtr = (void*)V.u.CI; break;
     default:
       release_assert(0 && "Bad value type");
       hashPtr = 0;
@@ -929,7 +964,6 @@ struct ShadowInstruction {
     return invar->I->getType();
   }
 
-  bool resolved();
   bool isCopyInst();
 
 };
@@ -1392,34 +1426,10 @@ uint32_t ShadowBBInvar::succs_size() {
 }
 
 extern Type* GInt8Ptr;
+extern Type* GInt8;
+extern Type* GInt16;
 extern Type* GInt32;
 extern Type* GInt64;
-
-/*
-inline Type* ShadowValue::getType() {
-
-  switch(t) {
-  case SHADOWVAL_ARG:
-    return u.A->getType();
-  case SHADOWVAL_INST:
-    return u.I->getType();
-  case SHADOWVAL_GV:
-    return u.GV->G->getType();
-  case SHADOWVAL_OTHER:
-    return u.V->getType();
-  case SHADOWVAL_PTRIDX:
-    return getAllocType();
-  case SHADOWVAL_FDIDX:
-    return GInt32;
-  case SHADOWVAL_FDIDX64:
-    return GInt64;
-  default:
-    release_assert(0 && "Bad SV type");
-    return 0;
-  }
-
-}
-*/
 
 inline const MDNode* ShadowValue::getTBAATag() {
 
@@ -1505,6 +1515,11 @@ inline LLVMContext& ShadowValue::getLLVMContext() {
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
     return GInt8Ptr->getContext();
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return GInt8->getContext();
   default:
     return u.V->getContext();
   }
@@ -1574,14 +1589,50 @@ template<class X> inline X* cast_val(ShadowValue V) {
   }
 }
 
-inline Constant* getSingleConstant(ImprovedValSet* IV) {
+static Constant* CIToConst(ShadowValue V) {
+
+  Type* CITy = V.getNonPointerType();
+  return ConstantInt::get(CITy, V.u.CI, true);
+
+}
+
+inline Constant* getSingleConstant(ShadowValue V) {
+
+  if(V.t == SHADOWVAL_OTHER)
+    return cast<Constant>(V.u.V);  
+  else if(V.isConstantInt())
+    return CIToConst(V);
+  else {
+    release_assert(0 && "getSingleConstant on non-constant");
+    return 0;
+  }
+
+}
+
+inline bool hasSingleConstant(ImprovedValSet* IV) {
 
   ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV);
   if(!IVS)
-    return 0;
+    return false;
   if(IVS->Overdef || IVS->Values.size() != 1 || IVS->SetType != ValSetTypeScalar)
+    return false;  
+  return true;
+
+}
+
+inline Constant* getSingleConstant(ImprovedValSet* IV) {
+  
+  if(!hasSingleConstant(IV))
     return 0;
-  return cast_val<Constant>(IVS->Values[0].V);  
+  return getSingleConstant(cast<ImprovedValSetSingle>(IV)->Values[0].V);
+
+}
+
+inline bool hasConstReplacement(ShadowArg* SA) {
+
+  if(!SA->i.PB)
+    return false;
+  return hasSingleConstant(SA->i.PB);
 
 }
 
@@ -1590,6 +1641,14 @@ inline Constant* getConstReplacement(ShadowArg* SA) {
   if(!SA->i.PB)
     return 0;
   return getSingleConstant(SA->i.PB);
+
+}
+
+inline bool hasConstReplacement(ShadowInstruction* SI) {
+
+  if(!SI->i.PB)
+    return false;
+  return hasSingleConstant(SI->i.PB);
 
 }
 
@@ -1603,6 +1662,34 @@ inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
 inline ImprovedValSet* getIVSRef(ShadowValue V);
 
+inline bool hasConstReplacement(ShadowValue SV) {
+
+  switch(SV.t) {
+
+  case SHADOWVAL_ARG:
+  case SHADOWVAL_INST: 
+    {
+      ImprovedValSet* IVS = getIVSRef(SV);
+      if(!IVS)
+	return 0;
+      return hasSingleConstant(IVS);
+    }
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return true;
+  case SHADOWVAL_OTHER:
+  case SHADOWVAL_GV:
+    return SV.getVal() && isa<Constant>(SV.getVal());
+  default:
+    release_assert(0 && "Bad SV type in hasConstReplacement");
+    llvm_unreachable();
+
+  }
+
+}
+
 inline Constant* getConstReplacement(ShadowValue SV) {
 
   switch(SV.t) {
@@ -1615,6 +1702,11 @@ inline Constant* getConstReplacement(ShadowValue SV) {
 	return 0;
       return getSingleConstant(IVS);
     }
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return getSingleConstant(SV);
   case SHADOWVAL_OTHER:
   case SHADOWVAL_GV:
     return dyn_cast_or_null<Constant>(SV.getVal());
@@ -1635,6 +1727,47 @@ inline ShadowValue tryGetConstReplacement(ShadowValue SV) {
 
 }
 
+inline bool tryGetConstantInt(ShadowValue SV, uint64_t& Out) {
+
+  if(SV.getCI(Out))
+    return true;
+
+  ConstantInt* CI;
+  if(SV.isVal() && (CI = dyn_cast<ConstantInt>(SV.u.V))) {
+
+    if(CI->getBitWidth() > 64)
+      return false;
+
+    Out = CI->getLimitedValue();
+    return true;
+  }
+
+  return false;
+
+}
+
+inline bool tryGetConstantIntReplacement(ShadowValue SV, uint64_t& Out) {
+
+  if(tryGetConstantInt(SV, Out))
+    return true;
+
+  switch(SV.t) {
+
+  case SHADOWVAL_ARG:
+  case SHADOWVAL_INST: 
+    {
+      ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(SV));
+      if((!IVS) || IVS->Values.size() != 1)
+	return false;
+      return tryGetConstantInt(IVS->Values[0].V, Out);
+    }
+  default:
+    return false;
+
+  }
+
+}
+
 std::pair<ValSetType, ImprovedVal> getValPB(Value* V);
 
 inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValSetType, ImprovedVal>& Single) {
@@ -1652,6 +1785,13 @@ inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValS
     break;
   case SHADOWVAL_OTHER:
     Single = getValPB(V.u.V);
+    break;
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64: 
+    Single.first = ValSetTypeScalar;
+    Single.second = V;
     break;
   default:
     release_assert(0 && "Bad value type in getIVOrSingleVal");
@@ -1730,7 +1870,13 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
   case SHADOWVAL_GV:
     OutPB.set(ImprovedVal(V, 0), ValSetTypePB);
     return true;
-
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64: 
+    OutPB.set(V, ValSetTypeScalar);
+    return true;
+    
   case SHADOWVAL_OTHER:
     {
       std::pair<ValSetType, ImprovedVal> VPB = getValPB(V.getVal());
@@ -1739,6 +1885,8 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
       OutPB.set(VPB.second, VPB.first);
       return true;
     }
+
+
 
   default:
     release_assert(0 && "Bad value type in getImprovedValSetSingle");
@@ -1787,6 +1935,12 @@ inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
     }
   case SHADOWVAL_GV:
     ResultPB.mergeOne(ValSetTypePB, ImprovedVal(V, 0));
+    return;
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64: 
+    ResultPB.mergeOne(ValSetTypeScalar, V);
     return;
   case SHADOWVAL_OTHER:
     {

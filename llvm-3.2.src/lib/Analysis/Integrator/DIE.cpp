@@ -332,7 +332,7 @@ bool llvm::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
   if(_willBeDeleted(V))
     return true;
-  if(getConstReplacement(V))
+  if(hasConstReplacement(V))
     return true;
 
   return false;
@@ -616,7 +616,7 @@ void IntegrationAttempt::runDIE() {
       if(!shouldDIE(SI))
 	continue;
 
-      bool delOrConst = willBeReplacedWithConstantOrDeleted(ShadowValue(SI));
+      bool delOrConst = willBeDeleted(ShadowValue(SI));
 
       if(inst_is<CallInst>(SI)) {
 

@@ -1155,6 +1155,11 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
     return true;
   case SHADOWVAL_OTHER:
     return isIdentifiedObject(V.u.V);
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return false;
   default:
     release_assert(0 && "Bad value type in isGlobalIdentifiedObject");
     llvm_unreachable();
@@ -3520,6 +3525,8 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
 }
 
 Type* llvm::GInt8Ptr;
+Type* llvm::GInt8;
+Type* llvm::GInt16;
 Type* llvm::GInt32;
 Type* llvm::GInt64;
 
@@ -3544,6 +3551,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
+  GInt8 = Type::getInt32Ty(M.getContext());
+  GInt16 = Type::getInt32Ty(M.getContext());
   GInt32 = Type::getInt32Ty(M.getContext());
   GInt64 = Type::getInt64Ty(M.getContext());
   initMRInfo(&M);

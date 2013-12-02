@@ -145,6 +145,13 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
     if(!it->allocValue.isInst())
       continue;
 
+    if(!it->committedVal) {
+
+      errs() << "Warning: heap allocation " << it->allocIdx << " not committed\n";
+      continue;
+
+    }
+
     patchReferences(it->PatchRefs, it->committedVal);
     forwardReferences(it->committedVal, getGlobalModule());
 
@@ -152,6 +159,13 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
 
   for(std::vector<FDGlobalState>::iterator it = fds.begin(),
 	itend = fds.end(); it != itend; ++it) {
+
+    if(!it->CommittedVal) {
+
+      errs() << "Warning: some FD not committed\n";
+      continue;
+
+    }
 
     patchReferences(it->PatchRefs, it->CommittedVal);
     forwardReferences(it->CommittedVal, getGlobalModule());

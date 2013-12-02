@@ -20,16 +20,18 @@ using namespace llvm;
 
 static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  ConstantInt* ReadSize = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 2)));
+  if(!tryGetConstantInt(getValArgOperand(CS, 2), Size))
+    Size = AliasAnalysis::UnknownSize;
   V = getValArgOperand(CS, 1);
-  Size = ReadSize ? ReadSize->getLimitedValue() : AliasAnalysis::UnknownSize;
 
 }
 
 static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
-  ConstantInt* nFDs = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)));
-  Size = nFDs ? (nFDs->getLimitedValue() * sizeof(struct pollfd)) : AliasAnalysis::UnknownSize;
+  if(!tryGetConstantInt(getValArgOperand(CS, 1), Size))
+    Size = AliasAnalysis::UnknownSize;
+  else
+    Size *= sizeof(struct pollfd);
   V = getValArgOperand(CS, 0);
   
 }
@@ -44,9 +46,7 @@ static void isReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ShadowValue LenArg = getValArgOperand(CS, 2);
-  if(ConstantInt* CI = dyn_cast_or_null<ConstantInt>(getConstReplacement(LenArg)))
-    Size = CI->getLimitedValue();
-  else
+  if(!tryGetConstantInt(LenArg, Size))
     Size = AliasAnalysis::UnknownSize;
   V = getValArgOperand(CS, 1);
 
@@ -232,18 +232,18 @@ static IHPLocationMRInfo UnameMR[] = {
 
 static const IHPLocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
-  if(ConstantInt* C = cast_or_null<ConstantInt>(getConstReplacement(getValArgOperand(CS, 1)))) {
-
-    switch(C->getLimitedValue()) {
-    case TCGETS:
-      return TCGETSMR;
-    case FIONBIO:
-      return JustErrno;
-    }
-
+  uint64_t ioctlCode;
+  if(!tryGetConstantInt(getValArgOperand(CS, 1), ioctlCode))
+    return 0;
+  
+  switch(ioctlCode) {
+  case TCGETS:
+    return TCGETSMR;
+  case FIONBIO:
+    return JustErrno;
+  default:
+    return 0;
   }
-
-  return 0;
 
 }
 

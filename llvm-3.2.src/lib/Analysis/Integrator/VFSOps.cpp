@@ -262,8 +262,9 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	    deleteIV(SI->i.PB);
 	  SI->i.PB = newOverdefIVS();
 
-	  if(ConstantInt* ModeValue = dyn_cast_or_null<ConstantInt>(getConstReplacement(SI->getCallArgOperand(1)))) {
-	    int RawMode = (int)ModeValue->getLimitedValue();
+	  uint64_t RawMode64;
+	  if(tryGetConstantIntReplacement(SI->getCallArgOperand(1), RawMode64)) {
+	    int RawMode = (int)RawMode64;
 	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
 	      LPDEBUG("Can't promote open call " << itcache(*CI) << " because it is not O_RDONLY\n");
 	      return true;
@@ -498,16 +499,19 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   else if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
 
     // Check for needed values now:
-    Constant* whence = getConstReplacement(SI->getCallArgOperand(2));
-    Constant* newOffset = getConstReplacement(SI->getCallArgOperand(1));
+
+    uint64_t intOffset;
+    uint64_t seekWhence64;
+
+    if((!tryGetConstantIntReplacement(SI->getCallArgOperand(2), seekWhence64)) || 
+       (!tryGetConstantIntReplacement(SI->getCallArgOperand(1), intOffset))) {
     
-    if((!newOffset) || (!whence)) {
       FDS.pos = (uint32_t)-1;
       return true;
+
     }
 
-    uint64_t intOffset = cast<ConstantInt>(newOffset)->getLimitedValue();
-    int32_t seekWhence = (int32_t)cast<ConstantInt>(whence)->getSExtValue();
+    int32_t seekWhence = (int32_t)seekWhence64;
     
     switch(seekWhence) {
     case SEEK_CUR:
@@ -561,13 +565,14 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   else if(F->getName() == "read") {
 
     ShadowValue readBytes = SI->getCallArgOperand(2);
-    ConstantInt* intBytes = cast_or_null<ConstantInt>(getConstReplacement(readBytes));
-    if(!intBytes) {
+    uint64_t ucBytes;
+
+    if(!tryGetConstantIntReplacement(readBytes, ucBytes)) {
       FDS.pos = (uint64_t)-1;
       return true;
     }
     
-    int64_t cBytes = intBytes->getLimitedValue();
+    int64_t cBytes = (int64_t)ucBytes;
 
     if(filenameIsForbidden(FDS.filename)) {
       FDS.pos = (uint64_t)-1;

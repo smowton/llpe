@@ -739,6 +739,17 @@ inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
       return true;
     }
 
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    {
+      ImprovedValSetSingle* NewIVS = newIVS();
+      OutPB = NewIVS;
+      NewIVS->set(ImprovedVal(V), ValSetTypeScalar);    
+      return true;
+    }
+
   case SHADOWVAL_INVAL:
   default:
     release_assert(0 && "getImprovedValSetSingle on uninit value");
@@ -2028,9 +2039,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  void getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
- void getConstSubVals(Constant* FromC, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
+ void getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  Constant* valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType);
- void getConstSubVal(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
+ void getConstSubVal(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
  Constant* getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType = 0);
  void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
  void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
@@ -2134,6 +2145,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void forwardReferences(Value* Fwd, Module* M);
  Module* getGlobalModule();
  void setAllNeededTop(DSELocalStore*);
+ bool IHPFoldIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, SmallVector<uint64_t, 4>& OpInts, ValSetType& ImpType, ImprovedVal& Improved);
 
  extern char ihp_workdir[];
  extern bool IHPSaveDOTFiles;
