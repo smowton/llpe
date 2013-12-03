@@ -214,8 +214,8 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
     bool changed = false;
 
     for (unsigned i = 0, ilim = IVS->Values.size(); i != ilim; ++i) {
-
-      SwitchInst::CaseIt targetit = Switch->findCaseValue(cast<ConstantInt>(IVS->Values[i].V.getVal()));
+      
+      SwitchInst::CaseIt targetit = Switch->findCaseValue(cast<ConstantInt>(getConstReplacement(IVS->Values[i].V)));
       BasicBlock* target = targetit.getCaseSuccessor();
       changed |= setEdgeAlive(TI, SI->parent, target);
 

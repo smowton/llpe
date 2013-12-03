@@ -1806,13 +1806,12 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
     }
 
-    if(canTruncate(found.val())) {
-      M->CoveredBytes -= (found.stop() - Offset);
+    if(canTruncate(found.val()))
       truncateRight(found, Offset - found.start());
-    }
-    else {
+    else
       found.val().setOverdef();
-    }
+
+    M->CoveredBytes -= (found.stop() - Offset);
     uint64_t oldStop = found.stop();
     found.setStopUnchecked(Offset);
 
@@ -1842,12 +1841,11 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
   if(found != M->Map.end() && found.start() < LastByte) {
 
-    if(canTruncate(found.val())) {
+    if(canTruncate(found.val()))
       truncateLeft(found, found.stop() - LastByte);
-    }
-    else {
+    else
       found.val().setOverdef();
-    }
+
     M->CoveredBytes -= (LastByte - found.start());
     found.setStartUnchecked(LastByte);
     release_assert(found.start() < found.stop());
@@ -2046,10 +2044,23 @@ void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet*
       if(it.start() != Offset) {
 
 	release_assert(it.start() > Offset && "Overlapping-on-left should be caught already");
-	// Gap -- defer this bit to our parent map (which must exist)
-	release_assert(IVM->Underlying && "Gap but no underlying map?");
-	LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << it.start() << "\n");
-	readValRangeMultiFrom(Offset, it.start() - Offset, IVM->Underlying, Results, ignoreBelowStore, ASize);
+	// Gap -- defer this bit to our parent map. If there is none, the value is undefined here.
+
+	if(!IVM->Underlying) {
+
+	  uint64_t UndefSize = it.start() - Offset;
+	  Type* UndefType = IntegerType::get(GInt8Ptr->getContext(), UndefSize * 8);
+	  Value* UD = UndefValue::get(UndefType);
+	  Results.push_back(IVSR(Offset, Offset + UndefSize, ImprovedValSetSingle(ImprovedVal(UD), ValSetTypeScalar)));
+
+	}
+	else {
+
+	  LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << it.start() << "\n");
+	  readValRangeMultiFrom(Offset, it.start() - Offset, IVM->Underlying, Results, ignoreBelowStore, ASize);
+
+	}
+
 	Size -= (it.start() - Offset);
 	Offset = it.start();
 	
@@ -2083,9 +2094,21 @@ void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet*
     // Check for gap on the right:
     if(Size != 0) {
 
-      release_assert(IVM->Underlying && "Gap but no underlying map/2?");
-      LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << (Offset+Size) << " (end path)\n");      
-      readValRangeMultiFrom(Offset, Size, IVM->Underlying, Results, ignoreBelowStore, ASize);
+      if(!IVM->Underlying) {
+
+	// No underlying map means undefined value below.
+	uint64_t UndefSize = Size - Offset;
+	Type* UndefType = IntegerType::get(GInt8Ptr->getContext(), UndefSize * 8);
+	Value* UD = UndefValue::get(UndefType);
+	Results.push_back(IVSR(Offset, Offset + Size, ImprovedValSetSingle(ImprovedVal(UD), ValSetTypeScalar)));	
+	
+      }
+      else {
+
+	LFV3(errs() << "Defer to underlying map " << IVM->Underlying << " for range " << Offset << "-" << (Offset+Size) << " (end path)\n");      
+	readValRangeMultiFrom(Offset, Size, IVM->Underlying, Results, ignoreBelowStore, ASize);
+
+      }
 
     }
 
@@ -2363,9 +2386,9 @@ void llvm::executeReallocInst(ShadowInstruction* SI, Function* F) {
 
   }
 
-  ImprovedValSetSingle ThisInst = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), 0), ValSetTypePB);
+  ImprovedValSetSingle* ThisInst = cast<ImprovedValSetSingle>(SI->i.PB);
 
-  executeCopyInst(0, ThisInst, SrcPtrSet, CopySize, SI);
+  executeCopyInst(0, *ThisInst, SrcPtrSet, CopySize, SI);
   // Release the realloc'd location.
   executeFreeInst(SI, getCalledFunction(SI));
 

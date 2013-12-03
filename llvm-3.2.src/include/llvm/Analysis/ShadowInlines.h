@@ -906,7 +906,7 @@ struct AllocData {
   IntegrationAttempt* allocContext;
   ShadowValue allocValue;
   // Note that if allocContext->isCommitted() then allocValue is invalid.
-  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
+  std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
   Value* committedVal;
 
 };
@@ -1261,7 +1261,7 @@ struct FDGlobalState {
   ShadowInstruction* SI;
   IntegrationAttempt* IA;
   Value* CommittedVal;
-  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
+  std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
   bool isFifo;
 
   FDGlobalState(ShadowInstruction* _SI, bool _isFifo);

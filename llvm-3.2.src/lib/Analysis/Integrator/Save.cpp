@@ -1308,8 +1308,10 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
       if(it->second->success && I->dieStatus == INSTSTATUS_ALIVE) {
 
 	Value* committed = emitInst(BB, I, emitBB);
-	FDGlobalState& FDS = pass->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
+	uint32_t FD = cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd();
+	FDGlobalState& FDS = pass->fds[FD];
 	FDS.CommittedVal = committed;
+	pass->committedFDs[committed] = FD;
 	
       }
 
@@ -1373,6 +1375,12 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
   if(InlineAttempt* IA = getInlineAttempt(I)) {
 
     if(IA->isEnabled()) {
+
+      if(!IA->instructionsCommitted) {
+	IA->activeCaller = I;
+	IA->commitArgsAndInstructions();
+	IA->instructionsCommitted = true;
+      }
 
       if(!IA->commitsOutOfLine()) {
 
@@ -1480,13 +1488,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	}
 
       }
-
-      if(!IA->instructionsCommitted) {
-	IA->activeCaller = I;
-	IA->commitArgsAndInstructions();
-	IA->instructionsCommitted = true;
-      }
-    
+   
       if(!IA->commitsOutOfLine()) {
 	
 	if(IA->emittedAlloca) {
@@ -1571,6 +1573,8 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
      AD->allocValue.u.I == I) {
 
     AD->committedVal = newI;
+    if(Base.getFrameNo() == -1)
+      pass->committedHeapAllocations[newI] = Base.getHeapKey();
 
   }
 
@@ -2313,6 +2317,8 @@ void IntegrationAttempt::commitInstructions() {
     for(uint32_t i = 0, ilim = F.arg_size(); i != ilim; ++i) {
 
       Value* StoreI = getFunctionRoot()->argShadows[i].committedVal;
+      if(!isa<Argument>(StoreI))
+	continue;
 
       patchReferences(pass->argStores[i].PatchRefs, StoreI);
       forwardReferences(StoreI, F.getParent());
@@ -2328,6 +2334,42 @@ void IntegrationAttempt::commitInstructions() {
 
 }
 
+static void unregisterCommittedAllocations(BasicBlock* BB) {
+
+  for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+
+    Instruction* I = BI;
+    {
+      DenseMap<Value*, uint32_t>::iterator findit = GlobalIHP->committedHeapAllocations.find(I);
+      if(findit != GlobalIHP->committedHeapAllocations.end()) {
+
+	GlobalIHP->heap[findit->second].committedVal = 0;
+	GlobalIHP->committedHeapAllocations.erase(findit);
+
+      }
+    }
+
+    {
+      DenseMap<Value*, uint32_t>::iterator findit = GlobalIHP->committedFDs.find(I);
+      if(findit != GlobalIHP->committedFDs.end()) {
+
+	GlobalIHP->fds[findit->second].CommittedVal = 0;
+	GlobalIHP->committedFDs.erase(findit);
+
+      }
+    }
+
+  }
+
+}
+
+static void unregisterCommittedAllocations(Function* F) {
+
+  for(Function::iterator it = F->begin(), itend = F->end(); it != itend; ++it)
+    unregisterCommittedAllocations(it);
+
+}
+
 void InlineAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
 
   if(CommitF) {
@@ -2335,6 +2377,7 @@ void InlineAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
     if(CommitF != alreadyDeleted) {
 
       // This (and children) already in a function: kill it.
+      unregisterCommittedAllocations(CommitF);
       CommitF->dropAllReferences();
       CommitF->eraseFromParent();
       CommitF = 0;
@@ -2349,6 +2392,7 @@ void InlineAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
     for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
 	  itend = CommitBlocks.end(); it != itend; ++it) {
 
+      unregisterCommittedAllocations(*it);
       (*it)->dropAllReferences();
 
     }
@@ -2380,9 +2424,6 @@ void IntegrationAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isEnabled())
-      continue;
 
     for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
 

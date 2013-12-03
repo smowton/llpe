@@ -145,6 +145,9 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
       Callers.push_back(_CI);
       uniqueParent = _CI->parent->IA;
     }
+    else {
+      uniqueParent = 0;
+    }
 
     prepareShadows();
 
@@ -658,9 +661,6 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
-
-    if(!it->second->isEnabled())
-      continue;
 
     for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
 

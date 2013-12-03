@@ -365,7 +365,7 @@ GlobalStats() : dynamicFunctions(0), dynamicContexts(0), dynamicBlocks(0), dynam
 struct ArgStore {
 
   uint32_t heapIdx;
-  std::vector<std::pair<Instruction*, uint32_t> > PatchRefs;
+  std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
 
 ArgStore() : heapIdx(0) {}
 ArgStore(uint32_t hi) : heapIdx(hi) {}
@@ -491,8 +491,9 @@ class IntegrationHeuristicsPass : public ModulePass {
    GlobalStats stats;
 
    DenseMap<IntegrationAttempt*, std::string> shortHeaders;
-
    DenseMap<ShadowInstruction*, TrackedStore*> trackedStores;
+   DenseMap<Value*, uint32_t> committedHeapAllocations;
+   DenseMap<Value*, uint32_t> committedFDs;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -2144,7 +2145,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
  void TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass);
  void rerunTentativeLoads(ShadowInstruction*, InlineAttempt*);
- void patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs, Value* V);
+ void patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Value* V);
  void forwardReferences(Value* Fwd, Module* M);
  Module* getGlobalModule();
  void setAllNeededTop(DSELocalStore*);

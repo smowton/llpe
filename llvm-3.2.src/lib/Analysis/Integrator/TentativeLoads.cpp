@@ -1073,6 +1073,10 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
 void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
 
+  // This indicates the call never returns, and so there will be no further exploration along these lines.
+  if(!SI->parent->tlStore)
+    return;
+
   if(IA->readsTentativeData) {
 
     // Conservatively assume that our inability to check where the data went

@@ -6,17 +6,25 @@
 
 using namespace llvm;
 
-void llvm::patchReferences(std::vector<std::pair<Instruction*, uint32_t> >& Refs, Value* V) {
+void llvm::patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Value* V) {
 
-  for(std::vector<std::pair<Instruction*, uint32_t> >::iterator it = Refs.begin(),
+  for(std::vector<std::pair<WeakVH, uint32_t> >::iterator it = Refs.begin(),
 	itend = Refs.end(); it != itend; ++it) {
 
-    it->first->setOperand(it->second, V);
+    // Value must have gone away due to e.g. discarding a previously committed function.
+    if(!it->first)
+      continue;
+
+    release_assert(isa<SelectInst>(it->first));
+
+    Instruction* I = cast<Instruction>(it->first);
+
+    I->setOperand(it->second, V);
     // Note this would be unsafe if any of the patch recipients were listed more than
     // once in patch lists.
-    if(Value* V = SimplifyInstruction(it->first)) {
-      it->first->replaceAllUsesWith(V);
-      it->first->eraseFromParent();
+    if(Value* V = SimplifyInstruction(I)) {
+      I->replaceAllUsesWith(V);
+      I->eraseFromParent();
     }
 
   }
@@ -296,7 +304,7 @@ uint64_t IntegrationAttempt::findSaveSplits() {
 
 void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp) {
 
-  std::pair<Instruction*, uint32_t> PRQ(PatchI, PatchOp);
+  std::pair<WeakVH, uint32_t> PRQ(WeakVH(PatchI), PatchOp);
 
   switch(Needed.t) {
 
