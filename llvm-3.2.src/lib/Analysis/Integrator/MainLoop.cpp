@@ -326,12 +326,6 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   if(!BB)
     return false;
 
-  if(F.getName() == "__check_one_fd" && BB->invar->BB->getName() == "4") {
-
-    errs() << "HIT\n";
-
-  }
-
   bool anyChange = false;
 
   // Use natural scope rather than scope because even if a loop is

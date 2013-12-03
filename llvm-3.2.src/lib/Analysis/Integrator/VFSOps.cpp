@@ -457,12 +457,6 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     deleteIV(SI->i.PB);
   SI->i.PB = newOverdefIVS();
 
-  // noteVFSOp() calls are inserted below wherever a resolution depends on
-  // not just the FD being used but its position, as this state is not explicitly
-  // maintained at the moment. Eventually FDs should occupy an FD store rather than
-  // using a backward walk, akin to the evolution of the load resolution code,
-  // and this limitation can go away.
-
   if(F->getName() == "stat") {
 
     // TODO: Add LF resolution code notifying file size. All users so far have just
@@ -485,9 +479,12 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   // All calls beyond here operate on FDs.
 
   uint32_t FD = getFD(SI->getCallArgOperand(0));
+
+  bool perturbsFDs = F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
+    F->getName() == "lseek64";
  
   // Operates on an unknown FD?
-  if(FD == (uint32_t)-1) {
+  if(FD == (uint32_t)-1 && perturbsFDs) {
     fdStore->fds.clear();
     return true;
   }
@@ -500,8 +497,11 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   if(F->getName() == "isatty") {
 
-    // OpenStatus items like this are always real files, not TTYs, for now.
-    setReplacement(SI, ConstantInt::get(FT->getReturnType(), 0));
+    // FD 0 is stdin which may or may not be terminal; no other symbolic FD can currently be a tty.
+    
+    if(FD != 0)
+      setReplacement(SI, ConstantInt::get(FT->getReturnType(), 0));
+
     return true;
 
   }

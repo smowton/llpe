@@ -1206,8 +1206,9 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
       
 	++emitBBIter;
 
-	// Branch to the real read instruction on failure:
-	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx);
+	// Branch to the real read instruction on failure for lliowd checks, or the instruction after otherwise.
+	uint32_t targetInst = it->second.isFifo ? I->invar->idx + 1 : I->invar->idx;
+	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, targetInst);
 	BasicBlock* successTarget = emitBBIter->specBlock;
       
 	if(breakBlock != emitBB) {
@@ -1579,11 +1580,15 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   }
 
   // If it's a store that is tracked by DSE, note the committed instruction.
-  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
-  if(findit != GlobalIHP->trackedStores.end()) {
-    findit->second->committedInsts = new Instruction*[1];
-    findit->second->committedInsts[0] = newI;
-    findit->second->nCommittedInsts = 1;
+  if(isa<StoreInst>(newI)) {
+
+    DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
+    if(findit != GlobalIHP->trackedStores.end()) {
+      findit->second->committedInsts = new Instruction*[1];
+      findit->second->committedInsts[0] = newI;
+      findit->second->nCommittedInsts = 1;
+    }
+
   }
 
   return newI;
