@@ -903,11 +903,13 @@ struct AllocData {
   int32_t allocIdx;
   bool allocVague;
   AllocTestedState allocTested;
-  IntegrationAttempt* allocContext;
+  bool isCommitted;
   ShadowValue allocValue;
   // Note that if allocContext->isCommitted() then allocValue is invalid.
   std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
   Value* committedVal;
+
+  bool isAvailable();
 
 };
 
@@ -1260,13 +1262,15 @@ FDStore(const FDStore& Other) : refCount(1), fds(Other.fds) {}
 struct FDGlobalState {
 
   ShadowInstruction* SI;
-  IntegrationAttempt* IA;
+  bool isCommitted;
   Value* CommittedVal;
   std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
   bool isFifo;
 
   FDGlobalState(ShadowInstruction* _SI, bool _isFifo);
   FDGlobalState(bool _isFifo);
+
+  bool isAvailable();
 
 };
 

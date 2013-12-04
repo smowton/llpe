@@ -1312,6 +1312,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	uint32_t FD = cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd();
 	FDGlobalState& FDS = pass->fds[FD];
 	FDS.CommittedVal = committed;
+	FDS.isCommitted = true;
 	pass->committedFDs[committed] = FD;
 	
       }
@@ -1574,6 +1575,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
      AD->allocValue.u.I == I) {
 
     AD->committedVal = newI;
+    AD->isCommitted = true;
     if(Base.getFrameNo() == -1)
       pass->committedHeapAllocations[newI] = Base.getHeapKey();
 
@@ -1682,14 +1684,6 @@ InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
     return this;
   else
     return activeCaller->parent->IA->getFunctionRoot()->getStackFrameCtx(frameIdx);
-
-}
-
-IntegrationAttempt* IntegrationAttempt::getCtx(ShadowValue V) {
-
-  if(!V.isPtrIdx())
-    return V.getCtx();
-  return getAllocData(V)->allocContext;
 
 }
 

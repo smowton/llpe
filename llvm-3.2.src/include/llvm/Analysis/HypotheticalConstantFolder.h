@@ -1277,7 +1277,6 @@ protected:
 
   AllocData* getAllocData(ShadowValue);
   ShadowInstruction* getAllocInst(ShadowValue V);
-  IntegrationAttempt* getAllocCtx(ShadowValue V);
 
   // Support functions for the generic IA graph walkers:
   void visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor*, void* Ctx, bool& firstPred);
@@ -1339,6 +1338,10 @@ protected:
   void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   void gatherIndirectUsersInLoop(const Loop*);
   void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
+  bool _willBeReplacedOrDeleted(ShadowValue);
+  bool willBeReplacedOrDeleted(ShadowValue);
+  bool willBeReplacedWithConstantOrDeleted(ShadowValue);
+
 
   // Enabling / disabling exploration:
 
@@ -1410,9 +1413,9 @@ protected:
   Instruction* emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   bool synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
+  bool canSynthMTI(ShadowInstruction* I);
   bool canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV);
   bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
-  bool canSynthMTI(ShadowInstruction* I);
   void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions);
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
   Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
@@ -1426,7 +1429,6 @@ protected:
   bool commitStarted() {
     return commitState != COMMIT_NOT_STARTED;
   }
-  IntegrationAttempt* getCtx(ShadowValue);
   Value* getCommittedValue(ShadowValue SV);
   void releaseMemoryPostCommit();
   BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock = false);
@@ -2116,8 +2118,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed);
 
  bool willBeDeleted(ShadowValue);
- bool willBeReplacedOrDeleted(ShadowValue);
- bool willBeReplacedWithConstantOrDeleted(ShadowValue);
 
  bool instructionCounts(Instruction* I);
 

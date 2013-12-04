@@ -703,7 +703,7 @@ static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
   else if(AD.allocTested == AllocEscaped)
     return false;
 
-  if(AD.allocContext->isCommitted()) {
+  if(AD.isCommitted) {
 
     AD.allocTested = AllocEscaped;
     errs() << "Unable to perform all-paths search for " << itcache(V) << ": allocating context already committed\n";
@@ -2215,7 +2215,7 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
     if(NewIVS->Values[0].V.isPtrIdx()) {
 
       AllocData* AD = getAllocData(NewIVS->Values[0].V);
-      if(AD->allocValue.isInst() && !AD->allocContext->isCommitted()) {
+      if(AD->allocValue.isInst() && !AD->isCommitted) {
 	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[AD->allocValue.getInst()];
 	Users.push_back(V);
       }
@@ -2224,7 +2224,7 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
     else if(NewIVS->Values[0].V.isFdIdx()) {
       
       FDGlobalState& FDS = pass->fds[NewIVS->Values[0].V.getFd()];
-      if(!FDS.IA->isCommitted()) {
+      if(!FDS.isCommitted) {
 	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[FDS.SI];
 	Users.push_back(V);
       }
@@ -2367,8 +2367,10 @@ Type* IntegrationAttempt::getValueType(ShadowValue V) {
   case SHADOWVAL_PTRIDX:
     {
       AllocData* AD = getAllocData(V);
-      if(AD->allocContext->isCommitted())
+      if(AD->isCommitted) {
+	release_assert(AD->committedVal);
 	return AD->committedVal->getType();
+      }
       else
 	return getValueType(AD->allocValue);
     }

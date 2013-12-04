@@ -135,7 +135,7 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, uint32_t extraSlots
     AllocData& AD = heap.back();
     AD.allocIdx = heap.size() - 1;
     AD.storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
-    AD.allocContext = 0;
+    AD.isCommitted = true;
     AD.allocValue = ShadowValue(&(shadowGlobals[i]));
 
     //errs() << "Init store for " << *it << " -> ";
@@ -719,6 +719,24 @@ bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
 
 }
 
+bool AllocData::isAvailable() {
+
+  if(isCommitted)
+    return !!committedVal;
+  else
+    return allocValue.getCtx()->allAncestorsEnabled();
+
+}
+
+bool FDGlobalState::isAvailable() {
+
+  if(isCommitted)
+    return !!CommittedVal;
+  else
+    return SI->parent->IA->allAncestorsEnabled();
+
+}
+
 bool ShadowValue::objectAvailable() {
 
   switch(t) {
@@ -739,11 +757,11 @@ bool ShadowValue::objectAvailable() {
       return true;
     else {
       AllocData* AD = getAllocData((OrdinaryLocalStore*)0);
-      return (!AD->allocContext->getFunctionRoot()->isPathCondition) && AD->allocContext->allAncestorsEnabled();
+      return AD->isAvailable();
     }
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
-    return GlobalIHP->fds[getFd()].IA->allAncestorsEnabled();
+    return GlobalIHP->fds[getFd()].isAvailable();
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
     llvm_unreachable();

@@ -244,9 +244,9 @@ static bool filenameIsForbidden(std::string& s) {
 
 }
 
-FDGlobalState::FDGlobalState(ShadowInstruction* _SI, bool _isFifo) : SI(_SI), IA(SI->parent->IA), CommittedVal(0), isFifo(_isFifo) {}
+FDGlobalState::FDGlobalState(ShadowInstruction* _SI, bool _isFifo) : SI(_SI), isCommitted(false), CommittedVal(0), isFifo(_isFifo) {}
 
-FDGlobalState::FDGlobalState(bool _isFifo) : SI(0), IA(0), CommittedVal(0), isFifo(_isFifo) {}
+FDGlobalState::FDGlobalState(bool _isFifo) : SI(0), isCommitted(false), CommittedVal(0), isFifo(_isFifo) {}
 
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 

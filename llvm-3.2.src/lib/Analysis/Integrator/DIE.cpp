@@ -298,7 +298,7 @@ bool llvm::willBeDeleted(ShadowValue V) {
 
 }
 
-static bool _willBeReplacedOrDeleted(ShadowValue V) {
+bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
 
   if(_willBeDeleted(V))
     return true;
@@ -310,14 +310,14 @@ static bool _willBeReplacedOrDeleted(ShadowValue V) {
   if(IVS->Values.size() != 1)
     return false;
 
-  if(!V.getCtx()->canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
+  if(!canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
     return false;
   
   return true;
 
 }
 
-bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
+bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
     return false;
@@ -325,7 +325,7 @@ bool llvm::willBeReplacedOrDeleted(ShadowValue V) {
 
 }
 
-bool llvm::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
+bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
     return false;
@@ -403,7 +403,7 @@ public:
 		return;
 
 	      }
-	      else if(!willBeReplacedOrDeleted(ShadowValue(&(IA->argShadows[i])))) {
+	      else if(!IA->willBeReplacedOrDeleted(ShadowValue(&(IA->argShadows[i])))) {
 
 		maybeLive = true;
 		return;
@@ -431,7 +431,7 @@ public:
       return;
 
     }
-    else if(willBeReplacedOrDeleted(ShadowValue(UserI)))
+    else if(UserI->parent->IA->willBeReplacedOrDeleted(ShadowValue(UserI)))
       return;
     else {
 
@@ -505,15 +505,8 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 
 	  if(!willBeDeleted(Users[i])) {
 
-	    if(verbose) {
-	      errs() << itcache(V) << " used by " << itcache(Users[i]);
-	      if(IntegrationAttempt* IA = Users[i].getCtx()) {
-
-		errs() << " in context " << IA->SeqNumber;
-
-	      }
-	      errs() << "\n";
-	    }
+	    if(verbose)
+	      errs() << itcache(V) << " used by " << itcache(Users[i]) << "\n";	      
 
 	    return false;
 

@@ -751,6 +751,8 @@ void InlineAttempt::finaliseAndCommit() {
 				  CommitBlocks.begin(), CommitBlocks.end());
     ParentIA->CommitFunctions.insert(ParentIA->CommitFunctions.end(),
 				     CommitFunctions.begin(), CommitFunctions.end());
+    CommitBlocks.clear();
+    CommitFunctions.clear();
     
   }
   else {
@@ -3289,7 +3291,7 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
 	      argStores[i] = ArgStore(heap.size());
 	      heap.push_back(AllocData());
 	      heap.back().allocIdx = heap.size() - 1;
-	      heap.back().allocContext = 0;
+	      heap.back().isCommitted = false;
 	      heap.back().allocValue = ShadowValue(&IA->argShadows[i]);
 	      anyNonGlobals = true;
 
@@ -3522,7 +3524,7 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
     it->second.heapIdx = (int32_t)heap.size();
     heap.push_back(AllocData());
     heap.back().allocIdx = heap.size() - 1;
-    heap.back().allocContext = 0;
+    heap.back().isCommitted = false;
     heap.back().allocValue = ShadowValue(it->first);
 
   }
@@ -3639,7 +3641,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     argStores[argvIdx] = ArgStore(heap.size());
     heap.push_back(AllocData());
     heap.back().allocIdx = heap.size() - 1;
-    heap.back().allocContext = 0;
+    heap.back().isCommitted = false;
     heap.back().allocValue = ShadowValue(&IA->argShadows[argvIdx]);
 
   }

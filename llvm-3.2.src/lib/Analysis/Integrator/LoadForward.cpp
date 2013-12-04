@@ -2217,7 +2217,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, AllocData& AD, Type* AllocTyp
   AD.allocVague = false;
   AD.allocTested = AllocUnchecked;
   AD.allocValue = ShadowValue(SI);
-  AD.allocContext = SI->parent->IA;
+  AD.isCommitted = false;
 
   // Note that the new object is unreachable from old objects, thread-local and unescaped.
   SI->parent->localStore = SI->parent->localStore->getWritableFrameList();
@@ -4080,15 +4080,8 @@ AllocData* IntegrationAttempt::getAllocData(ShadowValue V) {
 ShadowInstruction* IntegrationAttempt::getAllocInst(ShadowValue V) {
 
   AllocData* AD = getAllocData(V);
-  release_assert(!AD->committedVal);
+  release_assert(!AD->isCommitted);
   return AD->allocValue.u.I;
-
-}
-
-IntegrationAttempt* IntegrationAttempt::getAllocCtx(ShadowValue V) {
-
-  AllocData* AD = getAllocData(V);
-  return AD->allocContext;
 
 }
 
