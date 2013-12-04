@@ -208,7 +208,7 @@ IntegrationAttempt::~IntegrationAttempt() {
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
+  for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
     II->second->dropReferenceFrom(II->first);
   } 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
@@ -401,16 +401,6 @@ bool IntegrationAttempt::blockIsDeadRising(ShadowBBInvar& BBI) {
 
 }
 
-InlineAttempt* IntegrationAttempt::getInlineAttempt(ShadowInstruction* CI) {
-
-  DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.find(CI);
-  if(it != inlineChildren.end())
-    return it->second;
-
-  return 0;
-
-}
-
 static const char* blacklistedFnNames[] = {
   
    "malloc" ,  "free" ,
@@ -591,7 +581,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
     }
     if(pass->verboseSharing)
       errs() << "SHARE: " << itcache(SI) << " #" << Share->SeqNumber << " (refs: " << Share->Callers.size() << ")\n";
-    inlineChildren[SI] = Share;
+    SI->typeSpecificData = Share;
     return Share;
   }
 
@@ -605,7 +595,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
       InlineAttempt* Unshared = Result->getWritableCopyFrom(SI);
       if(pass->verboseSharing)
 	errs() << "BREAK: " << itcache(SI) << " #" << Result->SeqNumber << " -> #" << Unshared->SeqNumber << "\n";
-      inlineChildren[SI] = Unshared;
+      SI->typeSpecificData = Unshared;
       created = true;
       return Unshared;
     }
@@ -625,7 +615,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   InlineAttempt* IA = new InlineAttempt(pass, *FCalled, SI, this->nesting_depth + 1);
   IA->isModel = isModel;
-  inlineChildren[SI] = IA;
+  SI->typeSpecificData = IA;
 
   checkTargetStack(SI, IA);
 
@@ -651,8 +641,8 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
   if(commitState == COMMIT_FREED)
     return;
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(IAIterator it = child_calls_begin(this),
+	itend = child_calls_end(this); it != itend; ++it) {
 
     if(it->second->isEnabled())
       it->second->releaseMemoryPostCommit();
@@ -755,6 +745,13 @@ void InlineAttempt::finaliseAndCommit() {
 
     postCommitOptimise();
 
+    // Give our committed functions and blocks to our parent context.
+    InlineAttempt* ParentIA = uniqueParent->getFunctionRoot();
+    ParentIA->CommitBlocks.insert(ParentIA->CommitBlocks.end(),
+				  CommitBlocks.begin(), CommitBlocks.end());
+    ParentIA->CommitFunctions.insert(ParentIA->CommitFunctions.end(),
+				     CommitFunctions.begin(), CommitFunctions.end());
+    
   }
   else {
 
@@ -765,7 +762,7 @@ void InlineAttempt::finaliseAndCommit() {
 
     // Child contexts may have generated code that we no longer care
     // to use. Delete it if so.
-    releaseCommittedChildren(0);
+    releaseCommittedChildren();
 
     // Must rerun tentative load and DSE analyses accounting
     // for the fact that the stage will not be committed.
@@ -1278,7 +1275,7 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
   printHeader(OS);
   OS << ": improved " << improvedInstructions << "/" << improvableInstructions << "\n";
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
     it->second->print(OS);
   }
 
@@ -1334,7 +1331,7 @@ std::string PeelAttempt::nestingIndent() const {
 
 bool IntegrationAttempt::hasChildren() {
 
-  return inlineChildren.size() || peelChildren.size();
+  return (child_calls_begin(this) != child_calls_end(this)) || peelChildren.size();
 
 }
 
@@ -1400,8 +1397,8 @@ IntegratorTag* IntegrationAttempt::createTag(IntegratorTag* parent) {
   myTag->type = IntegratorTypeIA;
   myTag->parent = parent;
   
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this),
+	it2 = child_calls_end(this); it != it2; ++it) {
     
     IntegratorTag* inlineTag = it->second->createTag(myTag);
     myTag->children.push_back(inlineTag);
@@ -1449,7 +1446,7 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
   errs() << ind(indent);
   describeBrief(errs());
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator II = inlineChildren.begin(), IE = inlineChildren.end(); II != IE; II++) {
+  for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
     II->second->dumpMemoryUsage(indent+2);
   } 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {

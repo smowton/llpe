@@ -833,8 +833,7 @@ void IntegrationAttempt::resetTentativeLoads() {
 
   tentativeLoadsRun = false;
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it) {
 
     it->second->resetTentativeLoads();
 
@@ -912,8 +911,7 @@ void IntegrationAttempt::countTentativeInstructions() {
 
   checkedInstructionsChildren = checkedInstructionsHere;
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it) {
 
     it->second->countTentativeInstructions();
     checkedInstructionsChildren += it->second->checkedInstructionsChildren;

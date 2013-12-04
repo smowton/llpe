@@ -1089,7 +1089,6 @@ protected:
   bool integrationGoodnessValid;
   uint64_t residualInstructionsHere;
 
-  DenseMap<ShadowInstruction*, InlineAttempt*> inlineChildren;
   DenseMap<const Loop*, PeelAttempt*> peelChildren;
 
   uint32_t pendingEdges;
@@ -1117,7 +1116,6 @@ protected:
     L(_L),
     totalIntegrationGoodness(0),
     integrationGoodnessValid(false),
-    inlineChildren(1),
     peelChildren(1),
     pendingEdges(0),
     barrierState(BARRIER_NONE),
@@ -1254,7 +1252,9 @@ protected:
   
   // Child (inlines, peels) management
 
-  InlineAttempt* getInlineAttempt(ShadowInstruction* CI);
+  InlineAttempt* getInlineAttempt(ShadowInstruction* CI) {
+    return (InlineAttempt*)CI->typeSpecificData;
+  }
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
   InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool& created, bool& needsAnalyse);
@@ -1436,7 +1436,6 @@ protected:
 				  Function* F,
 				  uint32_t startIdx);
   void addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp);
-  void releaseCommittedChildren(Function* alreadyDeleted);
 
   // Function sharing
 
@@ -1501,8 +1500,8 @@ protected:
   // Function splitting in the commit stage
   
   virtual uint64_t findSaveSplits();
-  void inheritCommitFunction();
   void checkNonLocalReference(ShadowValue);
+  void inheritCommitFunction();
   
   // Stat collection and printing:
 
@@ -1547,7 +1546,7 @@ public:
 
   PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, int iter, int depth);
  
- IntegrationAttempt* parent;
+  IntegrationAttempt* parent;
 
   IterationStatus iterStatus;
 
@@ -1750,6 +1749,7 @@ class InlineAttempt : public IntegrationAttempt {
 
   Function* CommitF;
   std::vector<BasicBlock*> CommitBlocks;
+  std::vector<Function*> CommitFunctions;
   BasicBlock* entryBlock;
   BasicBlock* returnBlock;
   PHINode* returnPHI;
@@ -1929,7 +1929,6 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void preCommitStats(bool enabledHere);
 
   virtual uint64_t findSaveSplits();
-  void inheritCommitFunctionCall(bool onlyAdd);
   void splitCommitHere();
 
   void gatherIndirectUsers();
@@ -1938,12 +1937,114 @@ class InlineAttempt : public IntegrationAttempt {
   void fixNonLocalStackUses();
   virtual void commitCFG();
   void releaseBackupStores();
-  void releaseCommittedChildren(Function* alreadyDeleted);
+  void releaseCommittedChildren();
 
   void postCommitOptimise();
   void finaliseAndCommit();
+  void inheritCommitFunctionCall(bool);
 
 };
+
+struct IAIterator {
+
+  const IntegrationAttempt* parent;
+  uint32_t blockIdx;
+  uint32_t instIdx;
+
+  std::pair<ShadowInstruction*, InlineAttempt*> D;
+
+  IAIterator() {
+    blockIdx = 0;
+    instIdx = 0;
+    parent = 0;
+  }
+
+  IAIterator(const IntegrationAttempt* IA, bool isEnd) {
+    
+    parent = IA;
+    
+    if(isEnd) {
+      blockIdx = parent->nBBs;
+      instIdx = 0;
+    }
+    else {
+      blockIdx = 0;
+      instIdx = 0;
+      advanceToNextCall();
+    }
+
+  }
+
+IAIterator(const IAIterator& other) : parent(other.parent), blockIdx(other.blockIdx), instIdx(other.instIdx) {}
+  
+  void advanceToNextCall() {
+
+    for(; blockIdx < parent->nBBs; ++blockIdx) {
+      
+      if(parent->BBs[blockIdx]) {
+      
+	for(; instIdx < parent->BBs[blockIdx]->insts.size(); ++instIdx) {
+	  
+	  if(parent->BBs[blockIdx]->insts[instIdx].typeSpecificData)
+	    return;
+	  
+	}
+
+      }
+
+      instIdx = 0;
+
+    }
+
+  }
+
+  struct IAIterator& operator++() {
+    ++instIdx;
+    advanceToNextCall();
+    return *this;
+  }
+
+  struct IAIterator operator++(int) {
+    IAIterator cpy = *this;
+    ++instIdx;
+    advanceToNextCall();
+    return cpy;
+  }
+
+  bool operator==(const IAIterator& other) {
+
+    return parent == other.parent && blockIdx == other.blockIdx && instIdx == other.instIdx;
+
+  }
+
+  bool operator!=(const IAIterator& other) {
+
+    return !((*this) == other);
+
+  }
+
+  const std::pair<ShadowInstruction*, InlineAttempt*>& operator*() {
+
+    release_assert(blockIdx < parent->nBBs);
+    ShadowInstruction* SI = &parent->BBs[blockIdx]->insts[instIdx];
+    D = std::make_pair(SI, (InlineAttempt*)SI->typeSpecificData);
+    return D;
+    
+  }
+
+  const std::pair<ShadowInstruction*, InlineAttempt*>* operator->() {
+    return &operator*();
+  }
+
+};
+
+ inline IAIterator child_calls_begin(const IntegrationAttempt* IA) {
+   return IAIterator(IA, false);
+ }
+
+ inline IAIterator child_calls_end(const IntegrationAttempt* IA) {
+   return IAIterator(IA, true);
+ }
 
 inline int32_t getFrameSize(InlineAttempt* IA) {
   return IA->invarInfo->frameSize;

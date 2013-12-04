@@ -187,7 +187,7 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
 void IntegrationAttempt::inheritCommitFunction() {
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
+        itend = peelChildren.end(); it != itend; ++it) {
 
     if((!it->second->isEnabled()) || !it->second->isTerminated())
       continue;
@@ -198,8 +198,7 @@ void IntegrationAttempt::inheritCommitFunction() {
     
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -212,20 +211,14 @@ void IntegrationAttempt::inheritCommitFunction() {
 
 void InlineAttempt::inheritCommitFunctionCall(bool onlyAdd) {
 
+  if(isCommitted())
+    return;
+
   if(!onlyAdd) {
     
     if(CommitF)
       return;
     CommitF = uniqueParent->getFunctionRoot()->CommitF;
-
-  }
-
-  Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
-  
-  for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
-	itend = CommitBlocks.end(); it != itend; ++it) {
-
-    BBL.push_back(*it);
 
   }
 
@@ -288,8 +281,7 @@ uint64_t IntegrationAttempt::findSaveSplits() {
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
+  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -339,10 +331,6 @@ void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI
 
 void InlineAttempt::splitCommitHere() {
 
-  // Only split shared functions once.
-  if(CommitF)
-    return;
-  
   residualInstructionsHere = 1;
   
   std::string Name;
@@ -359,7 +347,21 @@ void InlineAttempt::splitCommitHere() {
   
   CommitF = cloneEmptyFunction(&F, LT, Name, hasFailedReturnPath() && !isRootMainCall());
 
-  inheritCommitFunctionCall(true);
+  Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
+  
+  for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
+	itend = CommitBlocks.end(); it != itend; ++it) {
+
+    BBL.push_back(*it);
+
+  }
+
+  CommitBlocks.clear();
+  CommitFunctions.push_back(CommitF);
+
+  residualInstructionsHere = 1;
+
+  inheritCommitFunction();
 
 }
 

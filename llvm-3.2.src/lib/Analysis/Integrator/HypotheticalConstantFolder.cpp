@@ -2147,8 +2147,8 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
     break;
   case Instruction::Call: 
     {
-      if(inlineChildren.count(SI)) {
-	NewPB = inlineChildren[SI]->returnValue;
+      if(InlineAttempt* IA = getInlineAttempt(SI)) {
+	NewPB = IA->returnValue;
 	return true;
       }
       break;

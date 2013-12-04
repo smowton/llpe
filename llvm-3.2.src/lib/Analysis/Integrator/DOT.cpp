@@ -55,7 +55,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
   }
 
   if(val_is<CallInst>(SV)) {
-    if(inlineChildren.find(SV.getInst()) != inlineChildren.end())
+    if(SV.u.I->typeSpecificData)
       return "yellow";
     else
       return "pink";
@@ -737,8 +737,7 @@ void IntegrationAttempt::saveDOT() {
   saveDOT2(true);
   saveDOT2(false);
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it)
+  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it)
     it->second->saveDOT();
 
   for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
@@ -828,7 +827,7 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
 
     std::string newPath;
     raw_string_ostream RSO(newPath);

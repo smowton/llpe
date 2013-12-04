@@ -118,7 +118,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 	Function* F = getCalledFunction(I);
 	if(F) {
 
-	  if(!inlineChildren.count(I))
+	  if(getInlineAttempt(I))
 	    ElimFunctions.erase(F);
 
 	}
@@ -144,7 +144,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
 
     it->second->findResidualFunctions(ElimFunctions, TotalResidualInsts);
 
@@ -194,7 +194,7 @@ void IntegrationAttempt::findProfitableIntegration() {
   totalIntegrationGoodness = 0;
   int64_t childIntegrationGoodness = 0;
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -413,7 +413,7 @@ void IntegrationAttempt::collectStats() {
   collectAllBlockStats();
   collectAllLoopStats();
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::const_iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
     if(!it->second->isCommitted())
       it->second->collectStats();
   }

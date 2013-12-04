@@ -51,7 +51,7 @@ void InlineAttempt::prepareCommitCall() {
 
 void IntegrationAttempt::prepareCommit() {
   
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -2375,67 +2375,30 @@ static void unregisterCommittedAllocations(Function* F) {
 
 }
 
-void InlineAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
+void InlineAttempt::releaseCommittedChildren() {
 
-  if(CommitF) {
+  for(std::vector<Function*>::iterator it = CommitFunctions.begin(), 
+	itend = CommitFunctions.end(); it != itend; ++it) {
 
-    if(CommitF != alreadyDeleted) {
+    Function* CF = *it;
 
-      // This (and children) already in a function: kill it.
-      unregisterCommittedAllocations(CommitF);
-      CommitF->dropAllReferences();
-      CommitF->eraseFromParent();
-      CommitF = 0;
-
-    }
-
-  }
-  else {
-
-    // Blocks not added to a function yet
-    
-    for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
-	  itend = CommitBlocks.end(); it != itend; ++it) {
-
-      unregisterCommittedAllocations(*it);
-      (*it)->dropAllReferences();
-
-    }
-
-    for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
-	  itend = CommitBlocks.end(); it != itend; ++it) {
-
-      delete *it;
-
-    }
-
-    CommitBlocks.clear();
+    // This (and children) already in a function: kill it.
+    unregisterCommittedAllocations(CF);
+    CF->dropAllReferences();
+    CF->eraseFromParent();
 
   }
 
-  IntegrationAttempt::releaseCommittedChildren(alreadyDeleted);
+  CommitFunctions.clear();
 
-}
+  for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
+	itend = CommitBlocks.end(); it != itend; ++it) {
 
-void IntegrationAttempt::releaseCommittedChildren(Function* alreadyDeleted) {
-
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(),
-	itend = inlineChildren.end(); it != itend; ++it) {
-
-    if(it->second->isEnabled())
-      it->second->releaseCommittedChildren(alreadyDeleted);
+    unregisterCommittedAllocations(*it);
+    (*it)->dropAllReferences();
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-
-    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
-
-      it->second->Iterations[i]->releaseCommittedChildren(alreadyDeleted);
-
-    }
-
-  }
+  CommitBlocks.clear();
 
 }

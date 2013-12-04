@@ -35,7 +35,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
   }
 
-  for(DenseMap<ShadowInstruction*, InlineAttempt*>::iterator it = inlineChildren.begin(), it2 = inlineChildren.end(); it != it2; ++it) {
+  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
 
     it->second->resetDeadArgsAndInstructions();
 
@@ -130,7 +130,11 @@ bool InlineAttempt::commitsOutOfLine() {
   for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
 	itend = Callers.end(); it != itend; ++it) {
 
-    if((*it)->parent->IA->getFunctionRoot()->CommitF != CommitF)
+    // If this function has null CommitF and a parent has one, this implies
+    // that this context was committed before our parent acquired its commit function,
+    // and since we hadn't claimed one of our own we inherited it implicitly.
+
+    if(CommitF && (*it)->parent->IA->getFunctionRoot()->CommitF != CommitF)
       return true;
 
   }

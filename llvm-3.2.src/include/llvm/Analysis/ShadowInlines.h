@@ -934,6 +934,7 @@ struct ShadowInstruction {
   unsigned char isThreadLocal;
   unsigned char needsRuntimeCheck;
   unsigned char dieStatus;
+  void* typeSpecificData;
 
   void initTypeSpecificData();
 

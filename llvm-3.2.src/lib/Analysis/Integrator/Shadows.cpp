@@ -544,6 +544,7 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].dieStatus = 0;
     insts[i].isThreadLocal = TLS_MUSTCHECK;
     insts[i].needsRuntimeCheck = RUNTIME_CHECK_NONE;
+    insts[i].typeSpecificData = 0;
   }
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
   newBB->useSpecialVarargMerge = false;
