@@ -638,21 +638,12 @@ BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, b
   }
 
   if(!SuccBB) {
-    // This is a BB which is guaranteed not reachable,
-    // but the loop which will never branch to it is not being committed.
-    // Emit unreachable instead.
-    // This is only excusable if the immediate child of BB (not the successor) is present but disabled,
-    // otherwise we should have explored the loop properly in this scope.
-    if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, BB->invar->naturalScope))) {
-      if(!PA->isEnabled())
-	markUnreachable = true;
-    }
-  }
-
-  if(!SuccBB)
+    markUnreachable = true;
     return 0;
-  else
+  }
+  else {
     return SuccBB->committedBlocks.front().specBlock;
+  }
 
 }
 

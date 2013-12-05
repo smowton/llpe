@@ -683,6 +683,7 @@ inline ImprovedValSetSingle* newOverdefIVS() {
 
 inline void deleteIVS(ImprovedValSetSingle* I) {
 
+  I->~ImprovedValSetSingle();
   GlobalIHP->IVSAllocator.Deallocate(I);
 
 }

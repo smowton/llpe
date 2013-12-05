@@ -717,17 +717,6 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
 }
 
-class ClobberDSEVisitor : public ShadowBBVisitor {
-
-  virtual void visit(ShadowBB* BB, void* Ctx, bool mustCopyCtx) {
-
-    BB->dseStore = BB->dseStore->getEmptyMap();
-    BB->dseStore->allOthersClobbered = true;
-
-  }
-
-};
-
 void InlineAttempt::finaliseAndCommit() {
 
   countTentativeInstructions();
@@ -802,8 +791,11 @@ void InlineAttempt::finaliseAndCommit() {
 
     // For now this is simply a barrier to DSE.
     setAllNeededTop(backupDSEStore);
-    ClobberDSEVisitor V;
-    visitLiveReturnBlocks(V);
+    backupDSEStore->dropReference();
+    if(activeCaller->parent->dseStore) {
+      activeCaller->parent->dseStore = activeCaller->parent->dseStore->getEmptyMap();
+      activeCaller->parent->dseStore->allOthersClobbered = true;
+    }
 
     if(!StatsFile.empty())
       preCommitStats(true);

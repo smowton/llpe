@@ -1082,6 +1082,7 @@ void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
     errs() << "Warning: disabled context " << IA->SeqNumber << " reads tentative information\n";
     SI->parent->tlStore = SI->parent->tlStore->getEmptyMap();
     SI->parent->tlStore->allOthersClobbered = true;
+    IA->backupTlStore->dropReference();
 
   }
   else {
