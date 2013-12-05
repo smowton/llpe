@@ -41,7 +41,7 @@ static void DSEInstructionDead(ShadowInstruction* SI) {
 
 }
 
-TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->parent->IA), committedInsts(0), nCommittedInsts(0), outstandingBytes(ob), isNeeded(false) {
+TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), isCommitted(false), committedInsts(0), nCommittedInsts(0), outstandingBytes(ob), isNeeded(false) {
 
   GlobalIHP->trackedStores[_I] = this;
   
@@ -49,7 +49,9 @@ TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), IA(_I->p
 
 TrackedStore::~TrackedStore() {
 
-  GlobalIHP->trackedStores.erase(I);
+  if(!isCommitted)
+    GlobalIHP->trackedStores.erase(I);
+
   // Just deletes the array, not the instructions
   if(committedInsts)
     delete[] committedInsts;
@@ -60,7 +62,7 @@ bool TrackedStore::canKill() {
 
   if(isNeeded)
     return false;
-  if(IA->isCommitted())
+  if(isCommitted)
     return !!committedInsts;
 
   return true;
@@ -116,7 +118,7 @@ static void DeleteDeadInstruction(Instruction *I) {
 
 void TrackedStore::kill() {
 
-  if(!IA->isCommitted())
+  if(!isCommitted)
     DSEInstructionDead(I);
   else {
     release_assert(committedInsts && "Should have a committed instructions");

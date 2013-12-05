@@ -147,7 +147,7 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
 	RSO << "[needed]";
       }
       else {
-	if(!TS->IA->isCommitted())
+	if(!TS->isCommitted)
 	  RSO << itcache(TS->I, brief);
 	else if(!TS->committedInsts)
 	  RSO << "[committed-unknown]";

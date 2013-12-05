@@ -1173,6 +1173,13 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  
 	  Constant* Zero32 = Constant::getNullValue(GInt32);
 	  CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_NE, ReadMemcmp, Zero32);
+
+	  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(I);
+	  if(findit != pass->trackedStores.end()) {
+
+	    findit->second->isCommitted = true;
+
+	  }
 	  
 	}
 	else {
@@ -1273,6 +1280,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(I);
 	if(findit != pass->trackedStores.end()) {
 
+	  findit->second->isCommitted = true;
 	  findit->second->committedInsts = new Instruction*[1];
 	  findit->second->committedInsts[0] = ReadMemcpy;
 	  findit->second->nCommittedInsts = 1;
@@ -1582,10 +1590,11 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   }
 
   // If it's a store that is tracked by DSE, note the committed instruction.
-  if(isa<StoreInst>(newI)) {
+  if(isa<StoreInst>(newI) || isa<MemSetInst>(newI)) {
 
     DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
     if(findit != GlobalIHP->trackedStores.end()) {
+      findit->second->isCommitted = true;
       findit->second->committedInsts = new Instruction*[1];
       findit->second->committedInsts[0] = newI;
       findit->second->nCommittedInsts = 1;
@@ -2010,6 +2019,7 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   
   DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
   if(findit != GlobalIHP->trackedStores.end()) {
+    findit->second->isCommitted = true;
     findit->second->committedInsts = new Instruction*[newInstructions.size()];
     memcpy(findit->second->committedInsts, &newInstructions[0], sizeof(Instruction*) * newInstructions.size());
     findit->second->nCommittedInsts = newInstructions.size();

@@ -1892,7 +1892,9 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       BasicBlock* splitBlock = 
 	toSplit->splitBasicBlock(splitIterator, SplitName);
       failedBlocks[idx].push_back(std::make_pair(splitBlock, i + 1));
-      CommitBlocks.push_back(splitBlock);
+
+      if(!CommitF)
+	CommitBlocks.push_back(splitBlock);
 
       instsSinceLastSplit = 0;
 

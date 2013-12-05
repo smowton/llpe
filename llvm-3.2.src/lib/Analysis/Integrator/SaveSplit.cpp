@@ -352,6 +352,9 @@ void InlineAttempt::splitCommitHere() {
   for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
 	itend = CommitBlocks.end(); it != itend; ++it) {
 
+    Value* TestVal = *it;
+    release_assert(isa<BasicBlock>(TestVal));
+
     BBL.push_back(*it);
 
   }
@@ -369,6 +372,9 @@ void InlineAttempt::splitCommitHere() {
 
 uint64_t InlineAttempt::findSaveSplits() {
 
+  if(isCommitted())
+    return residualInstructionsHere;
+  
   uint64_t residuals;
 
   if(mustCommitOutOfLine() || (residuals = IntegrationAttempt::findSaveSplits()) > SPLIT_THRESHOLD) {

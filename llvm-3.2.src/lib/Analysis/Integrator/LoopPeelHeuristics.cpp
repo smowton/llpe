@@ -180,6 +180,8 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 
 IntegrationAttempt::~IntegrationAttempt() {
 
+  // !BBs indicates we've already been cleaned up (but not deallocated yet).
+
   if(BBs) {
 
     for(uint32_t i = 0; i < nBBs; ++i) {
@@ -206,13 +208,13 @@ IntegrationAttempt::~IntegrationAttempt() {
 
     delete[] BBs;
 
-  }
+    for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
+      II->second->dropReferenceFrom(II->first);
+    } 
+    for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+      delete (PI->second);
+    }
 
-  for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
-    II->second->dropReferenceFrom(II->first);
-  } 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
-    delete (PI->second);
   }
 
 }
@@ -641,11 +643,18 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
   if(commitState == COMMIT_FREED)
     return;
 
+  // For the time being, retain all data if the user will inspect it.
+  if(IHPSaveDOTFiles) {
+    commitState = COMMIT_FREED;
+    return;
+  }
+
   for(IAIterator it = child_calls_begin(this),
 	itend = child_calls_end(this); it != itend; ++it) {
 
-    if(it->second->isEnabled())
-      it->second->releaseMemoryPostCommit();
+    it->second->releaseMemoryPostCommit();
+    // IAs may only be referenced from us at present
+    it->second->dropReferenceFrom(it->first);
 
   }
 
@@ -658,7 +667,11 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
     }
 
+    delete it->second;
+
   }
+
+  peelChildren.clear();
 
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
 
@@ -671,6 +684,13 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 	ShadowInstruction* SI = &BB->insts[j];
 	if(SI->i.PB)
 	  deleteIV(SI->i.PB);
+
+	DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(SI);
+	if(findit != pass->trackedStores.end()) {
+	  findit->second->isCommitted = true;
+	  pass->trackedStores.erase(findit);
+	}
+
 	pass->indirectDIEUsers.erase(SI);
 	pass->memcpyValues.erase(SI);
 	pass->forwardableOpenCalls.erase(SI);
@@ -746,13 +766,23 @@ void InlineAttempt::finaliseAndCommit() {
     postCommitOptimise();
 
     // Give our committed functions and blocks to our parent context.
-    InlineAttempt* ParentIA = uniqueParent->getFunctionRoot();
-    ParentIA->CommitBlocks.insert(ParentIA->CommitBlocks.end(),
-				  CommitBlocks.begin(), CommitBlocks.end());
-    ParentIA->CommitFunctions.insert(ParentIA->CommitFunctions.end(),
-				     CommitFunctions.begin(), CommitFunctions.end());
-    CommitBlocks.clear();
-    CommitFunctions.clear();
+    if(uniqueParent) {
+
+      if(CommitF) {
+	
+	release_assert(CommitBlocks.empty());
+
+      }
+
+      InlineAttempt* ParentIA = uniqueParent->getFunctionRoot();
+      ParentIA->CommitBlocks.insert(ParentIA->CommitBlocks.end(),
+				    CommitBlocks.begin(), CommitBlocks.end());
+      ParentIA->CommitFunctions.insert(ParentIA->CommitFunctions.end(),
+				       CommitFunctions.begin(), CommitFunctions.end());
+      CommitBlocks.clear();
+      CommitFunctions.clear();
+
+    }
     
   }
   else {
@@ -3657,9 +3687,13 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   fixNonLocalUses();
   errs() << "\n";
 
-  // Function sharing is now decided, and hence the graph structure, so create
-  // graph tags for the GUI.
-  rootTag = RootIA->createTag(0);
+  if(IHPSaveDOTFiles) {
+
+    // Function sharing is now decided, and hence the graph structure, so create
+    // graph tags for the GUI.
+    rootTag = RootIA->createTag(0);
+
+  }
     
   return false;
 
