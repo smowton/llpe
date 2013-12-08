@@ -787,3 +787,72 @@ BasicBlock* ShadowBB::getCommittedBreakBlockAt(uint32_t idx) {
   return 0;
 
 }
+
+ShadowBB* PeelIteration::getUniqueExitingBlock2(ShadowBBInvar* BBI, const Loop* exitLoop, bool& bail) {
+
+  PeelAttempt* LPA;
+
+  // Defer to child loop iteration?
+
+  if(BBI->naturalScope != L && 
+     (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) && 
+     LPA->isTerminated()) {
+
+    return LPA->Iterations.back()->getUniqueExitingBlock2(BBI, exitLoop, bail);
+
+  }
+
+  // Find a unique exiting edge if there is one.
+  ShadowBB* ExitingBB = getBB(*BBI);
+  if(!ExitingBB)
+    return 0;
+
+  uint32_t exitingEdges = 0;
+
+  for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim && exitingEdges < 2; ++i) {
+
+    ShadowBBInvar* ExitedBBI = getBBInvar(BBI->succIdxs[i]);
+    if(ExitingBB->succsAlive[i] && 
+       ((!ExitedBBI->naturalScope) || !exitLoop->contains(ExitedBBI->naturalScope))) {
+
+      ++exitingEdges;
+
+    }
+
+  }
+
+  if(exitingEdges == 0)
+    return 0;
+  else if(exitingEdges == 1)
+    return ExitingBB;
+  else {
+    bail = true;
+    return 0;
+  }
+
+}
+
+ShadowBB* PeelIteration::getUniqueExitingBlock() {
+
+  ShadowBB* uniqueBlock = 0;
+
+  for(std::vector<uint32_t>::iterator it = parentPA->invarInfo->exitingBlocks.begin(),
+	itend = parentPA->invarInfo->exitingBlocks.end(); it != itend; ++it) {
+
+    ShadowBBInvar* ExitingBBI = getBBInvar(*it);
+    bool bail = false;
+    ShadowBB* ExitingBB = getUniqueExitingBlock2(ExitingBBI, L, bail);
+    if(bail)
+      return 0;
+    else if(ExitingBB) {
+      if(uniqueBlock)
+	return 0;
+      else
+	uniqueBlock = ExitingBB;
+    }
+
+  }
+
+  return uniqueBlock;
+  
+}

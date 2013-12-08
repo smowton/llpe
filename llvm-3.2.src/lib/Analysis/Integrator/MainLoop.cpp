@@ -451,7 +451,22 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       // The loop preheader's local store was copied by the loop analysis assuming we'd
       // need it to analyse the loop body, but we've found the loop terminates; drop the extra ref.
       ShadowLoopInvar* LInfo = invarInfo->LInfo[BBL];
-      getBB(LInfo->preheaderIdx)->derefStores();
+
+      // For the common case where the loop has a single known exit point, perform store simplifications.
+      // These apply because the store was forked anticipating failure to establish an iteration count.
+
+      ShadowBB* ExitingBlock = LPA->Iterations.back()->getUniqueExitingBlock();
+
+      std::vector<ShadowValue> simplifyStores;
+      getBB(LInfo->preheaderIdx)->derefStores(ExitingBlock ? &simplifyStores : 0);
+
+      for(std::vector<ShadowValue>::iterator it = simplifyStores.begin(),
+	    itend = simplifyStores.end(); it != itend; ++it) {
+	  
+	if(LocStore* LS = ExitingBlock->getReadableStoreFor(*it))
+	  LocStore::simplifyStore(LS);
+
+      }
 
       // Copy edges found always dead to local scope, to accelerate edgeIsDead queries without
       // checking every iteration every time.

@@ -909,6 +909,10 @@ LocStore(const LocStore& other) : store(other.store) {}
 
   static void simplifyStore(LocStore*);
 
+  bool derefWillAllowSimplify() {
+    return store && isa<ImprovedValSetMulti>(store) && cast<ImprovedValSetMulti>(store)->MapRefCount == 2;
+  }
+
 };
 
 enum AllocTestedState {
@@ -1162,6 +1166,7 @@ DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
   static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
 			  uint64_t ASize, MergeBlockVisitor<DSEMapPointer, DSEStoreExtraState>* Visitor);
   static void simplifyStore(DSEMapPointer*) { }
+  bool derefWillAllowSimplify() { return false; }
   void useWriters(int64_t Offset, uint64_t Size);
   void setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* SI);
 
@@ -1223,6 +1228,7 @@ TLMapPointer(const TLMapPointer& other) : M(other.M) {}
   static void mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, 
 			  uint64_t ASize, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
   static void simplifyStore(TLMapPointer*) { }
+  bool derefWillAllowSimplify() { return false; }
   
 };
 
@@ -1370,8 +1376,8 @@ struct ShadowBB {
     if(dseStore)
       ++dseStore->refCount;
   }
-  void derefStores() {
-    localStore->dropReference();
+  void derefStores(std::vector<ShadowValue>* simplify = 0) {
+    localStore->dropReference(simplify);
     fdStore->dropReference();
     if(tlStore)
       tlStore->dropReference();

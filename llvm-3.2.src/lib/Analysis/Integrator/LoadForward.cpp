@@ -750,6 +750,24 @@ uint64_t ShadowBB::getAllocSize(ShadowValue V) {
 
 }
 
+static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
+
+  ImprovedValSetMulti* IVM = dyn_cast<ImprovedValSetMulti>(IVS);
+  if((!IVM) || !IVM->Underlying) {
+    
+    if(depth >= 2)
+      errs() << "RD " << depth << "\n";
+    return depth;
+    
+  }
+  else {
+    
+    return logReadDepth(IVM->Underlying, depth + 1);
+
+  }
+  
+}
+
 LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
 
   // We're about to write to memory location V + Offset -> Offset+Size. 
@@ -760,7 +778,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
    
   bool isNewStore;
   LocStore* ret = getOrCreateStoreFor(V, &isNewStore);
-  
+
   if(isNewStore) {
 
     // There wasn't an entry in the local map. Make a Single or Multi store depending on
@@ -1065,24 +1083,6 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
       
   }
 
-}
-
-static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
-
-  ImprovedValSetMulti* IVM = dyn_cast<ImprovedValSetMulti>(IVS);
-  if((!IVM) || !IVM->Underlying) {
-    
-    if(depth >= 2)
-      errs() << "RD " << depth << "\n";
-    return depth;
-    
-  }
-  else {
-    
-    return logReadDepth(IVM->Underlying, depth + 1);
-
-  }
-  
 }
 
 void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {

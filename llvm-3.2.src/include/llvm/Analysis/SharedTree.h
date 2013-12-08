@@ -18,7 +18,7 @@ SharedTreeNode() : refCount(1) {
 
 }
 
-  void dropReference(uint32_t height);
+  void dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified);
   ChildType* getReadableStoreFor(uint32_t idx, uint32_t height);
   ChildType* getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore);
   SharedTreeNode* getWritableNode(uint32_t height);
@@ -28,7 +28,7 @@ SharedTreeNode() : refCount(1) {
 };
 
 template<class ChildType, class ExtraState> 
-void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t height) {
+void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified) {
 
   if(!--refCount) {
 
@@ -39,9 +39,15 @@ void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t height) {
 
       for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 	if(children[i]) {
+
 	  ChildType* child = ((ChildType*)children[i]);
+	  
+	  if(simplified && child->derefWillAllowSimplify())
+	    simplified->push_back(ShadowValue::getPtrIdx(-1, idx + i));
+
 	  child->dropReference();
 	  delete child;
+
 	}
       }
 
@@ -50,7 +56,8 @@ void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t height) {
 
       for(uint32_t i = 0; i < HEAPTREEORDER; ++i) {
 	if(children[i])
-	  ((SharedTreeNode*)children[i])->dropReference(height - 1);
+	  ((SharedTreeNode*)children[i])->dropReference(idx + (i << (height * HEAPTREEORDERLOG2)), 
+							height - 1, simplified);
       }
 
     }
@@ -226,7 +233,7 @@ void SharedTreeNode<ChildType, ExtraState>
 	  if(height == 0)
 	    delete ((ChildType*)children[i]);
 	  else
-	    ((SharedTreeNode*)children[i])->dropReference(height - 1);
+	    ((SharedTreeNode*)children[i])->dropReference(idx + i, height - 1, 0);
 	  children[i] = 0;
 
 	}
@@ -384,8 +391,8 @@ template<class ChildType, class ExtraState> struct SharedTreeRoot {
   uint32_t height;
 
 SharedTreeRoot() : root(0), height(0) { }
-  void clear();
-  void dropReference();
+  void clear(std::vector<ShadowValue>* simplified);
+  void dropReference(std::vector<ShadowValue>* simplified);
   ChildType* getReadableStoreFor(ShadowValue& V);
   ChildType* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
   void growToHeight(uint32_t newHeight);
@@ -418,7 +425,7 @@ template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType,
   // Is a valid allocation instruction?
   int32_t idx = V.getHeapKey();
   if(idx < 0)
-   return 0;
+    return 0;
 
   if(getRequiredHeight(idx) > height)
     return 0;
@@ -489,19 +496,19 @@ template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType,
 
 }
 
-template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::clear() {
+template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::clear(std::vector<ShadowValue>* simplified) {
 
   if(height == 0)
     return;
-  root->dropReference(height - 1);
+  root->dropReference(0, height - 1, simplified);
   root = 0;
   height = 0;
 
 }
 
-template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::dropReference() {
+template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* simplified) {
 
-  clear();
+  clear(simplified);
 
 }
 
@@ -515,9 +522,9 @@ template<class ChildType, class ExtraState> struct SharedStoreMap {
 SharedStoreMap(InlineAttempt* _IA, uint32_t initSize) : store(initSize), refCount(1), IA(_IA), empty(true) { }
 
   SharedStoreMap* getWritableStoreMap();
-  void dropReference();
-  void clear();
-  SharedStoreMap* getEmptyMap();
+  void dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified);
+  void clear(uint32_t stack_depth, std::vector<ShadowValue>* simplified);
+  SharedStoreMap* getEmptyMap(uint32_t stack_depth);
   void print(raw_ostream&, bool brief);
 
 };
@@ -570,14 +577,17 @@ static int32_t allocFrameSize(InlineAttempt* IA) {
 
 }
 
-template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::clear() {
+template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::clear(uint32_t stack_depth, std::vector<ShadowValue>* simplified) {
 
   release_assert(refCount <= 1 && "clear() against shared map?");
 
   // Drop references to any maps this points to;
-  for(typename std::vector<ChildType>::iterator it = store.begin(), itend = store.end(); it != itend; ++it) {
+  uint32_t i = 0;
+  for(typename std::vector<ChildType>::iterator it = store.begin(), itend = store.end(); it != itend; ++it, ++i) {
     if(!it->isValid())
       continue;
+    if(simplified && it->derefWillAllowSimplify())
+      simplified->push_back(ShadowValue::getPtrIdx(stack_depth, i));
     it->dropReference();
   }
 
@@ -587,27 +597,27 @@ template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, Extra
 
 }
 
-template<class ChildType, class ExtraState> SharedStoreMap<ChildType, ExtraState>* SharedStoreMap<ChildType, ExtraState>::getEmptyMap() {
+template<class ChildType, class ExtraState> SharedStoreMap<ChildType, ExtraState>* SharedStoreMap<ChildType, ExtraState>::getEmptyMap(uint32_t stack_depth) {
 
   if(!store.size())
     return this;
   else if(refCount == 1) {
-    clear();
+    clear(stack_depth, 0);
     return this;
   }
   else {
-    dropReference();
+    dropReference(stack_depth, 0);
     return new SharedStoreMap<ChildType, ExtraState>(IA, store.size());
   }
 
 }
 
-template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::dropReference() {
+template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified) {
 
   if(!--refCount) {
 
     LFV3(errs() << "Local map " << this << " freed\n");
-    clear();
+    clear(stack_depth, simplified);
 
     delete this;
 
@@ -654,7 +664,7 @@ LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCou
 
   void clear();
   LocalStoreMap* getEmptyMap();
-  void dropReference();
+  void dropReference(std::vector<ShadowValue>* simplified = 0);
   LocalStoreMap* getWritableFrameList();
   void print(raw_ostream&, bool brief = false);
   bool empty();
@@ -741,9 +751,9 @@ template<class ChildType, class ExtraState> std::vector<ChildType>& LocalStoreMa
 
 template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::clear() {
 
-  heap.clear();
+  heap.clear(0);
   for(uint32_t i = 0; i < frames.size(); ++i)
-    frames[i] = frames[i]->getEmptyMap();
+    frames[i] = frames[i]->getEmptyMap(i);
 
 }
 
@@ -810,14 +820,14 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
   
 }
 
-template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::dropReference() {
+template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* Simplified) {
 
   if(!--refCount) {
 
     LFV3(errs() << "Local map " << this << " freed\n");
-    heap.dropReference();
+    heap.dropReference(Simplified);
     for(uint32_t i = 0; i < frames.size(); ++i)
-      frames[i]->dropReference();
+      frames[i]->dropReference(i, Simplified);
 
     delete this;
 
@@ -833,7 +843,7 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
 template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::popStackFrame() {
 
   release_assert(frames.size() && "Pop from empty stack?");
-  frames.back()->dropReference();
+  frames.back()->dropReference(frames.size() - 1, 0);
   frames.pop_back();
 
 }

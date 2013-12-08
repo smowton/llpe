@@ -1633,6 +1633,9 @@ public:
 
   virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
 
+  ShadowBB* getUniqueExitingBlock2(ShadowBBInvar* BBI, const Loop* exitLoop, bool& bail);
+  ShadowBB* getUniqueExitingBlock();
+
 };
 
 class ProcessExternalCallback;
