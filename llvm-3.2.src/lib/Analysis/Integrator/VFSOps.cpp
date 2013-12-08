@@ -507,6 +507,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   }
   else if(F->getName() == "llseek" || F->getName() == "lseek" || F->getName() == "lseek64") {
 
+    pass->resolvedSeekCalls.erase(SI);
+
     // Check for needed values now:
 
     uint64_t intOffset;
@@ -572,6 +574,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   }
   else if(F->getName() == "read") {
+
+    pass->resolvedReadCalls.erase(SI);
 
     ShadowValue readBytes = SI->getCallArgOperand(2);
     uint64_t ucBytes;

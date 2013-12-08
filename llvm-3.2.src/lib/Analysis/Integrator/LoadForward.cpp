@@ -1989,6 +1989,14 @@ bool llvm::canTruncate(ImprovedValSetSingle& S) {
 
 void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore, uint64_t ASize) {
 
+  if(!store) {
+    
+    Value* UD = UndefValue::get(Type::getIntNTy(GInt8->getContext(), Size));
+    Results.push_back(IVSR(Offset, Offset + Size, ImprovedValSetSingle(ImprovedVal(ShadowValue(UD)), ValSetTypeScalar)));
+    return;
+
+  }
+
   if(ignoreBelowStore && ignoreBelowStore == store) {
     LFV3(errs() << "Leaving a gap due to threshold store " << ignoreBelowStore << "\n");
     return;
@@ -3667,8 +3675,9 @@ void LocStore::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, uin
 	LFV3(errs() << "Merge with base " << LastOffset << "-" << stopAt << "\n");
 	  
 	SmallVector<IVSRange, 4> baseVals;
+
 	readValRangeMultiFrom(LastOffset, stopAt - LastOffset, LHSAncestor, baseVals, 0, ASize);
-		
+
 	for(SmallVector<IVSRange, 4>::iterator baseit = baseVals.begin(), baseend = baseVals.end();
 	    baseit != baseend; ++baseit) {
 
@@ -3727,7 +3736,9 @@ void LocStore::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, uin
 
     if(anyGaps) {
       LFV3(errs() << "Using ancestor " << LHSAncestor << "\n");
-      newUnderlying = LHSAncestor->getReadableCopy();
+      newUnderlying = LHSAncestor;
+      if(newUnderlying)
+	newUnderlying = newUnderlying->getReadableCopy();
     }
     else {
       LFV3(errs() << "No ancestor used (totally defined locally)\n");

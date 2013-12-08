@@ -701,6 +701,22 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
   if(disableWrites && !(inst_is<LoadInst>(I) || inst_is<MemTransferInst>(I)))
     return;
 
+  // Even if a memcpy or read fails its test, it will overwrite memory one way or another.
+  // Therefore it is OK to register their write operation first, before checking if a runtime
+  // check will take place.
+
+  if(inst_is<CallInst>(I)) {
+
+    DenseMap<ShadowInstruction*, ReadFile>::iterator RI = pass->resolvedReadCalls.find(I);
+    DenseMap<Function*, specialfunctions>::iterator findit;
+    if(RI != pass->resolvedReadCalls.end()) {
+      
+      DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, I, BB);
+
+    }
+
+  }
+
   // This will be a branch to unspecialised code in the output program;
   // assume store is needed if it is live over this point.
   if(requiresRuntimeCheck(ShadowValue(I), true)) {
@@ -733,7 +749,6 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
     // If the size is unknown we must assume zero.
     if(MISize != AliasAnalysis::UnknownSize)
       DSEHandleWrite(I->getCallArgOperand(0), MISize, I, BB);
-
 
   }
   else if(inst_is<AllocaInst>(I)) {
@@ -772,6 +787,8 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
       DenseMap<Function*, specialfunctions>::iterator findit;
       if(RI != pass->resolvedReadCalls.end()) {
 
+	// Repeat this, as a way of effectively sparing it from being needed because
+	// the read requires a runtime check.
 	DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, I, BB);
 
       }

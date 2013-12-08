@@ -394,7 +394,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   bool flip;
   bool CmpIntValid;
-  uint64_t CmpInt = 0;
+  int64_t CmpInt = 0;
   ValSetType CmpIntType;
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
@@ -403,12 +403,12 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   if(op0I != -1 && Ops[0].first == ValSetTypeFD) {
     flip = false;
-    CmpIntValid = tryGetConstantInt(op1, CmpInt);
+    CmpIntValid = tryGetConstantSignedInt(op1, CmpInt);
     CmpIntType = Ops[1].first;
   }
   else if(op1I != -1 && Ops[1].first == ValSetTypeFD) {
     flip = true;
-    CmpIntValid = tryGetConstantInt(op0, CmpInt);
+    CmpIntValid = tryGetConstantSignedInt(op0, CmpInt);
     CmpIntType = Ops[0].first;
   }
   else {
@@ -417,7 +417,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
   if(CmpIntValid) {
     
-    Improved.V = getOpenCmpResult(CmpI, (int64_t)CmpInt, flip);
+    Improved.V = getOpenCmpResult(CmpI, CmpInt, flip);
     if(!Improved.V.isInval()) {
       LPDEBUG("Comparison against file descriptor resolves to " << itcache(Improved.V) << "\n");
       ImpType = ValSetTypeScalar;

@@ -116,9 +116,12 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T it, T itend, C
 
     BasicBlock* Start = Chain[0];
     CB.willReplace(Start);
-    
-    for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i)
-      MergeBasicBlockIntoOnlyPred(Chain[i]);
+
+    for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i) {
+      if(i != 0 && (i % 10000 == 0)) 
+	errs() << ".";
+      MergeBasicBlockIntoOnlyPred(Chain.back());
+    }
 
     CB.replaced(Start, Chain.back());
 
@@ -189,6 +192,9 @@ struct DerefAdaptor {
 };
 
 void InlineAttempt::postCommitOptimise() {
+
+  if(SkipPostCommit)
+    return;
 
   if(CommitF) {
     

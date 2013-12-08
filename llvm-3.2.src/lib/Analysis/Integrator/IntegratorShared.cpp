@@ -33,7 +33,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(CastVal.first == ValSetTypePB)
 	  return CastVal;
 	else if(CastVal.first == ValSetTypeScalar) {
-	  if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CastVal.second.V.getVal())) {
+	  if(ConstantExpr* SubCE = dyn_cast_or_null<ConstantExpr>(getSingleConstant(CastVal.second.V))) {
 	    if(SubCE->getOpcode() == Instruction::PtrToInt)
 	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
 	  }
@@ -48,7 +48,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(CastVal.first == ValSetTypePB)
 	  return CastVal;
 	else if(CastVal.first == ValSetTypeScalar) {
-	  if(ConstantExpr* SubCE = dyn_cast<ConstantExpr>(CastVal.second.V.getVal())) {
+	  if(ConstantExpr* SubCE = dyn_cast_or_null<ConstantExpr>(getSingleConstant(CastVal.second.V))) {
 	    if(SubCE->getOpcode() == Instruction::IntToPtr)
 	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
 	  }
@@ -121,8 +121,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	  if(Op2.first == ValSetTypePB) // Can't add 2 pointers
 	    return std::make_pair(ValSetTypeUnknown, ImprovedVal());
 
-	  if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V.getVal()))
-	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset + Op2C->getLimitedValue()));
+	  uint64_t Op2C;
+	  if(tryGetConstantInt(Op2.second.V, Op2C))
+	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset + Op2C));
 	  else
 	    return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, LLONG_MAX));
 
@@ -150,8 +151,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
 	      if(Op1.second.Offset == LLONG_MAX)
 		return Op1;
-	      if(ConstantInt* Op2C = dyn_cast<ConstantInt>(Op2.second.V.getVal()))
-		return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset - Op2C->getLimitedValue()));
+	      uint64_t Op2C;
+	      if(tryGetConstantInt(Op2.second.V, Op2C))
+		return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset - Op2C));
 	      else
 		return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, LLONG_MAX));
 
@@ -215,7 +217,7 @@ static Function* getReplacementFunction(ShadowValue CCalledV) {
       if(!PB.Overdef) {
 
 	for(unsigned i = 0; i < PB.Values.size(); ++i) {
-
+	  
 	  Constant* ThisVal = dyn_cast_or_null<Constant>(PB.Values[i].V.getVal());
 	  if(!ThisVal) {
 	    OnlyVal = 0;

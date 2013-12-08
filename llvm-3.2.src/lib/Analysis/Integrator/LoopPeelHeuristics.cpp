@@ -181,41 +181,39 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 IntegrationAttempt::~IntegrationAttempt() {
 
   // !BBs indicates we've already been cleaned up (but not deallocated yet).
+  if(!BBs)
+    return;
 
-  if(BBs) {
+  for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
+    II->second->dropReferenceFrom(II->first);
+  } 
+  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+    delete (PI->second);
+  }
 
-    for(uint32_t i = 0; i < nBBs; ++i) {
+  for(uint32_t i = 0; i < nBBs; ++i) {
 
-      if(BBs[i]) {
+    if(BBs[i]) {
 
-	ShadowBB* BB = BBs[i];
+      ShadowBB* BB = BBs[i];
 
-	for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
 
-	  if(BB->insts[j].i.PB)
-	    deleteIV(BB->insts[j].i.PB);
-
-	}
-
-	// Delete ShadowInstruction array.
-	delete[] &(BB->insts[0]);
-	// Delete block itself.
-	delete BB;
+	if(BB->insts[j].i.PB)
+	  deleteIV(BB->insts[j].i.PB);
 
       }
 
-    }
+      // Delete ShadowInstruction array.
+      delete[] &(BB->insts[0]);
+      // Delete block itself.
+      delete BB;
 
-    delete[] BBs;
-
-    for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
-      II->second->dropReferenceFrom(II->first);
-    } 
-    for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
-      delete (PI->second);
     }
 
   }
+
+  delete[] BBs;
 
 }
 
@@ -754,25 +752,6 @@ void InlineAttempt::finaliseAndCommit() {
 
     postCommitOptimise();
 
-    // Give our committed functions and blocks to our parent context.
-    if(uniqueParent) {
-
-      if(CommitF) {
-	
-	release_assert(CommitBlocks.empty());
-
-      }
-
-      InlineAttempt* ParentIA = uniqueParent->getFunctionRoot();
-      ParentIA->CommitBlocks.insert(ParentIA->CommitBlocks.end(),
-				    CommitBlocks.begin(), CommitBlocks.end());
-      ParentIA->CommitFunctions.insert(ParentIA->CommitFunctions.end(),
-				       CommitFunctions.begin(), CommitFunctions.end());
-      CommitBlocks.clear();
-      CommitFunctions.clear();
-
-    }
-    
   }
   else {
 

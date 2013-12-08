@@ -2097,7 +2097,7 @@ bool IntegrationAttempt::subblockEndsWithSpecialTest(uint32_t idx,
   // a special test.
 
   ++it;
-  uint32_t instIdx = it->second - 1;
+  uint32_t instIdx = it->second;
 
   return instSpecialTest(idx, instIdx);
 

@@ -1439,6 +1439,7 @@ protected:
 				  Function* F,
 				  uint32_t startIdx);
   void addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp);
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs) = 0;
 
   // Function sharing
 
@@ -1630,6 +1631,8 @@ public:
   void setExitingStores(void*, StoreKind);
   void setExitingStore(void*, ShadowBBInvar*, const Loop*, StoreKind);
 
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
+
 };
 
 class ProcessExternalCallback;
@@ -1663,6 +1666,9 @@ class PeelAttempt {
    ShadowLoopInvar* invarInfo;
 
    std::vector<PeelIteration*> Iterations;
+
+   std::vector<BasicBlock*> CommitBlocks;
+   std::vector<Function*> CommitFunctions;
 
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
    ~PeelAttempt();
@@ -1708,7 +1714,9 @@ class PeelAttempt {
 
    bool containsTentativeLoads();
 
-  IntegratorTag* createTag(IntegratorTag* parent);
+   IntegratorTag* createTag(IntegratorTag* parent);
+
+   void releaseCommittedChildren();
 
  };
 
@@ -1945,6 +1953,8 @@ class InlineAttempt : public IntegrationAttempt {
   void postCommitOptimise();
   void finaliseAndCommit();
   void inheritCommitFunctionCall(bool);
+
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
 
 };
 

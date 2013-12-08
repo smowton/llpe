@@ -176,6 +176,28 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
       Out = u.CI;
     return isci;
   }
+  bool getSignedCI(int64_t& Out) {
+    bool isci = isConstantInt();
+    if(isci) {
+      switch(t) {
+      case SHADOWVAL_CI8:
+	Out = (int8_t)(uint8_t)u.CI;
+	break;
+      case SHADOWVAL_CI16:
+	Out = (int16_t)(uint16_t)u.CI;
+	break;
+      case SHADOWVAL_CI32:
+	Out = (int32_t)(uint32_t)u.CI;
+	break;
+      case SHADOWVAL_CI64:
+	Out = (int64_t)(uint64_t)u.CI;
+	break;
+      default:
+	llvm_unreachable();
+      }
+    }
+    return isci;
+  }
 
   Type* getNonPointerType();
   ShadowValue stripPointerCasts();
@@ -1733,6 +1755,25 @@ inline ShadowValue tryGetConstReplacement(ShadowValue SV) {
   else
     return SV;
 
+}
+
+inline bool tryGetConstantSignedInt(ShadowValue SV, int64_t& Out) {
+
+  if(SV.getSignedCI(Out))
+    return true;
+
+  ConstantInt* CI;
+  if(SV.isVal() && (CI = dyn_cast<ConstantInt>(SV.u.V))) {
+
+    if(CI->getBitWidth() > 64)
+      return false;
+
+    Out = CI->getSExtValue();
+    return true;
+  }
+  
+  return false;
+  
 }
 
 inline bool tryGetConstantInt(ShadowValue SV, uint64_t& Out) {

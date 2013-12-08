@@ -979,7 +979,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	if(markUnreachable) {
 
 	  // Create an unreachable BB to branch to:
-	  BasicBlock* UBB = createBasicBlock(emitBB->getContext(), VerboseNames ? "LoopAssumeSink" : "", emitBB->getParent());
+	  BasicBlock* UBB = createBasicBlock(emitBB->getContext(), VerboseNames ? "synth-unreachable" : "", emitBB->getParent());
 	  new UnreachableInst(UBB->getContext(), UBB);
 	  newTerm->setOperand(i, UBB);
 
@@ -2281,6 +2281,18 @@ void InlineAttempt::commitArgsAndInstructions() {
 
     fixNonLocalStackUses();
 
+    // Give our committed functions and blocks to our parent context.
+    // Do this here rather than in CommitCFG because blocks handling unreachable branches can be
+    // created during emitTerminator.
+    if(uniqueParent) {
+
+      if(CommitF)
+	release_assert(CommitBlocks.empty());
+
+      uniqueParent->inheritCommitBlocksAndFunctions(CommitBlocks, CommitFunctions);
+
+    }
+
   }
 
 }
@@ -2370,7 +2382,7 @@ static void unregisterCommittedAllocations(Function* F) {
 
 }
 
-void InlineAttempt::releaseCommittedChildren() {
+static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<BasicBlock*>& CommitBlocks) {
 
   for(std::vector<Function*>::iterator it = CommitFunctions.begin(), 
 	itend = CommitFunctions.end(); it != itend; ++it) {
@@ -2391,9 +2403,22 @@ void InlineAttempt::releaseCommittedChildren() {
 
     unregisterCommittedAllocations(*it);
     (*it)->dropAllReferences();
+    delete *it;
 
   }
 
   CommitBlocks.clear();
+
+}
+
+void InlineAttempt::releaseCommittedChildren() {
+
+  releaseCC(CommitFunctions, CommitBlocks);
+
+}
+
+void PeelAttempt::releaseCommittedChildren() {
+
+  releaseCC(CommitFunctions, CommitBlocks);
 
 }

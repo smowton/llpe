@@ -320,6 +320,26 @@ void PeelIteration::setExitingStores(void* S, StoreKind SK) {
   
 }
 
+void PeelIteration::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs) {
+
+  parentPA->CommitBlocks.insert(parentPA->CommitBlocks.end(), NewCBs.begin(), NewCBs.end());
+  parentPA->CommitFunctions.insert(parentPA->CommitFunctions.end(), NewFs.begin(), NewFs.end());
+
+  NewCBs.clear();
+  NewFs.clear();
+
+}
+
+void InlineAttempt::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs) {
+
+  CommitBlocks.insert(CommitBlocks.end(), NewCBs.begin(), NewCBs.end());
+  CommitFunctions.insert(CommitFunctions.end(), NewFs.begin(), NewFs.end());
+
+  NewCBs.clear();
+  NewFs.clear();
+
+}
+
 bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL) {
 
   ShadowBB* BB = getBB(blockIdx);
@@ -392,6 +412,19 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 	  emptyStore->dropReference();
 
 	}
+
+      }
+
+      if(LPA->isTerminated() && LPA->isEnabled()) {
+
+	// Committed blocks in the iterations will be used;
+	// next parent inherits them.
+	inheritCommitBlocksAndFunctions(LPA->CommitBlocks, LPA->CommitFunctions);
+
+      }
+      else {
+
+	LPA->releaseCommittedChildren();
 
       }
 
