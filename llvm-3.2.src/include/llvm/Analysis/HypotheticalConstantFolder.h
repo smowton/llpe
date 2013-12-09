@@ -2260,6 +2260,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  Module* getGlobalModule();
  void setAllNeededTop(DSELocalStore*);
  bool IHPFoldIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, SmallVector<uint64_t, 4>& OpInts, ValSetType& ImpType, ImprovedVal& Improved);
+ void DeleteDeadInstruction(Instruction *I);
 
  extern char ihp_workdir[];
  extern bool IHPSaveDOTFiles;

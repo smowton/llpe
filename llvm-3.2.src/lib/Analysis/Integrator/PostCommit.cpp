@@ -55,13 +55,38 @@ static BasicBlock* getChainNext(BasicBlock* BB) {
 
 }
 
-template<class T, class Callback> void postCommitOptimiseBlocks(T it, T itend, Callback& CB) {
+template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T itend, Callback& CB) {
+
+  // Zap any instructions we've created that are trivially dead.
+  // TODO: improve DIE to catch more cases like this before synthesis, or adopt
+  // on-demand synthesis to similar effect.
+
+  std::vector<Instruction*> Del;
+
+  for(T it = itstart; it != itend; ++it) {
+
+    BasicBlock* BB = it;
+    for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
+
+      if(isInstructionTriviallyDead(II, GlobalTLI))
+	Del.push_back(II);
+
+    }
+
+  }
+
+  for(std::vector<Instruction*>::iterator Delit = Del.begin(), Delend = Del.end(); Delit != Delend; ++Delit)
+    DeleteDeadInstruction(*Delit);
+
+  Del.clear();
+
+  // Now coalesce any long chains of BBs.
 
   std::vector<std::vector<BasicBlock*> > Chains;
 
   DenseSet<BasicBlock*> Seen;
 
-  for(; it != itend; ++it) {
+  for(T it = itstart; it != itend; ++it) {
 
     BasicBlock* BB = it;
     if(!Seen.insert(BB).second)

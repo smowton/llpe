@@ -3559,8 +3559,8 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   }
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
-  GInt8 = Type::getInt32Ty(M.getContext());
-  GInt16 = Type::getInt32Ty(M.getContext());
+  GInt8 = Type::getInt8Ty(M.getContext());
+  GInt16 = Type::getInt16Ty(M.getContext());
   GInt32 = Type::getInt32Ty(M.getContext());
   GInt64 = Type::getInt64Ty(M.getContext());
   initMRInfo(&M);

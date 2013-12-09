@@ -69,7 +69,7 @@ bool TrackedStore::canKill() {
 
 }
 
-static void DeleteDeadInstruction(Instruction *I) {
+void llvm::DeleteDeadInstruction(Instruction *I) {
 
   SmallVector<Instruction*, 32> NowDeadInsts;
 
