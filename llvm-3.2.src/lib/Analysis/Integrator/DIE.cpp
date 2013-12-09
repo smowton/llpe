@@ -31,329 +31,50 @@ static void DIEProgress() {
 
 }
 
-static bool isAllocationInstruction(ShadowValue V) {
-
-  if(val_is<AllocaInst>(V))
-    return true;
-
-  if(val_is<CallInst>(V)) {
-
-    ShadowInstruction* SI = V.getInst();
-
-    Function* F = getCalledFunction(SI);
-    DenseMap<Function*, specialfunctions>::iterator findit;
-
-    if((findit = SpecialFunctionMap.find(F)) != SpecialFunctionMap.end()) {
-
-      switch(findit->second) {
-
-      case SF_REALLOC:
-      case SF_MALLOC:
-	return true;
-
-      default:
-	break;
-
-      }
-
-    }
-
-  }
-
-  return false;
-
-}
-
-bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
-
-  if(inst_is<CallInst>(I)) {
-
-    if(getInlineAttempt(I))
-      return true;
-    if(pass->forwardableOpenCalls.count(I))
-      return true;
-    if(isAllocationInstruction(ShadowValue(I)))
-       return true;
-
-    return false;
-
-  }
-
-  switch(I->invar->I->getOpcode()) {
-  default:
-    return true;
-  case Instruction::VAArg:
-  case Instruction::Invoke:
-  case Instruction::Store:
-  case Instruction::Br:
-  case Instruction::IndirectBr:
-  case Instruction::Switch:
-  case Instruction::Resume:
-  case Instruction::Unreachable:
-    return false;
-  }
-
-}
-
-// Implement a visitor that gets called for every dynamic use of an instruction.
-
-bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor) {
-
-  return false;
-
-}
-
-bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor) {
-
-  if(PHINode* PN = dyn_cast_inst<PHINode>(I)) {
-
-    if(PN->getParent() == L->getHeader()) {
-
-      if(PeelIteration* PI = getNextIteration()) {
-
-	Visitor.visit(PI->getInst(I));
-
-      }
-      else if(parentPA->isTerminated()) {
-
-	// The instruction would be used by the next iteration,
-	// but there is no such iteration, so it is unused.
-	return true;
-
-      }
-      else {
-
-	Visitor.notifyUsersMissed();
-
-      }
-
-      return true;
-
-    }
-
-  }
-
-  return false;
-
-}
-
-void PeelIteration::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor) {
-
-  const Loop* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
-
-  PeelAttempt* LPA = getPeelAttempt(immediateChild);
-  if(LPA && LPA->isEnabled())
-    LPA->visitVariant(VI, Visitor);
-  else 
-    Visitor.notifyUsersMissed();
-
-}
-
-void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor) {
-
-  if(Iterations.back()->iterStatus != IterationStatusFinal)
-    Visitor.notifyUsersMissed();
-
-  // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
-  if(VI->parent->naturalScope == L && VI->I->getParent() == L->getHeader() && isa<PHINode>(VI->I)) {
-
-    Visitor.visit(Iterations[0]->getInst(VI));
-    return;
-
-  }
-
-  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
-
-    if(VI->parent->outerScope == L) {
-      Visitor.visit((*it)->getInst(VI));
-    }
-    else
-      (*it)->visitVariant(VI, Visitor);
-
-  }
-
-}
-  
-void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
-
-  release_assert(UserI->parent->naturalScope == 0 && "Reached bottom visiting exit PHI");
-  Visitor.visit(getInst(UserI));
-
-}
-
-void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) {
-
-  if(parentPA->isTerminated()) {
-    assert(isa<PHINode>(UserI));
-    if(UserI->parent->naturalScope != L)
-      parent->visitExitPHI(UserI, Visitor);
-    else
-      Visitor.visit(getInst(UserI));
-  }
-  else {
-    Visitor.notifyUsersMissed();
-  }
-
-}
-
-void IntegrationAttempt::visitUser(ShadowInstIdx& User, VisitorContext& Visitor) {
-
-  // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
-  // a child loop (defer to it to decide what to do), or a parent loop (again defer).
-  // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
-
-  if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INSTRUCTION_IDX)
-    return;
-
-  if(getFunctionRoot()->blocksReachableOnFailure && 
-     getFunctionRoot()->blocksReachableOnFailure->count(User.blockIdx)) {
-    Visitor.notifyUsersMissed();
-    return;
-  }
-
-  ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
-  const Loop* UserL = SII->parent->outerScope;
-
-  if(UserL == L) {
-	  
-    if(!visitNextIterationPHI(SII, Visitor)) {
-
-      // Just an ordinary user in the same iteration (or out of any loop!).
-      Visitor.visit(getInst(User.blockIdx, User.instIdx));
-
-    }
-
-  }
-  else {
-
-    if((!L) || L->contains(UserL)) {
-
-      const Loop* outermostChildLoop = immediateChildLoop(L, UserL);
-      // Used in a child loop. Check if that child exists at all and defer to it.
-
-      PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
-
-      if(LPA && LPA->isEnabled())
-	LPA->visitVariant(SII, Visitor);
-      else if(!getBB(invarInfo->LInfo[outermostChildLoop]->headerIdx))
-	return; // Block was not explored, hence failing to find the loop
-      else
-	Visitor.notifyUsersMissed();
-
-    }
-    else {
-
-      visitExitPHI(SII, Visitor);
-
-    }
-
-  }
-
-}
-
-void IntegrationAttempt::visitUsers(ShadowValue V, VisitorContext& Visitor) {
-
-  ImmutableArray<ShadowInstIdx>* Users;
-  if(V.isInst()) {
-    Users = &(V.getInst()->invar->userIdxs);
-  }
-  else {
-    Users = &(V.getArg()->invar->userIdxs);
-  }
-  
-  for(uint32_t i = 0; i < Users->size() && Visitor.shouldContinue(); ++i) {
-
-    visitUser((*Users)[i], Visitor);
-
-  }
-
-}
-
-static bool _willBeDeleted(ShadowValue V) {
-
-  uint32_t dieStatus;
-
-  if(ShadowInstruction* SI = V.getInst()) {
-    dieStatus = SI->dieStatus;
-  }
-  else if(ShadowArg* SA = V.getArg()) {
-    dieStatus = SA->dieStatus;
-  }
-  else {
-    return false;
-  }
-
-  if(isAllocationInstruction(V))
-    return dieStatus == (INSTSTATUS_DEAD | INSTSTATUS_UNUSED_WRITER);
-  else
-    return dieStatus != INSTSTATUS_ALIVE;
-
-}
-
-bool llvm::willBeDeleted(ShadowValue V) {
-
-  if(requiresRuntimeCheck(V, false))
-    return false;
-  return _willBeDeleted(V);
-
-}
-
-bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
-
-  if(_willBeDeleted(V))
-    return true;
-
-  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V));
-  if(!IVS)
-    return false;
-
-  if(IVS->Values.size() != 1)
-    return false;
-
-  if(!canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
-    return false;
-  
-  return true;
-
-}
-
-bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
-
-  if(requiresRuntimeCheck(V, false))
-    return false;
-  return _willBeReplacedOrDeleted(V);
-
-}
-
-bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
-
-  if(requiresRuntimeCheck(V, false))
-    return false;
-
-  if(_willBeDeleted(V))
-    return true;
-  if(hasConstReplacement(V))
-    return true;
-
-  return false;
-
-}
-
-class DIVisitor : public VisitorContext {
-
-  ShadowValue V;
+class llvm::DIVisitor {
 
 public:
 
+  ShadowValue V;
   bool maybeLive;
 
   DIVisitor(ShadowValue _V) : V(_V), maybeLive(false) { }
 
-  virtual void visit(ShadowInstruction* UserI) {
+  virtual void visit(ShadowInstruction* UserI, IntegrationAttempt* UserIA, uint32_t blockIdx, uint32_t instIdx) {
+
+    InlineAttempt* UserInA = UserIA->getFunctionRoot();
 
     // Null instruction means we found a user in a dead block.
-    if(!UserI)
+    if(!UserI) {
+
+      if(UserInA->blocksReachableOnFailure && 
+	 UserInA->blocksReachableOnFailure->count(blockIdx))
+	maybeLive = true;
+
       return;
+
+    }
+
+    // The instruction must remain around if it might be used by failed code paths.
+    // Ideally we would only keep things whose live ranges extend across tests
+    // that branch to failed code, but here's a cheap approximation:
+    // If the user block can be reached on failed paths, and the user is not certainly
+    // committed to the same block as the original, then such a live range may exist and
+    // we'll keep the value.
+
+    if(UserInA->blocksReachableOnFailure && 
+       UserInA->blocksReachableOnFailure->count(UserI->parent->invar->idx)) {
+
+      if((!V.isInst()) || 
+	 UserI->parent != V.u.I->parent ||
+	 UserI->parent->IA->hasSplitInsts(UserI->parent)) {
+
+	maybeLive = true;
+	return;
+
+      }
+
+    }
 
     CallInst* CI;
     if((CI = dyn_cast_inst<CallInst>(UserI)) && !isa<MemIntrinsic>(CI)) {
@@ -450,6 +171,308 @@ public:
   }
 
 };
+
+static bool isAllocationInstruction(ShadowValue V) {
+
+  if(val_is<AllocaInst>(V))
+    return true;
+
+  if(val_is<CallInst>(V)) {
+
+    ShadowInstruction* SI = V.getInst();
+
+    Function* F = getCalledFunction(SI);
+    DenseMap<Function*, specialfunctions>::iterator findit;
+
+    if((findit = SpecialFunctionMap.find(F)) != SpecialFunctionMap.end()) {
+
+      switch(findit->second) {
+
+      case SF_REALLOC:
+      case SF_MALLOC:
+	return true;
+
+      default:
+	break;
+
+      }
+
+    }
+
+  }
+
+  return false;
+
+}
+
+bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
+
+  if(inst_is<CallInst>(I)) {
+
+    if(getInlineAttempt(I))
+      return true;
+    if(pass->forwardableOpenCalls.count(I))
+      return true;
+    if(isAllocationInstruction(ShadowValue(I)))
+       return true;
+
+    return false;
+
+  }
+
+  switch(I->invar->I->getOpcode()) {
+  default:
+    return true;
+  case Instruction::VAArg:
+  case Instruction::Invoke:
+  case Instruction::Store:
+  case Instruction::Br:
+  case Instruction::IndirectBr:
+  case Instruction::Switch:
+  case Instruction::Resume:
+  case Instruction::Unreachable:
+    return false;
+  }
+
+}
+
+// Implement a visitor that gets called for every dynamic use of an instruction.
+
+bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
+
+  return false;
+
+}
+
+bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
+
+  if(PHINode* PN = dyn_cast_inst<PHINode>(I)) {
+
+    if(PN->getParent() == L->getHeader()) {
+
+      if(PeelIteration* PI = getNextIteration()) {
+
+	Visitor.visit(PI->getInst(I), PI, I->parent->idx, I->idx);
+
+      }
+      else if(parentPA->isTerminated()) {
+
+	// The instruction would be used by the next iteration,
+	// but there is no such iteration, so it is unused.
+	return true;
+
+      }
+      else {
+
+	Visitor.notifyUsersMissed();
+
+      }
+
+      return true;
+
+    }
+
+  }
+
+  return false;
+
+}
+
+void PeelIteration::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
+
+  const Loop* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
+
+  PeelAttempt* LPA = getPeelAttempt(immediateChild);
+  if(LPA && LPA->isEnabled())
+    LPA->visitVariant(VI, Visitor);
+  else 
+    Visitor.notifyUsersMissed();
+
+}
+
+void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
+
+  if(Iterations.back()->iterStatus != IterationStatusFinal)
+    Visitor.notifyUsersMissed();
+
+  // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
+  if(VI->parent->naturalScope == L && VI->I->getParent() == L->getHeader() && isa<PHINode>(VI->I)) {
+
+    Visitor.visit(Iterations[0]->getInst(VI), Iterations[0], VI->parent->idx, VI->idx);
+    return;
+
+  }
+
+  for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), itend = Iterations.end(); it != itend; ++it) {
+
+    if(VI->parent->outerScope == L) {
+      Visitor.visit((*it)->getInst(VI), *it, VI->parent->idx, VI->idx);
+    }
+    else
+      (*it)->visitVariant(VI, Visitor);
+
+  }
+
+}
+  
+void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
+
+  release_assert(UserI->parent->naturalScope == 0 && "Reached bottom visiting exit PHI");
+  Visitor.visit(getInst(UserI), this, UserI->parent->idx, UserI->idx);
+
+}
+
+void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
+
+  if(parentPA->isTerminated()) {
+    assert(isa<PHINode>(UserI));
+    if(UserI->parent->naturalScope != L)
+      parent->visitExitPHI(UserI, Visitor);
+    else
+      Visitor.visit(getInst(UserI), this, UserI->parent->idx, UserI->idx);
+  }
+  else {
+    Visitor.notifyUsersMissed();
+  }
+
+}
+
+void IntegrationAttempt::visitUser(ShadowInstIdx& User, DIVisitor& Visitor) {
+
+  // Figure out what context cares about this value. The only possibilities are: this loop iteration, the next iteration of this loop (latch edge of header phi),
+  // a child loop (defer to it to decide what to do), or a parent loop (again defer).
+  // Note that nested cases (e.g. this is an invariant two children deep) are taken care of in the immediate child or parent's logic.
+
+  if(User.blockIdx == INVALID_BLOCK_IDX || User.instIdx == INVALID_INSTRUCTION_IDX)
+    return;
+
+  ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
+  const Loop* UserL = SII->parent->outerScope;
+
+  if(UserL == L) {
+	  
+    if(!visitNextIterationPHI(SII, Visitor)) {
+
+      // Just an ordinary user in the same iteration (or out of any loop!).
+      Visitor.visit(getInst(User.blockIdx, User.instIdx), this, User.blockIdx, User.instIdx);
+
+    }
+
+  }
+  else {
+
+    if((!L) || L->contains(UserL)) {
+
+      const Loop* outermostChildLoop = immediateChildLoop(L, UserL);
+      // Used in a child loop. Check if that child exists at all and defer to it.
+
+      PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
+
+      if(LPA && LPA->isEnabled())
+	LPA->visitVariant(SII, Visitor);
+      else if(!getBB(invarInfo->LInfo[outermostChildLoop]->headerIdx))
+	return; // Block was not explored, hence failing to find the loop
+      else
+	Visitor.notifyUsersMissed();
+
+    }
+    else {
+
+      visitExitPHI(SII, Visitor);
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::visitUsers(ShadowValue V, DIVisitor& Visitor) {
+
+  ImmutableArray<ShadowInstIdx>* Users;
+  if(V.isInst()) {
+    Users = &(V.getInst()->invar->userIdxs);
+  }
+  else {
+    Users = &(V.getArg()->invar->userIdxs);
+  }
+  
+  for(uint32_t i = 0; i < Users->size() && Visitor.shouldContinue(); ++i) {
+
+    visitUser((*Users)[i], Visitor);
+
+  }
+
+}
+
+static bool _willBeDeleted(ShadowValue V) {
+
+  uint32_t dieStatus;
+
+  if(ShadowInstruction* SI = V.getInst()) {
+    dieStatus = SI->dieStatus;
+  }
+  else if(ShadowArg* SA = V.getArg()) {
+    dieStatus = SA->dieStatus;
+  }
+  else {
+    return false;
+  }
+
+  if(isAllocationInstruction(V))
+    return dieStatus == (INSTSTATUS_DEAD | INSTSTATUS_UNUSED_WRITER);
+  else
+    return dieStatus != INSTSTATUS_ALIVE;
+
+}
+
+bool llvm::willBeDeleted(ShadowValue V) {
+
+  if(requiresRuntimeCheck(V, false))
+    return false;
+  return _willBeDeleted(V);
+
+}
+
+bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
+
+  if(_willBeDeleted(V))
+    return true;
+
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(V));
+  if(!IVS)
+    return false;
+
+  if(IVS->Values.size() != 1)
+    return false;
+
+  if(!canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
+    return false;
+  
+  return true;
+
+}
+
+bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
+
+  if(requiresRuntimeCheck(V, false))
+    return false;
+  return _willBeReplacedOrDeleted(V);
+
+}
+
+bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
+
+  if(requiresRuntimeCheck(V, false))
+    return false;
+
+  if(_willBeDeleted(V))
+    return true;
+  if(hasConstReplacement(V))
+    return true;
+
+  return false;
+
+}
 
 bool InlineAttempt::isOwnCallUnused() {
 

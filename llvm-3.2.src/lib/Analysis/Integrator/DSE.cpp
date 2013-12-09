@@ -87,11 +87,6 @@ static void DeleteDeadInstruction(Instruction *I) {
       // If this operand just became dead, add it to the NowDeadInsts list.
       if (!Op->use_empty()) continue;
 
-      // HACK: spare select instructions, since those are used to forward
-      // undecided externals and must remain alive until patchrefs is called.
-      if(isa<SelectInst>(Op))
-	continue;
-
       if (Instruction *OpI = dyn_cast<Instruction>(Op)) {
         if (isInstructionTriviallyDead(OpI, GlobalTLI))
           NowDeadInsts.push_back(OpI);

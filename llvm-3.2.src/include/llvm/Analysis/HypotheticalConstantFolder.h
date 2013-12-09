@@ -876,14 +876,7 @@ class OpCallback {
 
 };
 
-class VisitorContext {
-public:
-
-  virtual void visit(ShadowInstruction* UserI) = 0;
-  virtual void notifyUsersMissed() = 0;
-  virtual bool shouldContinue() = 0;
-
-};
+class DIVisitor;
 
 inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
@@ -1322,10 +1315,10 @@ protected:
 
   // User visitors:
   
-  virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor);
-  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor) = 0;
-  void visitUsers(ShadowValue, VisitorContext& Visitor);
-  void visitUser(ShadowInstIdx&, VisitorContext& Visitor);
+  virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor);
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) = 0;
+  void visitUsers(ShadowValue, DIVisitor& Visitor);
+  void visitUser(ShadowInstIdx&, DIVisitor& Visitor);
 
   // Dead instruction elim:
 
@@ -1462,6 +1455,8 @@ protected:
   Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore);
   virtual void commitSimpleFailedBlock(uint32_t i);
   void getSplitInsts(ShadowBBInvar*, bool* splits);
+  void getLocalSplitInsts(ShadowBB*, bool*);
+  bool hasSplitInsts(ShadowBB*);
   virtual void createFailedBlock(uint32_t idx);
   void collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
@@ -1569,8 +1564,8 @@ public:
     return parent->getFunctionRoot();
   }
 
-  void visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor); 
-  virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, VisitorContext& Visitor); 
+  void visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor); 
+  virtual bool visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor); 
 
   virtual bool getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out); 
 
@@ -1612,7 +1607,7 @@ public:
   virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
   virtual void emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB);
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
-  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor);
 
   virtual void getInitialStore(bool inLoopAnalyser);
 
@@ -1681,7 +1676,7 @@ class PeelAttempt {
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 
 
-   void visitVariant(ShadowInstructionInvar* VI, VisitorContext& Visitor); 
+   void visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor); 
    
    void describeTreeAsDOT(std::string path); 
 
@@ -1866,7 +1861,7 @@ class InlineAttempt : public IntegrationAttempt {
   std::string getCommittedBlockPrefix();
   BasicBlock* getCommittedEntryBlock();
   virtual void runDIE();
-  virtual void visitExitPHI(ShadowInstructionInvar* UserI, VisitorContext& Visitor);
+  virtual void visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor);
 
   Value* getArgCommittedValue(ShadowArg* SA, BasicBlock* emitBB);
   Value* getArgCommittedValue(ShadowArg* SA, Instruction* insertBefore);

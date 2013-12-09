@@ -1752,6 +1752,53 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
 }
 
+void IntegrationAttempt::getLocalSplitInsts(ShadowBB* BB, bool* splitInsts) {
+
+  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
+
+    ShadowInstruction* SI = &BB->insts[i];
+    InlineAttempt* IA;
+    if((IA = getInlineAttempt(SI)) && IA->isEnabled() && IA->hasFailedReturnPath())
+      splitInsts[i] = true;
+    else if(requiresRuntimeCheck(ShadowValue(SI), true)) {
+
+      // Check exit PHIs as a block:
+      if(i + 1 != ilim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[i+1]))
+	continue;
+
+      // Special checks require a split BEFORE the block:
+      if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
+
+	if(i != 0)
+	  splitInsts[i - 1] = true;
+
+      }
+      else {
+	  
+	splitInsts[i] = true;
+
+      }
+
+    }
+
+  }
+
+}
+
+bool IntegrationAttempt::hasSplitInsts(ShadowBB* BB) {
+
+  bool splits[BB->insts.size()];
+  memset(splits, 0, sizeof(bool) * BB->insts.size());
+  getLocalSplitInsts(BB, splits);
+
+  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i)
+    if(splits[i])
+      return true;
+
+  return false;
+
+}
+
 void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 
   if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
@@ -1771,38 +1818,8 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
   }
 
   ShadowBB* BB = getBB(*BBI);
-  if(BB) {
-
-    for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
-
-      ShadowInstruction* SI = &BB->insts[i];
-      InlineAttempt* IA;
-      if((IA = getInlineAttempt(SI)) && IA->isEnabled() && IA->hasFailedReturnPath())
-	splitInsts[i] = true;
-      else if(requiresRuntimeCheck(ShadowValue(SI), true)) {
-
-	// Check exit PHIs as a block:
-	if(i + 1 != ilim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[i+1]))
-	  continue;
-
-	// Special checks require a split BEFORE the block:
-	if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
-
-	  if(i != 0)
-	    splitInsts[i - 1] = true;
-
-	}
-	else {
-	  
-	  splitInsts[i] = true;
-
-	}
-
-      }
-
-    }
-
-  }
+  if(BB)
+    getLocalSplitInsts(BB, splitInsts);
 
 }
 
