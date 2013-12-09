@@ -151,13 +151,24 @@ DSELocalStore* DSEMapPointer::getMapForBlock(ShadowBB* BB) {
   
 }
 
-TrackedAlloc::TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), IA(_SI->parent->IA), nRefs(1), isNeeded(false) {}
+TrackedAlloc::TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), isCommitted(false), nRefs(1), isNeeded(false) {
+
+  GlobalIHP->trackedAllocs[_SI] = this;
+
+}
+
+TrackedAlloc::~TrackedAlloc() {
+
+  if(!isCommitted)
+    GlobalIHP->trackedAllocs.erase(SI);
+
+}
 
 void TrackedAlloc::dropReference() {
 
   if(!(--nRefs)) {
     
-    if((!isNeeded) && (!IA->isCommitted()))
+    if((!isNeeded) && (!isCommitted))
       DSEInstructionDead(SI);
 
     delete this;

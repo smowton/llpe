@@ -492,6 +492,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    DenseMap<IntegrationAttempt*, std::string> shortHeaders;
    DenseMap<ShadowInstruction*, TrackedStore*> trackedStores;
+   DenseMap<ShadowInstruction*, TrackedAlloc*> trackedAllocs;
    DenseMap<Value*, uint32_t> committedHeapAllocations;
    DenseMap<Value*, uint32_t> committedFDs;
 
@@ -1414,6 +1415,7 @@ protected:
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
   Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
+  bool trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
   void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
   void commitInstructions();

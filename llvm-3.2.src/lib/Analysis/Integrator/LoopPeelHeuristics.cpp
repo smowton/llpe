@@ -681,10 +681,20 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 	if(SI->i.PB)
 	  deleteIV(SI->i.PB);
 
-	DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(SI);
-	if(findit != pass->trackedStores.end()) {
-	  findit->second->isCommitted = true;
-	  pass->trackedStores.erase(findit);
+	{
+	  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(SI);
+	  if(findit != pass->trackedStores.end()) {
+	    findit->second->isCommitted = true;
+	    pass->trackedStores.erase(findit);
+	  }
+	}
+
+	{
+	  DenseMap<ShadowInstruction*, TrackedAlloc*>::iterator findit = pass->trackedAllocs.find(SI);
+	  if(findit != pass->trackedAllocs.end()) {
+	    findit->second->isCommitted = true;
+	    pass->trackedAllocs.erase(findit);
+	  }
 	}
 
 	pass->indirectDIEUsers.erase(SI);

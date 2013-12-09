@@ -1092,7 +1092,7 @@ struct OrdinaryStoreExtraState {
 
 struct TrackedStore {
 
-  ShadowInstruction* I; // Invalid if IA is committed
+  ShadowInstruction* I; // Invalid if isCommitted
   bool isCommitted;
   Instruction** committedInsts; // Valid if the store was live when committed.
   uint64_t nCommittedInsts;
@@ -1113,14 +1113,15 @@ typedef IntervalMap<uint64_t, DSEMapEntry, IntervalMapImpl::NodeSizer<uint64_t, 
 
 struct TrackedAlloc {
 
-  ShadowInstruction* SI; // Invalid if IA is committed
-  IntegrationAttempt* IA;
+  ShadowInstruction* SI;
+  bool isCommitted;
   uint64_t nRefs;
   bool isNeeded;
 
   void dropReference();
 
   TrackedAlloc(ShadowInstruction* _SI);
+  ~TrackedAlloc();
 
 };
 

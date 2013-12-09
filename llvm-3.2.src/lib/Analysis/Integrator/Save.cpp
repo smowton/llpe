@@ -1809,6 +1809,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
 	Value* UD = UndefValue::get(getValueType(IV.V));      
 	Instruction* Fwd = SelectInst::Create(True, UD, UD, "", emitBB);
 	addPatchRequest(IV.V, Fwd, 1);
+	return Fwd;
 
       }
       else
@@ -2039,6 +2040,20 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
   
 }
 
+bool IntegrationAttempt::trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result) {
+
+  ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(A->i.PB);
+  if(!IVS)
+    return false;
+
+  if(IVS->Values.size() != 1)
+    return false;
+
+  Result = trySynthVal(0, A->getType(), IVS->SetType, IVS->Values[0], emitBB);
+  return !!Result;
+
+}
+
 // Identify functions like llvm.uadd.with.overflow which are essentially arithmetic instructions.
 static bool isPureCall(ShadowInstruction* SI) {
 
@@ -2250,16 +2265,8 @@ void InlineAttempt::commitArgsAndInstructions() {
       if(SA->dieStatus != INSTSTATUS_ALIVE)
 	continue;
 
-      if(Constant* C = getConstReplacement(SA)) {
-	SA->committedVal = C;
-	continue;
-      }
-    
-      if(synthCommittedPointer(ShadowValue(SA), emitBB))
-	continue;
-
-      // Finally just proxy whatever literal argument we're passed:
-      SA->committedVal = getArgCommittedValue(SA, entryBlock);
+      if(!trySynthArg(SA, emitBB->specBlock, SA->committedVal))
+	SA->committedVal = getArgCommittedValue(SA, entryBlock);
 
     }
 
