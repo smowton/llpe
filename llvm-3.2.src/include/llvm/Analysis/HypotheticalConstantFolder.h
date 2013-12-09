@@ -1780,6 +1780,7 @@ class InlineAttempt : public IntegrationAttempt {
   bool isModel : 1;
   bool isPathCondition : 1;
   bool enabled : 1;
+  bool isStackTop : 1;
 
   IATargetInfo* targetCallInfo;
 

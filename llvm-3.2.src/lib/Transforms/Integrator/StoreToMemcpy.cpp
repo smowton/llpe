@@ -14,6 +14,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
 
@@ -28,6 +29,7 @@ namespace {
     bool runOnModule(Module& M);
     void runOnFunction(Function* F);
     void runOnBasicBlock(BasicBlock* BB);
+    bool getWriteDetails(Instruction* I, Value*& Base, int64_t& Offset, int64_t& Size);
 
     virtual void getAnalysisUsage(AnalysisUsage &AU) const {
       AU.addRequired<DataLayout>();
@@ -95,10 +97,52 @@ static Value* getUnderlyingBaseAndOffset(Value* Ptr, int64_t& Offset) {
 
 static bool debugmts = false;
 
+static void DeleteDeadInstruction(Instruction *I) {
+
+  SmallVector<Instruction*, 32> NowDeadInsts;
+
+  NowDeadInsts.push_back(I);
+
+  do {
+    Instruction *DeadInst = NowDeadInsts.pop_back_val();
+
+    // This instruction is dead, zap it, in stages.
+
+    for (unsigned op = 0, e = DeadInst->getNumOperands(); op != e; ++op) {
+      Value *Op = DeadInst->getOperand(op);
+      DeadInst->setOperand(op, 0);
+
+      // If this operand just became dead, add it to the NowDeadInsts list.
+      if (!Op->use_empty()) continue;
+
+      if (Instruction *OpI = dyn_cast<Instruction>(Op)) {
+        if (isInstructionTriviallyDead(OpI, 0))
+          NowDeadInsts.push_back(OpI);
+      }
+      else if(Constant* C = dyn_cast<Constant>(Op)) {
+
+	if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(GetUnderlyingObject(C))) {
+	  
+	  GV->removeDeadConstantUsers();
+	  if(GV->use_empty() && GV->isDiscardableIfUnused())
+	    GV->eraseFromParent();
+
+	}
+
+      }
+
+    }
+    
+    DeadInst->eraseFromParent();
+
+  } while (!NowDeadInsts.empty());
+
+}
+
 static void replaceStores(BasicBlock::iterator itstart, BasicBlock::iterator itend) {
 
   Value* TargetPtr = 0;
-  std::vector<StoreInst*> Deletes;
+  std::vector<Instruction*> Deletes;
   std::vector<Type*> Types;
   std::vector<Constant*> Copy;
   uint64_t CpySize = 0;
@@ -109,19 +153,48 @@ static void replaceStores(BasicBlock::iterator itstart, BasicBlock::iterator ite
   
   for(BasicBlock::iterator it = itstart; it != itend; ++it) {
 
-    if(!isa<StoreInst>(it))
-      continue;
-    Constant* newVal = cast<Constant>(cast<StoreInst>(it)->getValueOperand());
-    CpySize += DL->getTypeStoreSize(newVal->getType());
-    Deletes.push_back(cast<StoreInst>(it));
-    Types.push_back(newVal->getType());
-    if(UniqueType && Types.back() != UniqueType)
-      UniqueType = 0;
-    Copy.push_back(newVal);
+    if(isa<StoreInst>(it)) {
 
-    if(it == itstart) {
-      TargetPtr = cast<StoreInst>(it)->getPointerOperand();
-      UniqueType = Types.back();
+      Constant* newVal = cast<Constant>(cast<StoreInst>(it)->getValueOperand());
+      CpySize += DL->getTypeStoreSize(newVal->getType());
+      Deletes.push_back(it);
+      Types.push_back(newVal->getType());
+      if(UniqueType && Types.back() != UniqueType)
+	UniqueType = 0;
+      Copy.push_back(newVal);
+      
+      if(it == itstart) {
+	TargetPtr = cast<StoreInst>(it)->getPointerOperand();
+	UniqueType = Types.back();
+      }
+
+    }
+    else if(isa<MemTransferInst>(it)) {
+
+      MemTransferInst* MTI = cast<MemTransferInst>(it);
+
+      int64_t Ign;
+      GlobalVariable* SourceGV = cast<GlobalVariable>(getUnderlyingBaseAndOffset(MTI->getRawSource(), Ign));
+
+      ConstantStruct* SourceC = cast<ConstantStruct>(SourceGV->getInitializer());
+      for(uint32_t i = 0, ilim = SourceC->getNumOperands(); i != ilim; ++i) {
+
+	Constant* newVal = cast<Constant>(SourceC->getOperand(i));
+	Types.push_back(newVal->getType());
+	if(UniqueType && Types.back() != UniqueType)
+	  UniqueType = 0;
+	Copy.push_back(newVal);
+      
+	if(it == itstart) {
+	  TargetPtr = MTI->getDest();
+	  UniqueType = Types.back();
+	}
+
+      }
+
+      Deletes.push_back(it);
+      CpySize += cast<ConstantInt>(MTI->getLength())->getLimitedValue();
+
     }
     
   }
@@ -173,20 +246,79 @@ static void replaceStores(BasicBlock::iterator itstart, BasicBlock::iterator ite
     ConstantInt::get(Type::getInt1Ty(BB->getContext()), 0)
   };
 
-  // Remove store instructions first:
-  for(std::vector<StoreInst*>::iterator it = Deletes.begin(), delitend = Deletes.end(); it != delitend; ++it) {
-    if(debugmts)
-      errs() << "Delete " << **it << "\n";
-    (*it)->eraseFromParent();
-  }
-
   Instruction* NewCI = CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", itend);
   if(debugmts)
     errs() << "Replace with " << *NewCI << "\n---\n";
-  
+
+  // Remove afterwards, or else the target pointer may be destroyed.
+  for(std::vector<Instruction*>::iterator it = Deletes.begin(), delitend = Deletes.end(); it != delitend; ++it) {
+    if(debugmts)
+      errs() << "Delete " << **it << "\n";
+    DeleteDeadInstruction(*it);
+  }
+
 }
 
 #define REPLACE_THRESHOLD 256
+
+bool StoreToMemcpyPass::getWriteDetails(Instruction* I, Value*& Base, int64_t& Offset, int64_t& Size) {
+
+  if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
+
+    if(!isa<Constant>(SI->getValueOperand()))
+      return false;
+    
+    Offset = 0;
+    Base = getUnderlyingBaseAndOffset(SI->getPointerOperand(), Offset);
+    Size = DL->getTypeStoreSize(SI->getValueOperand()->getType());
+    
+    return true;
+
+  }
+  else if(MemTransferInst* MTI = dyn_cast<MemTransferInst>(I)) {
+
+    Value* FromPtr = MTI->getRawSource();
+    int64_t FromOffset = 0;
+    Value* FromBase = getUnderlyingBaseAndOffset(FromPtr, FromOffset);
+
+    GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(FromBase);
+    if(!GV)
+      return false;
+
+    if(FromOffset != 0)
+      return false;
+
+    if(!GV->isConstant())
+      return false;
+
+    ConstantStruct* CS = dyn_cast_or_null<ConstantStruct>(GV->getInitializer());
+    if(!CS)
+      return false;
+	
+    if(!cast<StructType>(CS->getType())->isPacked())
+      return false;
+
+    ConstantInt* LenC = dyn_cast<ConstantInt>(MTI->getLength());
+    if(!LenC)
+      return false;
+
+    if(LenC->getLimitedValue() != DL->getTypeStoreSize(CS->getType()))
+      return false;
+
+    Offset = 0;
+    Base = getUnderlyingBaseAndOffset(MTI->getDest(), Offset);
+    Size = LenC->getLimitedValue();
+
+    return true;
+
+  }
+  else {
+
+    return false;
+
+  }
+
+}
 
 void StoreToMemcpyPass::runOnBasicBlock(BasicBlock* BB) {
 
@@ -204,17 +336,16 @@ void StoreToMemcpyPass::runOnBasicBlock(BasicBlock* BB) {
     if(!I->mayReadOrWriteMemory())
       continue;
 
-    if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
+    Value* ThisBase;
+    int64_t ThisOffset;
+    int64_t ThisSize;
 
-      Value* StorePtr = SI->getPointerOperand();
-      int64_t Offset = 0;
-      Value* StoreBase = getUnderlyingBaseAndOffset(StorePtr, Offset);
+    if(getWriteDetails(I, ThisBase, ThisOffset, ThisSize)) {
 
       if(CommonBase && 
-	 ((!isa<Constant>(SI->getValueOperand())) || 
-	  (CommonBase != StoreBase) || 
-	  (NextOffset != Offset))) {
-
+	 ((CommonBase != ThisBase) || 
+	  (NextOffset != ThisOffset))) {
+	
 	if((NextOffset - FirstOffset) >= REPLACE_THRESHOLD)
 	  replaceStores(firstStore, BI);
 	CommonBase = 0;
@@ -222,14 +353,13 @@ void StoreToMemcpyPass::runOnBasicBlock(BasicBlock* BB) {
       }
 
       if(!CommonBase) {
-	CommonBase = StoreBase;
+	CommonBase = ThisBase;
 	firstStore = BI;
-	NextOffset = Offset;
-	FirstOffset = Offset;
-      }
-
-      // Calculate next required store address:
-      NextOffset += DL->getTypeStoreSize(SI->getValueOperand()->getType());
+	NextOffset = ThisOffset;
+	FirstOffset = ThisOffset;
+      }      
+      
+      NextOffset += ThisSize;
 
     }
     else {

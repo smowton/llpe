@@ -140,6 +140,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
     integrationGoodnessValid = false;
     backupTlStore = 0;
     backupDSEStore = 0;
+    isStackTop = false;
     DT = pass->DTs[&F];
     if(_CI) {
       Callers.push_back(_CI);
@@ -1923,13 +1924,7 @@ void IntegrationHeuristicsPass::commit() {
 
     BasicBlock* preludeBlock = 0;
 
-    if(llioPreludeStackIdx != -1) {
-
-      release_assert(llioPreludeStackIdx < (int)targetCallStackIAs.size());
-      preludeBlock = targetCallStackIAs[llioPreludeStackIdx]->BBs[0]->committedBlocks[0].specBlock;
-
-    }
-    else {
+    if(llioPreludeStackIdx == -1) {
 
       Function* writePreludeFn = llioPreludeFn;
       if(llioPreludeFn == &RootIA->F)

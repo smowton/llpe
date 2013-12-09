@@ -22,13 +22,21 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
   InlineAttempt* MyRoot = getFunctionRoot();
   if(MyRoot->targetCallInfo && 
      SI->parent->invar->idx == MyRoot->targetCallInfo->targetCallBlock &&
-     SI->invar->idx == MyRoot->targetCallInfo->targetCallInst &&
-     MyRoot->targetCallInfo->targetStackDepth + 1 < pass->targetCallStack.size()) {
+     SI->invar->idx == MyRoot->targetCallInfo->targetCallInst) {
 
-    pass->targetCallStackIAs.push_back(IA);
+    if(MyRoot->targetCallInfo->targetStackDepth + 1 < pass->targetCallStack.size()) {
 
-    uint32_t newDepth = MyRoot->targetCallInfo->targetStackDepth + 1;
-    IA->setTargetCall(pass->targetCallStack[newDepth], newDepth);
+      pass->targetCallStackIAs.push_back(IA);
+      
+      uint32_t newDepth = MyRoot->targetCallInfo->targetStackDepth + 1;
+      IA->setTargetCall(pass->targetCallStack[newDepth], newDepth);
+
+    }
+    else {
+
+      IA->isStackTop = true;
+
+    }
 
   }
 

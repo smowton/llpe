@@ -2277,6 +2277,17 @@ void InlineAttempt::commitArgsAndInstructions() {
     else
       failedReturnPHI = 0;
 
+    // Introduce an lliowd_init call if ordered.
+    if((pass->llioPreludeStackIdx != -1 && 
+	targetCallInfo && targetCallInfo->targetStackDepth == (uint32_t)pass->llioPreludeStackIdx) ||
+       (((uint32_t)pass->llioPreludeStackIdx) == pass->targetCallStack.size() && isStackTop)) {
+
+      Type* Void = Type::getVoidTy(emitBB->specBlock->getContext());
+      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
+      CallInst::Create(WDInit, ArrayRef<Value*>(), "", emitBB->specBlock);
+
+    }
+
     commitInstructions();
 
     fixNonLocalStackUses();
