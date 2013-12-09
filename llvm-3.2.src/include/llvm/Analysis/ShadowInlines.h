@@ -1331,6 +1331,13 @@ struct ShadowBB {
   bool useSpecialVarargMerge;
   bool inAnyLoop;
 
+  ~ShadowBB() {
+
+    delete[] &(insts[0]);
+    delete[] succsAlive;
+
+  }
+
   bool edgeIsDead(ShadowBBInvar* BB2I) {
 
     bool foundLiveEdge = false;

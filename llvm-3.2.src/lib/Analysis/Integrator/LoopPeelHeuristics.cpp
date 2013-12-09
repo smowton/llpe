@@ -204,9 +204,6 @@ IntegrationAttempt::~IntegrationAttempt() {
 
       }
 
-      // Delete ShadowInstruction array.
-      delete[] &(BB->insts[0]);
-      // Delete block itself.
       delete BB;
 
     }
@@ -697,12 +694,7 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
       }
 
-      delete[] &BB->insts[0];
-      delete[] BB->succsAlive;
-      BB->committedBlocks.clear();
       delete BB;
-
-      BB = 0;
       
     }
 
@@ -3657,7 +3649,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   IA->finaliseAndCommit();
   fixNonLocalUses();
   errs() << "\n";
-
+  
   if(IHPSaveDOTFiles) {
 
     // Function sharing is now decided, and hence the graph structure, so create

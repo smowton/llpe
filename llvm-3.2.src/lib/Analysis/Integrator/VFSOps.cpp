@@ -86,7 +86,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
       DEBUG(dbgs() << "\n");
 
       uint64_t nextChar;
-      tryGetConstantInt(byte.Values[0].V, nextChar);
+      tryGetConstantInt(byte.Values[0].V, nextChar); 
       if(!nextChar) {
 	
 	// Null terminator.
