@@ -931,7 +931,6 @@ struct AllocData {
   AllocTestedState allocTested;
   bool isCommitted;
   ShadowValue allocValue;
-  // Note that if allocContext->isCommitted() then allocValue is invalid.
   std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
   Value* committedVal;
 
@@ -995,6 +994,8 @@ struct ShadowInstruction {
   }
 
   bool isCopyInst();
+  ShadowValue getCopySource();
+  ShadowValue getCopyDest();
 
 };
 
@@ -1032,7 +1033,7 @@ struct ShadowArg {
   InstArgImprovement i;  
   Value* committedVal;
   unsigned char dieStatus;
-  Instruction* patchInst;
+  WeakVH patchInst;
 
   Type* getType() {
     return invar->A->getType();

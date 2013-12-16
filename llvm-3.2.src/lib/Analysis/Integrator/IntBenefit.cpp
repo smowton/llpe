@@ -191,6 +191,10 @@ void IntegrationAttempt::findProfitableIntegration() {
   if(integrationGoodnessValid)
     return;
 
+  // Stack of calls leading to a checked read call remains alive no matter what.
+  if(containsCheckedReads)
+    return;
+
   totalIntegrationGoodness = 0;
   int64_t childIntegrationGoodness = 0;
 

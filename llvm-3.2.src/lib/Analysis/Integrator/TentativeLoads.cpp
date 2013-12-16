@@ -14,6 +14,7 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/DataLayout.h"
 
 using namespace llvm;
 
@@ -214,13 +215,12 @@ static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool c
   uint64_t Len = 0;
   switch(Ty) {
   case PathConditionTypeIntmem:
-    Len = GlobalAA->getTypeStoreSize(Cond.val->getType());
+    Len = GlobalAA->getTypeStoreSize(Cond.u.val->getType());
     break;
   case PathConditionTypeString:
-    Len = cast<ConstantDataArray>(Cond.val)->getNumElements();
+    Len = cast<ConstantDataArray>(Cond.u.val)->getNumElements();
     break;
-  case PathConditionTypeInt:
-  case PathConditionTypeFptrmem:
+  default:
     release_assert(0 && "Bad path condition type");
     llvm_unreachable();
   }
@@ -594,12 +594,98 @@ bool ShadowInstruction::isCopyInst() {
   if(inst_is<CallInst>(this)) {
 
     Function* F = getCalledFunction(this);
-    if(F && F->getName() == "realloc")
+    DenseMap<Function*, specialfunctions>::iterator findit = SpecialFunctionMap.find(F);
+    if(findit == SpecialFunctionMap.end())
+      return false;
+
+    switch(findit->second) {
+      
+    case SF_VACOPY:
+    case SF_REALLOC:
       return true;
+    default:
+      return false;
+
+    }
+
 
   }
 
   return false;
+
+}
+
+ShadowValue ShadowInstruction::getCopySource() {
+
+  if(inst_is<MemTransferInst>(this)) {
+
+    return getCallArgOperand(1);
+
+  }
+  else if(inst_is<CallInst>(this)) {
+
+    Function* F = getCalledFunction(this);
+    if(!F)
+      return ShadowValue();
+
+    DenseMap<Function*, specialfunctions>::iterator findit = SpecialFunctionMap.find(F);
+    if(findit == SpecialFunctionMap.end())
+      return ShadowValue();
+
+    switch(findit->second) {
+      
+    case SF_VACOPY:
+      return getCallArgOperand(1);
+    case SF_REALLOC:
+      return getCallArgOperand(0);
+    default:
+      return ShadowValue();
+
+    }
+    
+  }
+  else {
+
+    return ShadowValue();
+
+  }
+
+}
+
+ShadowValue ShadowInstruction::getCopyDest() {
+
+  if(inst_is<MemTransferInst>(this)) {
+
+    return getCallArgOperand(0);
+
+  }
+  else if(inst_is<CallInst>(this)) {
+
+    Function* F = getCalledFunction(this);
+    if(!F)
+      return ShadowValue();
+
+    DenseMap<Function*, specialfunctions>::iterator findit = SpecialFunctionMap.find(F);
+    if(findit == SpecialFunctionMap.end())
+      return ShadowValue();
+
+    switch(findit->second) {
+      
+    case SF_VACOPY:
+      return getCallArgOperand(0);
+    case SF_REALLOC:
+      return ShadowValue(this);
+    default:
+      return ShadowValue();
+
+    }
+    
+  }
+  else {
+
+    return ShadowValue();
+
+  }
 
 }
 
@@ -629,7 +715,197 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
 
 }
 
-void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commitDisabledHere, bool secondPass) {
+bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize) {
+
+  bool squash = false;
+
+  for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim && !squash; ++i) {
+
+    ImprovedVal& IV = IVS.Values[i];
+
+    if(IVS.SetType == ValSetTypePB) {
+
+      // Stack objects are always available, so no need to check them.
+      if(IV.V.isPtrIdx() && IV.V.getFrameNo() == -1) {
+
+	// Globals too:
+	AllocData* AD = getAllocData(IV.V);
+	if(AD->allocValue.isInst()) {
+
+	  if(AD->isCommitted && !AD->committedVal)
+	    squash = true;
+
+	}
+
+      }
+
+    }
+    else if(IVS.SetType == ValSetTypeFD) {
+
+      if(IV.V.isFdIdx()) {
+
+	FDGlobalState& FDGS = pass->fds[IV.V.getFd()];
+	if(FDGS.isCommitted && !FDGS.CommittedVal)
+	  squash = true;
+
+      }
+
+    }
+
+  }
+
+  if(squash) {
+
+    release_assert((!inLoopAnalyser) && "TODO: squashUnavailableObject implementation for loops");
+
+    errs() << "Squash ";
+    IVS.print(errs(), false);
+    errs() << " read by " << itcache(&SI) << "\n";
+
+    IVS.setOverdef();
+
+    // Overwrite the pointer in the store to prevent future readers from encountering it again.
+    ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+    ImprovedValSetSingle ReadP;
+    getImprovedValSetSingle(ReadPtr, ReadP);
+    
+    release_assert(ReadP.SetType == ValSetTypePB && ReadP.Values.size());
+
+    for(uint32_t i = 0, ilim = ReadP.Values.size(); i != ilim; ++i)
+      ReadP.Values[i].Offset += ReadOffset;
+
+    executeWriteInst(&ReadPtr, ReadP, OD, ReadSize, &SI);
+
+  }
+
+  return squash;
+
+}
+
+void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser) {
+
+  // The result of this load (or data read by this copy instruction) may contain pointers or
+  // FDs which are not available, but it requires a check and the check cannot be synthesised.
+  // Therefore replace them with Unknown.
+
+  if(inst_is<LoadInst>(&SI)) {
+
+    if(SI.i.PB) {
+      if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(SI.i.PB))
+	squashUnavailableObject(SI, *IVS, inLoopAnalyser, SI.getOperand(0), 0, GlobalTD->getTypeStoreSize(SI.getType()));
+      else {
+
+	ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(SI.i.PB);
+	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end();
+	    it != itend; ++it) {
+
+	  squashUnavailableObject(SI, it.val(), inLoopAnalyser, SI.getOperand(0), it.start(), it.stop() - it.start());
+
+	}
+
+      }
+
+    }
+
+  }
+  else {
+
+    // Copy instruction.
+    DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> >::iterator findit = pass->memcpyValues.find(&SI);
+    if(findit != pass->memcpyValues.end()) {
+
+      for(SmallVector<IVSRange, 4>::iterator it = findit->second.begin(), itend = findit->second.end();
+	  it != itend; ++it) {
+
+	if(squashUnavailableObject(SI, it->second, inLoopAnalyser, SI.getCopySource(), it->first.first, it->first.second - it->first.first)) {
+
+	  // Undo storing the pointer or FD.
+
+	  ImprovedValSetSingle OD(ValSetTypeUnknown, true);
+
+	  ShadowValue WritePtr = SI.getCopyDest();
+	  ImprovedValSetSingle WriteP;
+	  getImprovedValSetSingle(WritePtr, WriteP);
+
+	  int64_t WriteOffset = it->first.first;
+	  uint64_t WriteSize = it->first.second - it->first.first;
+    
+	  release_assert(WriteP.SetType == ValSetTypePB && WriteP.Values.size());
+
+	  for(uint32_t i = 0, ilim = WriteP.Values.size(); i != ilim; ++i)
+	    WriteP.Values[i].Offset += WriteOffset;
+
+	  executeWriteInst(&WritePtr, WriteP, OD, WriteSize, &SI);
+
+	}
+
+      }
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser) {
+
+  // If this load read a pointer or FD that is currently unrealisable (i.e. has been previously committed
+  // but currently has no committed value), volunteer to replace it, becoming the new definitive version,
+  // if the block is certain and thus this version must be reachable from all (future) users.
+
+  if(inLoopAnalyser)
+    return;
+
+  if(inst_is<LoadInst>(&SI)) {
+
+    if(SI.parent->status != BBSTATUS_CERTAIN)
+      return;
+
+    ShadowValue Base;
+    int64_t Offset;
+    if(getBaseAndConstantOffset(ShadowValue(&SI), Base, Offset, false)) {
+      
+      if(Base.isPtrIdx() && Base.getFrameNo() == -1) {
+
+	AllocData* AD = getAllocData(Base);
+	if(AD->isCommitted && !AD->committedVal) {
+
+	  // This means that the save phase will record the new reference and patch refs will be accrued
+	  // in the meantime.
+	  errs() << itcache(&SI) << " stepping up as new canonical reference for " << itcache(Base) << "\n";
+	  AD->isCommitted = false;
+	  AD->allocValue = ShadowValue(&SI);
+
+	}
+
+      }
+
+    }
+    else {
+
+      ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(SI.i.PB);
+      if(IVS && IVS->Values.size() == 1 && IVS->SetType == ValSetTypeFD && IVS->Values[0].V.isFdIdx()) {
+
+	int32_t FD = IVS->Values[0].V.getFd();
+	FDGlobalState& FDGS = pass->fds[FD];
+
+	if(FDGS.isCommitted && !FDGS.CommittedVal) {
+
+	  errs() << itcache(&SI) << " stepping up as new canonical reference for " << itcache(IVS->Values[0].V) << "\n";
+	  FDGS.isCommitted = false;
+	  FDGS.SI = &SI;
+
+	}
+
+      }
+
+    }
+
+  }
+
+}
+
+void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser) {
 
   // Known always good (as opposed to TLS_NOCHECK, resulting from a previous tentative loads run?)
   if(SI.isThreadLocal == TLS_NEVERCHECK)
@@ -644,8 +920,17 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
 
     SI.isThreadLocal = shouldCheckLoad(SI);
     
-    if(SI.isThreadLocal == TLS_MUSTCHECK)
+    if(SI.isThreadLocal == TLS_MUSTCHECK) {
+
       readsTentativeData = true;
+      squashUnavailableObjects(SI, inLoopAnalyser);
+      
+    }
+    else {
+
+      replaceUnavailableObjects(SI, inLoopAnalyser);
+
+    }
 
   }
   
@@ -750,7 +1035,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
     for(uint32_t j = 0, jlim = BB->invar->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction& SI = BB->insts[j];
-      TLAnalyseInstruction(SI, commitDisabledHere, secondPass);
+      TLAnalyseInstruction(SI, commitDisabledHere, secondPass, false);
       
       if(inst_is<CallInst>(&SI)) {
 
@@ -1077,8 +1362,9 @@ void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
 
   if(IA->readsTentativeData) {
 
-    // Conservatively assume that our inability to check where the data went
-    // means we must assume it clobbered everything.
+    // There may have been thread interference during the function, and/or it may have read data
+    // that needed checking from prior interference and may have used it, unchecked, to calculate
+    // its return value or store values to memory. Everything needs checking at this point.
     errs() << "Warning: disabled context " << IA->SeqNumber << " reads tentative information\n";
     SI->parent->tlStore = SI->parent->tlStore->getEmptyMap();
     SI->parent->tlStore->allOthersClobbered = true;
@@ -1087,8 +1373,8 @@ void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
   }
   else {
 
-    // As it does not read tentative information, the context simply has no effect.
-    // Use a copy of the TL map backed up on entry for this purpose.
+    // It does not corrupt state, but it does not itself perform checks.
+    // Undo any check elimination performed within the function.
     release_assert(IA->backupTlStore);
     SI->parent->tlStore->dropReference();
     SI->parent->tlStore = IA->backupTlStore;

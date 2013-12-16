@@ -269,6 +269,9 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
   case PathConditionTypeIntmem:
     Out << "Intmem";
     break;
+  case PathConditionTypeStream:
+    Out << "Stream";
+    break;
   case PathConditionTypeFptrmem:
     release_assert(0 && "Bad path condition type");
     llvm_unreachable();
@@ -278,14 +281,19 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
 
   if(t == PathConditionTypeString) {
 
-    GlobalVariable* GV = cast<GlobalVariable>(PC.val);
+    GlobalVariable* GV = cast<GlobalVariable>(PC.u.val);
     ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
     Out << "\"" << CDA->getAsCString() << "\"";
 
   }
+  else if(t == PathConditionTypeStream) {
+
+    Out << PC.u.filename;
+
+  }
   else {
 
-    Out << itcache(ShadowValue(PC.val), true);
+    Out << itcache(ShadowValue(PC.u.val), true);
 	
   }
 

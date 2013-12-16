@@ -732,6 +732,8 @@ bool FDGlobalState::isAvailable() {
 
   if(isCommitted)
     return !!CommittedVal;
+  else if(isFifo)
+    return false;
   else
     return SI->parent->IA->allAncestorsEnabled();
 

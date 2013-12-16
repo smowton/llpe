@@ -840,6 +840,25 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
+static bool tryGetNegatedPointer(ShadowValue checkOp, uint64_t& SubOp0, ShadowValue& SubOp1Base, int64_t& SubOp1Offset) {
+
+  if((!checkOp.isInst()) || checkOp.u.I->invar->I->getOpcode() != Instruction::Sub)
+    return false;
+
+  if(!tryGetConstantInt(checkOp.u.I->getOperand(0), SubOp0))
+    return false;
+
+  ShadowInstruction* SubOp1 = checkOp.u.I->getOperand(1).getInst();
+  if(!SubOp1)
+    return false;
+
+  if(!getBaseAndConstantOffset(ShadowValue(SubOp1), SubOp1Base, SubOp1Offset))
+    return false;
+
+  return true;
+
+}
+
 bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   Instruction* BOp = SI->invar->I;
@@ -860,9 +879,9 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
     if(!Op0Ptr) {
 
-      // This is a constant - pointer, which some compilers e.g. DragonEgg-3.2 + gcc-4.6 can produce.
+      // This is a constant minus a pointer, which some compilers e.g. DragonEgg-3.2 + gcc-4.6 can produce.
       // Mark it as pointer with unknown offset, to hopefully catch it later in the special case under ::Add
-      // below.
+      // below, or equivalently in the GEP path.
 
       ImpType = ValSetTypePB;
       Improved.V = Ops[1].second.V;
@@ -917,26 +936,16 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       else
 	checkNegOp = 1;
       
-      uint32_t otherOp = checkNegOp == 0 ? 1 : 0;
+      uint32_t otherOp = !checkNegOp;
       if(Ops[otherOp].second.Offset == LLONG_MAX)
 	return false;
 
       ShadowValue checkOp = SI->getOperand(checkNegOp);
 
-      if((!checkOp.isInst()) || checkOp.u.I->invar->I->getOpcode() != Instruction::Sub)
-	return false;
-
       uint64_t SubOp0;
-      if(!tryGetConstantInt(checkOp.u.I->getOperand(0), SubOp0))
-	return false;
-
-      ShadowInstruction* SubOp1 = checkOp.u.I->getOperand(1).getInst();
-      if(!SubOp1)
-	return false;
-
       ShadowValue SubOp1Base;
-      int64_t SubOp1Offset;
-      if(!getBaseAndConstantOffset(ShadowValue(SubOp1), SubOp1Base, SubOp1Offset))
+      int64_t SubOp1Offset = 0;
+      if(!tryGetNegatedPointer(checkOp, SubOp0, SubOp1Base, SubOp1Offset))
 	return false;
 
       if(SubOp1Base != Ops[checkNegOp].second.V)
@@ -1272,6 +1281,33 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	      Improved.Offset += ((int64_t)OpC) * Size;
 	    }
 	  }
+
+	}
+
+	if(Improved.Offset == LLONG_MAX && SI->getNumOperands() == 2) {
+
+	  // Special case: gep (baseptr + c1), negatedptr, where negatedptr = c2 - (baseptr + c3)
+	  // Resolves to integer c1 + c2 - c3
+	  
+	  uint64_t C;
+	  ShadowValue Op1Base;
+	  int64_t Op1Offset = 0;
+	  if(tryGetNegatedPointer(SI->getOperand(1), C, Op1Base, Op1Offset) &&
+	     Op1Base == Ops[0].second.V) {
+
+	    ImpType = ValSetTypeScalar;
+	    uint64_t ImpInt = (Ops[0].second.Offset + C) - Op1Offset;
+	    
+	    // Wrap the constant answer in an inttoptr CE, since GEP's result
+	    // is pointer-typed.
+
+	    Constant* IntC = ConstantInt::get(GInt64, ImpInt);
+	    Constant* NewCE = ConstantExpr::getIntToPtr(IntC, SI->getType());
+
+	    Improved = ImprovedVal(ShadowValue(NewCE));
+
+	  }
+
 	}
 
       }
@@ -2216,8 +2252,8 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
 
       AllocData* AD = getAllocData(NewIVS->Values[0].V);
       if(AD->allocValue.isInst() && !AD->isCommitted) {
-	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[AD->allocValue.getInst()];
-	Users.push_back(V);
+	std::vector<std::pair<ShadowValue, uint32_t> >& Users = GlobalIHP->indirectDIEUsers[AD->allocValue.getInst()];
+	Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
       }
 
     }
@@ -2225,8 +2261,8 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
       
       FDGlobalState& FDS = pass->fds[NewIVS->Values[0].V.getFd()];
       if(!FDS.isCommitted) {
-	std::vector<ShadowValue>& Users = GlobalIHP->indirectDIEUsers[FDS.SI];
-	Users.push_back(V);
+	std::vector<std::pair<ShadowValue, uint32_t> >& Users = GlobalIHP->indirectDIEUsers[FDS.SI];
+	Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
       }
       
     }

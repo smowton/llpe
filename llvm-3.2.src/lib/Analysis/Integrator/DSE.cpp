@@ -69,6 +69,14 @@ bool TrackedStore::canKill() {
 
 }
 
+static bool committedInstructionIsDead(Instruction* I) {
+
+  return isInstructionTriviallyDead(I, GlobalTLI) && 
+    (!GlobalIHP->committedHeapAllocations.count(I)) &&
+    (!GlobalIHP->committedFDs.count(I));
+
+}
+
 void llvm::DeleteDeadInstruction(Instruction *I) {
 
   SmallVector<Instruction*, 32> NowDeadInsts;
@@ -88,7 +96,7 @@ void llvm::DeleteDeadInstruction(Instruction *I) {
       if (!Op->use_empty()) continue;
 
       if (Instruction *OpI = dyn_cast<Instruction>(Op)) {
-        if (isInstructionTriviallyDead(OpI, GlobalTLI))
+        if (committedInstructionIsDead(OpI))
           NowDeadInsts.push_back(OpI);
       }
       else if(Constant* C = dyn_cast<Constant>(Op)) {

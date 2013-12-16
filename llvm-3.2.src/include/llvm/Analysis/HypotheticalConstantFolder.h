@@ -128,7 +128,8 @@ enum PathConditionTypes {
   PathConditionTypeInt,
   PathConditionTypeString,
   PathConditionTypeIntmem,
-  PathConditionTypeFptrmem
+  PathConditionTypeFptrmem,
+  PathConditionTypeStream
 
 };
 
@@ -139,12 +140,19 @@ struct PathCondition {
   uint32_t instIdx;
   uint32_t fromStackIdx;
   BasicBlock* fromBB;
-  Constant* val;
+  union {
+    Constant* val;
+    const char* filename;
+  } u;
   uint64_t offset;
 
 PathCondition(uint32_t isi, BasicBlock* ibi, uint32_t ii, uint32_t fsi, BasicBlock* fbi, Constant* v, uint64_t off) :
     instStackIdx(isi), instBB(ibi), instIdx(ii), 
-    fromStackIdx(fsi), fromBB(fbi), val(v), offset(off) {}
+    fromStackIdx(fsi), fromBB(fbi), offset(off) {
+
+      u.val = v;
+      
+    }
 
 };
 
@@ -185,6 +193,7 @@ struct PathConditions {
   std::vector<PathCondition> AsDefIntPathConditions;
   std::vector<PathCondition> StringPathConditions;
   std::vector<PathCondition> IntmemPathConditions;
+  std::vector<PathCondition> StreamPathConditions;
   std::vector<PathFunc> FuncPathConditions;
 
   void addForType(PathCondition newCond, PathConditionTypes Ty) {
@@ -206,6 +215,8 @@ struct PathConditions {
       IntmemPathConditions.push_back(newCond); break;
     case PathConditionTypeString:
       StringPathConditions.push_back(newCond); break;
+    case PathConditionTypeStream:
+      StreamPathConditions.push_back(newCond); break;
     }
 
   }
@@ -448,7 +459,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<CallInst*, 4> pessimisticLocks;
 
    // Of an allocation or FD, record instructions that may use it in the emitted program.
-   DenseMap<ShadowInstruction*, std::vector<ShadowValue> > indirectDIEUsers;
+   DenseMap<ShadowInstruction*, std::vector<std::pair<ShadowValue, uint32_t> > > indirectDIEUsers;
    // Of a successful copy instruction, records the values read.
    DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> > memcpyValues;
 
@@ -460,7 +471,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
 
-   uint64_t SeqNumber;
    bool mustRecomputeDIE;
 
    ShadowGV* shadowGlobals;
@@ -496,15 +506,16 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Value*, uint32_t> committedHeapAllocations;
    DenseMap<Value*, uint32_t> committedFDs;
 
+   std::vector<void*> IAs;
+
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
-     SeqNumber = 0;
      mustRecomputeDIE = false;
 
    }
 
-   bool runOnModule(Module& M);
+   bool runOnModule(Module& Ms);
 
    void print(raw_ostream &OS, const Module* M) const;
 
@@ -596,10 +607,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    void initShadowGlobals(Module&, uint32_t extraSlots);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
      return shadowGlobalsIdx[GV];
-   }
-
-   uint64_t getSeq() {
-     return SeqNumber++;
    }
 
    InlineAttempt* getRoot() { return RootIA; }
@@ -1092,6 +1099,7 @@ protected:
 
   bool tentativeLoadsRun;
   bool readsTentativeData;
+  bool containsCheckedReads;
 
   uint32_t checkedInstructionsHere;
   uint32_t checkedInstructionsChildren;
@@ -1116,6 +1124,7 @@ protected:
     barrierState(BARRIER_NONE),
     tentativeLoadsRun(false),
     readsTentativeData(false),
+    containsCheckedReads(false),
     checkedInstructionsHere(0),
     checkedInstructionsChildren(0),
     yieldState(BARRIER_NONE),
@@ -1409,11 +1418,11 @@ protected:
   bool synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
   bool canSynthMTI(ShadowInstruction* I);
-  bool canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV);
+  bool canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal& IV);
   bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
   void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions);
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
-  Value* trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
+  Value* trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
   bool trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
@@ -1435,6 +1444,7 @@ protected:
 				  uint32_t startIdx);
   void addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp);
   virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs) = 0;
+  void markAllocationsAndFDsCommitted();
 
   // Function sharing
 
@@ -1492,11 +1502,14 @@ protected:
   ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
   void findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
   void findTentativeLoadsInUnboundedLoop(const Loop* L, bool commitDisabledHere, bool secondPass);
-  void TLAnalyseInstruction(ShadowInstruction&, bool commitDisabledHere, bool secondPass);
+  void TLAnalyseInstruction(ShadowInstruction&, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser);
   void resetTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
+  void squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
+  bool squashUnavailableObject(ShadowInstruction& SI, ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize);
+  void replaceUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
 
   // Function splitting in the commit stage
   
@@ -1673,7 +1686,7 @@ class PeelAttempt {
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
    ~PeelAttempt();
 
-   bool analyse(uint32_t parent_stack_depth, bool& readsTentativeData);
+   bool analyse(uint32_t parent_stack_depth, bool& readsTentativeData, bool& containsCheckedReads);
 
    PeelIteration* getIteration(unsigned iter); 
    PeelIteration* getOrCreateIteration(unsigned iter); 

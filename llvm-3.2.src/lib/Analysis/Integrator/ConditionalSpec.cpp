@@ -198,7 +198,7 @@ bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStac
 	getFunctionRoot()->markBlockAndSuccsFailed(fromBlockIdx, 0);
 
 	Result.first = ValSetTypeScalar;
-	Result.second.V = it->val;
+	Result.second.V = it->u.val;
 	return true;
 	
       }
@@ -277,7 +277,7 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
 
     if(condty == PathConditionTypeString) {
       
-      GlobalVariable* GV = cast<GlobalVariable>(it->val);
+      GlobalVariable* GV = cast<GlobalVariable>(it->u.val);
       ConstantDataArray* CDA = cast<ConstantDataArray>(GV->getInitializer());
       uint32_t Size = CDA->getNumElements();
       
@@ -290,20 +290,39 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
       executeCopyInst(ptrSV.isGV() ? 0 : &ptrSV, writePtr, copyFromPointer, Size, &(BB->insts[0]));
 
     }
+    else if(condty == PathConditionTypeStream) {
+
+      const char* fname = it->u.filename;
+      FDStore* FDS = BB->getWritableFDStore();
+      uint32_t newId = pass->fds.size();
+      pass->fds.push_back(FDGlobalState(0, /* is a fifo */ true));
+      /* Pseudo FD is born waiting for a representitive value */
+      pass->fds.back().isCommitted = true; 
+      if(FDS->fds.size() <= newId)
+	FDS->fds.resize(newId + 1);
+      FDS->fds[newId] = FDState(std::string(fname));
+
+      ImprovedValSetSingle writeVal;
+      writeVal.set(ImprovedVal(ShadowValue::getFdIdx(newId)), ValSetTypeFD);
+
+      executeWriteInst(0, writePtr, writeVal, /* sizeof fd: */ 4, &(BB->insts[0]));
+	
+    }
     else {
       
       // IntMem condition
       
       ImprovedValSetSingle writeVal;
-      getImprovedValSetSingle(ShadowValue(it->val), writeVal);
+      getImprovedValSetSingle(ShadowValue(it->u.val), writeVal);
 
       // Attribute the effect of the write to first instruction in block:
-      executeWriteInst(0, writePtr, writeVal, GlobalAA->getTypeStoreSize(it->val->getType()), &(BB->insts[0]));
+      executeWriteInst(0, writePtr, writeVal, GlobalAA->getTypeStoreSize(it->u.val->getType()), &(BB->insts[0]));
 
     }
 
-    // Make sure a failed version of this block and its successors is created:
-    getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
+    // Make sure a failed version of this block and its successors is created (except for stream conditions, which are checked on reads)
+    if(condty != PathConditionTypeStream)
+      getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
 
   }
 
@@ -382,6 +401,13 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 
   }
 
+  for(std::vector<PathCondition>::iterator it = PC.StreamPathConditions.begin(),
+	itend = PC.StreamPathConditions.end(); it != itend; ++it) {
+
+    applyPathCondition(&*it, PathConditionTypeStream, BB, targetStackDepth);
+
+  }
+
   for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(),
 	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
 
@@ -411,6 +437,8 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 
       it->IA->activeCaller = &BB->insts[0];
       it->IA->analyseNoArgs(false, false, stack_depth);
+
+      it->IA->markAllocationsAndFDsCommitted();
 
       doCallStoreMerge(BB, it->IA);
 
@@ -630,7 +658,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
   case PathConditionTypeIntmem:
 
     {
-      Type* PtrTy = PointerType::getUnqual(Cond.val->getType());
+      Type* PtrTy = PointerType::getUnqual(Cond.u.val->getType());
       if(PtrTy != testRoot->getType())
 	testRoot = new BitCastInst(testRoot, PtrTy, "", emitBlock);
       testRoot = new LoadInst(testRoot, "", false, emitBlock);
@@ -640,10 +668,10 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
 
   case PathConditionTypeInt:
 
-    if(testRoot->getType() != Cond.val->getType())
-      testRoot = new SExtInst(testRoot, Cond.val->getType(), "", emitBlock);
+    if(testRoot->getType() != Cond.u.val->getType())
+      testRoot = new SExtInst(testRoot, Cond.u.val->getType(), "", emitBlock);
 
-    resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, testRoot, Cond.val);
+    resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, testRoot, Cond.u.val);
     break;
 
   case PathConditionTypeString:
@@ -663,7 +691,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
 	testRoot = CastInst::Create(Op, testRoot, Int8Ptr, VerboseNames ? "testcast" : "", emitBlock);
       }
       
-      Value* CondCast = ConstantExpr::getBitCast(Cond.val, Int8Ptr);
+      Value* CondCast = ConstantExpr::getBitCast(Cond.u.val, Int8Ptr);
 	
       Value* StrcmpArgs[2] = { CondCast, testRoot };
       CallInst* CmpCall = CallInst::Create(StrcmpFun, ArrayRef<Value*>(StrcmpArgs, 2), VerboseNames ? "assume_test" : "", emitBlock);
@@ -674,7 +702,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
 
     }
 
-  case PathConditionTypeFptrmem:
+  default:
     
     release_assert(0 && "Bad path condition type");
     llvm_unreachable();
@@ -1573,7 +1601,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator previt = it;
       --previt;
       unspecPreds.push_back(std::make_pair(previt->first, thisBlockInst));
-
+      
       thisBlockInst = insertMergePHI(OrigSI, specPreds, unspecPreds, it->first);
       ForwardingPHIs->insert(cast<PHINode>(thisBlockInst));
 

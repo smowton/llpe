@@ -374,6 +374,14 @@ void StoreToMemcpyPass::runOnBasicBlock(BasicBlock* BB) {
 
   }
 
+  // Emit last block if any
+  if(CommonBase && (NextOffset - FirstOffset) >= REPLACE_THRESHOLD) {
+    BasicBlock::iterator endit = BB->end();
+    // Insert memcpy before the terminator!
+    --endit;
+    replaceStores(firstStore, endit);
+  }
+
 }
 
 void StoreToMemcpyPass::runOnFunction(Function* F) {

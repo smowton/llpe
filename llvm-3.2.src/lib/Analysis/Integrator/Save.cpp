@@ -1300,27 +1300,6 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   }
 
-  {
-
-    DenseMap<ShadowInstruction*, OpenStatus*>::iterator it = pass->forwardableOpenCalls.find(I);
-    if(it != pass->forwardableOpenCalls.end()) {
-
-      if(it->second->success && I->dieStatus == INSTSTATUS_ALIVE) {
-
-	Value* committed = emitInst(BB, I, emitBB);
-	uint32_t FD = cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd();
-	FDGlobalState& FDS = pass->fds[FD];
-	FDS.CommittedVal = committed;
-	FDS.isCommitted = true;
-	pass->committedFDs[committed] = FD;
-	
-      }
-
-      return true;
-    }
-
-  }
-
   Function* CalledF = getCalledFunction(I);
 
   if((!pass->omitChecks) && I->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && 
@@ -1593,6 +1572,28 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  {
+
+    // Don't use forwardableOpenCalls here because surrogates for FDs need recording too.
+    // The defining characteristic is always resolving to an FD that points back to this instruction.
+
+    ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(I->i.PB);
+    if(IVS && IVS->SetType == ValSetTypeFD && IVS->Values.size() == 1 && IVS->Values[0].V.isFdIdx()) {
+
+      uint32_t FD = IVS->Values[0].V.getFd();
+      FDGlobalState& FDS = pass->fds[FD];
+      if((!FDS.isCommitted) && FDS.SI == I) {
+	
+	FDS.CommittedVal = newI;
+	FDS.isCommitted = true;
+	pass->committedFDs[newI] = FD;
+	
+      }
+
+    }
+
+  }
+
   return newI;
 
 }
@@ -1773,18 +1774,16 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
 }
 
-bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, ImprovedVal& IV) {
+bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal& IV) {
 
   if(Ty == ValSetTypeScalar)
     return true;
   else if(Ty == ValSetTypeFD) {
-    return I != pass->fds[IV.V.u.PtrOrFd.idx].SI && IV.V.objectAvailable();
+    return ((!I) || (!I->isInst()) || (I->u.I != pass->fds[IV.V.u.PtrOrFd.idx].SI)) 
+      && IV.V.objectAvailable();
   }
   else if(Ty == ValSetTypePB) {
-    ShadowValue SV;
-    if(I)
-      SV = ShadowValue(I);
-    return canSynthPointer(I ? &SV : 0, IV);
+    return canSynthPointer(I, IV);
   }
 
   return false;
@@ -1793,7 +1792,7 @@ bool IntegrationAttempt::canSynthVal(ShadowInstruction* I, ValSetType Ty, Improv
 
 
 
-Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
+Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar) {
     return getSingleConstant(IV.V);
@@ -1821,10 +1820,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowInstruction* I, Type* targetType, V
   else if(Ty == ValSetTypePB) {
 
     Value* V;
-    ShadowValue SV;
-    if(I)
-      SV = ShadowValue(I);
-    if(synthCommittedPointer(I ? &SV : 0, targetType, IV, emitBB, V))
+    if(synthCommittedPointer(I, targetType, IV, emitBB, V))
       return V;
 
   }
@@ -1880,7 +1876,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
   if(chunkSize == 1) {
 
     ImprovedVal& IV = chunkBegin->second.Values[0];
-    Value* newVal = trySynthVal(I, getValueType(IV.V), chunkBegin->second.SetType, IV, emitBB);
+    ShadowValue IVal(I);
+    Value* newVal = trySynthVal(&IVal, getValueType(IV.V), chunkBegin->second.SetType, IV, emitBB);
     uint64_t elSize = GlobalAA->getTypeStoreSize(newVal->getType());
 
     if(elSize > 8) {
@@ -1912,7 +1909,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
     for(SmallVector<IVSRange, 4>::iterator it = chunkBegin; it != chunkEnd; ++it) {
 
       ImprovedVal& IV = it->second.Values[0];
-      Value* newVal = trySynthVal(I, getValueType(IV.V), it->second.SetType, IV, emitBB);
+      ShadowValue IVal(I);
+      Value* newVal = trySynthVal(&IVal, getValueType(IV.V), it->second.SetType, IV, emitBB);
       release_assert(!isa<Instruction>(newVal));
       Types.push_back(newVal->getType());
       Copy.push_back(cast<Constant>(newVal));
@@ -1937,13 +1935,15 @@ bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
   if(!GlobalIHP->memcpyValues.count(I))
     return false;
 
+  ShadowValue IVal(I);
+
   // Can we describe the target?
   ShadowValue TargetPtr = I->getCallArgOperand(0);
   {
     ImprovedVal Test;
     if(!getBaseAndConstantOffset(TargetPtr, Test.V, Test.Offset))
       return false;
-    if(!canSynthVal(I, ValSetTypePB, Test))
+    if(!canSynthVal(&IVal, ValSetTypePB, Test))
       return false;
   }
   
@@ -1956,7 +1956,7 @@ bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
     if(it->second.isWhollyUnknown() || it->second.Values.size() != 1)
       return false;
 
-    if(!canSynthVal(I, it->second.SetType, it->second.Values[0]))
+    if(!canSynthVal(&IVal, it->second.SetType, it->second.Values[0]))
       return false;
 
   }
@@ -2035,7 +2035,8 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
   if(IVS->Values.size() != 1)
     return false;
 
-  Result = trySynthVal(I, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
+  ShadowValue IVal(I);
+  Result = trySynthVal(&IVal, I->getType(), IVS->SetType, IVS->Values[0], emitBB);
   return !!Result;
   
 }
@@ -2049,7 +2050,8 @@ bool IntegrationAttempt::trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& R
   if(IVS->Values.size() != 1)
     return false;
 
-  Result = trySynthVal(0, A->getType(), IVS->SetType, IVS->Values[0], emitBB);
+  ShadowValue AVal(A);
+  Result = trySynthVal(&AVal, A->getType(), IVS->SetType, IVS->Values[0], emitBB);
   return !!Result;
 
 }
@@ -2058,7 +2060,7 @@ bool IntegrationAttempt::trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& R
 static bool isPureCall(ShadowInstruction* SI) {
 
   Function* CalledF = getCalledFunction(SI);
-  return CalledF && CalledF->doesNotAccessMemory();
+  return CalledF && CalledF->isIntrinsic() && CalledF->doesNotAccessMemory();
 
 }
 
@@ -2438,5 +2440,70 @@ void InlineAttempt::releaseCommittedChildren() {
 void PeelAttempt::releaseCommittedChildren() {
 
   releaseCC(CommitFunctions, CommitBlocks);
+
+}
+
+void IntegrationAttempt::markAllocationsAndFDsCommitted() {
+
+  if(isCommitted())
+    return;
+
+  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
+
+    ShadowBBInvar* BBI = getBBInvar(i);
+    ShadowBB* BB = getBB(*BBI);
+    if(!BB)
+      continue;
+
+    if(BBI->naturalScope != L) {
+
+      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      PeelAttempt* LPA;
+      if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
+
+	for(uint32_t j = 0, jlim = LPA->Iterations.size(); j != jlim; ++j)
+	  LPA->Iterations[j]->markAllocationsAndFDsCommitted();
+
+	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
+	  ++i;
+	--i;
+	continue;
+
+      }
+
+    }
+
+    for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+      ShadowInstruction& SI = BB->insts[j];
+      ShadowValue Base;
+      if(getBaseObject(ShadowValue(&SI), Base) && Base.isPtrIdx()) {
+
+	AllocData* AD = getAllocData(Base);
+	if((!AD->isCommitted) && AD->allocValue == ShadowValue(&SI)) {
+	  AD->isCommitted = true;
+	  AD->committedVal = 0;
+	}
+	
+      }
+      else if(SI.i.PB && isa<ImprovedValSetSingle>(SI.i.PB)) {
+
+	ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(SI.i.PB);
+	if(IVS->Values.size() == 1 && IVS->SetType == ValSetTypeFD) {
+
+	  int32_t FD = IVS->Values[0].V.getFd();
+	  FDGlobalState& FDGS = pass->fds[FD];
+	  if(FDGS.SI == &SI) {
+	    FDGS.isCommitted = true;
+	    FDGS.CommittedVal = 0;
+	  }
+
+	}
+
+      }
+
+    }
+
+  }
 
 }

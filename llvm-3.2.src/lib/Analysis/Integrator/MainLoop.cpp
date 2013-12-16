@@ -224,7 +224,7 @@ void IntegrationAttempt::analyse() {
 
 }
 
-bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData) {
+bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData, bool& containsCheckedReads) {
   
   bool anyChange = false;
   stack_depth = parent_stack_depth;
@@ -236,6 +236,7 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData)
     anyChange |= PI->analyse(false, true, parent_stack_depth);
     parent->inheritDiagnosticsFrom(PI);
     readsTentativeData |= PI->readsTentativeData;
+    containsCheckedReads |= PI->containsCheckedReads;
 
   }
 
@@ -371,9 +372,10 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       ShadowBB* PHBB = getBB(LPA->invarInfo->preheaderIdx);
       PHBB->refStores();
 
-      bool loopReadsTentativeData;
-      LPA->analyse(stack_depth, loopReadsTentativeData);
+      bool loopReadsTentativeData, loopContainsCheckedReads;
+      LPA->analyse(stack_depth, loopReadsTentativeData, loopContainsCheckedReads);
       readsTentativeData |= loopReadsTentativeData;
+      containsCheckedReads |= loopContainsCheckedReads;  
 
       // We're certainly not in the loop analyser, so pick whether to keep a terminated
       // version of the loop now.
@@ -522,7 +524,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
   if(!inLoopAnalyser) {
 
-    TLWalkPathConditions(BB, true, false);
+    //TLWalkPathConditions(BB, true, false);
     if(pass->countPathConditionsAtBlockStart(BB->invar, BB->IA)) {
       setAllNeededTop(BB->dseStore);
       BB->dseStore = BB->dseStore->getEmptyMap();
@@ -628,7 +630,7 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool inLoopAnaly
       noteIndirectUse(ShadowValue(SI), SI->i.PB);
       
       // Check if this load or memcpy should be checked at runtime:
-      TLAnalyseInstruction(*SI, /* commit disabled = */ false, /* second pass = */ false);
+      TLAnalyseInstruction(*SI, /* commit disabled = */ false, /* second pass = */ false, /* in loop analyser = */ false);
 
       // Update the DSE store:
       DSEAnalyseInstruction(SI, /* commit disabled = */false, 

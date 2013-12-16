@@ -451,7 +451,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
   
   if(!(F->getName() == "read" || F->getName() == "llseek" || F->getName() == "lseek" || 
        F->getName() == "lseek64" || F->getName() == "close" || F->getName() == "stat" ||
-       F->getName() == "fstat" || F->getName() == "isatty"))
+       F->getName() == "fstat" || F->getName() == "isatty" || F->getName() == "recvfrom"))
     return false;
 
   if(SI->i.PB)
@@ -574,7 +574,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     return true;
 
   }
-  else if(F->getName() == "read") {
+  else if(F->getName() == "read" || F->getName() == "recvfrom") {
 
     pass->resolvedReadCalls.erase(SI);
 
@@ -634,6 +634,8 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
       SI->needsRuntimeCheck = RUNTIME_CHECK_READ_MEMCMP;
     else if(!FDS.clean)
       SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
+
+    this->containsCheckedReads = true;
 
     FDS.pos += cBytes;
     if(ElimRedundantChecks && !isFifo)

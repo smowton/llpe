@@ -79,6 +79,7 @@ static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::
 static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsFptrmem("int-path-condition-fptrmem", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsStream("int-path-condition-stream", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<bool> SkipTL("skip-check-elim");
@@ -123,34 +124,35 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
   IntegrationAttempt(Pass, F, 0, depth, 0)
 { 
 
-    SeqNumber = Pass->getSeq();
+  SeqNumber = Pass->IAs.size();
+  Pass->IAs.push_back(this);
 
-    sharing = 0;
-    enabled = true;
-    isModel = false;
-    isPathCondition = pathCond;
-    hasVFSOps = false;
-    registeredSharable = false;
-    active = false;
-    instructionsCommitted = false;
-    emittedAlloca = false;
-    blocksReachableOnFailure = 0;
-    CommitF = 0;
-    targetCallInfo = 0;
-    integrationGoodnessValid = false;
-    backupTlStore = 0;
-    backupDSEStore = 0;
-    isStackTop = false;
-    DT = pass->DTs[&F];
-    if(_CI) {
-      Callers.push_back(_CI);
-      uniqueParent = _CI->parent->IA;
-    }
-    else {
-      uniqueParent = 0;
-    }
+  sharing = 0;
+  enabled = true;
+  isModel = false;
+  isPathCondition = pathCond;
+  hasVFSOps = false;
+  registeredSharable = false;
+  active = false;
+  instructionsCommitted = false;
+  emittedAlloca = false;
+  blocksReachableOnFailure = 0;
+  CommitF = 0;
+  targetCallInfo = 0;
+  integrationGoodnessValid = false;
+  backupTlStore = 0;
+  backupDSEStore = 0;
+  isStackTop = false;
+  DT = pass->DTs[&F];
+  if(_CI) {
+    Callers.push_back(_CI);
+    uniqueParent = _CI->parent->IA;
+  }
+  else {
+    uniqueParent = 0;
+  }
 
-    prepareShadows();
+  prepareShadows();
 
 }
 
@@ -162,7 +164,8 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   parent(P),
   iterStatus(IterationStatusUnknown)
 { 
-  SeqNumber = Pass->getSeq();
+  SeqNumber = Pass->IAs.size();
+  Pass->IAs.push_back(this);
   prepareShadows();
 }
 
@@ -173,7 +176,8 @@ PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P,
 {
 
   invarInfo = parent->invarInfo->LInfo[L];
-  SeqNumber = Pass->getSeq();
+  SeqNumber = Pass->IAs.size();
+  Pass->IAs.push_back(this);
 
   getOrCreateIteration(0);
 
@@ -184,6 +188,9 @@ IntegrationAttempt::~IntegrationAttempt() {
   // !BBs indicates we've already been cleaned up (but not deallocated yet).
   if(!BBs)
     return;
+
+  release_assert(pass->IAs.size() > SeqNumber);
+  pass->IAs[SeqNumber] = 0;
 
   for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
     II->second->dropReferenceFrom(II->first);
@@ -249,9 +256,14 @@ void InlineAttempt::dropReferenceFrom(ShadowInstruction* SI) {
 }
 
 PeelAttempt::~PeelAttempt() {
+
+  release_assert(pass->IAs.size() > SeqNumber);
+  pass->IAs[SeqNumber] = 0;
+
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; it++) {
     delete *it;
   }
+
 }
 static uint32_t mainPhaseProgressN = 0;
 const uint32_t mainPhaseProgressLimit = 1000;
@@ -518,7 +530,7 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
 
   Result = 0;
   
-  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+  if(MaxContexts != 0 && pass->IAs.size() > MaxContexts)
     return false;
 
   Function* FCalled = getCalledFunction(SI);
@@ -763,6 +775,10 @@ void InlineAttempt::finaliseAndCommit() {
 
     commitState = COMMIT_DONE;
 
+    // Allocations and FD creations in this scope should be marked
+    // committed without canonical value.
+    markAllocationsAndFDsCommitted();
+
     // Child contexts may have generated code that we no longer care
     // to use. Delete it if so.
     releaseCommittedChildren();
@@ -811,6 +827,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 
       changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop, stack_depth);
       readsTentativeData |= IA->readsTentativeData;
+      containsCheckedReads |= IA->containsCheckedReads;
       
       inheritDiagnosticsFrom(IA);
       mergeChildDependencies(IA);
@@ -1069,7 +1086,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
   if(PeelAttempt* PA = getPeelAttempt(NewL))
     return PA;
 
-  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
+  if(MaxContexts != 0 && pass->IAs.size() > MaxContexts)
     return 0;
  
   // Preheaders only have one successor (the header), so this is enough.
@@ -3111,6 +3128,9 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
 	++newGVIndex;
 	break;
       }
+    case PathConditionTypeStream:
+      assumeC = (Constant*)strdup(assumeStr.c_str());
+      break;
     default:
       release_assert(0 && "Bad path condition type");
       llvm_unreachable();
@@ -3374,6 +3394,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
   parsePathConditions(PathConditionsString, PathConditionTypeString, IA);
   parsePathConditions(PathConditionsIntmem, PathConditionTypeIntmem, IA);  
   parsePathConditions(PathConditionsFptrmem, PathConditionTypeFptrmem, IA);
+  parsePathConditions(PathConditionsStream, PathConditionTypeStream, IA);
 
   for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
 	itend = PathConditionsFunc.end(); it != itend; ++it) {

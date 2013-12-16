@@ -258,7 +258,17 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& 
       else if(parentPA->isTerminated()) {
 
 	// The instruction would be used by the next iteration,
-	// but there is no such iteration, so it is unused.
+	// but there is no such iteration, so it is unused unless there may be an out-of-loop user.
+
+	InlineAttempt* UserInA = getFunctionRoot();
+
+	if(UserInA->blocksReachableOnFailure && 
+	   UserInA->blocksReachableOnFailure->count(I->parent->idx)) {
+	  
+	  Visitor.notifyUsersMissed();
+
+	}
+
 	return true;
 
       }
@@ -445,7 +455,7 @@ bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
   if(IVS->Values.size() != 1)
     return false;
 
-  if(!canSynthVal(V.isInst() ? V.getInst() : 0, IVS->SetType, IVS->Values[0]))
+  if(!canSynthVal(&V, IVS->SetType, IVS->Values[0]))
     return false;
   
   return true;
@@ -518,18 +528,48 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
     // but will do in the final committed program. Check that each is dead:
     if(ShadowInstruction* I = V.getInst()) {
 
-      DenseMap<ShadowInstruction*, std::vector<ShadowValue> >::iterator findit = 
+      DenseMap<ShadowInstruction*, std::vector<std::pair<ShadowValue, uint32_t > > >::iterator findit = 
 	GlobalIHP->indirectDIEUsers.find(I);
       if(findit != GlobalIHP->indirectDIEUsers.end()) {
 
-	std::vector<ShadowValue>& Users = findit->second;
+	// First check if users have already been committed:
+	release_assert(I->i.PB && 
+		       isa<ImprovedValSetSingle>(I->i.PB) && 
+		       cast<ImprovedValSetSingle>(I->i.PB)->Values.size() == 1);
+	
+	if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isPtrIdx()) {
+
+	  AllocData* AD = getAllocData(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V);
+	  if(AD->PatchRefs.size())
+	    return false;
+
+	}
+	else if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isFdIdx()) {
+
+	  FDGlobalState& GFDS = GlobalIHP->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
+	  if(GFDS.PatchRefs.size())
+	    return false;
+
+	}
+	else {
+
+	  release_assert(0 && "Not an allocation, not an FD, but has indirect users?");
+
+	}
+
+	std::vector<std::pair<ShadowValue, uint32_t> >& Users = findit->second;
 
 	for(uint32_t i = 0; i < Users.size(); ++i) {
 
-	  if(!willBeDeleted(Users[i])) {
+	  // If the IA has been deallocated then the user must have been committed already
+	  // or thrown away, and can be spotted as a patch request.
+	  if(!pass->IAs[Users[i].second])
+	    continue;
+
+	  if(!willBeDeleted(Users[i].first)) {
 
 	    if(verbose)
-	      errs() << itcache(V) << " used by " << itcache(Users[i]) << "\n";	      
+	      errs() << itcache(V) << " used by " << itcache(Users[i].first) << "\n";	      
 
 	    return false;
 
