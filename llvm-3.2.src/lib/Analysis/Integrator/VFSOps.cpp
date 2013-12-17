@@ -454,8 +454,13 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
        F->getName() == "fstat" || F->getName() == "isatty" || F->getName() == "recvfrom"))
     return false;
 
-  if(SI->i.PB)
+  if(SI->i.PB) {
+
     deleteIV(SI->i.PB);
+    pass->resolvedReadCalls.erase(SI);
+    pass->resolvedSeekCalls.erase(SI);
+
+  }
   SI->i.PB = newOverdefIVS();
 
   if(F->getName() == "stat") {
@@ -575,8 +580,6 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
   }
   else if(F->getName() == "read" || F->getName() == "recvfrom") {
-
-    pass->resolvedReadCalls.erase(SI);
 
     ShadowValue readBytes = SI->getCallArgOperand(2);
     uint64_t ucBytes;
