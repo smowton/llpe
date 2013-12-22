@@ -48,6 +48,9 @@ static cl::opt<bool> UseNewSROA("use-new-sroa",
   cl::init(true), cl::Hidden,
   cl::desc("Enable the new, experimental SROA pass"));
 
+static cl::opt<bool> DisableLTO("xxx-disable-lto",
+				cl::init(false), cl::Hidden, cl::desc("Hack: disable all LTO"));
+
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
     SizeLevel = 0;
@@ -244,6 +247,10 @@ void PassManagerBuilder::populateLTOPassManager(PassManagerBase &PM,
                                                 bool Internalize,
                                                 bool RunInliner,
                                                 bool DisableGVNLoadPRE) {
+
+  if(DisableLTO)
+    return;
+
   // Provide AliasAnalysis services for optimizations.
   addInitialAliasAnalysisPasses(PM);
 

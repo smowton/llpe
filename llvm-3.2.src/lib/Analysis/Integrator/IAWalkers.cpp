@@ -322,7 +322,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB
       return WIR;
     }
 
-    if(inst_is<CallInst>(SI)) {
+    if(inst_is<CallInst>(SI) || inst_is<InvokeInst>(SI)) {
 
       if(!shouldEnterCall(SI, Ctx))
 	continue;
@@ -437,7 +437,7 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB*
     if(WIR != WIRContinue)
       return WIR;
 
-    if(inst_is<CallInst>(I)) {
+    if(inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) {
 
       if(!shouldEnterCall(I, Ctx))
 	continue;
@@ -484,14 +484,15 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
 
     if(!Callers.empty()) {
 
-      // CallInst isn't a terminatorinst so can't be end of block.
-      
       bool firstQueue = true;
       for(SmallVector<ShadowInstruction*, 1>::iterator it = Callers.begin(),
 	    itend = Callers.end(); it != itend; ++it) {
 
 	Walker->leaveCall(this, Ctx);
-	Walker->queueWalkFrom((*it)->invar->idx + 1, (*it)->parent, Ctx, !firstQueue);
+	if(inst_is<CallInst>(*it))
+	  Walker->queueWalkFrom((*it)->invar->idx + 1, (*it)->parent, Ctx, !firstQueue);
+	else
+	  (*it)->parent->IA->queueSuccessorsFW((*it)->parent, Walker, Ctx);
 	firstQueue = false;
 
       }

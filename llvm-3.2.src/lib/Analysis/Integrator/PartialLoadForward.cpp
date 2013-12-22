@@ -12,6 +12,7 @@
 
 #include <llvm/Analysis/ConstantFolding.h>
 #include <llvm/Target/TargetData.h>
+#include <llvm/Support/CallSite.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/GetElementPtrTypeIterator.h>
 #include <llvm/Support/raw_ostream.h>
@@ -104,7 +105,9 @@ int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
   // All callers must have the same operand count, so Callers[0] is ok.
   for(unsigned i = F.getFunctionType()->getNumParams(); i < Callers[0]->getNumArgOperands(); ++i) {
 
-    Type* T = cast_inst<CallInst>(Callers[0])->getArgOperand(i)->getType();
+    ImmutableCallSite ICS(Callers[0]->invar->I);
+
+    Type* T = ICS.getArgument(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       if(idx == 0)
@@ -134,7 +137,9 @@ int64_t InlineAttempt::FPArgIdxToArgIdx(int64_t idx) {
   
   for(unsigned i = F.getFunctionType()->getNumParams(); i < Callers[0]->getNumArgOperands(); ++i) {
 
-    Type* T = cast_inst<CallInst>(Callers[0])->getArgOperand(i)->getType();
+    ImmutableCallSite ICS(Callers[0]->invar->I);
+
+    Type* T = ICS.getArgument(i)->getType();
     if(T->isPointerTy() || T->isIntegerTy()) {
 
       continue;

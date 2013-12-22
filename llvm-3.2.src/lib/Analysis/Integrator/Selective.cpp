@@ -153,7 +153,30 @@ bool PeelIteration::commitsOutOfLine() {
 // rather than being inlined everywhere as usual.
 bool InlineAttempt::mustCommitOutOfLine() {
 
-  return isRootMainCall() || F.isVarArg() || isShared();
+  if(isRootMainCall())
+    return true;
+
+  if(F.isVarArg())
+    return true;
+
+  if(isShared())
+    return true;
+
+  if(pass->splitFunctions.count(&F))
+    return true;
+  
+  if(hasFailedReturnPath()) {
+
+    for(uint32_t i = 0, ilim = Callers.size(); i != ilim; ++i) {
+      
+      if(inst_is<InvokeInst>(Callers[i]))
+	return true;
+	
+    }
+
+  }
+
+  return false;
 
 }
 

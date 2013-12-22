@@ -434,6 +434,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallPtrSet<Function*, 8> blacklistedFunctions;
    void initBlacklistedFunctions(Module&);
 
+   SmallPtrSet<Function*, 8> splitFunctions;
+
    DenseMap<Function*, std::vector<InlineAttempt*> > IAsByFunction;
 
    PathConditions pathConditions;
@@ -1107,6 +1109,8 @@ protected:
   BarrierState yieldState;
   CommitState commitState;
 
+  bool mayUnwind;
+
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
 		    const Loop* _L, int depth, int sdepth) : 
     improvableInstructions(0),
@@ -1128,7 +1132,8 @@ protected:
     checkedInstructionsHere(0),
     checkedInstructionsChildren(0),
     yieldState(BARRIER_NONE),
-    commitState(COMMIT_NOT_STARTED)
+    commitState(COMMIT_NOT_STARTED),
+    mayUnwind(false)  
       { 
       }
 
@@ -1257,6 +1262,7 @@ protected:
   // Child (inlines, peels) management
 
   InlineAttempt* getInlineAttempt(ShadowInstruction* CI) {
+    // Only calls and invokes use tSD at the moment, so no need for a check.
     return (InlineAttempt*)CI->typeSpecificData;
   }
   virtual bool stackIncludesCallTo(Function*) = 0;
@@ -1435,6 +1441,7 @@ protected:
     return commitState != COMMIT_NOT_STARTED;
   }
   Value* getCommittedValue(ShadowValue SV);
+  Value* getCommittedValueOrBlock(ShadowInstruction* I, uint32_t idx, ConstantInt*& failValue, BasicBlock*& failBlock);
   void releaseMemoryPostCommit();
   BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock = false);
   BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
@@ -1494,6 +1501,10 @@ protected:
 				   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator it, 
 				   SmallVector<std::pair<BasicBlock*, uint32_t>, 1>::iterator lastit);
   bool instSpecialTest(uint32_t blockIdx, uint32_t instIdx);
+  bool gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
+			  Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds,
+			  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources);
+  bool hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo);
 
   // Tentative load determination
   
@@ -1927,6 +1938,8 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void finishFailedBlockCommit();
   void markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI);
   bool isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx);
+  void gatherSpecToUnspecEdges(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
+			       Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>& newPreds);
   bool isSimpleMergeBlock(uint32_t i);
   BasicBlock::iterator skipMergePHIs(BasicBlock::iterator it);
   void createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruction* NewI);

@@ -327,7 +327,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
-  else if(CallInst* CallI = dyn_cast_inst<CallInst>(SI)) {
+  else if(inst_is<CallInst>(SI) || inst_is<InvokeInst>(SI)) {
 
     if(inst_is<MemSetInst>(SI)) {
 
@@ -344,6 +344,8 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
     }
     else {
+
+      CallInst* CallI = dyn_cast_inst<CallInst>(SI);
 
       Function* F = getCalledFunction(SI);
       DenseMap<Function*, specialfunctions>::iterator findit;
@@ -379,7 +381,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 	}
 
       }
-      else if(((!F) && !GlobalIHP->programSingleThreaded) || GlobalIHP->yieldFunctions.count(F)) {
+      else if(CallI && (((!F) && !GlobalIHP->programSingleThreaded) || GlobalIHP->yieldFunctions.count(F))) {
 
 	if(GlobalIHP->pessimisticLocks.count(CallI)) {
 
@@ -1037,23 +1039,19 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
       ShadowInstruction& SI = BB->insts[j];
       TLAnalyseInstruction(SI, commitDisabledHere, secondPass, false);
       
-      if(inst_is<CallInst>(&SI)) {
+      if(InlineAttempt* IA = getInlineAttempt(&SI)) {
 
-	if(InlineAttempt* IA = getInlineAttempt(&SI)) {
+	IA->BBs[0]->tlStore = BB->tlStore;
+	IA->findTentativeLoads(commitDisabledHere || !IA->isEnabled(), secondPass);
+	doTLCallMerge(BB, IA);
 
-	  IA->BBs[0]->tlStore = BB->tlStore;
-	  IA->findTentativeLoads(commitDisabledHere || !IA->isEnabled(), secondPass);
-	  doTLCallMerge(BB, IA);
+	if(!BB->tlStore) {
 
-	  if(!BB->tlStore) {
+	  // Call exit unreachable
+	  brokeOnUnreachableCall = true;
+	  break;
 
-	    // Call exit unreachable
-	    brokeOnUnreachableCall = true;
-	    break;
-
-	  }	    
-
-	}
+	}	    
 
       }
 
@@ -1259,10 +1257,9 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
       return true;
     
   }
-  else if (inst_is<CallInst>(SI)) {
+  else if (InlineAttempt* IA = getInlineAttempt(SI)) {
       
-    InlineAttempt* IA = getInlineAttempt(SI);
-    if(IA && (!IA->isEnabled()) && IA->containsTentativeLoads())
+    if((!IA->isEnabled()) && IA->containsTentativeLoads())
       return !SI->i.PB->isWhollyUnknown();
 
   }
@@ -1343,8 +1340,17 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
       else if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
 	IA->addCheckpointFailedBlocks();
-	if(IA->hasFailedReturnPath())
-	  getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+	if(IA->hasFailedReturnPath()) {
+
+	  // If this is the block terminator then it must be an invoke instruction,
+	  // the only kind of terminator that produces a checkable value.
+	  // If it is an invoke, mark the normal continuation reachable on failure.
+	  if(j == jlim - 1)
+	    getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[0], 0);
+	  else
+	    getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+
+	}
 
       }
 

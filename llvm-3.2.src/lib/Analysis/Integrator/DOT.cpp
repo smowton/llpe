@@ -54,7 +54,7 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
 
   }
 
-  if(val_is<CallInst>(SV)) {
+  if(val_is<CallInst>(SV) || val_is<InvokeInst>(SV)) {
     if(SV.u.I->typeSpecificData)
       return "yellow";
     else
@@ -427,7 +427,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   Out << "><font point-size=\"14\">";
   if(BBI->BB == getEntryBlock())
     Out << "Entry block: ";
-  Out << escapeHTML(BBI->BB->getName()) << "</font></td></tr>\n";
+  Out << escapeHTML(BBI->BB->getName()) << " </font></td></tr>\n";
 
   bool isFunctionHeader = (!L) && (BBI->BB == &(F.getEntryBlock()));
 

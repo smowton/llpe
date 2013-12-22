@@ -548,7 +548,7 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
   ShadowInstructionInvar* SII = SI->invar;
   Instruction* I = SII->I;
 
-  if(inst_is<TerminatorInst>(SI)) {
+  if(inst_is<TerminatorInst>(SI) && !inst_is<InvokeInst>(SI)) {
     // Call tryEvalTerminator regardless of scope.
     return tryEvaluateTerminator(SI, loadedVarargsHere);
   }
@@ -564,10 +564,11 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
     executeStoreInst(SI);
     return false;
   case Instruction::Call: 
+  case Instruction::Invoke:
     {
 	
       // Certain intrinsics manifest as calls but fold like ordinary instructions.
-      if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
+      if(Function* F = getCalledFunction(SI)) {
 	if(canConstantFoldCallTo(F))
 	  break;
       }
@@ -584,7 +585,6 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 	  // Call must have ended in unreachable.
 	  // Don't bother analysing the rest of this path.
 	  bail = true;
-	  return changed;
 
 	}
 
@@ -597,13 +597,18 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 
       }
 
+      // Invoke instructions are also block terminators.
+      if(inst_is<InvokeInst>(SI))
+	return tryEvaluateTerminator(SI, loadedVarargsHere);
+
     }
 
     // Fall through to try to get the call's return value
 
   }
 
-  changed |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
+  if(!bail)
+    changed |= tryEvaluate(ShadowValue(SI), inLoopAnalyser, loadedVarargsHere);
   return changed;
 
 }
@@ -695,12 +700,8 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 
 	ShadowInstruction* SI = &(BB->insts[j]);
 
-	if(inst_is<CallInst>(SI)) {
-
-	  if(InlineAttempt* IA = getInlineAttempt(SI))
-	    IA->releaseCallLatchStores();
-
-	}
+	if(InlineAttempt* IA = getInlineAttempt(SI))
+	  IA->releaseCallLatchStores();
 
       }
 
@@ -1021,7 +1022,7 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
     case Instruction::Call:
       {
 
-	if(Function* F = cast_inst<CallInst>(SI)->getCalledFunction()) {
+	if(Function* F = getCalledFunction(SI)) {
 	  if(canConstantFoldCallTo(F))
 	    break;
 	}

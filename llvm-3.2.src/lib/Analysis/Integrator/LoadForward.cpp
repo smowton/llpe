@@ -2868,6 +2868,9 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
 
 bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
+  // System calls cannot throw
+  release_assert(inst_is<CallInst>(SI));
+
   if(const IHPFunctionInfo* FI = GlobalIHP->getMRInfo(F)) {
 
     if(FI->NoModRef)
@@ -3041,7 +3044,11 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
     if(F->onlyReadsMemory())
       return;
 
-    // Otherwise do selective clobbering for annotated syscalls:
+    // The function might cause unwinding if it isn't explicitly annotated to the contrary:
+    if(!F->doesNotThrow())
+      SI->parent->IA->mayUnwind = true;
+
+    // Do selective clobbering for annotated syscalls:
 
     if(clobberSyscallModLocations(F, SI))
       return;
@@ -3059,8 +3066,13 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   bool clobbersMemory = true;
   
   InlineAsm* ASM;
-  if((ASM = dyn_cast<InlineAsm>(cast<CallInst>(SI->invar->I)->getCalledValue())) && !ASM->hasSideEffects())
+  if(inst_is<CallInst>(SI) && 
+     (ASM = dyn_cast_or_null<InlineAsm>(cast<CallInst>(SI->invar->I)->getCalledValue())) && 
+     !ASM->hasSideEffects()) {
+
     clobbersMemory = false;
+
+  }
 
   if(clobbersMemory) {
 
@@ -3228,6 +3240,7 @@ void IntegrationAttempt::inheritDiagnosticsFrom(IntegrationAttempt* Other) {
     barrierState = BARRIER_CHILD;
   if(Other->yieldState != BARRIER_NONE && yieldState == BARRIER_NONE)
     yieldState = BARRIER_CHILD;
+  mayUnwind |= Other->mayUnwind;
 
 }
 

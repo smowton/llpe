@@ -113,7 +113,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
       ShadowInstruction* I = &(BB->insts[j]);
 
-      if(inst_is<CallInst>(I)) {
+      if(inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) {
 
 	Function* F = getCalledFunction(I);
 	if(F) {

@@ -980,7 +980,10 @@ struct ShadowInstruction {
   }
 
   uint32_t getNumArgOperands() {
-    return getNumOperands() - 1;
+    if(isa<CallInst>(invar->I))
+      return getNumOperands() - 1;
+    else
+      return getNumOperands() - 3;
   }
 
   uint32_t getNumUsers() {

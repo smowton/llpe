@@ -773,7 +773,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
     store->A = new TrackedAlloc(I);
 
   }
-  else if(inst_is<CallInst>(I)) {
+  else if(inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) {
 
     if(InlineAttempt* IA = getInlineAttempt(I)) {
 

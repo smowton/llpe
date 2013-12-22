@@ -122,18 +122,55 @@ static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
 // Return true on change.
 bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
-  if (!(inst_is<BranchInst>(SI) || inst_is<SwitchInst>(SI))) {
-    
+  switch(SI->invar->I->getOpcode()) {
+  case Instruction::Br:
+  case Instruction::Switch:
+  case Instruction::Invoke:
+  case Instruction::Resume:
+    break;
+  default:
     return false;
-
   }
 
-  if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
+  if(inst_is<InvokeInst>(SI)) {
+
+    InlineAttempt* IA = getInlineAttempt(SI);
+
+    bool changed = false;
+
+    // !localStore indicates there were no live normal return paths.
+    if(SI->parent->localStore) {
+
+      changed |= !SI->parent->succsAlive[0];
+      SI->parent->succsAlive[0] = true;
+
+    }      
+
+    if((!IA) || IA->mayUnwind) {
+
+      changed |= !SI->parent->succsAlive[1];
+      SI->parent->succsAlive[1] = true;
+
+    }
+
+    return changed;
+    
+  }
+  else if(inst_is<ResumeInst>(SI)) {
+
+    bool changed = !mayUnwind;
+    mayUnwind = true;
+    return changed;
+
+  }
+  else if(BranchInst* BI = dyn_cast_inst<BranchInst>(SI)) {
+
     if(BI->isUnconditional()) {
       bool changed = !SI->parent->succsAlive[0];
       SI->parent->succsAlive[0] = true;
       return changed;
     }
+
   }
 
   // Both switches and conditional branches use operand 0 for the condition.
@@ -316,7 +353,9 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
   //errs() << "Leaving block " << SI->parent->invar->BB->getParent()->getName() << "/" << SI->parent->invar->BB->getName() << " with store " << SI->parent->localStore << " refcount " << SI->parent->localStore->refCount << "\n";
 
   // This block relinquishes its reference. Might free the store in e.g. an unreachable block.
-  SI->parent->derefStores();
+  
+  if(SI->parent->localStore)
+    SI->parent->derefStores();
 
   uint32_t uniqueSucc = 0xffffffff;
 

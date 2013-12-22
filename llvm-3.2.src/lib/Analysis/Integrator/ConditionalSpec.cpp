@@ -98,6 +98,13 @@ void InlineAttempt::setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_
 
 bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
 
+  if(isa<InvokeInst>(CurrBB->BB->getTerminator())) {
+
+    if(CurrBB->succIdxs[1] == SuccBB->idx)
+      return true;
+
+  }
+
   InlineAttempt* MyRoot = getFunctionRoot();
   IATargetInfo* TI = MyRoot->targetCallInfo;
 
@@ -858,6 +865,8 @@ bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
 
 }
 
+
+
 bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
 
   if(targetCallInfo && !targetCallInfo->mayReachTarget.count(BBIdx)) {  
@@ -870,8 +879,106 @@ bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
     }    
 
   }
-  
+
   return false;
+
+}
+
+bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
+					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
+
+  ShadowBBInvar* predBBI = getBBInvar(predBlockIdx);
+  
+  PeelAttempt* LPA;
+
+  if(predBBI->naturalScope != L && 
+     ((!L) || L->contains(predBBI->naturalScope)) &&
+     (LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope))) &&
+     LPA->isEnabled() && LPA->isTerminated()) {
+
+    bool ret = false;
+
+    for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
+      ret |= LPA->Iterations[i]->gatherInvokeBreaks(predBlockIdx, BBIdx, predOp, predV, newPreds, newEdgeSources);
+
+    return ret;
+
+  }
+  else {
+
+    // Edge 0 is the ordinary continuation; it leads to unspecialised code (via a test) if the call can fail and is emitted OOL,
+    // or via the call's failedReturnBlock if it is emitted inline.
+    // Edge 1 is the exceptional continuation, and always leads to unspecialised code if it is live.
+
+    if(edgeIsDead(predBBI, getBBInvar(BBIdx)))
+      return false;
+
+    ShadowBB* BB = getBB(predBlockIdx);
+    BasicBlock* predBlock = 0;
+
+    if(BBIdx == predBBI->succIdxs[0]) {
+      
+      if(InlineAttempt* IA = getInlineAttempt(&BB->insts.back())) {
+	
+	if(IA->hasFailedReturnPath()) {
+
+	  if(IA->mustCommitOutOfLine())
+	    predBlock = BB->committedBlocks.back().breakBlock;
+	  else
+	    predBlock = IA->failedReturnBlock;
+
+	}
+	
+      }
+
+    }
+    else if(BBIdx == predBBI->succIdxs[1]) {
+
+      predBlock = BB->committedBlocks.back().breakBlock;
+
+    }
+
+    if(predBlock) {
+
+      if(newPreds) {
+	Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, predBlock->getTerminator());
+	release_assert(specV);
+	newPreds->push_back(std::make_pair(specV, predBlock));
+      }
+      else if(newEdgeSources) {
+	newEdgeSources->push_back(std::make_pair(predBlock, this));
+      }
+
+    }
+    
+    return !!predBlock;
+    
+  }
+
+}
+
+bool IntegrationAttempt::hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo) {
+
+  return gatherInvokeBreaks(breakFrom, breakTo, ShadowInstIdx(), 0, 0, 0);
+
+}
+
+void InlineAttempt::gatherSpecToUnspecEdges(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
+					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>& newPreds) {
+
+  if(isSpecToUnspecEdge(predBlockIdx, BBIdx)) {
+    
+    BasicBlock* specPred = getBB(predBlockIdx)->committedBlocks.back().breakBlock;
+    Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, specPred->getTerminator());
+    release_assert(specV);
+    newPreds.push_back(std::make_pair(specV, specPred));
+    
+  }
+  else if(isa<InvokeInst>(getBBInvar(BBIdx)->BB->getTerminator())) {
+
+    gatherInvokeBreaks(predBlockIdx, BBIdx, predOp, predV, &newPreds, 0);
+
+  }
 
 }
 
@@ -1123,10 +1230,12 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
   // * If an incoming value is only defined in specialised code, 
   //     use it: it must dominate the sending block.
   // * If an incoming value is defined both ways then if this is a spec-to-unspec merge point 
-  //     (i.e. this is an ignored block), merge both.
+  //     (i.e. this is an ignored block, or has invoke predecessors that fail), merge both.
   // * Otherwise use just the unspec version.
   // * If this block has cross-edges at the top (due to path condition checks), 
   //     merge in the companion of this PHI node on each of those edges.
+  //     Note this case does not apply to failing invokes, which branch to failed code
+  //     BEFORE the specialised version of this block's phi nodes.
 
   // Note that if we don't have a companion BB then no augmentation is necessary: we are only
   // called this way regarding blocks accessible from within a loop, whose headers are not merge points.
@@ -1167,38 +1276,14 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
       ShadowInstIdx predOp = PNInfo->operandIdxs[i];
       Value* predV = OrigPN->getIncomingValue(i);
 
-      BasicBlock* specPred;
-      if(isSpecToUnspecEdge(predBlockIdx, BBIdx))
-	specPred = getBB(predBlockIdx)->committedBlocks.back().breakBlock;
-      else
-	specPred = 0;
+      gatherSpecToUnspecEdges(predBlockIdx, BBIdx, predOp, predV, newPreds);
 
-      BasicBlock* unspecPred;
-      if(failedBlocks[predBlockIdx].size())
-	unspecPred = failedBlocks[predBlockIdx].back().first;
-      else
-	unspecPred = 0;
+      if(failedBlocks[predBlockIdx].size()) {
 
-      if(unspecPred) {
-
-	bool isMerge = isSpecToUnspecEdge(predBlockIdx, BBIdx);
-
-	if(isMerge) {
-	  Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, specPred->getTerminator());
-	  release_assert(specV && specPred);
-	  newPreds.push_back(std::make_pair(specV, specPred));
-	}
-
+	BasicBlock* unspecPred = failedBlocks[predBlockIdx].back().first;
 	Value* unspecV = getUnspecValue(predOp.blockIdx, predOp.instIdx, predV, unspecPred, unspecPred->getTerminator());
 	release_assert(unspecV);
 	newPreds.push_back(std::make_pair(unspecV, unspecPred));
-
-      }
-      else if(specPred) {
-
-	Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, specPred->getTerminator());
-	release_assert(specV);
-	newPreds.push_back(std::make_pair(specV, specPred));
 
       }
 
@@ -1391,6 +1476,18 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	    else if(pass->countPathConditionsAtBlockStart(thisBBI, this))
 	      loopHasBreaks = true;
 
+	    // Do invoke instructions within the loop cause break edges on an existing block boundary?
+	    else if(isa<InvokeInst>(thisBBI->BB->getTerminator())) {
+
+	      if(thisBBI->naturalScope->contains(getBBInvar(thisBBI->succIdxs[0])->naturalScope) &&
+		 hasInvokeBreaks(thisBBI->idx, thisBBI->succIdxs[0]))
+		loopHasBreaks = true;
+	      else if(thisBBI->naturalScope->contains(getBBInvar(thisBBI->succIdxs[1])->naturalScope) &&
+		      hasInvokeBreaks(thisBBI->idx, thisBBI->succIdxs[1]))
+		loopHasBreaks = true;
+
+	    }
+
 	  }
 
 	  Instruction* PreheaderInst = predBlocks[LInfo->preheaderIdx - OrigSI.parent->idx].first;
@@ -1456,7 +1553,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       
       // Create a PHI merge at the top of this block if (a) there are unspec->spec edges
       // due to ignored blocks, (b) there are path condition breaks to top of block,
-      // or (c) unspecialised predecessor blocks are using different versions of the 
+      // (c) there are in-loop invoke instructions branching here,
+      // or (d) unspecialised predecessor blocks are using different versions of the 
       // instruction in question. Also always insert a merge at the loop header if we
       // get to here, as some disagreement is sure to arise between the preheader->header
       // and latch->header edges.
@@ -1472,7 +1570,21 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
       if(!shouldMergeHere) {
 
-	// Case (c): do predecesors disagree about which version of the instruction they're using?
+	// Case (c): invoke breaks, either due to checked invoke instruction
+	// or due to exceptional control flow that leads here.
+      
+	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+
+	  if(hasInvokeBreaks(thisBBI->predIdxs[j], thisBBI->idx))
+	    shouldMergeHere = true;
+
+	}
+
+      }
+
+      if(!shouldMergeHere) {
+
+	// Case (d): do predecesors disagree about which version of the instruction they're using?
 
 	Instruction* UniqueIncoming = 0;
 	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
@@ -1500,19 +1612,20 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> specPreds;
 	SmallVector<std::pair<BasicBlock*, Instruction*>, 4> unspecPreds;
 
-	if(isSpecToUnspec) {
+	// Some specialised predecessors branch straight to unspec code.
+	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
 
-	  // Some specialised predecessors branch straight to unspec code.
-	  for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	  uint32_t pred = thisBBI->predIdxs[j];
+	  ShadowBBInvar* predBBI = getBBInvar(pred);
 
-	    uint32_t pred = thisBBI->predIdxs[j];
-
-	    if(isSpecToUnspecEdge(pred, thisBlockIdx))
-	      specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().breakBlock, this));
-
-	  }
+	  if(isSpecToUnspec && isSpecToUnspecEdge(pred, thisBlockIdx))
+	    specPreds.push_back(std::make_pair(getBB(pred)->committedBlocks.back().breakBlock, this));
+	  
+	  if(isa<InvokeInst>(predBBI->BB->getTerminator()))
+	    gatherInvokeBreaks(predBBI->idx, thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
 
 	}
+
 	if(nCondsHere) {
 
 	  // Adds to specPreds for each loop iteration that can break here:
@@ -1790,7 +1903,10 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
 void IntegrationAttempt::getLocalSplitInsts(ShadowBB* BB, bool* splitInsts) {
 
-  for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
+  // Stop before the terminator because invoke instructions are treated specially
+  // and other kinds of terminator cannot be split points.
+
+  for(uint32_t i = 0, ilim = BB->insts.size() - 1; i != ilim; ++i) {
 
     ShadowInstruction* SI = &BB->insts[i];
     InlineAttempt* IA;
@@ -2172,9 +2288,9 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
   if(it->second == 0) {
 
     // Possible predecessors: failing path conditions from a specialised partner,
+    // failing invoke instructions from a specialised predecessor,
     // specialised blocks that branch direct to unspecialised code, and an unspecialised predecessor.
-    // These inserted / augmented PHIs cannot draw from loop iterations above us,
-    // as loop iterations only make mid-block breaks due to failing tests.
+
     BasicBlock::iterator BI = skipMergePHIs(it->first->begin());
     BasicBlock::iterator PostPHIBI = commitFailedPHIs(it->first, BI, idx);
 
@@ -2210,6 +2326,10 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
       Instruction* failedI = BBI->insts[failedInst].I;
 
       SmallVector<std::pair<Value*, BasicBlock*>, 4> specPreds;
+
+      // Splits at this point cannot be caused by invoke instructions, because they are
+      // always terminators and this split is not at the top of the block.
+
       if(isa<CallInst>(failedI)) {
 	if(!failedI->getType()->isVoidTy())
 	  collectCallFailingEdges(BBI, failedInst, BBI, failedInst, specPreds);

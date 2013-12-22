@@ -76,8 +76,7 @@ public:
 
     }
 
-    CallInst* CI;
-    if((CI = dyn_cast_inst<CallInst>(UserI)) && !isa<MemIntrinsic>(CI)) {
+    if((inst_is<CallInst>(UserI) || inst_is<InvokeInst>(UserI)) && !inst_is<MemIntrinsic>(UserI)) {
 
       if(UserI->parent->IA->isResolvedVFSCall(UserI)) {
 
@@ -96,7 +95,7 @@ public:
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(UserI);
       if((!IA) || (!IA->isEnabled()) || IA->commitsOutOfLine()) {
-	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(*CI) << "\n");
+	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(UserI) << "\n");
 	maybeLive = true;
 	return;
       }
@@ -112,8 +111,10 @@ public:
 
 	if(CalledF) {
 
+	  ImmutableCallSite ICS(UserI->invar->I);
+
 	  Function::arg_iterator it = CalledF->arg_begin();
-	  for(unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
+	  for(unsigned i = 0; i < ICS.arg_size(); ++i) {
 
 	    if(UserI->getCallArgOperand(i) == V) {
 
@@ -207,7 +208,7 @@ static bool isAllocationInstruction(ShadowValue V) {
 
 bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
-  if(inst_is<CallInst>(I)) {
+  if(inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) {
 
     if(getInlineAttempt(I))
       return true;
@@ -532,6 +533,9 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 	GlobalIHP->indirectDIEUsers.find(I);
       if(findit != GlobalIHP->indirectDIEUsers.end()) {
 
+	return false;
+
+	/*
 	// First check if users have already been committed:
 	release_assert(I->i.PB && 
 		       isa<ImprovedValSetSingle>(I->i.PB) && 
@@ -576,6 +580,8 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 	  }
 
 	}
+
+	*/
 
       }
 
@@ -674,7 +680,7 @@ void IntegrationAttempt::runDIE() {
 
       bool delOrConst = willBeDeleted(ShadowValue(SI));
 
-      if(inst_is<CallInst>(SI)) {
+      if(inst_is<CallInst>(SI) || inst_is<InvokeInst>(SI)) {
 
 	if((!delOrConst) && valueIsDead(ShadowValue(SI)))
 	  SI->dieStatus |= INSTSTATUS_DEAD; 
@@ -736,12 +742,8 @@ void IntegrationAttempt::gatherIndirectUsersInLoop(const Loop* L) {
     
     for(uint32_t i = 0, ilim = BB->insts.size(); i != ilim; ++i) {
 
-      InlineAttempt* IA;
-      if(inst_is<CallInst>(&BB->insts[i]) && (IA = getInlineAttempt(&BB->insts[i]))) {
-
+      if(InlineAttempt* IA = getInlineAttempt(&BB->insts[i]))
 	IA->gatherIndirectUsers();
-
-      }
 
       if(BB->insts[i].i.PB)
 	noteIndirectUse(ShadowValue(&BB->insts[i]), BB->insts[i].i.PB);

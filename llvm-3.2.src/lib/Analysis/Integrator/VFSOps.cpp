@@ -251,6 +251,10 @@ FDGlobalState::FDGlobalState(bool _isFifo) : SI(0), isCommitted(false), Committe
 
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
+  // No currently-accepted VFS call can be invoked.
+  if(!inst_is<CallInst>(SI))
+    return false;
+
   if(Function *SysOpen = F.getParent()->getFunction("open")) {
     const FunctionType *FT = SysOpen->getFunctionType();
     if (FT->getNumParams() == 2 && FT->getReturnType()->isIntegerTy(32) &&
@@ -443,6 +447,10 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
 // Return value: is this a VFS call (regardless of whether we resolved it successfully)
 bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
+  // No currently-accepted VFS call can be invoked.
+  if(!inst_is<CallInst>(SI))
+    return false;
+  
   Function* F = getCalledFunction(SI);
   if(!F)
     return false;

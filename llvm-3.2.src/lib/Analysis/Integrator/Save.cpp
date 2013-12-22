@@ -371,48 +371,50 @@ void IntegrationAttempt::commitCFG() {
     for(uint32_t j = 0; j < BB->insts.size(); ++j) {
 
       ShadowInstruction* SI = &(BB->insts[j]);
-      if(inst_is<CallInst>(SI)) {
-	
-	if(InlineAttempt* IA = getInlineAttempt(SI)) {
+      if(InlineAttempt* IA = getInlineAttempt(SI)) {
 
-	  if(IA->isEnabled()) {
+	if(IA->isEnabled()) {
 
-	    IA->activeCaller = SI;
-	    IA->commitCFG();
+	  IA->activeCaller = SI;
+	  IA->commitCFG();
 
-	    std::string Pref;
-	    if(VerboseNames)
-	      Pref = IA->getCommittedBlockPrefix();
+	  std::string Pref;
+	  if(VerboseNames)
+	    Pref = IA->getCommittedBlockPrefix();
 
-	    if(!IA->commitsOutOfLine()) {
+	  if(!IA->commitsOutOfLine()) {
 
-	      // Adopt the return block:
-	      BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
+	    // Adopt the return block:
+	    BB->committedBlocks.push_back(CommittedBlock(IA->returnBlock, IA->returnBlock, j+1));
 
-	      // Direct the call to the appropriate fail block:
-	      if(IA->failedReturnBlock) {
+	    // Direct the call to the appropriate fail block:
+	    if(IA->failedReturnBlock) {
 
-		BasicBlock* targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
-		BranchInst::Create(targetBlock, IA->failedReturnBlock);
-
-	      }
-
-	    }
-	    else {
-
-	      // Requires a break afterwards if the target function might branch onto a failed path.
-	      if(IA->hasFailedReturnPath()) {
-
-		BasicBlock* newBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
-		BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
-
-	      }
+	      BasicBlock* targetBlock;
+	      if(inst_is<CallInst>(SI))
+		targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, j + 1);
+	      else
+		targetBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[1], 0);
+	      BranchInst::Create(targetBlock, IA->failedReturnBlock);
 
 	    }
-
-	    continue;
 
 	  }
+	  else {
+
+	    // Requires a break afterwards if the target function might branch onto a failed path.
+	    // Invoke instructions are a bit special in this respect, as the new block will only
+	    // contain a failure check.
+	    if(IA->hasFailedReturnPath()) {
+
+	      BasicBlock* newBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
+	      BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
+
+	    }
+
+	  }
+
+	  continue;
 
 	}
 
@@ -442,6 +444,8 @@ void IntegrationAttempt::commitCFG() {
       // then insert a break for a check.
       // This path also handles path conditions that are checked as they are defined,
       // rather than at the top of a block that may be remote from the definition site.
+      // Thankfully for my sanity, having your return value checked and being committed
+      // as a specialised call are mutually exclusive.
       if(requiresRuntimeCheck(SI, true) && SI->needsRuntimeCheck != RUNTIME_CHECK_READ_LLIOWD) {
 
 	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
@@ -838,9 +842,79 @@ void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
 }
 
+Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32_t idx, ConstantInt*& failValue, BasicBlock*& failBlock) {
+
+  ShadowBB* BB = I->parent;
+
+  if(I->invar->operandIdxs[idx].instIdx == INVALID_INSTRUCTION_IDX && 
+     I->invar->operandIdxs[idx].blockIdx != INVALID_BLOCK_IDX) {
+
+    // Argument is a BB.
+    bool markUnreachable = false;
+    BasicBlock* SBB = getSuccessorBB(BB, I->invar->operandIdxs[idx].blockIdx, markUnreachable);
+
+    release_assert((SBB || markUnreachable) && "Failed to get successor BB (2)");
+
+    if(markUnreachable) {
+
+      // Create an unreachable BB to branch to:
+      BasicBlock* UBB = createBasicBlock(I->invar->I->getContext(), VerboseNames ? "synth-unreachable" : "", 
+					 getFunctionRoot()->CommitF);
+      new UnreachableInst(UBB->getContext(), UBB);
+      return UBB;
+
+    }
+    else {
+	  
+      if(pass->verbosePCs && shouldIgnoreEdge(BB->invar, getBBInvar(I->invar->operandIdxs[idx].blockIdx))) {
+
+	if(inst_is<SwitchInst>(I)) {
+
+	  if(idx == 1) {
+	    // Default target
+	    failValue = 0;
+	  }
+	  else {
+	    // Switch value comes before this target block.
+	    failValue = cast<ConstantInt>(getSingleConstant(I->getOperand(idx - 1)));
+	  }
+
+	}
+	else {
+
+	  failValue = 0;
+
+	}
+	      
+	failBlock = SBB;
+
+	BasicBlock* breakBlock = BB->committedBlocks.back().breakBlock;
+	release_assert(breakBlock && "Should have a break block");
+	return breakBlock;
+
+      }
+      else {
+
+	return SBB;
+
+      }
+
+    }
+
+  }
+  else { 
+
+    ShadowValue op = I->getOperand(idx);
+    Value* opV = getCommittedValue(op);
+    return opV;
+
+  }
+
+}
+
 void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
-  if(inst_is<UnreachableInst>(I)) {
+  if(inst_is<UnreachableInst>(I) || inst_is<ResumeInst>(I)) {
 
     emitInst(BB, I, emitBB);
     return;
@@ -962,74 +1036,20 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     Instruction* newTerm = I->invar->I->clone();
     emitBB->getInstList().push_back(newTerm);
 
-    bool isSwitch = isa<SwitchInst>(newTerm);
     BasicBlock* defaultSwitchTarget = 0;
     
     // Like emitInst, but can emit BBs.
     for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
-      if(I->invar->operandIdxs[i].instIdx == INVALID_INSTRUCTION_IDX && I->invar->operandIdxs[i].blockIdx != INVALID_BLOCK_IDX) {
+      ConstantInt* switchVal = 0;
+      BasicBlock* switchBlock = 0;
+      Value* replVal = getCommittedValueOrBlock(I, i, switchVal, switchBlock);
+      newTerm->setOperand(i, replVal);
 
-	// Argument is a BB.
-	bool markUnreachable = false;
-	BasicBlock* SBB = getSuccessorBB(BB, I->invar->operandIdxs[i].blockIdx, markUnreachable);
-
-	release_assert((SBB || markUnreachable) && "Failed to get successor BB (2)");
-
-	if(markUnreachable) {
-
-	  // Create an unreachable BB to branch to:
-	  BasicBlock* UBB = createBasicBlock(emitBB->getContext(), VerboseNames ? "synth-unreachable" : "", emitBB->getParent());
-	  new UnreachableInst(UBB->getContext(), UBB);
-	  newTerm->setOperand(i, UBB);
-
-	}
-	else {
-	  
-	  if(pass->verbosePCs && shouldIgnoreEdge(BB->invar, getBBInvar(I->invar->operandIdxs[i].blockIdx))) {
-	  
-	    ConstantInt* switchVal;
-	    if(isSwitch) {
-
-	      if(i == 1) {
-		// Default target
-		switchVal = 0;
-		defaultSwitchTarget = SBB;
-	      }
-	      else {
-		// Switch value comes before this target block.
-		switchVal = cast<ConstantInt>(newTerm->getOperand(i - 1));
-	      }
-
-	    }
-	    else {
-
-	      switchVal = 0;
-
-	    }
-	      
-	    breakSuccessors.push_back(std::make_pair(switchVal, SBB));
-	    BasicBlock* breakBlock = BB->committedBlocks.back().breakBlock;
-	    release_assert(breakBlock && "Should have a break block");
-	    newTerm->setOperand(i, breakBlock);
-
-	  }
-	  else {
-
-	    newTerm->setOperand(i, SBB);
-
-	  }
-
-	}
-
-      }
-      else { 
-
-	ShadowValue op = I->getOperand(i);
-	Value* opV = getCommittedValue(op);
-	newTerm->setOperand(i, opV);
-
-      }
+      if(switchVal || switchBlock)
+	breakSuccessors.push_back(std::make_pair(switchVal, switchBlock));
+      if(inst_is<SwitchInst>(I) && i == 1)
+	defaultSwitchTarget = cast<BasicBlock>(replVal);
 
     }
 
@@ -1053,7 +1073,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       }
       else {
 
-	release_assert(isSwitch);
+	release_assert(inst_is<SwitchInst>(I));
 	
 	// If the default does not break, use the first target as a default.
 	if(!defaultSwitchTarget)
@@ -1124,7 +1144,10 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   BasicBlock* emitBB = emitBBIter->specBlock;
 
-  CallInst* CI = cast_inst<CallInst>(I);
+  // No VFS invokes.
+  CallInst* CI = dyn_cast_inst<CallInst>(I);
+  if(!CI)
+    return false;
 
   {
     DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(I);
@@ -1382,10 +1405,10 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	// Build a call to IA->CommitF with same attributes but perhaps less arguments.
 	// Most of this code borrowed from Transforms/IPO/DeadArgumentElimination.cpp
 
-	CallInst* OldCI = cast_inst<CallInst>(I);
+	ImmutableCallSite OldCI(I->invar->I);
 
 	SmallVector<AttributeWithIndex, 8> AttributesVec;
-	const AttrListPtr &CallPAL = OldCI->getAttributes();
+	const AttrListPtr &CallPAL = OldCI.getAttributes();
 
 	Attributes FnAttrs = CallPAL.getFnAttributes();
 	  
@@ -1393,7 +1416,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	uint32_t ilim;
 	if(FType->isVarArg())
-	  ilim = OldCI->getNumArgOperands();
+	  ilim = OldCI.arg_size();
 	else
 	  ilim = FType->getNumParams();
 
@@ -1412,7 +1435,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  }
 	  else {
 	    // Vararg: cast to old callinst arg type.
-	    needTy = OldCI->getArgOperand(i)->getType();
+	    needTy = OldCI.getArgument(i)->getType();
 	  }
 	  
 	  Value* opV;
@@ -1434,14 +1457,30 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	AttrListPtr NewCallPAL = AttrListPtr::get(emitBB->getContext(), AttributesVec);
 
 	release_assert(IA->CommitF);
-	CallInst* NewCI = cast<CallInst>(CallInst::Create(IA->CommitF, Args, "", emitBB));
-	NewCI->setCallingConv(OldCI->getCallingConv());
-	NewCI->setAttributes(NewCallPAL);
-	if(OldCI->isTailCall())
-	  NewCI->setTailCall();
-	NewCI->setDebugLoc(OldCI->getDebugLoc());
+	Instruction* NewI;
+	if(inst_is<CallInst>(I))
+	  NewI = CallInst::Create(IA->CommitF, Args, "", emitBB);
+	else {
+	  ++emitBBIter;
+	  BasicBlock* exnBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[1], 0);
+	  BasicBlock* normalBlock = emitBBIter->specBlock;
+	  NewI = InvokeInst::Create(IA->CommitF, normalBlock, exnBlock, Args, "", emitBB);
+	  emitBB = emitBBIter->specBlock;
+	}
+
+	CallSite NewCI(NewI);
+	 
+	NewCI.setCallingConv(OldCI.getCallingConv());
+	NewCI.setAttributes(NewCallPAL);
+	
+	if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
+	  if(CI->isTailCall())
+	    cast<CallInst>(NewI)->setTailCall();
+	}
+
+	NewI->setDebugLoc(I->invar->I->getDebugLoc());
 	  
-	I->committedVal = NewCI;
+	I->committedVal = NewI;
 
 	if(IA->hasFailedReturnPath()) {
 
@@ -1450,19 +1489,42 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  Value* CallFailed;
 	  if(IA->F.getFunctionType()->getReturnType()->isVoidTy()) {
 
-	    CallFailed = NewCI;
+	    CallFailed = NewI;
 
 	  }
 	  else {
 
-	    CallFailed = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(1), VerboseNames ? "retfailflag" : "", emitBB);
-	    I->committedVal = ExtractValueInst::Create(NewCI, ArrayRef<unsigned>(0), VerboseNames ? "ret" : "", emitBB);
+	    CallFailed = ExtractValueInst::Create(NewI, ArrayRef<unsigned>(1), VerboseNames ? "retfailflag" : "", emitBB);
+	    I->committedVal = ExtractValueInst::Create(NewI, ArrayRef<unsigned>(0), VerboseNames ? "ret" : "", emitBB);
 	    
 	  }
 
-	  ++emitBBIter;
-	  BasicBlock* successTarget = emitBBIter->specBlock;
-	  BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx + 1);
+	  BasicBlock* successTarget;
+	  BasicBlock* failTarget;
+
+	  if(inst_is<CallInst>(I)) {
+
+	    ++emitBBIter;
+	    successTarget = emitBBIter->specBlock;
+	    failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx + 1);
+
+	  }
+	  else {
+	    
+	    // emititer already bumped above.
+	    bool markUnreachable = false;
+	    successTarget = getSuccessorBB(BB, BB->invar->succIdxs[0], markUnreachable);
+	    if(markUnreachable) {
+	      successTarget = createBasicBlock(emitBB->getContext(), 
+					       VerboseNames ? "invoke-unreachable" : "", 
+					       emitBB->getParent());
+	      new UnreachableInst(emitBB->getContext(), successTarget);
+	    }
+
+	    failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[0], 0);
+
+	  }
+
 	  BranchInst::Create(successTarget, failTarget, CallFailed, emitBB);
 
 	}
@@ -1504,6 +1566,29 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  I->committedVal = UndefValue::get(IA->F.getFunctionType()->getReturnType());
 	}
 
+	// If it's an invoke instruction then this is the terminator!
+	// If it commits out of line, then it doesn't unwind but might fail (deviate from specialisation
+	// assumptions). The successful and failed return blocks should branch to the invoke's
+	// non-exception successor.
+
+	if(inst_is<InvokeInst>(I)) {
+	  
+	  bool markUnreachable = false;
+	  BasicBlock* SBB = getSuccessorBB(BB, BB->invar->succIdxs[0], markUnreachable);
+	  if(markUnreachable)
+	    new UnreachableInst(IA->returnBlock->getContext(), IA->returnBlock);
+	  else
+	    BranchInst::Create(SBB, IA->returnBlock);
+	  
+	  if(IA->failedReturnBlock) {
+
+	    BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[0], 0);
+	    BranchInst::Create(failTarget, IA->failedReturnBlock);
+
+	  }
+
+	}
+	
       }
 
       return;
@@ -1530,16 +1615,38 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   if(isa<AllocaInst>(newI))
     getFunctionRoot()->emittedAlloca = true;
 
-  if(isa<CallInst>(newI))
-    cast<CallInst>(newI)->setTailCall(false);
+  if(CallInst* CI = dyn_cast<CallInst>(newI))
+    CI->setTailCall(false);
 
-  // Normal instruction: no BB arguments, and all args have been committed already.
+  BasicBlock* uniqueFailBlock = 0;
+
+  // Normal instruction: no BB arguments apart from invoke instructions, 
+  // and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
-    ShadowValue op = I->getOperand(i);
-    Value* opV = getCommittedValue(op);
+    ConstantInt* ignFailValue = 0;
+    BasicBlock* failBlock = 0;
+
+    Value* opV = getCommittedValueOrBlock(I, i, ignFailValue, failBlock);
     Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
+
+    if(failBlock) {
+
+      if(uniqueFailBlock)
+	release_assert(0 && "Case not covered yet: invoke with both arms ignored");
+
+    }
+
+    uniqueFailBlock = failBlock;
+
+  }
+
+  if(uniqueFailBlock) {
+
+    // Invoke instruction heading down failed path. Landingpad instruction means
+    // that the breakBlock should actually be the target block.
+    release_assert(0 && "TODO: exceptions + verbose PCs");
 
   }
 
@@ -2066,7 +2173,11 @@ static bool isPureCall(ShadowInstruction* SI) {
 
 void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB) {
 
-  if(inst_is<CallInst>(I) && (!inst_is<MemIntrinsic>(I)) && !isPureCall(I)) {
+  bool useCallPath = (inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) && 
+    (!inst_is<MemIntrinsic>(I)) && 
+    !isPureCall(I);
+
+  if(useCallPath) {
     emitCall(BB, I, emitBB);
     if(I->committedVal)
       return;
@@ -2096,7 +2207,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
   }
 
   // Already emitted calls above:
-  if(inst_is<CallInst>(I) && (!inst_is<MemIntrinsic>(I)) && !isPureCall(I))
+  if(useCallPath)
     return;
 
   // We'll emit an instruction. Is it special?

@@ -109,6 +109,7 @@ static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
 static cl::opt<bool> SingleThreaded("int-single-threaded");
 static cl::opt<bool> OmitChecks("int-omit-checks");
+static cl::list<std::string> SplitFunctions("int-force-split");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2603,8 +2604,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     BasicBlock::iterator TestBI = BB->begin();
     std::advance(TestBI, instIdx);
-    if(!isa<CallInst>(TestBI)) {
-      errs() << "int-target-stack: index does not refer to a CallInst\n";
+    if((!isa<CallInst>(TestBI)) && (!isa<InvokeInst>(TestBI))) {
+      errs() << "int-target-stack: index does not refer to a call or invoke\n";
       exit(1);
     }
     
@@ -2838,6 +2839,20 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     }
 
     blacklistedFunctions.insert(IgnoreF);
+
+  }
+
+  for(cl::list<std::string>::iterator it = SplitFunctions.begin(), itend = SplitFunctions.end(); it != itend; ++it) {
+
+    Function* SplitF = F.getParent()->getFunction(*it);
+    if(!SplitF) {
+
+      errs() << "int-force-split: no such function " << *it << "\n";
+      exit(1);
+
+    }
+
+    splitFunctions.insert(SplitF);
 
   }
 

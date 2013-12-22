@@ -2253,7 +2253,7 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
       AllocData* AD = getAllocData(NewIVS->Values[0].V);
       if(AD->allocValue.isInst() && !AD->isCommitted) {
 	std::vector<std::pair<ShadowValue, uint32_t> >& Users = GlobalIHP->indirectDIEUsers[AD->allocValue.getInst()];
-	Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
+	//Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
       }
 
     }
@@ -2262,7 +2262,7 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
       FDGlobalState& FDS = pass->fds[NewIVS->Values[0].V.getFd()];
       if(!FDS.isCommitted) {
 	std::vector<std::pair<ShadowValue, uint32_t> >& Users = GlobalIHP->indirectDIEUsers[FDS.SI];
-	Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
+	//Users.push_back(std::make_pair(V, V.getCtx()->SeqNumber));
       }
       
     }
