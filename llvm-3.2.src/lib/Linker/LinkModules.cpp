@@ -54,7 +54,12 @@ class TypeMapTy : public ValueMapTypeRemapper {
   /// destination modules who are getting a body from the source module.
   SmallPtrSet<StructType*, 16> DstResolvedOpaqueTypes;
 
+  SmallPtrSet<StructType*, 32>& DstNamedStructTypes;
+
 public:
+
+  TypeMapTy(SmallPtrSet<StructType*, 32>& S) : DstNamedStructTypes(S) {}
+
   /// addTypeMapping - Indicate that the specified type in the destination
   /// module is conceptually equivalent to the specified type in the source
   /// module.
@@ -331,13 +336,19 @@ Type *TypeMapTy::getImpl(Type *Ty) {
   StructType *STy = cast<StructType>(Ty);
   
   // If the type is opaque, we can just use it directly.
-  if (STy->isOpaque())
+  if (STy->isOpaque()) {
+    // A named structure type from src module is used.
+    // Track named structure types in the dest module.
+    DstNamedStructTypes.insert(STy);
     return *Entry = STy;
+  }
   
   // Otherwise we create a new type and resolve its body later.  This will be
   // resolved by the top level of get().
   SrcDefinitionsToResolve.push_back(STy);
   StructType *DTy = StructType::create(STy->getContext());
+  DstNamedStructTypes.insert(DTy);
+  // Track new type:
   DstResolvedOpaqueTypes.insert(DTy);
   return *Entry = DTy;
 }
@@ -375,12 +386,16 @@ namespace {
     
     // Vector of functions to lazily link in.
     std::vector<Function*> LazilyLinkFunctions;
+
+    // Reference to a set tracking the named structure types in the composite module.
+    // ModuleLinker (via TypeMapTy) must keep it up to date.
+    SmallPtrSet<StructType*, 32>& DstNamedStructTypes;
     
   public:
     std::string ErrorMsg;
     
-    ModuleLinker(Module *dstM, Module *srcM, unsigned mode)
-      : DstM(dstM), SrcM(srcM), Mode(mode) { }
+    ModuleLinker(Module *dstM, Module *srcM, unsigned mode, SmallPtrSet<StructType*, 32>& nST)
+      : DstM(dstM), SrcM(srcM), TypeMap(nST), Mode(mode), DstNamedStructTypes(nST) { }
     
     bool run();
     
@@ -601,10 +616,14 @@ void ModuleLinker::computeTypeMapping() {
   SmallPtrSet<StructType*, 32> SrcStructTypesSet(SrcStructTypes.begin(),
                                                  SrcStructTypes.end());
 
+  /*
   TypeFinder DstStructTypes;
   DstStructTypes.run(*DstM, true);
   SmallPtrSet<StructType*, 32> DstStructTypesSet(DstStructTypes.begin(),
                                                  DstStructTypes.end());
+  */
+  // The dest module set of named struct types starts empty and is kept up to
+  // date incrementally, so no need to search each time.
 
   for (unsigned i = 0, e = SrcStructTypes.size(); i != e; ++i) {
     StructType *ST = SrcStructTypes[i];
@@ -635,7 +654,7 @@ void ModuleLinker::computeTypeMapping() {
       // we prefer to take the '%C' version. So we are then left with both
       // '%C.1' and '%C' being used for the same types. This leads to some
       // variables using one type and some using the other.
-      if (!SrcStructTypesSet.count(DST) && DstStructTypesSet.count(DST))
+      if (!SrcStructTypesSet.count(DST) && DstNamedStructTypes.count(DST))
         TypeMap.addTypeMapping(DST, ST);
   }
 
@@ -1328,8 +1347,17 @@ bool ModuleLinker::run() {
 /// the problem.  Upon failure, the Dest module could be in a modified state,
 /// and shouldn't be relied on to be consistent.
 bool Linker::LinkModules(Module *Dest, Module *Src, unsigned Mode, 
-                         std::string *ErrorMsg) {
-  ModuleLinker TheLinker(Dest, Src, Mode);
+                         std::string *ErrorMsg, SmallPtrSet<StructType*, 32>* DestStructTypes) {
+
+  SmallPtrSet<StructType*, 32> FreshStructTypes;
+  if(!DestStructTypes) {
+    TypeFinder DstStructTypeFinder;
+    DstStructTypeFinder.run(*Dest, true);
+    FreshStructTypes.insert(DstStructTypeFinder.begin(), DstStructTypeFinder.end());
+    DestStructTypes = &FreshStructTypes;
+  }
+
+  ModuleLinker TheLinker(Dest, Src, Mode, *DestStructTypes);
   if (TheLinker.run()) {
     if (ErrorMsg) *ErrorMsg = TheLinker.ErrorMsg;
     return true;
@@ -1346,7 +1374,7 @@ LLVMBool LLVMLinkModules(LLVMModuleRef Dest, LLVMModuleRef Src,
                          LLVMLinkerMode Mode, char **OutMessages) {
   std::string Messages;
   LLVMBool Result = Linker::LinkModules(unwrap(Dest), unwrap(Src),
-                                        Mode, OutMessages? &Messages : 0);
+                                        Mode, OutMessages? &Messages : 0, 0);
   if (OutMessages)
     *OutMessages = strdup(Messages.c_str());
   return Result;

@@ -18,12 +18,15 @@
 #include <string>
 #include <vector>
 
+#include "llvm/ADT/SmallPtrSet.h"
+
 namespace llvm {
   namespace sys { class Path; }
 
 class Module;
 class LLVMContext;
 class StringRef;
+class StructType;
 
 /// This class provides the core functionality of linking in LLVM. It retains a
 /// Module object which is the composite of the modules and libraries linked
@@ -251,7 +254,7 @@ class Linker {
       Module* Src,              ///< Module linked into \p Dest
       std::string* ErrorMsg = 0 /// Error/diagnostic string
     ) { 
-      return LinkModules(Composite, Src, Linker::DestroySource, ErrorMsg ); 
+      return LinkModules(Composite, Src, Linker::DestroySource, ErrorMsg, &namedStructTypes); 
     }
 
     /// This is the heart of the linker. This method will take unconditional
@@ -266,7 +269,7 @@ class Linker {
     /// @returns True if an error occurs, false otherwise.
     /// @brief Generically link two modules together.
     static bool LinkModules(Module* Dest, Module* Src, unsigned Mode,
-                            std::string* ErrorMsg);
+			    std::string* ErrorMsg, SmallPtrSet<StructType*, 32>* DestTypes);
 
     /// This function looks through the Linker's LibPaths to find a library with
     /// the name \p Filename. If the library cannot be found, the returned path
@@ -297,6 +300,7 @@ class Linker {
     unsigned Flags;    ///< Flags to control optional behavior.
     std::string Error; ///< Text of error that occurred.
     std::string ProgramName; ///< Name of the program being linked
+    SmallPtrSet<StructType*, 32> namedStructTypes;
   /// @}
 
 };
