@@ -2722,7 +2722,7 @@ static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, Reach
 	continue;
       break;
     case SHADOWVAL_OTHER:
-      release_assert(ThisPtr.isNullPointer() || isFunction(ThisPtr.u.V));
+      release_assert(ThisPtr.isNullPointer() || isa<UndefValue>(ThisPtr.u.V) || isFunction(ThisPtr.u.V));
       continue;
     default:
       break;

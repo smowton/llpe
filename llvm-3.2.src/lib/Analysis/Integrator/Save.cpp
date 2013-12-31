@@ -1458,9 +1458,17 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	release_assert(IA->CommitF);
 	Instruction* NewI;
-	if(inst_is<CallInst>(I))
+	if(inst_is<CallInst>(I) || (inst_is<InvokeInst>(I) && !BB->succsAlive[1])) {
 	  NewI = CallInst::Create(IA->CommitF, Args, "", emitBB);
+	  if(inst_is<InvokeInst>(I)) {
+	    // Invoke that becomes a call because it cannot throw
+	    ++emitBBIter;
+	    BranchInst::Create(emitBBIter->specBlock, emitBB);
+	    emitBB = emitBBIter->specBlock;
+	  }
+	}
 	else {
+	  // Normal invoke that can throw
 	  ++emitBBIter;
 	  BasicBlock* exnBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[1], 0);
 	  BasicBlock* normalBlock = emitBBIter->specBlock;

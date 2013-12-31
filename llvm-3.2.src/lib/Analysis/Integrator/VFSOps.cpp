@@ -39,16 +39,24 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   if(!getBaseAndConstantOffset(Ptr, StrBase, StrOffset))
     return false;
 
+  Constant* CGInit = 0;
+
   if(ShadowGV* G = StrBase.getGV()) {
       
     GlobalVariable* GV = G->G;
     if(GV->isConstant()) {
+
       Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
       Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
+
       if(getConstantStringInfo(QueryCE, RResult)) {
 	Result = RResult.str();
 	return true;
       }
+
+      // Fall through to try to read it bytewise.
+      CGInit = GV->getInitializer();
+
     }
 
   }
@@ -66,11 +74,15 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   for(; success; ++StrOffset) {
 
     // Create a GEP to access the next byte:
-
     //std::string* fwdError = 0;
 
     ImprovedValSetSingle byte;
-    readValRange(StrBase, StrOffset, 1, SearchFrom->parent, byte, 0, 0 /* fwdError */);
+
+    if(CGInit)
+      getConstSubVal(ShadowValue(CGInit), StrOffset, 1, byteType, byte);
+    else
+      readValRange(StrBase, StrOffset, 1, SearchFrom->parent, byte, 0, 0 /* fwdError */);
+
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
       DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
