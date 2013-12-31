@@ -667,6 +667,12 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
       return ShadowValue(ArgV);
     }
   }
+  else if(SII.instIdx == INVALID_INSTRUCTION_IDX) {
+
+    // BasicBlock operand, only encountered on this path with Invoke instructions.
+    return ShadowValue();
+
+  }
   else {
     ShadowInstruction* OpInst = parent->IA->getInst(blockOpIdx, SII.instIdx);
     if(OpInst)

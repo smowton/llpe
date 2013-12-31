@@ -578,7 +578,8 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
       if(tryResolveVFSCall(SI))
 	return false;
       
-      if(analyseExpandableCall(SI, changed, inLoopAnalyser, inAnyLoop)) {
+      bool isExpanded = analyseExpandableCall(SI, changed, inLoopAnalyser, inAnyLoop);
+      if(isExpanded) {
 	  
 	if(!SI->parent->localStore) {
 
@@ -591,15 +592,18 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
       }
       else {
 
-	// For special calls like malloc this might define a return value.
+	// For special calls like malloc this might define a return value;
+	// for others it is responsible for placing an Overdef return.
 	executeUnexpandedCall(SI);
-	return false;
 
       }
 
       // Invoke instructions are also block terminators.
       if(inst_is<InvokeInst>(SI))
-	return tryEvaluateTerminator(SI, loadedVarargsHere);
+	changed |= tryEvaluateTerminator(SI, loadedVarargsHere);
+
+      if(!isExpanded)
+	return changed;
 
     }
 

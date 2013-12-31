@@ -2868,10 +2868,10 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
 
 bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
-  // System calls cannot throw
-  release_assert(inst_is<CallInst>(SI));
-
   if(const IHPFunctionInfo* FI = GlobalIHP->getMRInfo(F)) {
+
+    // System calls cannot throw
+    release_assert(inst_is<CallInst>(SI));
 
     if(FI->NoModRef)
       return true;
@@ -3087,9 +3087,9 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
   }
     
   // Args to an unhandled call escape, may be stored in old object, and may be visible from other threads.
-  for(uint32_t i = 0, ilim = SI->invar->operandIdxs.size(); i != ilim; ++i) {
+  for(uint32_t i = 0, ilim = SI->getNumArgOperands(); i != ilim; ++i) {
     
-    ShadowValue Op = SI->getOperand(i);
+    ShadowValue Op = SI->getCallArgOperand(i);
     valueEscaped(Op, SI->parent);
     setValueMayAliasOld(Op, SI->parent);
     setValueThreadGlobal(Op, SI->parent);

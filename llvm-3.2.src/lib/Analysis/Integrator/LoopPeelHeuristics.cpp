@@ -1125,7 +1125,11 @@ void InlineAttempt::getLiveReturnVals(SmallVector<ShadowValue, 4>& Vals) {
     if(ShadowBB* BB = BBs[i]) {
 
       ShadowInstruction* TI = &(BB->insts.back());
-      if(inst_is<ReturnInst>(TI))
+
+      // The localStore check determines whether this block was
+      // abandoned due to e.g. a call that cannot return.
+
+      if(inst_is<ReturnInst>(TI) && BB->localStore)
 	Vals.push_back(TI->getOperand(0));
 
     }
@@ -1371,6 +1375,11 @@ void InlineAttempt::addExtraTagsFrom(PathConditions& PC, IntegratorTag* myTag) {
 	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
 
     if(it->stackIdx == UINT_MAX || it->stackIdx == targetCallInfo->targetStackDepth) {
+
+      // May happen if the user has specified a limit on how many IAs
+      // should be explored.
+      if(!it->IA)
+	continue;
 
       IntegratorTag* newTag = it->IA->createTag(myTag);
       myTag->children.push_back(newTag);
