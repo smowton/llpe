@@ -987,8 +987,11 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 	break;
 
       uint64_t MaskC;
+      int64_t SignedMaskC;
       if(!tryGetConstantInt(Ops[1].second.V, MaskC))
 	break;
+
+      SignedMaskC = (int64_t)MaskC;
 
       if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
 	break;
@@ -998,17 +1001,26 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       // Try to get alignment:
 
       unsigned Align = 0;
-      if(GlobalValue* GV = dyn_cast_or_null<GlobalValue>(Ops[0].second.V.getVal()))
-	Align = GV->getAlignment();
-      else if(ShadowInstruction* SI = Ops[0].second.V.getInst()) {
+      if(Ops[0].second.V.isPtrIdx()) {
+
+	AllocData* AD = getAllocData(Ops[0].second.V);
       
-	if(AllocaInst* AI = dyn_cast<AllocaInst>(SI->invar->I))
-	  Align = AI->getAlignment();
-	else if(isa<CallInst>(SI->invar->I)) {
-	  Function* F = getCalledFunction(SI);
-	  if(F && F->getName() == "malloc") {
+	if(Ops[0].second.V.getFrameNo() == -1) {
+
+	  // Careful, can't use the instruction as it might be committed.
+	  if(AD->allocValue.isInst())
 	    Align = pass->getMallocAlignment();
+	  else if(AD->allocValue.isGV()) {
+	    GlobalValue* GV = cast<GlobalValue>(AD->allocValue.getGV()->G);
+	    Align = GV->getAlignment();
 	  }
+
+	}
+	else {
+	  
+	  AllocaInst* AI = cast_inst<AllocaInst>(AD->allocValue.getInst());
+	  Align = AI->getAlignment();
+	  
 	}
 
       }
@@ -1017,6 +1029,16 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       
 	ImpType = ValSetTypeScalar;
 	Improved.V = ShadowValue::getInt(BOp->getType(), MaskC & UOff);
+	return true;
+
+      }
+      else if(SignedMaskC < 0 && (-SignedMaskC) <= Align) {
+	
+	// In this case the instruction is masking off bits that are known zero in the original allocation;
+	// thus it is masking only the Offset.
+	ImpType = ValSetTypePB;
+	Improved.V = Ops[0].second.V;
+	Improved.Offset = UOff & MaskC;
 	return true;
 
       }
