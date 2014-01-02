@@ -412,8 +412,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<const GlobalVariable*, std::string> GVCache;
    DenseMap<const GlobalVariable*, std::string> GVCacheBrief;
 
-   DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > functionTextCache;
-   DenseMap<const Function*, DenseMap<const Instruction*, std::string>* > briefFunctionTextCache;
+   DenseMap<const Function*, DenseMap<const Value*, std::string>* > functionTextCache;
+   DenseMap<const Function*, DenseMap<const Value*, std::string>* > briefFunctionTextCache;
 
    DenseMap<GlobalVariable*, uint64_t> shadowGlobalsIdx;
 
@@ -527,7 +527,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    // Caching text representations of instructions:
 
-   DenseMap<const Instruction*, std::string>& getFunctionCache(const Function* F, bool brief);
+   DenseMap<const Value*, std::string>& getFunctionCache(const Function* F, bool brief);
    DenseMap<const GlobalVariable*, std::string>& getGVCache(bool brief);
    void populateGVCaches(const Module*);
    virtual void printValue(raw_ostream& ROS, const Value* V, bool brief);
@@ -2128,7 +2128,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
 
  // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
- void getInstructionsText(const Function* IF, DenseMap<const Instruction*, std::string>& IMap, DenseMap<const Instruction*, std::string>& BriefMap);
+ void getInstructionsText(const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefMap);
  void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
 
  bool isGlobalIdentifiedObject(ShadowValue VC);

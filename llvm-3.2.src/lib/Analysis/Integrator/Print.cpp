@@ -15,14 +15,14 @@
 
 using namespace llvm;
 
-DenseMap<const Instruction*, std::string>& IntegrationHeuristicsPass::getFunctionCache(const Function* F, bool brief) {
+DenseMap<const Value*, std::string>& IntegrationHeuristicsPass::getFunctionCache(const Function* F, bool brief) {
 
-  DenseMap<const Function*, DenseMap<const Instruction*, std::string>* >& Map = brief ? briefFunctionTextCache : functionTextCache;
-  DenseMap<const Function*, DenseMap<const Instruction*, std::string>* >::iterator FI = Map.find(F);
+  DenseMap<const Function*, DenseMap<const Value*, std::string>* >& Map = brief ? briefFunctionTextCache : functionTextCache;
+  DenseMap<const Function*, DenseMap<const Value*, std::string>* >::iterator FI = Map.find(F);
   
   if(FI == Map.end()) {
-    DenseMap<const Instruction*, std::string>* FullMap = functionTextCache[F] = new DenseMap<const Instruction*, std::string>();
-    DenseMap<const Instruction*, std::string>* BriefMap = briefFunctionTextCache[F] = new DenseMap<const Instruction*, std::string>();
+    DenseMap<const Value*, std::string>* FullMap = functionTextCache[F] = new DenseMap<const Value*, std::string>();
+    DenseMap<const Value*, std::string>* BriefMap = briefFunctionTextCache[F] = new DenseMap<const Value*, std::string>();
     getInstructionsText(F, *FullMap, *BriefMap);
     return brief ? *BriefMap : *FullMap;
   }
@@ -48,10 +48,16 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& ROS, const Value* V, boo
 
   if(!cacheDisabled) {
 
-    if(const Instruction* I = dyn_cast<Instruction>(V)) {
+    if(isa<Instruction>(V) || isa<Argument>(V)) {
 
-      DenseMap<const Instruction*, std::string>& Map = getFunctionCache(I->getParent()->getParent(), brief);
-      ROS << Map[I];
+      const Function* VF;
+      if(const Instruction* I = dyn_cast<Instruction>(V))
+	VF = I->getParent()->getParent();
+      else
+	VF = cast<Argument>(V)->getParent();
+
+      DenseMap<const Value*, std::string>& Map = getFunctionCache(VF, brief);
+      ROS << Map[V];
       return;
 
     }
