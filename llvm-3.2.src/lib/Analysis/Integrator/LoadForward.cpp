@@ -637,6 +637,7 @@ int32_t ShadowValue::getHeapKey() {
   switch(t) {
 
   case SHADOWVAL_GV:
+    release_assert(!u.GV->G->isConstant());
     return u.GV->allocIdx;
   case SHADOWVAL_OTHER:
     {
@@ -768,7 +769,24 @@ static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
   
 }
 
-LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
+LocStore* ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
+
+  // Check if the location is not writable:
+  if(V.isNullPointer())
+    return 0;
+
+  if(V.isVal()) {
+
+    if(isa<UndefValue>(V.u.V))
+      return 0;
+
+  }
+  else if(V.isGV()) {
+
+    if(V.u.GV->G->isConstant())
+      return 0;
+
+  }
 
   // We're about to write to memory location V + Offset -> Offset+Size. 
   // We must return a LocStore for that value that can be updated (i.e. is not shared).
@@ -804,7 +822,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
       ret->store = M;
     }
 
-    return *ret;
+    return ret;
 
   }
   else {
@@ -866,7 +884,7 @@ LocStore& ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
   }
 
-  return *ret;
+  return ret;
   
 }
 
@@ -2216,7 +2234,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, AllocData& AD, Type* AllocTyp
   }
   
   ShadowValue AllocSV = ShadowValue::getPtrIdx(frame, idx);
-  LocStore& localStore = SI->parent->getWritableStoreFor(AllocSV, 0, AllocSize, /* willWriteSingle = */ true);
+  LocStore& localStore = *SI->parent->getWritableStoreFor(AllocSV, 0, AllocSize, /* willWriteSingle = */ true);
   localStore.store->dropReference();
   localStore.store = initVal;
 
@@ -2432,9 +2450,10 @@ static void checkStore(ImprovedValSet* IV, ShadowValue&) { }
 
 void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB) {
 
-  LocStore& Store = BB->getWritableStoreFor(Ptr, Offset, Size, copyValues.size() == 1);
-  replaceRangeWithPBs(Store.store, copyValues, (uint64_t)Offset, Size);
-  checkStore(Store.store, Ptr);
+  LocStore* Store = BB->getWritableStoreFor(Ptr, Offset, Size, copyValues.size() == 1);
+  release_assert(Store && "Non-writable location in writeExtents?");
+  replaceRangeWithPBs(Store->store, copyValues, (uint64_t)Offset, Size);
+  checkStore(Store->store, Ptr);
 
 
 }
@@ -2572,9 +2591,10 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   ImprovedValSetSingle StackBase = ImprovedValSetSingle(ImprovedVal(ShadowValue(SI), ImprovedVal::va_baseptr), ValSetTypeVarArg);
   vaStartVals.push_back(IVSR(16, 24, StackBase));
 
-  LocStore& Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
-  replaceRangeWithPBs(Store.store, vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
-  checkStore(Store.store, PtrSet.Values[0].V);
+  LocStore* Store = BB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, 24, false);
+  release_assert(Store && "Non-writable location in executeVaStartInst?");
+  replaceRangeWithPBs(Store->store, vaStartVals, (uint64_t)PtrSet.Values[0].Offset, 24);
+  checkStore(Store->store, PtrSet.Values[0].V);
 
 }
 
@@ -2954,6 +2974,12 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
     return true;
 
   }
+  else if(GlobalIHP->yieldFunctions.count(F)) {
+
+    // Temporary hack: unannotated yields don't clobber.
+    return true;
+
+  }
 
   return false;
 
@@ -3300,29 +3326,27 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
     LFV3(errs() << "Write through certain pointer\n");
     // Best case: store through a single, certain pointer. Overwrite the location with our new PB.
 
-    if(PtrSet.Values[0].V.isNullPointer())
+    LocStore* Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
+    if(!Store)
       return;
 
-    LocStore& Store = StoreBB->getWritableStoreFor(PtrSet.Values[0].V, PtrSet.Values[0].Offset, PtrSize, true);
-    replaceRangeWithPB(Store.store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
-
-    checkStore(Store.store, PtrSet.Values[0].V);
+    replaceRangeWithPB(Store->store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
+    checkStore(Store->store, PtrSet.Values[0].V);
 
   }
   else {
 
     for(SmallVector<ImprovedVal, 1>::iterator it = PtrSet.Values.begin(), it2 = PtrSet.Values.end(); it != it2; ++it) {
 
-      if(it->V.isNullPointer())
+      LocStore* Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
+      if(!Store)
 	continue;
 
       if(it->Offset == LLONG_MAX) {
 	LFV3(errs() << "Write through vague pointer; clobber\n");
-	LocStore& Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
+
 	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-	replaceRangeWithPB(Store.store, OD, 0, ULONG_MAX);
-	
-	checkStore(Store.store, it->V);
+	replaceRangeWithPB(Store->store, OD, 0, ULONG_MAX);
 
       }
       else {
@@ -3365,12 +3389,11 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
 	}
 
-	LocStore& Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
-	replaceRangeWithPB(Store.store, oldValSet, (uint64_t)it->Offset, PtrSize);
-
-	checkStore(Store.store, it->V);
+	replaceRangeWithPB(Store->store, oldValSet, (uint64_t)it->Offset, PtrSize);
 
       }
+
+      checkStore(Store->store, it->V);
 
     }
 

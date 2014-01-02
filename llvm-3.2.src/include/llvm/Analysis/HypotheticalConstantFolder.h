@@ -126,6 +126,7 @@ struct IntegratorTag {
 enum PathConditionTypes {
   
   PathConditionTypeInt,
+  PathConditionTypeFptr,
   PathConditionTypeString,
   PathConditionTypeIntmem,
   PathConditionTypeFptrmem,
@@ -199,6 +200,7 @@ struct PathConditions {
   void addForType(PathCondition newCond, PathConditionTypes Ty) {
 
     switch(Ty) {
+    case PathConditionTypeFptr:
     case PathConditionTypeInt:
       {
 	if(newCond.instStackIdx == newCond.fromStackIdx &&

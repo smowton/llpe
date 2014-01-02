@@ -121,9 +121,10 @@ static void initialiseStore(ShadowBB* BB) {
 
     }
 
-    LocStore& LS = BB->getWritableStoreFor(AD.allocValue, 0, AD.storeSize, true);
-    LS.store->dropReference();
-    LS.store = Init;
+    LocStore* LS = BB->getWritableStoreFor(AD.allocValue, 0, AD.storeSize, true);
+    release_assert(LS && "Non-writable location in initialiseStore?");
+    LS->store->dropReference();
+    LS->store = Init;
 
   }
 

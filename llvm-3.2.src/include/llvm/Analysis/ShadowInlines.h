@@ -1364,7 +1364,7 @@ struct ShadowBB {
 
   DenseMap<ShadowValue, LocStore>& getWritableStoreMapFor(ShadowValue&);
   DenseMap<ShadowValue, LocStore>& getReadableStoreMapFor(ShadowValue&);
-  LocStore& getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
+  LocStore* getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
   LocStore* getOrCreateStoreFor(ShadowValue&, bool* isNewStore);
   LocStore* getReadableStoreFor(ShadowValue& V);
   void pushStackFrame(InlineAttempt*);

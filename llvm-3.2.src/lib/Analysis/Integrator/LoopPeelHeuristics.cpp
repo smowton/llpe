@@ -75,6 +75,7 @@ static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::Ze
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFptr("int-path-condition-fptr", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsFptrmem("int-path-condition-fptrmem", cl::ZeroOrMore);
@@ -549,6 +550,9 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
     LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return false;
   }
+
+  if(pass->yieldFunctions.count(FCalled))
+    return false;
 
   if(pass->specialLocations.count(FCalled))
     return false;
@@ -3132,6 +3136,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
 	  assumeC = Constant::getNullValue(ConstType);
 	break;
       }
+    case PathConditionTypeFptr:
     case PathConditionTypeFptrmem:
       {
 	assumeC = IA->F.getParent()->getFunction(assumeStr);
@@ -3415,6 +3420,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
   }
 
   parsePathConditions(PathConditionsInt, PathConditionTypeInt, IA);
+  parsePathConditions(PathConditionsFptr, PathConditionTypeFptr, IA);
   parsePathConditions(PathConditionsString, PathConditionTypeString, IA);
   parsePathConditions(PathConditionsIntmem, PathConditionTypeIntmem, IA);  
   parsePathConditions(PathConditionsFptrmem, PathConditionTypeFptrmem, IA);
