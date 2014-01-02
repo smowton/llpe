@@ -75,6 +75,7 @@ class TargetLibraryInfo;
 class EQTDDataStructures;
 class ShadowBB;
 class TrackedStore;
+class PersistPrinter; // Opaque here, defined in AsmWriter
 
 inline void release_assert_fail(const char* str) {
 
@@ -511,6 +512,8 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Value*, uint32_t> committedFDs;
 
    std::vector<void*> IAs;
+
+   PersistPrinter* persistPrinter;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -2127,9 +2130,10 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  // Implemented in Transforms/Integrator/SimpleVFSEval.cpp, so only usable with -integrator
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
 
- // Implemented in Support/AsmWriter.cpp, since that file contains a bunch of useful private classes
- void getInstructionsText(const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefMap);
- void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
+ // Implemented in VMCore/AsmWriter.cpp, since that file contains a bunch of useful private classes
+ PersistPrinter* getPersistPrinter(Module*);
+ void getInstructionsText(PersistPrinter*, const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefMap);
+ void getGVText(PersistPrinter*, const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
 
  bool isGlobalIdentifiedObject(ShadowValue VC);
  bool shouldQueueOnInst(Instruction* I, IntegrationAttempt* ICtx);

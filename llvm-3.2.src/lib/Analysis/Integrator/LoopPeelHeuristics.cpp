@@ -3611,6 +3611,9 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   GInt16 = Type::getInt16Ty(M.getContext());
   GInt32 = Type::getInt32Ty(M.getContext());
   GInt64 = Type::getInt64Ty(M.getContext());
+
+  persistPrinter = getPersistPrinter(&M);
+
   initMRInfo(&M);
   
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; MI++) {

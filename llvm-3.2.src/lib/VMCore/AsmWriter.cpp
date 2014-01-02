@@ -2118,11 +2118,24 @@ void Type::print(raw_ostream &OS) const {
 
 namespace llvm {
 
-  void getInstructionsText(const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefIMap) {
+  struct PersistPrinter {
 
-    SlotTracker SlotTable(IF);
+    SlotTracker SlotTable;
     formatted_raw_ostream FRSO;
-    AssemblyWriter W(FRSO, SlotTable, IF->getParent(), 0);
+    raw_null_ostream NullOS;
+    AssemblyWriter W;
+
+    PersistPrinter(Module* M) : SlotTable(M), W(FRSO, SlotTable, M, 0) {}
+    
+  };
+
+  PersistPrinter* getPersistPrinter(Module* M) {
+    return new PersistPrinter(M);
+  }
+
+  void getInstructionsText(PersistPrinter* PP, const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefIMap) {
+
+    PP->SlotTable.incorporateFunction(IF);
 
     for(Function::const_iterator BI = IF->begin(), BE = IF->end(); BI != BE; ++BI) {
 
@@ -2130,14 +2143,14 @@ namespace llvm {
 
        std::string& IStr = IMap[II];
        raw_string_ostream RSO(IStr);
-       FRSO.setStream(RSO);
-       W.printInstruction(*II);
-       FRSO.flush();
+       PP->FRSO.setStream(RSO);
+       PP->W.printInstruction(*II);
+       PP->FRSO.flush();
        std::string& IStrBrief = BriefIMap[II];
        raw_string_ostream RSOBrief(IStrBrief);
-       FRSO.setStream(RSOBrief);
-       W.printInstruction(*II, true);
-       FRSO.flush();
+       PP->FRSO.setStream(RSOBrief);
+       PP->W.printInstruction(*II, true);
+       PP->FRSO.flush();
            
       }
 
@@ -2150,35 +2163,39 @@ namespace llvm {
 
       std::string& IStr = IMap[AI];
       raw_string_ostream RSO(IStr);
-      FRSO.setStream(RSO);
-      W.printArgument(AI, Attrs.getParamAttributes(argIdx));
-      FRSO.flush();
+      PP->FRSO.setStream(RSO);
+      PP->W.printArgument(AI, Attrs.getParamAttributes(argIdx));
+      PP->FRSO.flush();
       BriefIMap[AI] = IMap[AI];
 
     }
 
+    // Reset the slotTable ready to deal with another function
+    PP->SlotTable.purgeFunction();
+    // The FRSO must not be left attached to an RSO that is shorter-lived than it,
+    // as on the next setStream it will try to flush to it again.
+    PP->FRSO.setStream(PP->NullOS);
+
   }
 
-  void getGVText(const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
-
-    SlotTracker SlotTable(M);
-    formatted_raw_ostream FRSO;
-    AssemblyWriter W(FRSO, SlotTable, M, 0);
+  void getGVText(PersistPrinter* PP, const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
 
     for(Module::const_global_iterator it = M->global_begin(), itend = M->global_end(); it != itend; ++it) {
 
       std::string& GVStr = GVMap[it];
       raw_string_ostream RSO(GVStr);
-      FRSO.setStream(RSO);
-      W.printGlobal(it);
-      FRSO.flush();
+      PP->FRSO.setStream(RSO);
+      PP->W.printGlobal(it);
+      PP->FRSO.flush();
       std::string& GVStrBrief = BriefGVMap[it];
       raw_string_ostream RSOBrief(GVStrBrief);
-      FRSO.setStream(RSOBrief);
-      W.printGlobal(it, true);
-      FRSO.flush();
+      PP->FRSO.setStream(RSOBrief);
+      PP->W.printGlobal(it, true);
+      PP->FRSO.flush();
 
     }
+
+    PP->FRSO.setStream(PP->NullOS);
 
   }
 

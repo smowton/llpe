@@ -23,7 +23,7 @@ DenseMap<const Value*, std::string>& IntegrationHeuristicsPass::getFunctionCache
   if(FI == Map.end()) {
     DenseMap<const Value*, std::string>* FullMap = functionTextCache[F] = new DenseMap<const Value*, std::string>();
     DenseMap<const Value*, std::string>* BriefMap = briefFunctionTextCache[F] = new DenseMap<const Value*, std::string>();
-    getInstructionsText(F, *FullMap, *BriefMap);
+    getInstructionsText(persistPrinter, F, *FullMap, *BriefMap);
     return brief ? *BriefMap : *FullMap;
   }
   else {
@@ -34,7 +34,7 @@ DenseMap<const Value*, std::string>& IntegrationHeuristicsPass::getFunctionCache
 
 void IntegrationHeuristicsPass::populateGVCaches(const Module* M) {
 
-  getGVText(M, GVCache, GVCacheBrief);
+  getGVText(persistPrinter, M, GVCache, GVCacheBrief);
 
 }
 
