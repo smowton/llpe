@@ -163,14 +163,60 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	
 	}
 
-	// Fall through to default
+	// Return failure:
+	break;
 
-      }	
+      }
+
+    case Instruction::And:
+      {
+
+	std::pair<ValSetType, ImprovedVal> Op1 = getValPB(CE->getOperand(0));
+	std::pair<ValSetType, ImprovedVal> Op2 = getValPB(CE->getOperand(1));
+
+	if(Op1.first == ValSetTypeScalar && Op2.first == ValSetTypePB)
+	  std::swap(Op1, Op2);
+
+	if(Op1.first != ValSetTypePB || Op2.first != ValSetTypeScalar)
+	  break;
+
+	if(!Op1.second.V.isGV())
+	  break;
+
+	uint64_t GlobalAlign = Op1.second.V.u.GV->G->getAlignment();
+	if(GlobalAlign == 0 || GlobalAlign == 1)
+	  break;
+
+	uint64_t AndConst;
+	if(!tryGetConstantInt(Op2.second.V, AndConst))
+	  break;
+
+	int64_t AndConstSigned = (int64_t)AndConst;
+
+	if(AndConst < GlobalAlign) {
+	  
+	  // Inspecting offset (pointer bits known zero)
+	  uint64_t Result = AndConst & Op1.second.Offset;
+	  return std::make_pair(ValSetTypeScalar, ShadowValue::getInt(CE->getType(), Result));
+
+	}
+	else if(AndConstSigned < 0 && (-AndConstSigned) <= (int64_t)GlobalAlign) {
+
+	  // Masking offset, pointer bits unaffected
+	  return std::make_pair(ValSetTypePB, ImprovedVal(Op1.second.V, Op1.second.Offset & AndConst));
+
+	}
+	else
+	  break;
+	
+      }
 
     default:
-      return std::make_pair(ValSetTypeUnknown, ShadowValue());
+      break;
 
     }
+
+    return std::make_pair(ValSetTypeUnknown, ShadowValue());
 
   }
   else if(isa<GlobalValue>(C)) {
