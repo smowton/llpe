@@ -3091,10 +3091,13 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
   bool clobbersMemory = true;
   
+  // An assembly section is harmless if it doesn't clobber memory, or if it
+  // doesn't contain any instructions and is thus just a fence.
+
   InlineAsm* ASM;
   if(inst_is<CallInst>(SI) && 
      (ASM = dyn_cast_or_null<InlineAsm>(cast<CallInst>(SI->invar->I)->getCalledValue())) && 
-     !ASM->hasSideEffects()) {
+     ((!ASM->hasSideEffects()) || ASM->getAsmString().size() == 0)) {
 
     clobbersMemory = false;
 

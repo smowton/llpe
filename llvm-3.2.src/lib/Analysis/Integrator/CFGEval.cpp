@@ -146,7 +146,7 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
     }      
 
-    if((!IA) || IA->mayUnwind) {
+    if((!IA) || (!IA->isEnabled()) || IA->mayUnwind) {
 
       changed |= !SI->parent->succsAlive[1];
       SI->parent->succsAlive[1] = true;

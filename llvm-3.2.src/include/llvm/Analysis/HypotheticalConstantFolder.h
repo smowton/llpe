@@ -131,7 +131,8 @@ enum PathConditionTypes {
   PathConditionTypeString,
   PathConditionTypeIntmem,
   PathConditionTypeFptrmem,
-  PathConditionTypeStream
+  PathConditionTypeStream,
+  PathConditionTypeGlobalInit
 
 };
 
@@ -215,6 +216,7 @@ struct PathConditions {
       }
     case PathConditionTypeIntmem:
     case PathConditionTypeFptrmem:
+    case PathConditionTypeGlobalInit:
       IntmemPathConditions.push_back(newCond); break;
     case PathConditionTypeString:
       StringPathConditions.push_back(newCond); break;

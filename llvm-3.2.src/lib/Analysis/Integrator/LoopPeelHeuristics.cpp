@@ -81,6 +81,7 @@ static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", c
 static cl::list<std::string> PathConditionsFptrmem("int-path-condition-fptrmem", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
 static cl::list<std::string> PathConditionsStream("int-path-condition-stream", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsGlobalInit("int-path-condition-global-unmodified", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
 static cl::opt<bool> SkipDIE("skip-int-die");
 static cl::opt<bool> SkipTL("skip-check-elim");
@@ -3160,6 +3161,13 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
     case PathConditionTypeStream:
       assumeC = (Constant*)strdup(assumeStr.c_str());
       break;
+    case PathConditionTypeGlobalInit:
+      {
+	release_assert((!bb) && "Unmodified global assumption relating to a non-global?");
+	GlobalVariable* GV = shadowGlobals[instIndex].G;
+	assumeC = GV->getInitializer();
+	break;
+      }
     default:
       release_assert(0 && "Bad path condition type");
       llvm_unreachable();
@@ -3425,6 +3433,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
   parsePathConditions(PathConditionsIntmem, PathConditionTypeIntmem, IA);  
   parsePathConditions(PathConditionsFptrmem, PathConditionTypeFptrmem, IA);
   parsePathConditions(PathConditionsStream, PathConditionTypeStream, IA);
+  parsePathConditions(PathConditionsGlobalInit, PathConditionTypeGlobalInit, IA);
 
   for(cl::list<std::string>::iterator it = PathConditionsFunc.begin(), 
 	itend = PathConditionsFunc.end(); it != itend; ++it) {
