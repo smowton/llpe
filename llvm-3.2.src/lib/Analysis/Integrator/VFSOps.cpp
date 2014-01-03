@@ -285,7 +285,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  uint64_t RawMode64;
 	  if(tryGetConstantIntReplacement(SI->getCallArgOperand(1), RawMode64)) {
 	    int RawMode = (int)RawMode64;
-	    if(RawMode & O_RDWR || RawMode & O_WRONLY) {
+	    if(RawMode & O_WRONLY) {
 	      LPDEBUG("Can't promote open call " << itcache(*CI) << " because it is not O_RDONLY\n");
 	      return true;
 	    }
