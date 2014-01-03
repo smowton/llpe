@@ -293,7 +293,14 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
   }
   else {
 
-    Out << itcache(ShadowValue(PC.u.val), true);
+    std::string truncd;
+
+    {
+      raw_string_ostream RSO(truncd);
+      RSO << itcache(ShadowValue(PC.u.val), true);
+    }    
+
+    Out << TruncStr(truncd, 100);
 	
   }
 
