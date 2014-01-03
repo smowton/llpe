@@ -44,6 +44,7 @@ public:
 using namespace llvm;
 
 static cl::opt<std::string> PrintName("dump-type-name", cl::init(""));
+static cl::opt<std::string> PrintGlobal("dump-type-of-global", cl::init(""));
 
 static RegisterPass<DumpTypePass> X("dump-type", "Describe a named type",
 						 false /* Only looks at CFG */,
@@ -53,12 +54,34 @@ char DumpTypePass::ID = 0;
 
 bool DumpTypePass::runOnModule(Module &M) {
 
-  if(PrintName == "") {
-    errs() << "Must specify dump-type-name";
+  if(PrintName == "" && PrintGlobal == "") {
+    errs() << "Must specify dump-type-name or dump-type-of-global";
     exit(1);
   }
 
-  Print = M.getTypeByName(PrintName);
+  if(PrintName != "")
+    Print = M.getTypeByName(PrintName);
+  else {
+    GlobalValue* GV = M.getNamedValue(PrintGlobal);
+    if(!GV) {
+      errs() << "Global " << PrintGlobal << " not found\n";
+      exit(1);
+    }
+
+    PointerType* PT = dyn_cast<PointerType>(GV->getType());
+    if(!PT) {
+      errs() << "Global " << PrintGlobal << " not pointer typed\n";
+      exit(1);
+    }
+
+    Print = dyn_cast<StructType>(PT->getElementType());
+    if(!Print) {
+      errs() << "Global " << PrintGlobal << " doesn't point to a struct\n";
+      exit(1);
+    }
+
+  }
+
   DataLayout* DL = &getAnalysis<DataLayout>();
   Layout = DL->getStructLayout(Print);
 
