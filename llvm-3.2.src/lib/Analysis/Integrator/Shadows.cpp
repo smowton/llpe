@@ -12,7 +12,9 @@
 
 using namespace llvm;
 
-static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL) {
+namespace llvm {
+
+void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL) {
 
   const Loop* BBL = LI->getLoopFor(BB);
   
@@ -44,6 +46,8 @@ static void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resu
   }
 
   Result.push_back(BB);
+
+}
 
 }
 

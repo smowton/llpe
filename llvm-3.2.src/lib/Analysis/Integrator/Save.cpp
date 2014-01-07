@@ -1123,6 +1123,15 @@ static GlobalVariable* getFileBytesGlobal(ReadFile& RF) {
 
 }
 
+static Constant* getOrInsertLocalFunction(StringRef Name, FunctionType* FT) {
+
+  Module* M = getGlobalModule();
+  if(Function* F = M->getFunction(Name))
+    return F;
+  return M->getOrInsertFunction(Name, FT);
+
+}
+
 static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
 
   LLVMContext& Context = FD->getContext();
@@ -1132,7 +1141,10 @@ static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
   Type* Int32Ty = IntegerType::get(Context, 32);
   Constant* SeekSet = ConstantInt::get(Int32Ty, SEEK_SET);
 
-  Constant* SeekFn = getGlobalModule()->getOrInsertFunction("lseek64", Int64Ty /* ret */, Int32Ty, Int64Ty, Int32Ty, NULL);
+  Type* ArgTypes[3] = { Int32Ty, Int64Ty, Int32Ty };
+  FunctionType* FT = FunctionType::get(/* ret = */ Int64Ty, ArrayRef<Type*>(ArgTypes, 3), false);
+
+  Constant* SeekFn = getOrInsertLocalFunction("lseek64", FT);
 
   Value* CallArgs[] = { FD, NewOffset, SeekSet };
 
