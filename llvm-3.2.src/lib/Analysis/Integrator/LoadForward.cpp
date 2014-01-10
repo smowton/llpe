@@ -2244,6 +2244,7 @@ void llvm::executeAllocInst(ShadowInstruction* SI, AllocData& AD, Type* AllocTyp
   AD.allocTested = AllocUnchecked;
   AD.allocValue = ShadowValue(SI);
   AD.isCommitted = false;
+  AD.allocType = SI->getType();
 
   // Note that the new object is unreachable from old objects, thread-local and unescaped.
   SI->parent->localStore = SI->parent->localStore->getWritableFrameList();

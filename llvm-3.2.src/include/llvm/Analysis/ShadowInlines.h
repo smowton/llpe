@@ -932,6 +932,7 @@ struct AllocData {
   bool isCommitted;
   ShadowValue allocValue;
   std::vector<std::pair<WeakVH, uint32_t> > PatchRefs;
+  Type* allocType;
   Value* committedVal;
 
   bool isAvailable();

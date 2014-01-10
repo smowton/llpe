@@ -381,8 +381,8 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, DIVisitor& Visitor) {
 
       if(LPA && LPA->isEnabled())
 	LPA->visitVariant(SII, Visitor);
-      else if(!getBB(invarInfo->LInfo[outermostChildLoop]->headerIdx))
-	return; // Block was not explored, hence failing to find the loop
+      else if((!getBB(invarInfo->LInfo[outermostChildLoop]->headerIdx)))
+	Visitor.visit(0, this, User.blockIdx, User.instIdx); // Loop not explored, but a failed version may exist
       else
 	Visitor.notifyUsersMissed();
 

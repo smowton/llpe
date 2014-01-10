@@ -470,7 +470,8 @@ static const char* blacklistedFnNames[] = {
    "pthread_setcancelstate",
    "writev",
    "epoll_create",
-   "dup2"
+   "dup2",
+   "access"
    
 };
 
@@ -736,7 +737,7 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
 }
 
-void InlineAttempt::finaliseAndCommit() {
+void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
 
   countTentativeInstructions();
   collectStats();
@@ -791,7 +792,7 @@ void InlineAttempt::finaliseAndCommit() {
 
     // Must rerun tentative load and DSE analyses accounting
     // for the fact that the stage will not be committed.
-    rerunTentativeLoads(activeCaller, this);
+    rerunTentativeLoads(activeCaller, this, inLoopAnalyser);
 
     // For now this is simply a barrier to DSE.
     setAllNeededTop(backupDSEStore);
@@ -842,7 +843,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 	pass->addSharableFunction(IA);
       else if(IA->registeredSharable && IA->isUnsharable())
 	pass->removeSharableFunction(IA);
-      
+     
       IA->active = false;
 
       if(changed && IA->hasFailedReturnPath()) {
@@ -859,7 +860,7 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 	doTLCallMerge(SI->parent, IA);
 	doDSECallMerge(SI->parent, IA);
 
-	IA->finaliseAndCommit();
+	IA->finaliseAndCommit(inLoopAnalyser);
 
       }
       
@@ -3140,11 +3141,28 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
     case PathConditionTypeFptr:
     case PathConditionTypeFptrmem:
       {
-	assumeC = IA->F.getParent()->getFunction(assumeStr);
+	int64_t Offset = 0;
+	size_t plusOffset = assumeStr.find('+');
+	if(plusOffset != std::string::npos) {
+	  std::string offsetStr(assumeStr, plusOffset + 1);
+	  Offset = getInteger(offsetStr, "Global value path condition +offset");
+	  assumeStr = std::string(assumeStr, 0, plusOffset);
+	}
+	
+	assumeC = IA->F.getParent()->getNamedValue(assumeStr);
 	if(!assumeC) {
-	  errs() << "No such function: " << assumeStr << "\n";
+	  errs() << "No such global value: " << assumeStr << "\n";
 	  exit(1);
 	}
+
+	if(Offset != 0) {
+	  
+	  if(assumeC->getType() != GInt8Ptr)
+	    assumeC = ConstantExpr::getBitCast(assumeC, GInt8Ptr);
+	  assumeC = ConstantExpr::getGetElementPtr(assumeC, ConstantInt::get(GInt64, Offset));
+
+	}
+
 	break;
       }
     case PathConditionTypeString:
@@ -3348,6 +3366,7 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
 	      heap.back().allocIdx = heap.size() - 1;
 	      heap.back().isCommitted = false;
 	      heap.back().allocValue = ShadowValue(&IA->argShadows[i]);
+	      heap.back().allocType = IA->argShadows[i].getType();
 	      anyNonGlobals = true;
 
 	    }
@@ -3578,12 +3597,13 @@ void IntegrationHeuristicsPass::createSpecialLocations() {
 
   for(SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = specialLocations.begin(),
 	itend = specialLocations.end(); it != itend; ++it) {
-
+    
     it->second.heapIdx = (int32_t)heap.size();
     heap.push_back(AllocData());
     heap.back().allocIdx = heap.size() - 1;
     heap.back().isCommitted = false;
     heap.back().allocValue = ShadowValue(it->first);
+    heap.back().allocType = it->first->getFunctionType()->getReturnType();
 
   }
 
@@ -3704,6 +3724,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     heap.back().allocIdx = heap.size() - 1;
     heap.back().isCommitted = false;
     heap.back().allocValue = ShadowValue(&IA->argShadows[argvIdx]);
+    heap.back().allocType = IA->argShadows[argvIdx].getType();
 
   }
 
@@ -3714,7 +3735,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
   errs() << "Interpreting";
   IA->analyse();
-  IA->finaliseAndCommit();
+  IA->finaliseAndCommit(false);
   fixNonLocalUses();
   errs() << "\n";
   

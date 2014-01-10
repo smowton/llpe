@@ -784,6 +784,24 @@ bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, Improved
 
 }
 
+void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, ImprovedValSet* PB, bool inLoopAnalyser) {
+
+  if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(PB))
+    squashUnavailableObject(SI, *IVS, inLoopAnalyser, SI.getOperand(0), 0, GlobalTD->getTypeStoreSize(SI.getType()));
+  else {
+
+    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(PB);
+    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end();
+	it != itend; ++it) {
+
+      squashUnavailableObject(SI, it.val(), inLoopAnalyser, SI.getOperand(0), it.start(), it.stop() - it.start());
+
+    }
+
+  }
+
+}
+
 void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser) {
 
   // The result of this load (or data read by this copy instruction) may contain pointers or
@@ -792,22 +810,8 @@ void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool in
 
   if(inst_is<LoadInst>(&SI)) {
 
-    if(SI.i.PB) {
-      if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(SI.i.PB))
-	squashUnavailableObject(SI, *IVS, inLoopAnalyser, SI.getOperand(0), 0, GlobalTD->getTypeStoreSize(SI.getType()));
-      else {
-
-	ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(SI.i.PB);
-	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end();
-	    it != itend; ++it) {
-
-	  squashUnavailableObject(SI, it.val(), inLoopAnalyser, SI.getOperand(0), it.start(), it.stop() - it.start());
-
-	}
-
-      }
-
-    }
+    if(SI.i.PB)
+      squashUnavailableObjects(SI, SI.i.PB, inLoopAnalyser);
 
   }
   else {
@@ -1258,7 +1262,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
     
   }
   else if (InlineAttempt* IA = getInlineAttempt(SI)) {
-      
+
     if((!IA->isEnabled()) && IA->containsTentativeLoads())
       return !SI->i.PB->isWhollyUnknown();
 
@@ -1360,7 +1364,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
 }
 
-void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
+void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA, bool inLoopAnalyser) {
 
   // This indicates the call never returns, and so there will be no further exploration along these lines.
   if(!SI->parent->tlStore)
@@ -1375,6 +1379,9 @@ void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA) {
     SI->parent->tlStore = SI->parent->tlStore->getEmptyMap();
     SI->parent->tlStore->allOthersClobbered = true;
     IA->backupTlStore->dropReference();
+
+    if(IA->returnValue)
+      SI->parent->IA->squashUnavailableObjects(*SI, IA->returnValue, inLoopAnalyser);
 
   }
   else {

@@ -298,12 +298,21 @@ static Function* getReplacementFunction(ShadowValue CCalledV) {
 
 Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
+  ShadowValue Op;
+
   if(inst_is<CallInst>(SI))
-    return getReplacementFunction(SI->getOperandFromEnd(1));
+    Op = SI->getOperandFromEnd(1);
   else if(inst_is<InvokeInst>(SI))
-    return getReplacementFunction(SI->getOperandFromEnd(3));
-  release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
-  return 0;
+    Op = SI->getOperandFromEnd(3);
+  else
+    release_assert(0 && "getCalledFunction called on non-call, non-invoke inst");
+
+  // Shouldn't usually happen, but isCopyInst() called from the DOT printer
+  // can run into this situation when drawing in-loop blocks from an outer context.
+  if(Op.isInval())
+    return 0;
+
+  return getReplacementFunction(Op);
 
 }
 

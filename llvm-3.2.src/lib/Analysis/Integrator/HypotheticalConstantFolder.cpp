@@ -2426,12 +2426,8 @@ Type* IntegrationAttempt::getValueType(ShadowValue V) {
   case SHADOWVAL_PTRIDX:
     {
       AllocData* AD = getAllocData(V);
-      if(AD->isCommitted) {
-	release_assert(AD->committedVal);
-	return AD->committedVal->getType();
-      }
-      else
-	return getValueType(AD->allocValue);
+      release_assert(AD->allocType);
+      return AD->allocType;
     }
   default:
     return V.getNonPointerType();

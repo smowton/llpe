@@ -2587,8 +2587,30 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterat
   else
     Check = emitAsExpectedCheck(SI, emitBB);
     
-  BasicBlock* successTarget = emitIt->specBlock;
-  BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(SI->parent->invar->idx, SI->invar->idx + 1);
+  BasicBlock* successTarget; 
+  BasicBlock* failTarget;
+
+  if(inst_is<InvokeInst>(SI)) {
+
+    // emititer already bumped above.
+    bool markUnreachable = false;
+    successTarget = getSuccessorBB(SI->parent, SI->parent->invar->succIdxs[0], markUnreachable);
+    if(markUnreachable) {
+      successTarget = createBasicBlock(emitBB->getContext(), 
+				       VerboseNames ? "invoke-check-unreachable" : "", 
+				       emitBB->getParent());
+      new UnreachableInst(emitBB->getContext(), successTarget);
+    }
+
+    failTarget = getFunctionRoot()->getSubBlockForInst(SI->parent->invar->succIdxs[0], 0);
+
+  }
+  else {
+
+    successTarget = emitIt->specBlock;
+    failTarget = getFunctionRoot()->getSubBlockForInst(SI->parent->invar->idx, SI->invar->idx + 1);
+
+  }
 
   if(emitCB.specBlock != emitCB.breakBlock) {
 

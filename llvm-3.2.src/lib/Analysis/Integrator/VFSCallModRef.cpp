@@ -318,6 +318,7 @@ static IHPFunctionInfo VFSCallFunctions[] = {
   { "writev", false, JustErrno, 0 },
   { "epoll_create", false, JustErrno, 0 },
   { "dup2", false, JustErrno, 0 },
+  { "access", false, JustErrno, 0 },
   // Terminator
   { 0, false, 0, 0 }
 

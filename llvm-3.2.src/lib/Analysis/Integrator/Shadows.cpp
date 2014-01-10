@@ -141,6 +141,7 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, uint32_t extraSlots
     AD.storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
     AD.isCommitted = true;
     AD.allocValue = ShadowValue(&(shadowGlobals[i]));
+    AD.allocType = shadowGlobals[i].G->getType();
 
     //errs() << "Init store for " << *it << " -> ";
     //printPB(errs(), *Init);

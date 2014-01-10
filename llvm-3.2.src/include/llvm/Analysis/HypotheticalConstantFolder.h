@@ -1525,6 +1525,7 @@ protected:
   bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
+  void squashUnavailableObjects(ShadowInstruction& SI, ImprovedValSet*, bool inLoopAnalyser);
   void squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
   bool squashUnavailableObject(ShadowInstruction& SI, ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize);
   void replaceUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
@@ -1985,7 +1986,7 @@ class InlineAttempt : public IntegrationAttempt {
   void releaseCommittedChildren();
 
   void postCommitOptimise();
-  void finaliseAndCommit();
+  void finaliseAndCommit(bool inLoopAnalyser);
   void inheritCommitFunctionCall(bool);
 
   virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
@@ -2291,7 +2292,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void doDSECallMerge(ShadowBB* BB, InlineAttempt* IA);
 
  void TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass);
- void rerunTentativeLoads(ShadowInstruction*, InlineAttempt*);
+ void rerunTentativeLoads(ShadowInstruction*, InlineAttempt*, bool inLoopAnalyser);
  void patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Value* V);
  void forwardReferences(Value* Fwd, Module* M);
  Module* getGlobalModule();
