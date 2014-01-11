@@ -1552,6 +1552,9 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 	    }
 
+	    else if(hasTopOfBlockVFSChecks(thisBBI->idx))
+	      loopHasBreaks = true;
+
 	  }
 
 	  Instruction* PreheaderInst = predBlocks[LInfo->preheaderIdx - OrigSI.parent->idx].first;
@@ -1694,8 +1697,6 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  if(isa<InvokeInst>(predBBI->BB->getTerminator()))
 	    gatherInvokeBreaks(predBBI->idx, thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
 
-	  gatherTopOfBlockVFSChecks(thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
-
 	}
 
 	if(nCondsHere) {
@@ -1704,6 +1705,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  gatherPathConditionEdges(thisBlockIdx, 0, 0, &specPreds);
 
 	}
+
+	gatherTopOfBlockVFSChecks(thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
 
 	if(headerPred.first) {
 

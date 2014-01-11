@@ -377,7 +377,8 @@ void IntegrationAttempt::commitCFG() {
       BasicBlock* newBlock =
 	createBasicBlock(F.getContext(), CheckName, CF);	
 
-      BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
+      // New block-let starts from instruction #1
+      BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 1));
 
     }
      
@@ -435,7 +436,7 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
-      // If we need a check *before* this instruction (at the moment only true if it's a read 
+      // If we need a check *before* this instruction (at the moment only true if it's a read or [f]stat
       // call that will require an inline check) then add a break.
       if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && !GlobalIHP->omitChecks) {
 
@@ -449,7 +450,7 @@ void IntegrationAttempt::commitCFG() {
 	  }
 
 	  BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF);
-	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j));
+	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j + 1));
 
 	}
 
