@@ -168,6 +168,21 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
   
   NewF->copyAttributesFrom(F);
 
+  if(addFailedReturnFlag) {
+
+    // The zeroext and signext attributes specify that codegen should expand these
+    // to fill a register if it needs to satisfy the C ABI. Since cloned functions (except for the root,
+    // whose type is never altered) are not externally called, we don't care about the CC.
+
+    // SRet is an ABI-compliance thing too, and is illegal when the return type is not void.
+
+    NewF->removeAttribute(0, Attributes::get(F->getContext(), Attributes::ZExt));
+    NewF->removeAttribute(0, Attributes::get(F->getContext(), Attributes::SExt));
+    if(NewFType->getNumParams() != 0)
+      NewF->removeAttribute(1, Attributes::get(F->getContext(), Attributes::StructRet));
+
+  }
+
   return NewF;
 
 }
@@ -1922,7 +1937,13 @@ bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal&
 Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar) {
-    return getSingleConstant(IV.V);
+   
+    Constant* C = getSingleConstant(IV.V);
+    if(!C)
+      return 0;
+
+    return getConstAsType(C, targetType);
+
   }
   else if(Ty == ValSetTypeFD) {
     
