@@ -1514,6 +1514,10 @@ protected:
 			  Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds,
 			  SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources);
   bool hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo);
+  bool gatherTopOfBlockVFSChecks(uint32_t BBIdx, ShadowInstIdx predOp, Value* predV,
+				 SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, 
+				 SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources);
+  bool hasTopOfBlockVFSChecks(uint32_t BBIdx);
 
   // Tentative load determination
   

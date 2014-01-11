@@ -894,7 +894,8 @@ bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
 }
 
 bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
-					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
+					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, 
+					    SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
 
   ShadowBBInvar* predBBI = getBBInvar(predBlockIdx);
   
@@ -968,7 +969,61 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
 
 bool IntegrationAttempt::hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo) {
 
+  if(!isa<InvokeInst>(getBBInvar(breakFrom)->BB->getTerminator()))
+    return false;
   return gatherInvokeBreaks(breakFrom, breakTo, ShadowInstIdx(), 0, 0, 0);
+
+}
+
+bool IntegrationAttempt::gatherTopOfBlockVFSChecks(uint32_t BBIdx, ShadowInstIdx predOp, Value* predV,
+						   SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, 
+						   SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
+
+  ShadowBBInvar* BBI = getBBInvar(BBIdx);
+  
+  PeelAttempt* LPA;
+
+  if(BBI->naturalScope != L && 
+     ((!L) || L->contains(BBI->naturalScope)) &&
+     (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) &&
+     LPA->isEnabled() && LPA->isTerminated()) {
+
+    bool ret = false;
+
+    for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
+      ret |= LPA->Iterations[i]->gatherTopOfBlockVFSChecks(BBIdx, predOp, predV, newPreds, newEdgeSources);
+
+    return ret;
+
+  }
+  else {
+
+    ShadowBB* BB = getBB(BBIdx);
+    if(!BB)
+      return false;
+    if(BB->insts[0].needsRuntimeCheck != RUNTIME_CHECK_READ_LLIOWD)
+      return false;
+
+    BasicBlock* predBlock = BB->getCommittedBreakBlockAt(0);
+
+    if(newPreds) {
+      Value* specV = getSpecValue(predOp.blockIdx, predOp.instIdx, predV, predBlock->getTerminator());
+      release_assert(specV);
+      newPreds->push_back(std::make_pair(specV, predBlock));
+    }
+    else if(newEdgeSources) {
+      newEdgeSources->push_back(std::make_pair(predBlock, this));
+    }
+
+    return true;
+    
+  }
+
+}
+
+bool IntegrationAttempt::hasTopOfBlockVFSChecks(uint32_t idx) {
+
+  return gatherTopOfBlockVFSChecks(idx, ShadowInstIdx(), 0, 0, 0);
 
 }
 
@@ -1560,10 +1615,12 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
       }
       
-      // Create a PHI merge at the top of this block if (a) there are unspec->spec edges
-      // due to ignored blocks, (b) there are path condition breaks to top of block,
-      // (c) there are in-loop invoke instructions branching here,
-      // or (d) unspecialised predecessor blocks are using different versions of the 
+      // Create a PHI merge at the top of this block if:
+      // (a) there are unspec->spec edges due to ignored blocks, 
+      // (b) there are path condition breaks to top of block,
+      // (c) there are invoke instructions branching here on test failure or exception,
+      // (d) there are checked VFS instructions at the top of the block,
+      // or (e) unspecialised predecessor blocks are using different versions of the 
       // instruction in question. Also always insert a merge at the loop header if we
       // get to here, as some disagreement is sure to arise between the preheader->header
       // and latch->header edges.
@@ -1577,12 +1634,16 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
       bool shouldMergeHere = nCondsHere != 0 || isSpecToUnspec || headerPred.first != 0;
 
+      // Case (d): failing VFS instructions exist that will target the start of this block.
+      if((!shouldMergeHere) && hasTopOfBlockVFSChecks(thisBBI->idx))
+	shouldMergeHere = true;
+
       if(!shouldMergeHere) {
 
 	// Case (c): invoke breaks, either due to checked invoke instruction
 	// or due to exceptional control flow that leads here.
       
-	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
+	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size() && !shouldMergeHere; j != jlim; ++j) {
 
 	  if(hasInvokeBreaks(thisBBI->predIdxs[j], thisBBI->idx))
 	    shouldMergeHere = true;
@@ -1593,7 +1654,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
       if(!shouldMergeHere) {
 
-	// Case (d): do predecesors disagree about which version of the instruction they're using?
+	// Case (e): do predecesors disagree about which version of the instruction they're using?
 
 	Instruction* UniqueIncoming = 0;
 	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim; ++j) {
@@ -1632,6 +1693,8 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  
 	  if(isa<InvokeInst>(predBBI->BB->getTerminator()))
 	    gatherInvokeBreaks(predBBI->idx, thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
+
+	  gatherTopOfBlockVFSChecks(thisBBI->idx, ShadowInstIdx(), 0, 0, &specPreds);
 
 	}
 
