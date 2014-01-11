@@ -1791,6 +1791,8 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
 
   if(!CmpC)
     return MCRMAYBE;
+  if(!isa<ConstantInt>(CmpC))
+    return MCRMAYBE;
 
   uint64_t CmpInt = cast<ConstantInt>(CmpC)->getLimitedValue();
   uint8_t* CmpBytes = (uint8_t*)&CmpInt;
