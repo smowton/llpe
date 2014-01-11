@@ -849,7 +849,12 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
       if(changed && IA->hasFailedReturnPath()) {
 
 	// Must create a copy of this block for failure paths, starting at the call successor.
-	getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->idx, SI->invar->idx + 1);
+	// Invoke instructions fail directly to their non-exception successors;
+	// call instructions introduce a break in their basic block.
+	if(inst_is<CallInst>(SI))
+	  getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->idx, SI->invar->idx + 1);
+	else
+	  getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->succIdxs[0], 0);
 
       }
 
