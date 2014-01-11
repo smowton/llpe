@@ -983,7 +983,7 @@ void InlineAttempt::gatherSpecToUnspecEdges(uint32_t predBlockIdx, uint32_t BBId
     newPreds.push_back(std::make_pair(specV, specPred));
     
   }
-  else if(isa<InvokeInst>(getBBInvar(BBIdx)->BB->getTerminator())) {
+  else if(isa<InvokeInst>(getBBInvar(predBlockIdx)->BB->getTerminator())) {
 
     gatherInvokeBreaks(predBlockIdx, BBIdx, predOp, predV, &newPreds, 0);
 
