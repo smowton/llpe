@@ -880,7 +880,8 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
 
   ShadowBB* BB = getBB(fromIdx);
-  if(BB && !edgeIsDead(BB->invar, getBBInvar(toIdx))) {
+  ShadowBBInvar* toBBI = getBBInvar(toIdx);
+  if(BB && (!edgeIsDead(BB->invar, toBBI)) && !shouldIgnoreEdge(BB->invar, toBBI)) {
 
     if(BB->invar->naturalScope != L) {
 
