@@ -107,8 +107,27 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 
 	}
 
-	// Create a load before the user. TODO: fix this for phis.
-	Instruction* Fwd = new LoadInst(NewGV, "", UserI);
+	Instruction* InsertBefore;
+	if(PHINode* PN = dyn_cast<PHINode>(UserI)) {
+
+	  // Find the particular predecessor corresponding to this use:
+	  int32_t phiOpIdx = -1;
+	  
+	  for(uint32_t i = 0, ilim = PN->getNumIncomingValues(); i != ilim && phiOpIdx == -1; ++i)
+	    if((&PN->getOperandUse(PN->getOperandNumForIncomingValue(i))) == U)
+	      phiOpIdx = i;
+
+	  release_assert(phiOpIdx != -1 && "No PHI corresponding Use?");
+	  InsertBefore = PN->getIncomingBlock(phiOpIdx)->getTerminator();
+
+	}
+	else {
+
+	  InsertBefore = UserI;
+
+	}
+
+	Instruction* Fwd = new LoadInst(NewGV, "", InsertBefore);
 	replaceUses.push_back(std::make_pair(U, Fwd));
 
       }
