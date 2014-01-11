@@ -96,14 +96,23 @@ void InlineAttempt::setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_
 
 }
 
-bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
+bool IntegrationAttempt::isExceptionEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
 
   if(isa<InvokeInst>(CurrBB->BB->getTerminator())) {
-
+    
     if(CurrBB->succIdxs[1] == SuccBB->idx)
       return true;
-
+    
   }
+
+  return false;
+
+}
+
+bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
+
+  if(isExceptionEdge(CurrBB, SuccBB))
+    return true;
 
   InlineAttempt* MyRoot = getFunctionRoot();
   IATargetInfo* TI = MyRoot->targetCallInfo;

@@ -1640,7 +1640,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
 	uint64_t PaddingBytes = (NextOff - (ThisOff + ESize));
 	if(PaddingBytes) {
 
-	  Type* PaddingType = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+	  Type* PaddingType = Type::getIntNTy(FromC->getContext(), PaddingBytes * 8);
 	  Constant* Padding = UndefValue::get(PaddingType);
 	  AddIVSConst(ThisOff + ESize, PaddingBytes, Padding);
 
@@ -1824,22 +1824,38 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
     }
 
+    // Back up the stop() value here, are some truncateRight paths will adjust it.
+    // Also back up start() as the iterator will be moved.
+    uint64_t oldStart = found.start();
+    uint64_t oldStop = found.stop();
+
     if(canTruncate(found.val()))
       truncateRight(found, Offset - found.start());
     else
       found.val().setOverdef();
 
-    M->CoveredBytes -= (found.stop() - Offset);
-    uint64_t oldStop = found.stop();
+    // Some truncate paths don't update the value's stop index (e.g. the setOverdef just above)
+    // so ensure it is correct here:
+    M->CoveredBytes -= (oldStop - Offset);
     found.setStopUnchecked(Offset);
 
     release_assert(found.start() < found.stop());
 
     if(RHS.isInitialised()) {
 
+      ImprovedValSetMulti::MapIt replacementStart;      
+
       ++found;
-      found.insert(LastByte, oldStop, RHS);
-      truncateLeft(found, oldStop - LastByte);
+
+      // Insert the original value with its original value. This will temporarily produce an invalid
+      // interval map (e.g. 0-16: [i32 1, i32 2, i32 3, i32 4] where we're replacing 4-8 will have
+      // become 0-4: i32 1, (4-8 blanked), 0-16: [i32 1, i32 2, i32 3, i32 4]; therefore truncateLeft
+      // -> truncateConstVal must not do any imap searches.
+      // The setStartUnchecked command below will make the map well-formed again.
+
+      found.insert(oldStart, oldStop, RHS);
+      truncateLeft(found, oldStop - LastByte, replacementStart);
+      replacementStart.setStartUnchecked(LastByte);
       M->CoveredBytes += (oldStop - LastByte);
       return;
 
@@ -1859,13 +1875,16 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
   if(found != M->Map.end() && found.start() < LastByte) {
 
+    ImprovedValSetMulti::MapIt replacementStart = found;
+    uint64_t oldStart = found.start();
+
     if(canTruncate(found.val()))
-      truncateLeft(found, found.stop() - LastByte);
+      truncateLeft(found, found.stop() - LastByte, replacementStart);
     else
       found.val().setOverdef();
 
-    M->CoveredBytes -= (LastByte - found.start());
-    found.setStartUnchecked(LastByte);
+    M->CoveredBytes -= (LastByte - oldStart);
+    replacementStart.setStartUnchecked(LastByte);
     release_assert(found.start() < found.stop());
 
   }
@@ -1906,9 +1925,10 @@ void llvm::replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>&
 
 }
 
-void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size) {
+void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& firstPtr) {
 
   ImprovedValSetSingle& S = it.val();
+  firstPtr = it;
 
   // Dodge problem of taking e.g. { complex_val, other_complex_val } that
   // split into multiple values and then recombining: only allow value splitting for singleton sets.
@@ -1928,10 +1948,16 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
 	  valit != valend; ++valit) {
 
 	it.insert(valit->first.first, valit->first.second, valit->second);
+
+	// Record an iterator pointing to the start of the replacement sequence if our caller needs it.
+	if(valit == SubVals.begin())
+	  firstPtr = it;
+
 	++it;
 
       }
 
+      --it;
       // Pointer ends up aimed at the last part of the replacement.
 
     }
@@ -1970,15 +1996,21 @@ void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
     return;
   }
 
-  truncateConstVal(it, 0, n);
+  ImprovedValSetMulti::MapIt ign;
+  truncateConstVal(it, 0, n, ign);
   
 }
 
 
-void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
+void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValSetMulti::MapIt& firstPtr) {
 
   // Remove bytes from the LHS, leaving a value of size n bytes.
   // it points at the current value that should be altered.
+
+  // On most paths we'll just modify it in place, and so firstPtr will continue to point to the
+  // start of the truncated value; however truncateConstVal might break 'it' into several smaller
+  // extents and set firstPtr appropriately.
+  firstPtr = it;
 
   ImprovedValSetSingle& S = it.val();
 
@@ -1992,7 +2024,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n) {
 
   Constant* C = getSingleConstant(S.Values[0].V);
   uint64_t CSize = GlobalAA->getTypeStoreSize(C->getType());
-  truncateConstVal(it, CSize - n, n);
+  truncateConstVal(it, CSize - n, n, firstPtr);
 
 }
 

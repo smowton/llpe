@@ -859,6 +859,39 @@ static bool tryGetNegatedPointer(ShadowValue checkOp, uint64_t& SubOp0, ShadowVa
 
 }
 
+unsigned IntegrationAttempt::getAlignment(ShadowValue V) {
+
+  unsigned Align = 1;
+
+  if(V.isPtrIdx()) {
+
+    AllocData* AD = getAllocData(V);
+      
+    if(V.getFrameNo() == -1) {
+
+      // Careful, can't use the instruction as it might be committed.
+      if(AD->allocValue.isInst())
+	Align = pass->getMallocAlignment();
+      else if(AD->allocValue.isGV()) {
+	GlobalValue* GV = cast<GlobalValue>(AD->allocValue.getGV()->G);
+	Align = GV->getAlignment();
+      }
+
+    }
+    else {
+	  
+      // Alloca instructions are never committed when in scope.
+      AllocaInst* AI = cast_inst<AllocaInst>(AD->allocValue.getInst());
+      Align = AI->getAlignment();
+	  
+    }
+
+  }
+
+  return Align;
+
+}
+
 bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   Instruction* BOp = SI->invar->I;
@@ -866,8 +899,15 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
   if(!SI->getType()->isIntegerTy())
     return false;
 
-  if(BOp->getOpcode() != Instruction::Sub && BOp->getOpcode() != Instruction::And && BOp->getOpcode() != Instruction::Add)
+  switch(BOp->getOpcode()) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::And:
+  case Instruction::Or:
+    break;
+  default:
     return false;
+  }
 
   bool Op0Ptr = Ops[0].first == ValSetTypePB;
   bool Op1Ptr = Ops[1].first == ValSetTypePB;
@@ -983,6 +1023,11 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
     do {
 
+      if(Op1Ptr) {
+	std::swap(Op0Ptr, Op1Ptr);
+	std::swap(Ops[0], Ops[1]);
+      }
+
       if((!Op0Ptr) || Op1Ptr)
 	break;
 
@@ -998,33 +1043,8 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 
       uint64_t UOff = (uint64_t)Ops[0].second.Offset;
 
-      // Try to get alignment:
-
-      unsigned Align = 0;
-      if(Ops[0].second.V.isPtrIdx()) {
-
-	AllocData* AD = getAllocData(Ops[0].second.V);
+      unsigned Align = getAlignment(Ops[0].second.V);
       
-	if(Ops[0].second.V.getFrameNo() == -1) {
-
-	  // Careful, can't use the instruction as it might be committed.
-	  if(AD->allocValue.isInst())
-	    Align = pass->getMallocAlignment();
-	  else if(AD->allocValue.isGV()) {
-	    GlobalValue* GV = cast<GlobalValue>(AD->allocValue.getGV()->G);
-	    Align = GV->getAlignment();
-	  }
-
-	}
-	else {
-	  
-	  AllocaInst* AI = cast_inst<AllocaInst>(AD->allocValue.getInst());
-	  Align = AI->getAlignment();
-	  
-	}
-
-      }
-
       if(Align > MaskC) {
       
 	ImpType = ValSetTypeScalar;
@@ -1057,6 +1077,55 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
       return true;
 
     }
+
+  }
+  else if(BOp->getOpcode() == Instruction::Or) {
+
+    // Or may be used to set offset bits, similar to the And case above subtracting from it.
+
+    do {
+
+      if(Op1Ptr) {
+	std::swap(Op0Ptr, Op1Ptr);
+	std::swap(Ops[0], Ops[1]);
+      }
+
+      if((!Op0Ptr) || Op1Ptr)
+	break;
+
+      uint64_t MaskC;
+      if(!tryGetConstantInt(Ops[1].second.V, MaskC))
+	break;
+
+      if(Ops[0].second.Offset == LLONG_MAX || Ops[0].second.Offset < 0)
+	break;
+
+      uint64_t UOff = (uint64_t)Ops[0].second.Offset;
+      unsigned Align = getAlignment(Ops[0].second.V);
+      
+      if(Align > MaskC) {
+      
+	ImpType = ValSetTypePB;
+	Improved = ImprovedVal(Ops[0].second.V, MaskC | UOff);
+	return true;
+
+      }
+
+    } while(0);
+
+    // Otherwise, the usual rule: the and op cannot take a pointer into a different allocated object.
+    
+    if(Op0Ptr || Op1Ptr) {
+
+      std::pair<ValSetType, ImprovedVal>& PtrV = Op0Ptr ? Ops[0] : Ops[1];
+
+      ImpType = ValSetTypePB;
+      Improved.V = PtrV.second.V;
+      Improved.Offset = LLONG_MAX;
+      return true;
+
+    }
+
 
   }
 
@@ -1959,8 +2028,10 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	      newVal.val().setOverdef();
 	  }
 	  else if(ShiftedStop > resSize) {
-	    if(canTruncate(newVal.val()))
-	      truncateLeft(newVal, ShiftedStop - resSize);
+	    if(canTruncate(newVal.val())) {
+	      ImprovedValSetMulti::MapIt ign;
+	      truncateLeft(newVal, ShiftedStop - resSize, ign);
+	    }
 	    else
 	      newVal.val().setOverdef();
 	  }

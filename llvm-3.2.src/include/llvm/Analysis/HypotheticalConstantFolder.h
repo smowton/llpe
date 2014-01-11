@@ -1233,6 +1233,7 @@ protected:
 			 ValSetType& ImpType, ImprovedVal& Improved,
 			 unsigned char* needsRuntimeCheck);
   bool tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
+  unsigned getAlignment(ShadowValue);
   bool tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
   bool tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned char* needsRuntimeCheck);
   bool tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved);
@@ -1472,6 +1473,7 @@ protected:
   // Conditional specialisation
 
   void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
+  bool isExceptionEdge(ShadowBBInvar*, ShadowBBInvar*);
   bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
   bool hasLiveIgnoredEdges(ShadowBB*);
   virtual void initFailedBlockCommit();
@@ -2198,9 +2200,9 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
  void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
  void replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
- void truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size);
+ void truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& replacementStart);
  void truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n);
- void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n);
+ void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValSetMulti::MapIt& replacementStart);
  bool canTruncate(ImprovedValSetSingle& S);
 
  void readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore, uint64_t ASize);

@@ -62,7 +62,7 @@ static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
 static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
 static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
-static cl::opt<unsigned> MallocAlignment("int-malloc-alignment", cl::init(0));
+static cl::opt<unsigned> MallocAlignment("int-malloc-alignment", cl::init(1));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
 static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
@@ -1009,10 +1009,12 @@ bool PeelIteration::allExitEdgesDead() {
 
   for(std::vector<std::pair<uint32_t, uint32_t> >::iterator EI = parentPA->invarInfo->exitEdges.begin(), EE = parentPA->invarInfo->exitEdges.end(); EI != EE; ++EI) {
 
-    if(!edgeIsDead(getBBInvar(EI->first), getBBInvar(EI->second))) {
+    ShadowBBInvar* EStart = getBBInvar(EI->first);
+    ShadowBBInvar* EEnd = getBBInvar(EI->second);
+
+    if((!edgeIsDead(EStart, EEnd)) && !isExceptionEdge(EStart, EEnd))
       return false;
-    }
-  
+
   }
 
   return true;
