@@ -927,11 +927,14 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
     BasicBlock* predBlock = 0;
 
     if(BBIdx == predBBI->succIdxs[0]) {
+
+      InlineAttempt* IA;
       
-      if(InlineAttempt* IA = getInlineAttempt(&BB->insts.back())) {
+      if((IA = getInlineAttempt(&BB->insts.back())) && IA->isEnabled()) {
 	
 	if(IA->hasFailedReturnPath()) {
 
+	  // Enabled invoke context with a failed path?
 	  if(IA->mustCommitOutOfLine())
 	    predBlock = BB->committedBlocks.back().breakBlock;
 	  else
@@ -939,6 +942,12 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
 
 	}
 	
+      }
+      else if(requiresRuntimeCheck(ShadowValue(&BB->insts.back()), false)) {
+
+	// Disabled invoke context with a checked return value?
+	predBlock = BB->committedBlocks.back().breakBlock;
+
       }
 
     }
