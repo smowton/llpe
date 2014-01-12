@@ -1646,7 +1646,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	// Case (c): invoke breaks, either due to checked invoke instruction
 	// or due to exceptional control flow that leads here.
       
-	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size() && !shouldMergeHere; j != jlim; ++j) {
+	for(uint32_t j = 0, jlim = thisBBI->predIdxs.size(); j != jlim && !shouldMergeHere; ++j) {
 
 	  if(hasInvokeBreaks(thisBBI->predIdxs[j], thisBBI->idx))
 	    shouldMergeHere = true;
