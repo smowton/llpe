@@ -862,10 +862,13 @@ bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
   if(pass->omitChecks)
     return false;
 
+  ShadowBBInvar* SBBI = BB->invar;
+
   for(uint32_t i = 0, ilim = BB->invar->succIdxs.size(); i != ilim; ++i) {
 
-    if(shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i])) &&
-       !edgeIsDead(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
+    ShadowBBInvar* TBBI = getBBInvar(BB->invar->succIdxs[i]);
+
+    if(shouldIgnoreEdge(SBBI, TBBI) && (!isExceptionEdge(SBBI, TBBI)) && !edgeIsDead(SBBI, TBBI))
       return true;
 
   }
@@ -930,6 +933,9 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
 
       InlineAttempt* IA;
       
+      // Where the following code gets BB->committedBlocks.back().breakBlock, this will be the
+      // breakBlock corresponding to the CommittedBlock *after* the invoke instruction itself.
+
       if((IA = getInlineAttempt(&BB->insts.back())) && IA->isEnabled()) {
 	
 	if(IA->hasFailedReturnPath()) {
@@ -953,9 +959,9 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
     }
     else if(BBIdx == predBBI->succIdxs[1]) {
 
-      // TODO: the 'breakblock' concept doesn't quite work when invoke instructions
-      // can break to unspecialised code by throwing an exception
-      // OR by a subsequent test failing.
+      // As this is the exception edge, it isn't legal to interpose a break block
+      // between the edge leaving the invoke and the landingpad block. Thus this
+      // must return the breakBlock of a CommittedBlock where .breakBlock == .specBlock.
       predBlock = BB->getCommittedBreakBlockAt(predBBI->insts.size() - 1);
 
     }

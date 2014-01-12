@@ -467,16 +467,25 @@ void IntegrationAttempt::commitCFG() {
 	if(j + 1 != BB->insts.size() && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
 
+	BasicBlock* breakBlock = 0;
+
 	if(pass->verbosePCs) {
 	
 	  // The previous block will break due to a tentative load. Give it a break block.
-	  BasicBlock* breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
-	  BB->committedBlocks.back().breakBlock = breakBlock;
+	  // For most kinds of break this should belong to the old subblock;
+	  // for invoke instructions it should belong to the new one so that the old one's break edge
+	  // doesn't have an intermediary block and so can be used for the unwind edge.
+	  breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
+	  if(!inst_is<InvokeInst>(SI))
+	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	}
 
 	BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF);
 	BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j+1));
+
+	if(inst_is<InvokeInst>(SI) && breakBlock)
+	  BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
 
@@ -882,7 +891,9 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
     }
     else {
 	  
-      if(pass->verbosePCs && shouldIgnoreEdge(BB->invar, getBBInvar(I->invar->operandIdxs[idx].blockIdx))) {
+      ShadowBBInvar* TargetBBI = getBBInvar(I->invar->operandIdxs[idx].blockIdx);
+
+      if(pass->verbosePCs && shouldIgnoreEdge(BB->invar, TargetBBI) && !isExceptionEdge(BB->invar, TargetBBI)) {
 
 	if(inst_is<SwitchInst>(I)) {
 
@@ -1070,6 +1081,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     }
 
     if(!breakSuccessors.empty()) {
+
+      // This path should never handle invoke instructions, and so this treatment of
+      // failed paths is acceptable.
 
       BasicBlock* breakBlock = BB->committedBlocks.back().breakBlock;
 
@@ -1425,7 +1439,7 @@ BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, b
     Value* opV = getCommittedValueOrBlock(I, I->getNumOperands() - 2, ignFailValue, failBlock);
 
     if(failBlock)
-	release_assert(0 && "Case not covered yet: invoke without a normal successor");
+	release_assert(0 && "Case not covered yet: invoke instruction with ignored normal return edge");
 
     return cast<BasicBlock>(opV);
 
@@ -1689,6 +1703,26 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
   if(emitVFSCall(BB, I, emitBBIter))
     return;
 
+  // Print a warning when leaving specialised code via an exception.
+  // Hopefully the call always has the right attribute combination:
+
+  if(pass->verbosePCs && !getInlineAttempt(I)) {
+
+    Function* CalledF = getCalledFunction(I);
+    if(CalledF && CalledF->doesNotReturn() && !CalledF->doesNotThrow()) {
+
+      std::string msg;
+      {
+	raw_string_ostream RSO(msg);
+	RSO << "Leaving specialised code by entering noreturn throws function " << CalledF->getName() << "\n";
+      }
+
+      emitRuntimePrint(emitBB, msg, 0);
+
+    }
+
+  }
+
   // Unexpanded call, emit it as a normal instruction.
   Instruction* NewI = emitInst(BB, I, emitBB);
 
@@ -1725,8 +1759,6 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
   if(CallInst* CI = dyn_cast<CallInst>(newI))
     CI->setTailCall(false);
 
-  BasicBlock* uniqueFailBlock = 0;
-
   // Normal instruction: no BB arguments apart from invoke instructions, 
   // and all args have been committed already.
   for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
@@ -1738,25 +1770,21 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
     Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
 
-    if(failBlock) {
+    release_assert((!failBlock) && "Case not handled yet: invoke with ignored normal return");
 
-      if(uniqueFailBlock)
-	release_assert(0 && "Case not covered yet: invoke with both arms ignored");
+  }
 
+  if(pass->verbosePCs && isa<LandingPadInst>(newI)) {
+
+    std::string msg;
+    {
+      raw_string_ostream RSO(msg);
+      RSO << "Landed at landing pad inst in block " << BB->invar->BB->getName() << " / " << F.getName() << " / " << SeqNumber << "\n";
     }
-
-    uniqueFailBlock = failBlock;
-
+    emitRuntimePrint(emitBB, msg, 0);
+    
   }
-
-  if(uniqueFailBlock) {
-
-    // Invoke instruction heading down failed path. Landingpad instruction means
-    // that the breakBlock should actually be the target block.
-    release_assert(0 && "TODO: exceptions + verbose PCs");
-
-  }
-
+   
   // If it's an allocation instruction, either store it to a global if globalised
   // or just record the emitted allocation otherwise.
   ShadowValue Base;
