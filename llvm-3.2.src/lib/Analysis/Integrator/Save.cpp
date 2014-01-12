@@ -1639,6 +1639,12 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
   // Unexpanded call, emit it as a normal instruction.
   emitInst(BB, I, emitBB);
 
+  // If the InvokeInst has its return value checked then there will be a block
+  // waiting to hold the check; if not this walks to committedBlocks.end()
+  // but it's OK since Invoke is a terminator.
+  if(inst_is<InvokeInst>(I))
+    ++emitBBIter;
+
 }
 
 Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
@@ -2630,7 +2636,12 @@ void IntegrationAttempt::markAllocationsAndFDsCommitted() {
 
       ShadowInstruction& SI = BB->insts[j];
       ShadowValue Base;
-      if(getBaseObject(ShadowValue(&SI), Base) && Base.isPtrIdx()) {
+      if(InlineAttempt* IA = getInlineAttempt(&SI)) {
+
+	IA->markAllocationsAndFDsCommitted();
+
+      }
+      else if(getBaseObject(ShadowValue(&SI), Base) && Base.isPtrIdx()) {
 
 	AllocData* AD = getAllocData(Base);
 	if((!AD->isCommitted) && AD->allocValue == ShadowValue(&SI)) {

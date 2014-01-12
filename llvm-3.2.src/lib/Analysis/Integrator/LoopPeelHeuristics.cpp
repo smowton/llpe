@@ -780,11 +780,11 @@ void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
     // Save a DOT representation if need be, for the GUI to use.
     saveDOT();
 
-    commitState = COMMIT_DONE;
-
     // Allocations and FD creations in this scope should be marked
     // committed without canonical value.
     markAllocationsAndFDsCommitted();
+
+    commitState = COMMIT_DONE;
 
     // Child contexts may have generated code that we no longer care
     // to use. Delete it if so.
@@ -2284,6 +2284,13 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
   errs() << "Block " << name << " not found\n";
   exit(1);
+
+}
+
+BasicBlock* findBlockRaw(Function* F, const char* name) {
+
+  std::string S(name);
+  return findBlockRaw(F, S);
 
 }
 
