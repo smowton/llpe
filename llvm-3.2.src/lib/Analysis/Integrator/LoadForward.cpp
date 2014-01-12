@@ -3368,7 +3368,7 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
     replaceRangeWithPB(Store->store, ValPB, (uint64_t)PtrSet.Values[0].Offset, PtrSize);
     checkStore(Store->store, PtrSet.Values[0].V);
-
+ 
   }
   else {
 

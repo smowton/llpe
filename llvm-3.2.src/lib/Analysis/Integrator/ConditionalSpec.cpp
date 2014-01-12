@@ -2450,7 +2450,6 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
 
 	  if(!blockAlreadyDone) {
 
-	    errs() << "FOUND MISSING BLOCK!\n";
 	    Value* newVal = it->second->getSpecValue(/*blockIdx =*/idx, failedInst, failedI, it->first->getTerminator());
 	    specPreds.push_back(std::make_pair(newVal, it->first));
 
@@ -2570,6 +2569,14 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
 
     Type* I64 = Type::getInt64Ty(emitBB->getContext());
     Value* PrevCheck = 0;
+
+    // Ptrtoint if necessary (usually this indicates a union type).
+    if(!realInst->getType()->isIntegerTy()) {
+
+      release_assert(realInst->getType()->isPointerTy());
+      realInst = new PtrToIntInst(realInst, I64, "", emitBB);
+	
+    }
 
     // Check each non-overdef element of the source inst.
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(SI->i.PB);
