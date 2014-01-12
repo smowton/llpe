@@ -1450,6 +1450,7 @@ protected:
   }
   Value* getCommittedValue(ShadowValue SV);
   Value* getCommittedValueOrBlock(ShadowInstruction* I, uint32_t idx, ConstantInt*& failValue, BasicBlock*& failBlock);
+  BasicBlock* getInvokeNormalSuccessor(ShadowInstruction*, bool& toCheckBlock);
   void releaseMemoryPostCommit();
   BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock = false);
   BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,

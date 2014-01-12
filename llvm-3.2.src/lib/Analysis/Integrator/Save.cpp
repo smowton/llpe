@@ -1399,6 +1399,40 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 }
 
+BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, bool& toCheckBlock) {
+
+  toCheckBlock = false;
+
+  InlineAttempt* IA;
+
+  // An invoke's normal return path should go to special block added to the end of its parent's
+  // committedBlock list to perform a test if necessary.
+  // This might be because its return value should be checked, or because it has a failed return path.
+  // If not check is needed, simply branch to its ordinary successor.
+
+  if(requiresRuntimeCheck(ShadowValue(I), false))
+    toCheckBlock = true;
+  else if((IA = getInlineAttempt(I)) && IA->hasFailedReturnPath())
+    toCheckBlock = true;
+
+  if(toCheckBlock)
+    return I->parent->committedBlocks.back().specBlock;
+  else {
+
+    ConstantInt* ignFailValue = 0;
+    BasicBlock* failBlock = 0;
+
+    Value* opV = getCommittedValueOrBlock(I, I->getNumOperands() - 2, ignFailValue, failBlock);
+
+    if(failBlock)
+	release_assert(0 && "Case not covered yet: invoke without a normal successor");
+
+    return cast<BasicBlock>(opV);
+
+  }
+
+}
+
 void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBBIter) {
 
   BasicBlock* emitBB = emitBBIter->specBlock;
@@ -1486,23 +1520,42 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	release_assert(IA->CommitF);
 	Instruction* NewI;
+
+	BasicBlock* invokeNormalDest = 0;
+	bool advanceCBIter;
+
+	if(inst_is<InvokeInst>(I)) {
+
+	  // Note that the iterator is bumped forwards, but we keep emitBB as-is for now
+	  // to emit the call or invoke into the old block.
+	  invokeNormalDest = getInvokeNormalSuccessor(I, advanceCBIter);
+	  if(advanceCBIter)
+	    ++emitBBIter;
+
+	}
+
 	if(inst_is<CallInst>(I) || (inst_is<InvokeInst>(I) && !BB->succsAlive[1])) {
+
 	  NewI = CallInst::Create(IA->CommitF, Args, "", emitBB);
+
 	  if(inst_is<InvokeInst>(I)) {
 	    // Invoke that becomes a call because it cannot throw
-	    ++emitBBIter;
-	    BranchInst::Create(emitBBIter->specBlock, emitBB);
-	    emitBB = emitBBIter->specBlock;
+	    BranchInst::Create(invokeNormalDest, emitBB);
 	  }
+
 	}
 	else {
+
 	  // Normal invoke that can throw
-	  ++emitBBIter;
 	  BasicBlock* exnBlock = getFunctionRoot()->getSubBlockForInst(BB->invar->succIdxs[1], 0);
-	  BasicBlock* normalBlock = emitBBIter->specBlock;
-	  NewI = InvokeInst::Create(IA->CommitF, normalBlock, exnBlock, Args, "", emitBB);
-	  emitBB = emitBBIter->specBlock;
+	  NewI = InvokeInst::Create(IA->CommitF, invokeNormalDest, exnBlock, Args, "", emitBB);
+
 	}
+
+	// Bring emitBB back into sync with the iterator if we bumped it above getting an invoke
+	// instruction's destination. This means that any checks needed by that invoke
+	// will be emitted to this block.
+	emitBB = emitBBIter->specBlock;
 
 	CallSite NewCI(NewI);
 	 
@@ -1637,13 +1690,25 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
     return;
 
   // Unexpanded call, emit it as a normal instruction.
-  emitInst(BB, I, emitBB);
+  Instruction* NewI = emitInst(BB, I, emitBB);
 
-  // If the InvokeInst has its return value checked then there will be a block
-  // waiting to hold the check; if not this walks to committedBlocks.end()
-  // but it's OK since Invoke is a terminator.
-  if(inst_is<InvokeInst>(I))
-    ++emitBBIter;
+  if(InvokeInst* NewInvoke = dyn_cast<InvokeInst>(NewI)) {
+
+    // If an invoke with a disabled IA was emitted, its return value may need to be checked;
+    // in this case it should branch to another subblock of the same BB rather than its usual
+    // successor, and the check will be constructed by our caller.
+
+    bool advanceIter;
+    BasicBlock* normalDest = getInvokeNormalSuccessor(I, advanceIter);
+
+    if(advanceIter) {
+
+      NewInvoke->setNormalDest(normalDest);
+      ++emitBBIter;
+
+    }
+
+  }
 
 }
 
