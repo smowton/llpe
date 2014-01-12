@@ -1121,38 +1121,38 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
   if(!BB)
     return 0;
 
-  bool added = false;
+  uint32_t oldEdgesSize = edges.size();
 
   ShadowInstruction* SI = &BB->insts[instIdx];
   InlineAttempt* IA;
 
   if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
-    if(IA->failedReturnBlock) {
+    if(IA->failedReturnBlock)
       edges.push_back(std::make_pair(IA->failedReturnBlock, this));
-      added = true;
-    }
-    else if(IA->commitsOutOfLine() && IA->hasFailedReturnPath()) {
+    else if(IA->commitsOutOfLine() && IA->hasFailedReturnPath())
       edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
-      added = true;
-    }
 
   }
 
-  // Does this IA break at this instruction?
+  // Does this context break at this instruction?
   // It does if this instruction requires an as-expected check ("requiresRuntimeCheck"), 
   // OR if the NEXT instruction requires a special check.
-  if((!added) && 
-     (requiresRuntimeCheck(ShadowValue(SI), false) ||
-      (SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) ||
-      (BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD))) {
+  if(edges.size() == oldEdgesSize) {
 
-    edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
-    added = true;
-    
+    if(requiresRuntimeCheck(ShadowValue(SI), false) || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP)
+      edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx), this));
+
   }
 
-  if(added && L)
+  // Add for a failing VFS op even if we've already found other failing paths above:
+  // it is possible for the NEXT instruction (i + 1) to have an LLIOWD check,
+  // which backs up an instruction to repeat the VFS op, and for the CURRENT instruction (i)
+  
+  if(BB->insts.size() > instIdx + 1 && BB->insts[instIdx + 1].needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD)
+    edges.push_back(std::make_pair(BB->getCommittedBreakBlockAt(instIdx + 1), this));
+
+  if(edges.size() != oldEdgesSize && L)
     return 1;
   else
     return 0;
@@ -2421,6 +2421,45 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
       else
 	collectSpecPreds(BBI, failedInst, BBI, failedInst, specPreds);
 
+      // In the rare circumstance where there is a VFS instruction immediately after a checked
+      // call or load, the edges can converge at this failed block because the VFS failing edge
+      // branches to a repeat of the VFS instruction. In this case we must add variants of the
+      // same failedInst for the VFS failing edge.
+      
+      // This is only necessary if some specpreds have been found already for the load or call
+      // that is the primary motivation for this merge point: otherwise no PHI will be created
+      // and the edge form a converging VFS check is irrelevant.
+      
+      // TODO: improve this ugly hack. I don't use the same algorithm as insertMergePHI
+      // purely because call instructions need different treatment, with this path consuming
+      // failedReturnPHI instead of their successful return values.
+
+      if(specPreds.size()) {
+
+	SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4> incomingEdges;
+	collectSpecIncomingEdges(idx, it->second - 1, incomingEdges);
+
+	for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = incomingEdges.begin(),
+	      itend = incomingEdges.end(); it != itend; ++it) {
+
+	  bool blockAlreadyDone = false;
+	  for(SmallVector<std::pair<Value*, BasicBlock*>, 4>::iterator findit = specPreds.begin(),
+		finditend = specPreds.end(); findit != finditend && !blockAlreadyDone; ++findit)
+	    if(findit->second == it->first)
+	      blockAlreadyDone = true;
+
+	  if(!blockAlreadyDone) {
+
+	    errs() << "FOUND MISSING BLOCK!\n";
+	    Value* newVal = it->second->getSpecValue(/*blockIdx =*/idx, failedInst, failedI, it->first->getTerminator());
+	    specPreds.push_back(std::make_pair(newVal, it->first));
+
+	  }
+
+	}
+
+      }
+      
       if(specPreds.size()) {
 
 	++insertedPHIs;
