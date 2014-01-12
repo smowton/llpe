@@ -687,7 +687,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
     if(testRoot->getType() != Cond.u.val->getType())
       testRoot = new SExtInst(testRoot, Cond.u.val->getType(), "", emitBlock);
 
-    resultInst = new ICmpInst(*emitBlock, CmpInst::ICMP_EQ, testRoot, Cond.u.val);
+    resultInst = emitCompositeCheck(testRoot, Cond.u.val, emitBlock);
     break;
 
   case PathConditionTypeString:
@@ -953,7 +953,10 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
     }
     else if(BBIdx == predBBI->succIdxs[1]) {
 
-      predBlock = BB->committedBlocks.back().breakBlock;
+      // TODO: the 'breakblock' concept doesn't quite work when invoke instructions
+      // can break to unspecialised code by throwing an exception
+      // OR by a subsequent test failing.
+      predBlock = BB->getCommittedBreakBlockAt(predBBI->insts.size() - 1);
 
     }
 
@@ -2507,6 +2510,58 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
   
 }
 
+Instruction* IntegrationAttempt::emitCompositeCheck(Value* realInst, Value* CV, BasicBlock* emitBB) {
+
+  Type* VTy = CV->getType();
+
+  if(VTy->isFloatingPointTy())
+    return new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, CV, VerboseNames ? "check" : "");
+  else if(VTy->isIntegerTy() || VTy->isPointerTy() || VTy->isVectorTy())
+    return new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, CV, VerboseNames ? "check" : "");
+  else if(VTy->isArrayTy() || VTy->isStructTy()) {
+    // Fall through
+  }
+  else {
+
+    release_assert(0 && "Can't compare value of given type");
+
+  }
+  
+  // Really I'd like to do memcmp to compare two aggregates, but they're value types
+  // and may not have addresses. In practice this path is only entered to deal with comparison
+  // against struct or array literals from the source program though, so unconditionally unrolling
+  // memcmp into value type compares is probably OK.
+
+  release_assert(isa<Constant>(CV));
+  release_assert(realInst->getType() == CV->getType());
+
+  CompositeType* CT = cast<CompositeType>(CV->getType());
+  unsigned numElements;
+  if(StructType* ST = dyn_cast<StructType>(CT))
+    numElements = ST->getNumElements();
+  else
+    numElements = cast<ArrayType>(CT)->getNumElements();
+
+  Instruction* ret = 0;
+
+  for(uint32_t i = 0, ilim = numElements; i != ilim; ++i) {
+
+    Instruction* Op1 = ExtractValueInst::Create(realInst, ArrayRef<unsigned>(&i, 1), "", emitBB);
+    Value* Op2 = cast<Constant>(CV)->getOperand(i);
+
+    Instruction* thisTest = emitCompositeCheck(Op1, Op2, emitBB);
+    if(ret)
+      ret = BinaryOperator::CreateAnd(thisTest, ret, "", emitBB);
+    else
+      ret = thisTest;
+
+  }
+  
+  release_assert(ret);
+  return ret;
+
+}
+
 Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB) {
 
   release_assert(isa<Instruction>(realInst) && "Checked instruction must be residualised");
@@ -2542,10 +2597,7 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
       Value* thisVal = trySynthVal(0, realInst->getType(), IVS->SetType, IVS->Values[j], emitBB);
       release_assert(thisVal && "Couldn't synthesise value for check?");
 
-      if(thisVal->getType()->isFloatingPointTy())
-	newCheck = new FCmpInst(*emitBB, CmpInst::FCMP_OEQ, realInst, thisVal, VerboseNames ? "check" : "");
-      else
-	newCheck = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, realInst, thisVal, VerboseNames ? "check" : "");
+      newCheck = emitCompositeCheck(realInst, thisVal, emitBB);
 
     }
 

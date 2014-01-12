@@ -1492,6 +1492,7 @@ protected:
   virtual void populateFailedBlock(uint32_t idx);
   virtual void populateFailedHeaderPHIs(const Loop*);
   Value* emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB);
+  Instruction* emitCompositeCheck(Value*, Value*, BasicBlock* emitBB);
   Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
   SmallVector<CommittedBlock, 1>::iterator emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowBB* BB);
   Value* emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB);
