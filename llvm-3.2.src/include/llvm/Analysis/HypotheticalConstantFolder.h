@@ -2263,7 +2263,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  PHINode* makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB);
  
  void printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped);
- void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param);
+ void emitRuntimePrint(BasicBlock* BB, std::string& message, Value* param, Instruction* insertBefore = 0);
  void escapePercent(std::string&);
 
  void clearAsExpectedChecks(ShadowBB*);

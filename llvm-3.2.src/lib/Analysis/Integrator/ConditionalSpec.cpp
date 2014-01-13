@@ -1971,6 +1971,21 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 
       }
 
+      if(pass->verbosePCs && isa<LandingPadInst>(I)) {
+
+	std::string msg;
+	{
+	  raw_string_ostream RSO(msg);
+	  RSO << "Landed at landing pad inst in block " << BB->getName() << " / " << F.getName() << " / " << SeqNumber << "\n";
+	}
+	// Insert print before the next instruction:
+	++BI;
+	emitRuntimePrint(BB, msg, 0, BI);
+	// Point iterator back at the new instruction:
+	--BI;
+    
+      }
+
     }
 
   }
@@ -2840,7 +2855,7 @@ void llvm::escapePercent(std::string& msg) {
 
 }
 
-void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* param) {
+void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* param, Instruction* insertBefore) {
 
   Type* CharPtr = Type::getInt8PtrTy(emitBB->getContext());
   Module* M = getGlobalModule();
@@ -2875,6 +2890,9 @@ void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* par
   if(param)
     args[1] = param;
 
-  CallInst::Create(Printf, ArrayRef<Value*>(args, nParams), "", emitBB);
+  if(insertBefore)
+    CallInst::Create(Printf, ArrayRef<Value*>(args, nParams), "", insertBefore);
+  else
+    CallInst::Create(Printf, ArrayRef<Value*>(args, nParams), "", emitBB);
   
 }
