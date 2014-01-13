@@ -454,7 +454,12 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       it->IA->activeCaller = &BB->insts[0];
       it->IA->analyseNoArgs(false, false, stack_depth);
 
+      // This is a bit of a hack -- the whole context is obviously ordained not to
+      // be committed from the start and only exists for its side-effects -- but
+      // path conditions are rare and it's simplest to treat it like we decided to disable
+      // the context after the fact like the normal InlineAttempt analyse path.
       it->IA->markAllocationsAndFDsCommitted();
+      it->IA->releaseCommittedChildren();
 
       doCallStoreMerge(BB, it->IA);
 
