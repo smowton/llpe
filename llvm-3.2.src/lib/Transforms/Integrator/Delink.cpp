@@ -8,6 +8,7 @@
 #include "llvm/Function.h"
 #include "llvm/Value.h"
 #include "llvm/DerivedTypes.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -21,6 +22,7 @@
 using namespace llvm;
 
 static cl::opt<std::string> DelinkSymbols("delink-symbols");
+static cl::opt<std::string> DelinkExcept("delink-except");
 
 namespace {
 
@@ -68,31 +70,71 @@ static inline std::string &trim(std::string &s) {
 
 bool DelinkPass::runOnModule(Module& M) {
 
-  std::ifstream RFI(DelinkSymbols.c_str());
+  if(DelinkExcept.size()) {
+
+    std::ifstream RFI(DelinkExcept.c_str());
+
+    DenseSet<GlobalValue*> Keep;
   
-  while(!RFI.eof()) {
+    while(!RFI.eof()) {
 
-    std::string line;
-    std::getline(RFI, line);
+      std::string line;
+      std::getline(RFI, line);
 
-    trim(line);
+      trim(line);
 
-    if(line.empty())
-      continue;
+      if(line.empty())
+	continue;
 
-    if(line == "__uClibc_main" || line == "__uClibc_main_spec")
-      continue;
-    
-    GlobalValue* GV = M.getNamedValue(line);
-    if(!GV) {
+      GlobalValue* GV = M.getNamedValue(line);
+      if(!GV) {
+	
+	errs() << "Warning: Skipped " << line << "\n";
+	continue;
 
-      errs() << "Warning: Skipped " << line << "\n";
-      continue;
+      }
+
+      Keep.insert(GV);
+  
+    }
+
+    for(Module::iterator it = M.begin(), itend = M.end(); it != itend; ++it) {
+
+      if(!Keep.count(it))
+	it->deleteBody();
 
     }
+
+  }
+  else {
+
+    std::ifstream RFI(DelinkSymbols.c_str());
+  
+    while(!RFI.eof()) {
+
+      std::string line;
+      std::getline(RFI, line);
+
+      trim(line);
+
+      if(line.empty())
+	continue;
+
+      if(line == "__uClibc_main" || line == "__uClibc_main_spec")
+	continue;
     
-    if(Function* F = dyn_cast<Function>(GV))
-      F->deleteBody();
+      GlobalValue* GV = M.getNamedValue(line);
+      if(!GV) {
+
+	errs() << "Warning: Skipped " << line << "\n";
+	continue;
+
+      }
+    
+      if(Function* F = dyn_cast<Function>(GV))
+	F->deleteBody();
+
+    }
 
   }
 
