@@ -57,6 +57,8 @@ void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool
 
 void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
 
+  release_assert(getBBInvar(idx)->insts.size() > instIdx);
+
   if(pass->omitChecks)
     return;
 

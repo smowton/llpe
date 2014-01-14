@@ -1351,8 +1351,12 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 	// Treat tested exit PHIs as a block.
 	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
-
-	getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+	
+	// Invoke instruction?
+	if(j == jlim - 1)
+	  getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[0], 0);
+	else
+	  getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
 
       }
       else if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
