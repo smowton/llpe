@@ -538,12 +538,21 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
   if(GlobalIHP->programSingleThreaded)
     return TLS_NEVERCHECK;
 
-  if(inst_is<LoadInst>(&SI)) {
+  if(SI.readsMemoryDirectly() && !SI.isCopyInst()) {
 
     // Load doesn't extract any useful information?
     ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI.i.PB);
     if(IVS && IVS->isWhollyUnknown())
       return TLS_NEVERCHECK;
+
+  }
+
+  if(inst_is<LoadInst>(&SI)) {
+
+    if(SI.hasOrderingConstraint())
+      return TLS_MUSTCHECK;
+
+    // Read from known-good memory?
 
     ShadowValue PtrOp = SI.getOperand(0);
     std::pair<ValSetType, ImprovedVal> Single;
@@ -582,6 +591,12 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
     ShadowValue Len = SI.getCallArgOperand(2);
 
     return shouldCheckCopy(SI, PtrOp, Len);
+
+  }
+  else if(inst_is<AtomicRMWInst>(&SI) || inst_is<AtomicCmpXchgInst>(&SI)) {
+
+    // Always volatile if anything useful was loaded.
+    return TLS_MUSTCHECK;
 
   }
   else {
@@ -922,19 +937,7 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
   if(SI.isThreadLocal == TLS_NEVERCHECK)
     return;
 
-  if(SI.readsMemoryDirectly() && SI.hasOrderingConstraint()) {
-
-    // These instructions explicitly import information from other threads
-    // and so must always be executed and checked at runtime.
-    
-    ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI.i.PB);
-    if(IVS && IVS->isWhollyUnknown())
-      SI.isThreadLocal = TLS_NEVERCHECK;
-    else
-      SI.isThreadLocal = TLS_MUSTCHECK;
-
-  }
-  else if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+  if(SI.readsMemoryDirectly()) {
 
     // Ordinary load or memcpy, without memory ordering constraints.
     // Check this value if a previous memory op has rendered it uncertain.

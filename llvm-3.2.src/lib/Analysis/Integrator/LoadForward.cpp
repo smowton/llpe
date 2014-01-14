@@ -1408,8 +1408,10 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 }
 
 bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg) {
-
+  
   bool ret;
+
+  SI->isThreadLocal = TLS_NEVERCHECK;
 
   OldPB = newOverdefIVS();
 
@@ -1419,7 +1421,7 @@ bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool&
   release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
 		 && "Write through non-pointer-typed value?");
 
-  ShadowValue Val = SI->getOperand(0);
+  ShadowValue Val = SI->getOperand(1);
   valueEscaped(Val, SI->parent);
 
   ImprovedValSetSingle ValPB;
@@ -1444,6 +1446,9 @@ bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool&
   deleteIV(OldPB);
   OldPB = 0;
   ret = SI->parent->IA->tryForwardLoadPB(SI, OldPB, loadedVararg);
+
+  // The tryForwardLoad call may set SI->isThreadLocal if the object we're reading
+  // may be global.
 
   // OldPB is the old value, and what we will return. Now do the RMW:
   if((!isa<ImprovedValSetSingle>(OldPB)) || 
@@ -1535,6 +1540,7 @@ bool llvm::executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& l
 
   bool ret;
 
+  SI->isThreadLocal = TLS_NEVERCHECK;
   OldPB = newOverdefIVS();
 
   ShadowValue Ptr = SI->getOperand(0);
