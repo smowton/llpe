@@ -1139,7 +1139,7 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
 
   /*  
   if(logReadDepth(firstStore->store, 1) >= 10) {
-
+  
     errs() << "Deep read for " << itcache(V, true) << " from " << ReadBB->invar->BB->getName() << " / " << ReadBB->IA->SeqNumber << "\n";
     firstStore->store->print(errs(), false);
 
@@ -1405,6 +1405,205 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
 
   executeWriteInst(&Ptr, PtrSet, ValSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemsetSI);
   
+}
+
+bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg) {
+
+  bool ret;
+
+  OldPB = newOverdefIVS();
+
+  ShadowValue Ptr = SI->getOperand(0);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
+		 && "Write through non-pointer-typed value?");
+
+  ShadowValue Val = SI->getOperand(0);
+  valueEscaped(Val, SI->parent);
+
+  ImprovedValSetSingle ValPB;
+  getImprovedValSetSingle(Val, ValPB);
+
+  if(PtrSet.isWhollyUnknown()) {
+
+    // Just clobber everything:
+    executeWriteInst(&Ptr, PtrSet, ValPB, Val.getValSize(), SI);
+    return true;
+
+  }
+  else if(ValPB.isWhollyUnknown() || ValPB.SetType != ValSetTypeScalar) {
+
+    // Overwrite location with overdef:
+    executeWriteInst(&Ptr, PtrSet, ValPB, Val.getValSize(), SI);
+    return true;
+
+  }
+
+  // Attempt a proper RMW:
+  deleteIV(OldPB);
+  OldPB = 0;
+  ret = SI->parent->IA->tryForwardLoadPB(SI, OldPB, loadedVararg);
+
+  // OldPB is the old value, and what we will return. Now do the RMW:
+  if((!isa<ImprovedValSetSingle>(OldPB)) || 
+     cast<ImprovedValSetSingle>(OldPB)->isWhollyUnknown() ||
+     cast<ImprovedValSetSingle>(OldPB)->SetType != ValSetTypeScalar) {
+
+    ImprovedValSetSingle OD;
+    OD.setOverdef();
+    executeWriteInst(&Ptr, PtrSet, OD, Val.getValSize(), SI);
+    return true;
+
+  }
+
+  ImprovedValSetSingle& LoadedPB = *cast<ImprovedValSetSingle>(OldPB);
+  ImprovedValSetSingle StorePB;
+  AtomicRMWInst::BinOp Op = cast_inst<AtomicRMWInst>(SI)->getOperation();
+
+  // Constant fold. Ideally I would re-use the code for normal instruction
+  // constant folding, but atomicrmw's instruction set is slightly different,
+  // e.g. it contains nand, max and min which are not llvm primitives.
+  for(uint32_t i = 0, ilim = LoadedPB.Values.size(); i != ilim; ++i) {
+
+    uint64_t op1Val;
+    if(!tryGetConstantInt(LoadedPB.Values[i].V, op1Val)) {
+      StorePB.setOverdef();
+      break;
+    }
+	 
+    for(uint32_t j = 0, jlim = ValPB.Values.size(); j != jlim; ++j) {
+
+      uint64_t op2Val;
+      if(!tryGetConstantInt(ValPB.Values[j].V, op2Val)) {
+	StorePB.setOverdef();
+	break;
+      }
+
+      uint64_t newVal;
+
+      switch(Op) {
+      case AtomicRMWInst::Xchg:
+	newVal = op2Val; break;
+      case AtomicRMWInst::Add:
+	newVal = op1Val + op2Val; break;
+      case AtomicRMWInst::Sub:
+	newVal = op1Val - op2Val; break;
+      case AtomicRMWInst::And:
+	newVal = op1Val & op2Val; break;
+      case AtomicRMWInst::Nand:
+	newVal = ~(op1Val & op2Val); break;
+      case AtomicRMWInst::Or:
+	newVal = op1Val | op2Val; break;
+      case AtomicRMWInst::Xor:
+	newVal = op1Val ^ op2Val; break;
+      case AtomicRMWInst::Max: 
+      case AtomicRMWInst::Min:
+	{
+	  int64_t op1S = 0, op2S = 0;
+	  tryGetConstantSignedInt(LoadedPB.Values[i].V, op1S);
+	  tryGetConstantSignedInt(ValPB.Values[j].V, op2S);
+	  if(Op == AtomicRMWInst::Max)
+	    newVal = (uint64_t)std::max(op1S, op2S);
+	  else
+	    newVal = (uint64_t)std::min(op1S, op2S);		
+	  break;
+	}
+      case AtomicRMWInst::UMax:
+	newVal = std::max(op1Val, op2Val); break;
+      case AtomicRMWInst::UMin:
+	newVal = std::min(op1Val, op2Val); break;
+      default:
+	release_assert(0 && "AtomicRMW doesn't handle all cases!");
+	llvm_unreachable();
+      }
+
+      ShadowValue NewSV = ShadowValue::getInt(SI->getType(), newVal);
+      StorePB.mergeOne(ValSetTypeScalar, ImprovedVal(NewSV));
+
+    }
+
+  }
+
+  executeWriteInst(&Ptr, PtrSet, StorePB, Val.getValSize(), SI);
+
+  return ret;
+
+}
+
+bool llvm::executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg) {
+
+  bool ret;
+
+  OldPB = newOverdefIVS();
+
+  ShadowValue Ptr = SI->getOperand(0);
+  ImprovedValSetSingle PtrSet;
+  release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
+  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
+		 && "Write through non-pointer-typed value?");
+
+  uint64_t WriteSize = SI->getOperand(2).getValSize();
+
+  if(PtrSet.isWhollyUnknown()) {
+
+    // Just clobber everything:
+    ImprovedValSetSingle OD(ValSetTypePB, true);
+    executeWriteInst(&Ptr, PtrSet, OD, WriteSize, SI);
+    return true;
+
+  }
+
+  deleteIV(OldPB);
+  OldPB = 0;
+  ret = SI->parent->IA->tryForwardLoadPB(SI, OldPB, loadedVararg);
+
+  // OldPB is now our return value (like atomicrmw, cmpx returns the old value)
+
+  ImprovedValSetSingle StorePB;
+  ImprovedValSetSingle* OldIVS = dyn_cast<ImprovedValSetSingle>(OldPB);
+
+  if((!OldIVS) || OldIVS->isWhollyUnknown()) {
+
+    ImprovedValSetSingle OD(ValSetTypePB, true);
+    executeWriteInst(&Ptr, PtrSet, OD, WriteSize, SI);
+    return ret;
+
+  }
+
+  ImprovedValSetSingle NewIVS;
+  ImprovedValSetSingle CmpIVS;
+  release_assert(getImprovedValSetSingle(SI->getOperand(1), CmpIVS));
+
+  if(CmpIVS.Values.size() == 1 && OldIVS->Values.size() == 1) {
+
+    if(CmpIVS.Values[0] == OldIVS->Values[0]) {
+      
+      // Cmpxchg succeeds: write the new value!
+      release_assert(getImprovedValSetSingle(SI->getOperand(2), NewIVS));
+
+    }
+    else {
+
+      // Cmpxchg fails: nothing to write.
+      return ret;
+
+    }
+     
+  }
+  else {
+
+    // Cmpxchg may or may not succeed. Merge values.
+    ImprovedValSetSingle ReplIVS;
+    release_assert(getImprovedValSetSingle(SI->getOperand(2), ReplIVS));
+    NewIVS = *OldIVS;
+    NewIVS.merge(ReplIVS);
+
+  }
+
+  executeWriteInst(&Ptr, PtrSet, NewIVS, WriteSize, SI);
+  return ret;
+
 }
 
 uint64_t ShadowValue::getValSize() {

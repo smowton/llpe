@@ -126,8 +126,13 @@ void TrackedStore::kill() {
   else {
     release_assert(committedInsts && "Should have a committed instructions");
     for(uint32_t i = 0, ilim = nCommittedInsts; i != ilim; ++i) {
-      release_assert(committedInsts[i]->use_empty());
-      DeleteDeadInstruction(committedInsts[i]);
+      Instruction* I = cast_or_null<Instruction>((Value*)committedInsts[i]);
+      // Instruction has been deleted already for another reason?
+      // Usually this means the context it belonged to was discarded.
+      if(!I) 
+	continue;
+      release_assert(I->use_empty());
+      DeleteDeadInstruction(I);
     }
     delete[] committedInsts;
     committedInsts = 0;
@@ -712,7 +717,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
   ShadowBB* BB = I->parent;
 
-  if(disableWrites && !(inst_is<LoadInst>(I) || inst_is<MemTransferInst>(I)))
+  if(disableWrites && !I->readsMemoryDirectly())
     return;
 
   // Even if a memcpy or read fails its test, it will overwrite memory one way or another.
@@ -733,7 +738,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
   // This will be a branch to unspecialised code in the output program;
   // assume store is needed if it is live over this point.
-  if(requiresRuntimeCheck(ShadowValue(I), true)) {
+  if(requiresRuntimeCheck(ShadowValue(I), true) || inst_is<FenceInst>(I)) {
 
     setAllNeededTop(BB->dseStore);
     BB->dseStore = BB->dseStore->getEmptyMap();	
@@ -905,7 +910,12 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
     }
 
   }
-  else if(inst_is<LoadInst>(I)) {
+  else if(inst_is<LoadInst>(I) || inst_is<AtomicRMWInst>(I) || inst_is<AtomicCmpXchgInst>(I)) {
+
+    // Conveniently, all three classes read from op0.
+    // The two Atomics will necessarily have TLS_MUSTCHECK, skipping that bit.
+    // The Atomics also write to memory, but I don't call DSEHandleWrite because they
+    // should never be deleted in any case.
 
     ShadowValue Pointer = I->getOperand(0);
     uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());

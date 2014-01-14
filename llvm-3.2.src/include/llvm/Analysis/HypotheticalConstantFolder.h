@@ -2195,6 +2195,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error);
  void executeStoreInst(ShadowInstruction* StoreSI);
  void executeMemsetInst(ShadowInstruction* MemsetSI);
+ bool executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg);
+ bool executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg);
  void propagateStoreFlags(ImprovedValSetSingle& WrittenPtr, ImprovedValSetSingle& WrittenVal, ShadowBB* StoreBB);
 
  void getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);

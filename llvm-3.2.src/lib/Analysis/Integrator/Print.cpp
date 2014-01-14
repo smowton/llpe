@@ -164,7 +164,7 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
 	      RSO << ", ";
 	    RSO << (*(TS->committedInsts[i]));
 	  }
-	  RSO << " in block " << TS->committedInsts[0]->getParent()->getName();	  
+	  RSO << " in block " << cast<Instruction>((Value*)TS->committedInsts[0])->getParent()->getName();	  
 	}
 	RSO << " (" << TS->outstandingBytes << ")";
       }

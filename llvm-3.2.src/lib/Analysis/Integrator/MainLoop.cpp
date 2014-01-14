@@ -558,6 +558,9 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 
   switch(I->getOpcode()) {
 
+  // All fence logic is implemented in the tentative loads passlet; nothing to do here.
+  case Instruction::Fence:
+    return false;
   case Instruction::Alloca:
     executeAllocaInst(SI);
     return false;
@@ -1022,6 +1025,10 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
 
     case Instruction::Store:
       executeStoreInst(SI);
+      break;
+
+    // All fence logic is implemented in the tentative loads passlet; nothing to do here.
+    case Instruction::Fence:
       break;
 
     case Instruction::Call:

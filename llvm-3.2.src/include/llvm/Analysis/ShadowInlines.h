@@ -1001,6 +1001,9 @@ struct ShadowInstruction {
   ShadowValue getCopySource();
   ShadowValue getCopyDest();
 
+  bool readsMemoryDirectly();
+  bool hasOrderingConstraint();
+
 };
 
 template<class X> inline bool inst_is(ShadowInstruction* SI) {
@@ -1099,7 +1102,7 @@ struct TrackedStore {
 
   ShadowInstruction* I; // Invalid if isCommitted
   bool isCommitted;
-  Instruction** committedInsts; // Valid if the store was live when committed.
+  WeakVH* committedInsts; // Valid if the store was live when committed.
   uint64_t nCommittedInsts;
   uint64_t outstandingBytes;
   bool isNeeded;

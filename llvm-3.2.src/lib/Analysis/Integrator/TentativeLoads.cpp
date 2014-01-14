@@ -311,7 +311,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   }
   else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
-    if(LI->isVolatile() && (!GlobalIHP->programSingleThreaded) && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
+    if((LI->isVolatile() || SI->hasOrderingConstraint()) && (!GlobalIHP->programSingleThreaded) && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
       markAllObjectsTentative(SI->parent);
     else
       markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
@@ -325,6 +325,11 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     //markAllObjectsTentative(SI->parent);
     //else
     markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
+
+  }
+  else if((SI->readsMemoryDirectly() && SI->hasOrderingConstraint()) || inst_is<FenceInst>(SI)) {
+
+    markAllObjectsTentative(SI->parent);
 
   }
   else if(inst_is<CallInst>(SI) || inst_is<InvokeInst>(SI)) {
@@ -808,7 +813,7 @@ void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool in
   // FDs which are not available, but it requires a check and the check cannot be synthesised.
   // Therefore replace them with Unknown.
 
-  if(inst_is<LoadInst>(&SI)) {
+  if(inst_is<LoadInst>(&SI) || inst_is<AtomicCmpXchgInst>(&SI)) {
 
     if(SI.i.PB)
       squashUnavailableObjects(SI, SI.i.PB, inLoopAnalyser);
@@ -917,7 +922,22 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
   if(SI.isThreadLocal == TLS_NEVERCHECK)
     return;
 
-  if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+  if(SI.readsMemoryDirectly() && SI.hasOrderingConstraint()) {
+
+    // These instructions explicitly import information from other threads
+    // and so must always be executed and checked at runtime.
+    
+    ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI.i.PB);
+    if(IVS && IVS->isWhollyUnknown())
+      SI.isThreadLocal = TLS_NEVERCHECK;
+    else
+      SI.isThreadLocal = TLS_MUSTCHECK;
+
+  }
+  else if(inst_is<LoadInst>(&SI) || SI.isCopyInst()) {
+
+    // Ordinary load or memcpy, without memory ordering constraints.
+    // Check this value if a previous memory op has rendered it uncertain.
 
     // Known that we must check when this block is reached from a loop preheader?
     // If so whether it is tentative from the latch is irrelevant.
@@ -1255,7 +1275,7 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
   if(includeSpecialChecks && (SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP))
     return true;
 
-  if(inst_is<LoadInst>(SI) || inst_is<MemTransferInst>(SI)) {
+  if(inst_is<MemTransferInst>(SI) || ((!inst_is<CallInst>(SI)) && SI->readsMemoryDirectly())) {
     
     if(SI->isThreadLocal == TLS_MUSTCHECK)
       return true;

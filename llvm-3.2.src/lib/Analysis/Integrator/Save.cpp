@@ -1178,7 +1178,9 @@ static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
 
   Value* CallArgs[] = { FD, NewOffset, SeekSet };
 
-  CallInst::Create(SeekFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
+  CallInst* SeekC = CallInst::Create(SeekFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
+  if(Function* SeekF = dyn_cast<Function>(SeekFn))
+    SeekC->setCallingConv(SeekF->getCallingConv());
 
 }
 
@@ -1337,7 +1339,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	if(findit != pass->trackedStores.end()) {
 
 	  findit->second->isCommitted = true;
-	  findit->second->committedInsts = new Instruction*[1];
+	  findit->second->committedInsts = new WeakVH[1];
 	  findit->second->committedInsts[0] = ReadMemcpy;
 	  findit->second->nCommittedInsts = 1;
 
@@ -1746,6 +1748,26 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 }
 
+static void checkEmittedInst(Instruction* I) {
+
+  bool Broken = false;
+
+  if(StoreInst* SI = dyn_cast<StoreInst>(I)) {
+
+    Value* WritePtr = SI->getPointerOperand();
+    if(isa<ConstantPointerNull>(WritePtr) || isa<UndefValue>(WritePtr))
+      Broken = true;
+
+  }
+
+  if(Broken) {
+
+    errs() << "WARNING: suspicious instruction emitted in block " << I->getParent() << "\n";
+
+  }
+
+}
+
 Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Clone all attributes:
@@ -1807,7 +1829,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
     DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
     if(findit != GlobalIHP->trackedStores.end()) {
       findit->second->isCommitted = true;
-      findit->second->committedInsts = new Instruction*[1];
+      findit->second->committedInsts = new WeakVH[1];
       findit->second->committedInsts[0] = newI;
       findit->second->nCommittedInsts = 1;
     }
@@ -1835,6 +1857,8 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
     }
 
   }
+
+  checkEmittedInst(newI);
 
   return newI;
 
@@ -2260,7 +2284,7 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = GlobalIHP->trackedStores.find(I);
   if(findit != GlobalIHP->trackedStores.end()) {
     findit->second->isCommitted = true;
-    findit->second->committedInsts = new Instruction*[newInstructions.size()];
+    findit->second->committedInsts = new WeakVH[newInstructions.size()];
     memcpy(findit->second->committedInsts, &newInstructions[0], sizeof(Instruction*) * newInstructions.size());
     findit->second->nCommittedInsts = newInstructions.size();
   }

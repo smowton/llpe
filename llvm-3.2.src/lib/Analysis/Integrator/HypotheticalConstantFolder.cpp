@@ -2254,6 +2254,10 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
     
   case Instruction::Load:
     return tryForwardLoadPB(SI, NewPB, loadedVararg);
+  case Instruction::AtomicRMW:
+    return executeAtomicRMW(SI, NewPB, loadedVararg);
+  case Instruction::AtomicCmpXchg:
+    return executeCmpXchg(SI, NewPB, loadedVararg);
   case Instruction::PHI:
     {
       bool Valid;
@@ -2306,6 +2310,12 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
   }
   else {
+
+    if(SI->invar->I->mayHaveSideEffects()) {
+
+      errs() << "*** instruction " << itcache(SI) << " has side effects!\n";
+
+    }
 
     tryEvaluateOrdinaryInst(SI, NewPB);
 

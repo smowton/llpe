@@ -869,3 +869,42 @@ ShadowBB* PeelIteration::getUniqueExitingBlock() {
   return uniqueBlock;
   
 }
+
+bool ShadowInstruction::readsMemoryDirectly() {
+
+  if(isCopyInst())
+    return true;
+
+  switch(invar->I->getOpcode()) {
+  case Instruction::Load:
+  case Instruction::AtomicCmpXchg:
+  case Instruction::AtomicRMW:
+    return true;
+  default:
+    return false;
+  }
+
+}
+
+bool ShadowInstruction::hasOrderingConstraint() {
+
+  switch(invar->I->getOpcode()) {
+
+  case Instruction::Load:
+    return !cast_inst<LoadInst>(this)->isUnordered();
+  case Instruction::Store:
+    return !cast_inst<StoreInst>(this)->isUnordered();
+  case Instruction::AtomicRMW:
+    return cast_inst<AtomicRMWInst>(this)->getOrdering() > Unordered;
+  case Instruction::AtomicCmpXchg:
+    return cast_inst<AtomicCmpXchgInst>(this)->getOrdering() > Unordered;
+  case Instruction::Fence:
+    return true;
+  default:
+    break;
+
+  }
+
+  return false;
+
+}
