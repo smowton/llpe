@@ -54,6 +54,14 @@ static cl::opt<bool>
 DisableGVNLoadPRE("disable-gvn-loadpre", cl::init(false),
   cl::desc("Do not run the GVN load PRE pass"));
 
+static cl::opt<char>
+OptLevel("Olink",
+         cl::desc("Optimization level. [-O0, -O1, -O2, or -O3] "
+                  "(default = '-O2')"),
+         cl::Prefix,
+         cl::ZeroOrMore,
+         cl::init(' '));
+
 const char* LTOCodeGenerator::getVersionString() {
 #ifdef LLVM_VERSION_INFO
   return PACKAGE_NAME " version " PACKAGE_VERSION ", " LLVM_VERSION_INFO;
@@ -256,9 +264,22 @@ bool LTOCodeGenerator::determineTarget(std::string& errMsg) {
   }
   TargetOptions Options;
   LTOModule::getTargetOptions(Options);
+
+  CodeGenOpt::Level OLvl = CodeGenOpt::Aggressive;
+  switch (OptLevel) {
+  default:
+    errs() << OptLevel << ": invalid optimization level.\n";
+    return 1;
+  case ' ': break;
+  case '0': OLvl = CodeGenOpt::None; break;
+  case '1': OLvl = CodeGenOpt::Less; break;
+  case '2': OLvl = CodeGenOpt::Default; break;
+  case '3': OLvl = CodeGenOpt::Aggressive; break;
+  }
+
   _target = march->createTargetMachine(TripleStr, _mCpu, FeatureStr, Options,
                                        RelocModel, CodeModel::Default,
-                                       CodeGenOpt::Aggressive);
+                                       OLvl);
   return false;
 }
 
@@ -350,15 +371,16 @@ void LTOCodeGenerator::applyScopeRestrictions() {
 /// Optimize merged modules using various IPO passes
 bool LTOCodeGenerator::generateObjectFile(raw_ostream &out,
                                           std::string &errMsg) {
-  if (this->determineTarget(errMsg))
-    return true;
-
-  Module* mergedModule = _linker.getModule();
 
   // if options were requested, set them
   if (!_codegenOptions.empty())
     cl::ParseCommandLineOptions(_codegenOptions.size(),
                                 const_cast<char **>(&_codegenOptions[0]));
+
+  if (this->determineTarget(errMsg))
+    return true;
+
+  Module* mergedModule = _linker.getModule();
 
   // mark which symbols can not be internalized
   this->applyScopeRestrictions();
