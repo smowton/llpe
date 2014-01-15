@@ -933,9 +933,8 @@ void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool i
 
 void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser) {
 
-  // Known always good (as opposed to TLS_NOCHECK, resulting from a previous tentative loads run?)
-  if(SI.isThreadLocal == TLS_NEVERCHECK)
-    return;
+  // Note that TLS_NEVERCHECK may have been assigned already during the main analysis phase,
+  // signifying a load from a known thread-local object.
 
   if(SI.readsMemoryDirectly()) {
 
@@ -946,8 +945,9 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
     // If so whether it is tentative from the latch is irrelevant.
     if(secondPass && SI.isThreadLocal == TLS_MUSTCHECK)
       return;
-
-    SI.isThreadLocal = shouldCheckLoad(SI);
+    
+    if(SI.isThreadLocal != TLS_NEVERCHECK)
+      SI.isThreadLocal = shouldCheckLoad(SI);
     
     if(SI.isThreadLocal == TLS_MUSTCHECK) {
 
@@ -960,6 +960,12 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
       replaceUnavailableObjects(SI, inLoopAnalyser);
 
     }
+
+  }
+  else {
+
+    if(SI.isThreadLocal == TLS_NEVERCHECK)
+      return;
 
   }
   
