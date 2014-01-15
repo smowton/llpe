@@ -753,8 +753,14 @@ bool FDGlobalState::isAvailable() {
 bool ShadowValue::objectAvailable() {
 
   switch(t) {
+  case SHADOWVAL_OTHER: 
+    {
+      if(Function* F = dyn_cast<Function>(u.V))
+	return !GlobalIHP->specialLocations.count(F);
+      else
+	return true;
+    }
   case SHADOWVAL_GV:
-  case SHADOWVAL_OTHER:
   case SHADOWVAL_ARG:
     return true;
   case SHADOWVAL_INST:
