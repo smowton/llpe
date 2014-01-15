@@ -2285,7 +2285,8 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
   if(findit != GlobalIHP->trackedStores.end()) {
     findit->second->isCommitted = true;
     findit->second->committedInsts = new WeakVH[newInstructions.size()];
-    memcpy(findit->second->committedInsts, &newInstructions[0], sizeof(Instruction*) * newInstructions.size());
+    for(uint32_t i = 0, ilim = newInstructions.size(); i != ilim; ++i)
+      findit->second->committedInsts[i] = newInstructions[i];
     findit->second->nCommittedInsts = newInstructions.size();
   }
 
@@ -2305,6 +2306,13 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
     return false;
 
   if(IVS->Values.size() != 1)
+    return false;
+
+  // AtomicRMW and AtomicCmpXchg can be assigned values and not require a runtime check
+  // if their operand was known to be thread-local; however for now emit them for their
+  // side-effects.
+
+  if(inst_is<AtomicRMWInst>(I) || inst_is<AtomicCmpXchgInst>(I))
     return false;
 
   ShadowValue IVal(I);
@@ -2365,8 +2373,10 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
 
     Value* V;
     if(trySynthInst(I, emitBB->specBlock, V)) {
+
       I->committedVal = V;
       return;
+
     }
 
   }

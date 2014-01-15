@@ -440,6 +440,10 @@ bool llvm::willBeDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
     return false;
+
+  if(val_is<AtomicRMWInst>(V) || val_is<AtomicCmpXchgInst>(V))
+    return false;
+
   return _willBeDeleted(V);
 
 }
@@ -467,6 +471,10 @@ bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
     return false;
+
+  if(val_is<AtomicRMWInst>(V) || val_is<AtomicCmpXchgInst>(V))
+    return false;
+
   return _willBeReplacedOrDeleted(V);
 
 }
@@ -474,6 +482,9 @@ bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
 bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
+    return false;
+
+  if(val_is<AtomicRMWInst>(V) || val_is<AtomicCmpXchgInst>(V))
     return false;
 
   if(_willBeDeleted(V))
