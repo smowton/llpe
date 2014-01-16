@@ -428,8 +428,12 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
   if(stat_ret == -1 && errno != ENOENT)
     return false;
 
-  noteLLIODependency(Filename);
-  SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
+  if(!Filename.empty()) {
+
+    noteLLIODependency(Filename);
+    SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
+
+  }
 
   if(stat_ret == 0) {
 
