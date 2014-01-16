@@ -908,6 +908,10 @@ void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool i
 	  errs() << itcache(&SI) << " stepping up as new canonical reference for " << itcache(Base) << "\n";
 	  AD->isCommitted = false;
 	  AD->allocValue = ShadowValue(&SI);
+	  // Should be safe to change the allocType, as until now the allocation had no examplar pointer
+	  // and thus could not be referenced.
+	  AD->allocType = SI.getType();
+	  release_assert(isa<PointerType>(AD->allocType));
 
 	}
 
