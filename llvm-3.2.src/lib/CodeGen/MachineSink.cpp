@@ -323,11 +323,12 @@ MachineBasicBlock *MachineSinking::SplitCriticalEdge(MachineInstr *MI,
                                                      MachineBasicBlock *FromBB,
                                                      MachineBasicBlock *ToBB,
                                                      bool BreakPHIEdge) {
-  if (!isWorthBreakingCriticalEdge(MI, FromBB, ToBB))
-    return 0;
 
   // Avoid breaking back edge. From == To means backedge for single BB loop.
   if (!SplitEdges || FromBB == ToBB)
+    return 0;
+
+  if (!isWorthBreakingCriticalEdge(MI, FromBB, ToBB))
     return 0;
 
   // Check for backedges of more "complex" loops.
