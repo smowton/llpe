@@ -327,7 +327,14 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
-  else if((SI->readsMemoryDirectly() && SI->hasOrderingConstraint()) || inst_is<FenceInst>(SI)) {
+  else if(SI->readsMemoryDirectly() && SI->hasOrderingConstraint()) {
+
+    // Might create a synchronisation edge:
+    if(SI->isThreadLocal == TLS_MUSTCHECK)
+      markAllObjectsTentative(SI->parent);
+
+  }
+  else if(inst_is<FenceInst>(SI)) {
 
     markAllObjectsTentative(SI->parent);
 
