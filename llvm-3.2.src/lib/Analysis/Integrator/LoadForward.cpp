@@ -1332,8 +1332,8 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
-		 && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   ShadowValue Val = StoreSI->getOperand(0);
 
@@ -1383,7 +1383,8 @@ void llvm::executeMemsetInst(ShadowInstruction* MemsetSI) {
   ShadowValue Ptr = MemsetSI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
   
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(2)));
   ConstantInt* ValCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemsetSI->getCallArgOperand(1)));
@@ -1418,8 +1419,8 @@ bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool&
   ShadowValue Ptr = SI->getOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
-		 && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   ShadowValue Val = SI->getOperand(1);
   valueEscaped(Val, SI->parent);
@@ -1546,8 +1547,8 @@ bool llvm::executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& l
   ShadowValue Ptr = SI->getOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) 
-		 && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   uint64_t WriteSize = SI->getOperand(2).getValSize();
 
@@ -2425,14 +2426,16 @@ void llvm::executeMemcpyInst(ShadowInstruction* MemcpySI) {
   ShadowValue Ptr = MemcpySI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   ConstantInt* LengthCI = dyn_cast_or_null<ConstantInt>(getConstReplacement(MemcpySI->getCallArgOperand(2)));
 
   ShadowValue SrcPtr = MemcpySI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
+  if(!(SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB))
+    SrcPtrSet.setOverdef();
 
   executeCopyInst(&Ptr, PtrSet, SrcPtrSet, LengthCI ? LengthCI->getLimitedValue() : ULONG_MAX, MemcpySI);
 
@@ -2443,12 +2446,14 @@ void llvm::executeVaCopyInst(ShadowInstruction* SI) {
   ShadowValue Ptr = SI->getCallArgOperand(0);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
   
   ShadowValue SrcPtr = SI->getCallArgOperand(1);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Memcpy from uninitialised PB?");
-  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Memcpy from non-pointer value?");
+  if(!(SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB))
+    SrcPtrSet.setOverdef();
   
   executeCopyInst(&Ptr, PtrSet, SrcPtrSet, 24, SI);
 
@@ -2635,7 +2640,8 @@ void llvm::executeReallocInst(ShadowInstruction* SI, Function* F) {
   ShadowValue SrcPtr = SI->getCallArgOperand(Re.ptrArg);
   ImprovedValSetSingle SrcPtrSet;
   release_assert(getImprovedValSetSingle(SrcPtr, SrcPtrSet) && "Realloc from uninitialised PB?");
-  release_assert((SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB) && "Realloc non-pointer-typed value?");
+  if(!(SrcPtrSet.isWhollyUnknown() || SrcPtrSet.SetType == ValSetTypePB))
+    SrcPtrSet.setOverdef();
   uint64_t CopySize = ULONG_MAX;
 
   if(SrcPtrSet.isWhollyUnknown() || SrcPtrSet.Values.size() > 1) {
@@ -2805,7 +2811,8 @@ void llvm::executeVaStartInst(ShadowInstruction* SI) {
   ImprovedValSetSingle PtrSet;
 
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   if(PtrSet.isWhollyUnknown() || PtrSet.Values.size() > 1) {
 
@@ -2843,7 +2850,8 @@ void llvm::executeReadInst(ShadowInstruction* ReadSI, std::string& Filename, uin
   ShadowValue Ptr = ReadSI->getCallArgOperand(1);
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB (read)?");
-  release_assert((PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB) && "Write through non-pointer-typed value (read)?");
+  if(!(PtrSet.isWhollyUnknown() || PtrSet.SetType == ValSetTypePB))
+    PtrSet.setOverdef();
 
   ImprovedValSetSingle WriteIVS;
   
