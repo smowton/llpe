@@ -2575,8 +2575,13 @@ Instruction* IntegrationAttempt::emitCompositeCheck(Value* realInst, Value* CV, 
   for(uint32_t i = 0, ilim = numElements; i != ilim; ++i) {
 
     Instruction* Op1 = ExtractValueInst::Create(realInst, ArrayRef<unsigned>(&i, 1), "", emitBB);
-    Value* Op2 = cast<Constant>(CV)->getOperand(i);
-
+    Constant* CVC = cast<Constant>(CV);
+    Constant* Op2;
+    if(isa<ConstantAggregateZero>(CVC))
+      Op2 = Constant::getNullValue(Op1->getType());
+    else
+      Op2 = cast<Constant>(CVC->getOperand(i));
+    
     Instruction* thisTest = emitCompositeCheck(Op1, Op2, emitBB);
     if(ret)
       ret = BinaryOperator::CreateAnd(thisTest, ret, "", emitBB);
