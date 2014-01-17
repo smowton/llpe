@@ -2954,7 +2954,7 @@ void IntegrationHeuristicsPass::runDSEAndDIE() {
 
 }
 
-static Type* getTypeAtOffset(Type* Ty, uint64_t Offset) {
+static Type* getIntTypeAtOffset(Type* Ty, uint64_t Offset) {
 
   PointerType* Ptr = dyn_cast<PointerType>(Ty);
   if(!Ptr)
@@ -2967,7 +2967,17 @@ static Type* getTypeAtOffset(Type* Ty, uint64_t Offset) {
     const StructLayout* SL = GlobalTD->getStructLayout(ST);
     unsigned FieldNo = SL->getElementContainingOffset(Offset);
     release_assert(SL->getElementOffset(FieldNo) == Offset && "Bad path condition alignment");
-    return ST->getElementType(FieldNo);
+
+    Type* ret = ST->getElementType(FieldNo);
+
+    while(isa<ArrayType>(ret) || isa<StructType>(ret)) {
+      if(isa<ArrayType>(ret))
+	ret = cast<ArrayType>(ret)->getElementType();
+      else
+	ret = cast<StructType>(ret)->getElementType(0);
+    }
+
+    return ret;
     
   }
   else {
@@ -3143,7 +3153,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
 	if(Ty == PathConditionTypeInt)
 	  ConstType = targetType;
 	else {
-	  ConstType = getTypeAtOffset(targetType, offset);
+	  ConstType = getIntTypeAtOffset(targetType, offset);
 	  release_assert(ConstType && "Failed to find assigned type for path condition");
 	}
 	release_assert((ConstType->isIntegerTy() || (ConstType->isPointerTy() && !assumeInt)) && "Instructions with an integer assumption must be integer typed");
