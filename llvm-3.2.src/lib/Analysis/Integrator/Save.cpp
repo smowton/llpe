@@ -634,6 +634,11 @@ BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
 
   if(shouldIgnoreEdge(BB->invar, getBBInvar(succIdx))) {
 
+    if(pass->omitChecks) {
+      markUnreachable = true;
+      return 0;
+    }
+    
     release_assert(failedBlocks[succIdx].size());
     return failedBlocks[succIdx].front().first;
 
@@ -876,7 +881,8 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
 
     // Argument is a BB.
     bool markUnreachable = false;
-    BasicBlock* SBB = getSuccessorBB(BB, I->invar->operandIdxs[idx].blockIdx, markUnreachable);
+    uint32_t succIdx = I->invar->operandIdxs[idx].blockIdx;
+    BasicBlock* SBB = getSuccessorBB(BB, succIdx, markUnreachable);
 
     release_assert((SBB || markUnreachable) && "Failed to get successor BB (2)");
 
@@ -885,6 +891,16 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
       // Create an unreachable BB to branch to:
       BasicBlock* UBB = createBasicBlock(I->invar->I->getContext(), VerboseNames ? "synth-unreachable" : "", 
 					 getFunctionRoot()->CommitF);
+      // The following is only currently needed when running with int-omit-checks: exceptions lead
+      // to immediate death, but we still need a landingpad to produce a sane module.
+      if(LandingPadInst* LPI = dyn_cast<LandingPadInst>(getBBInvar(succIdx)->BB->getFirstNonPHI())) {
+
+	Instruction* NewLPI = LPI->clone();
+	// No remapping necessary, as LP arg is just a constant pointer to a personality function
+	UBB->getInstList().push_back(NewLPI);
+
+      }
+	
       new UnreachableInst(UBB->getContext(), UBB);
       return UBB;
 
