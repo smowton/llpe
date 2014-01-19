@@ -1557,27 +1557,29 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  bool loopHasBreaks = false;
 	  for(uint32_t j = LInfo->headerIdx, jlim = LInfo->latchIdx + 1; j != jlim && !loopHasBreaks; ++j) {
 
+	    ShadowBBInvar* jbbi = getBBInvar(j);
+
 	    // Block is broken into pieces due to a mid-block check?
 	    if(failedBlocks[j].size() > 1)
 	      loopHasBreaks = true;
 
 	    // Will there be incoming edges from specialised code due to path conditions?
-	    else if(pass->countPathConditionsAtBlockStart(thisBBI, this))
+	    else if(pass->countPathConditionsAtBlockStart(jbbi, this))
 	      loopHasBreaks = true;
 
 	    // Do invoke instructions within the loop cause break edges on an existing block boundary?
-	    else if(isa<InvokeInst>(thisBBI->BB->getTerminator())) {
+	    else if(isa<InvokeInst>(jbbi->BB->getTerminator())) {
 
-	      if(thisBBI->naturalScope->contains(getBBInvar(thisBBI->succIdxs[0])->naturalScope) &&
-		 hasInvokeBreaks(thisBBI->idx, thisBBI->succIdxs[0]))
+	      if(jbbi->naturalScope->contains(getBBInvar(jbbi->succIdxs[0])->naturalScope) &&
+		 hasInvokeBreaks(jbbi->idx, jbbi->succIdxs[0]))
 		loopHasBreaks = true;
-	      else if(thisBBI->naturalScope->contains(getBBInvar(thisBBI->succIdxs[1])->naturalScope) &&
-		      hasInvokeBreaks(thisBBI->idx, thisBBI->succIdxs[1]))
+	      else if(jbbi->naturalScope->contains(getBBInvar(jbbi->succIdxs[1])->naturalScope) &&
+		      hasInvokeBreaks(jbbi->idx, jbbi->succIdxs[1]))
 		loopHasBreaks = true;
 
 	    }
 
-	    else if(hasTopOfBlockVFSChecks(thisBBI->idx))
+	    else if(hasTopOfBlockVFSChecks(jbbi->idx))
 	      loopHasBreaks = true;
 
 	  }
@@ -1625,6 +1627,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 	  while(thisBBI->naturalScope != loopStack.back().first) {
 
 	    const Loop* exitLoop = loopStack.back().first;
+
 	    PHINode* PN = loopStack.back().second;
 	    loopStack.pop_back();
 	    // Lowest level loop should never be popped.
