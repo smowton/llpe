@@ -403,7 +403,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
-   DenseSet<LoadInst*> simpleVolatileLoads;
+   DenseSet<Instruction*> simpleVolatileLoads;
    
    DenseMap<ShadowInstruction*, std::string> optimisticForwardStatus;
 
@@ -596,7 +596,7 @@ class IntegrationHeuristicsPass : public ModulePass {
      return it->second == C;
    }
 
-   bool volatileLoadIsSimple(LoadInst* LI) {
+   bool atomicOpIsSimple(Instruction* LI) {
 
      return programSingleThreaded || simpleVolatileLoads.count(LI);
 

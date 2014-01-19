@@ -103,11 +103,14 @@ TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
 }
 
-static void markAllObjectsTentative(ShadowBB* BB) {
+static void markAllObjectsTentative(ShadowInstruction* SI, ShadowBB* BB) {
 
   BB->tlStore = BB->tlStore->getEmptyMap();
   BB->tlStore->allOthersClobbered = true;
   BB->IA->yieldState = BARRIER_HERE;
+
+  if(inst_is<LoadInst>(SI) || inst_is<AtomicRMWInst>(SI))
+    errs() << "Clobber all at " << SI->parent->IA->F.getName() << "," << SI->parent->invar->BB->getName() << "," << std::distance(SI->parent->invar->BB->begin(), BasicBlock::iterator(SI->invar->I)) << "\n";
 
 }
 
@@ -311,8 +314,8 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   }
   else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
-    if((LI->isVolatile() || SI->hasOrderingConstraint()) && (!GlobalIHP->programSingleThreaded) && !SI->parent->IA->pass->volatileLoadIsSimple(LI))
-      markAllObjectsTentative(SI->parent);
+    if((LI->isVolatile() || SI->hasOrderingConstraint()) && !SI->parent->IA->pass->atomicOpIsSimple(LI))
+      markAllObjectsTentative(SI, SI->parent);
     else
       markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
 
@@ -322,7 +325,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     // I don't think there's a need to regard a volatile /store/ as a yield point, as this is *outgoing* interthread communication
     // if it communication at all. Compare pthread_unlock which is not a yield point to pthread_lock, which is.
     //if(StoreI->isVolatile())
-    //markAllObjectsTentative(SI->parent);
+    //markAllObjectsTentative(SI, SI->parent);
     //else
     markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
@@ -330,13 +333,15 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   else if(SI->readsMemoryDirectly() && SI->hasOrderingConstraint()) {
 
     // Might create a synchronisation edge:
-    if(SI->isThreadLocal == TLS_MUSTCHECK)
-      markAllObjectsTentative(SI->parent);
+    if(SI->isThreadLocal == TLS_MUSTCHECK && !SI->parent->IA->pass->atomicOpIsSimple(SI->invar->I))
+      markAllObjectsTentative(SI, SI->parent);
+    else
+      markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(SI->getType()), contextEnabled, SI->parent);
 
   }
   else if(inst_is<FenceInst>(SI)) {
 
-    markAllObjectsTentative(SI->parent);
+    markAllObjectsTentative(SI, SI->parent);
 
   }
   else if(inst_is<CallInst>(SI) || inst_is<InvokeInst>(SI)) {
@@ -423,7 +428,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 	else {
 
 	  // No explicit domain given; clobbers everything.
-	  markAllObjectsTentative(SI->parent);
+	  markAllObjectsTentative(SI, SI->parent);
 
 	}
 

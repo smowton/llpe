@@ -2276,7 +2276,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
 
   if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
-    if(IA->commitsOutOfLine())
+    if(IA->commitsOutOfLine() && IA->hasFailedReturnPath())
       fallThrough = true;    
     else if(IA->failedReturnPHI)
       preds.push_back(std::make_pair(IA->failedReturnPHI, IA->failedReturnBlock));

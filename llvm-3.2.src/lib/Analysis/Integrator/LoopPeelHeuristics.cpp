@@ -2654,14 +2654,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     BasicBlock::iterator BI = BB->begin();
     std::advance(BI, Offset);
-    LoadInst* LI = dyn_cast<LoadInst>(BI);
 
-    if(!LI) {
-      errs() << "int-simple-volatile-load: " << *it << " does not denote a load\n";
+    if(!(isa<LoadInst>(BI) || isa<AtomicRMWInst>(BI) || isa<AtomicCmpXchgInst>(BI))) {
+      errs() << "int-simple-volatile-load: " << *it << " does not denote an atomic op\n";
       exit(1);
     }
 
-    simpleVolatileLoads.insert(LI);
+    simpleVolatileLoads.insert(BI);
 
   }
 
