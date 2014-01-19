@@ -243,7 +243,9 @@ DSEMapPointer DSEMapPointer::getReadableCopy() {
     else {
 
       newMap->insert(it.start(), it.stop(), DSEMapEntry());
-      DSEMapEntry* newEntry = &(newMap->find(it.start()).val());
+      DSEMapTy::iterator newEntryIt = newMap->find(it.start());
+      release_assert(newEntryIt != newMap->end());
+      DSEMapEntry* newEntry = &newEntryIt.val();
 	
       for(DSEMapEntry::iterator entryit = oldEntry.begin(); entryit != oldEntry.end(); ++entryit) {
 
@@ -685,6 +687,11 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
 }
 
 void IntegrationAttempt::DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, ShadowInstruction* Writer, ShadowBB* BB) {
+
+  // Occasionally zero-length memset or memcpy instructions get here: these are trivially removed
+  // by other means so no need to handle the special case here.
+  if(Size == 0)
+    return;
 
   ShadowValue Ptr;
   int64_t Offset;
