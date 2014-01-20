@@ -365,20 +365,29 @@ void InlineAttempt::splitCommitHere() {
     LT = GlobalValue::InternalLinkage;
   
   CommitF = cloneEmptyFunction(&F, LT, Name, hasFailedReturnPath() && !isRootMainCall());
+  firstFailedBlock = CommitF->end();
 
   Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
   
   for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
 	itend = CommitBlocks.end(); it != itend; ++it) {
 
-    Value* TestVal = *it;
-    release_assert(isa<BasicBlock>(TestVal));
-
     BBL.push_back(*it);
 
   }
 
+  for(std::vector<BasicBlock*>::iterator it = CommitFailedBlocks.begin(),
+	itend = CommitFailedBlocks.end(); it != itend; ++it) {
+
+    BBL.push_back(*it);
+
+    if(it == CommitFailedBlocks.begin())
+      firstFailedBlock = Function::iterator(BBL.back());
+
+  }
+
   CommitBlocks.clear();
+  CommitFailedBlocks.clear();
   CommitFunctions.push_back(CommitF);
 
   residualInstructionsHere = 1;

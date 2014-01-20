@@ -2093,13 +2093,14 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 
 }
 
+
 BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
 						    ValueToValueMapTy& VMap,
 						    const Twine &NameSuffix, 
 						    Function* F,
 						    uint32_t startIdx) {
 
-  BasicBlock *NewBB = createBasicBlock(BB->getContext(), "", F);
+  BasicBlock *NewBB = createBasicBlock(BB->getContext(), "", F, false, /* isfailedblock= */ true);
   if (VerboseNames && BB->hasName()) NewBB->setName(BB->getName()+NameSuffix);
 
   // Loop over all instructions, and copy them over.
@@ -2181,7 +2182,7 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       failedBlocks[idx].push_back(std::make_pair(splitBlock, i + 1));
 
       if(!CommitF)
-	CommitBlocks.push_back(splitBlock);
+	CommitFailedBlocks.push_back(splitBlock);
 
       instsSinceLastSplit = 0;
 
@@ -2816,7 +2817,7 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterat
     if(markUnreachable) {
       successTarget = createBasicBlock(emitBB->getContext(), 
 				       VerboseNames ? "invoke-check-unreachable" : "", 
-				       emitBB->getParent());
+				       emitBB->getParent(), false, true);
       new UnreachableInst(emitBB->getContext(), successTarget);
     }
 

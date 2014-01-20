@@ -55,7 +55,7 @@ static BasicBlock* getChainNext(BasicBlock* BB) {
 
 }
 
-template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T itend, Callback& CB) {
+template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T itend, Callback& CB, Function::iterator& firstFailedBlock) {
 
   // Zap any instructions we've created that are trivially dead.
   // TODO: improve DIE to catch more cases like this before synthesis, or adopt
@@ -143,9 +143,18 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T ite
     CB.willReplace(Start);
 
     for(unsigned i = 1, ilim = Chain.size(); i != ilim; ++i) {
+
       if(i != 0 && (i % 10000 == 0)) 
 	errs() << ".";
+
+      BasicBlock* PBB = Chain.back()->getSinglePredecessor();
+
+      // First failed block goes away; next one takes its place.
+      if(Function::iterator(PBB) == firstFailedBlock)
+	++firstFailedBlock;
+
       MergeBasicBlockIntoOnlyPred(Chain.back());
+
     }
 
     CB.replaced(Start, Chain.back());
@@ -224,7 +233,36 @@ void InlineAttempt::postCommitOptimise() {
   if(CommitF) {
     
     PCOFunctionCB CB;
-    postCommitOptimiseBlocks(CommitF->begin(), CommitF->end(), CB);
+    postCommitOptimiseBlocks(CommitF->begin(), CommitF->end(), CB, firstFailedBlock);
+
+    // Now top-sort the blocks, excluding the failed blocks by annotating them 'visited' to start with.
+    {
+
+      SmallSet<BasicBlock*, 8> Visited;
+      for(Function::iterator it = firstFailedBlock, itend = CommitF->end(); it != itend; ++it)
+	Visited.insert(it);
+
+      BasicBlock* firstBlock = &CommitF->getEntryBlock();
+      std::vector<BasicBlock*> Ordered;
+      createTopOrderingFrom(firstBlock, Ordered, Visited, 0, 0);
+      std::reverse(Ordered.begin(), Ordered.end());
+
+      Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
+
+      Function::iterator fit = CommitF->begin();
+      for(std::vector<BasicBlock*>::iterator it = Ordered.begin(), itend = Ordered.end(); it != itend; ++it) {
+
+	// Splice this block before fit, fit moves forwards and continue,
+	// or else fit is already in the right place, leave it and insert before its successor.
+
+	if(fit == CommitF->end() || (&*fit) != (*it))
+	  BBL.splice(fit, BBL, *it);
+	else
+	  ++fit;
+
+      }
+
+    }
 
   }
   else {

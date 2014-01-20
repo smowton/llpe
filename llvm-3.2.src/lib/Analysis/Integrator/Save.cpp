@@ -195,18 +195,46 @@ bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
 }
 
-BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock) {
+BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock, bool isFailedBlock) {
 
   Function* AddTo;
   if(isEntryBlock)
     AddTo = 0;
   else
     AddTo = AddF;
-  BasicBlock* newBlock = BasicBlock::Create(Ctx, Name, AddTo);
-  if(!AddF)
-    getFunctionRoot()->CommitBlocks.push_back(newBlock);
-  else if(isEntryBlock)
+  
+  BasicBlock* newBlock;
+  if(AddTo && getFunctionRoot()->firstFailedBlock != AddTo->end() && !isFailedBlock) {
+
+    // Add block before any failed blocks
+    newBlock = BasicBlock::Create(Ctx, Name, AddTo, getFunctionRoot()->firstFailedBlock);
+
+  }
+  else {
+    
+    // Add block to end of function, or to no function if !AddTo
+    newBlock = BasicBlock::Create(Ctx, Name, AddTo);
+    if(AddTo && isFailedBlock && getFunctionRoot()->firstFailedBlock == AddTo->end())
+      getFunctionRoot()->firstFailedBlock = Function::iterator(newBlock);
+
+  }
+
+  if(!AddF) {
+
+    // Commit function unknown at the moment: save the block for later addition
+    // when a function is chosen in SaveSplits.cpp
+    if(isFailedBlock)
+      getFunctionRoot()->CommitFailedBlocks.push_back(newBlock);
+    else
+      getFunctionRoot()->CommitBlocks.push_back(newBlock);
+
+  }
+  else if(isEntryBlock) {
+    
     AddF->getBasicBlockList().push_front(newBlock);
+
+  }
+
   return newBlock;
 
 }
@@ -221,7 +249,7 @@ void InlineAttempt::commitCFG() {
     std::string Pref;
     if(VerboseNames)
       Pref = getCommittedBlockPrefix();
-    returnBlock = createBasicBlock(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CommitF);
+    returnBlock = createBasicBlock(F.getContext(), VerboseNames ? (StringRef(Pref) + "callexit") : "", CommitF, false, false);
 
     if(hasFailedReturnPath()) {
 
@@ -231,7 +259,7 @@ void InlineAttempt::commitCFG() {
       else
 	PreName = "";
 
-      failedReturnBlock = createBasicBlock(F.getContext(), PreName, CommitF);
+      failedReturnBlock = createBasicBlock(F.getContext(), PreName, CommitF, false, true);
 
     }
     else {
@@ -312,7 +340,7 @@ void IntegrationAttempt::commitCFG() {
     else if(isEntryBlock)
       Name = "entry";
     
-    BasicBlock* firstNewBlock = createBasicBlock(F.getContext(), Name, CF, isCommittedEntryBlock);
+    BasicBlock* firstNewBlock = createBasicBlock(F.getContext(), Name, CF, isCommittedEntryBlock, false);
 
     BB->committedBlocks.push_back(CommittedBlock(firstNewBlock, firstNewBlock, 0));
     if(isEntryBlock)
@@ -334,7 +362,7 @@ void IntegrationAttempt::commitCFG() {
 	  BlockName = BB->invar->BB->getName() + ".break";
 	else
 	  BlockName = "";
-	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BlockName, CF);
+	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BlockName, CF, false, true);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
@@ -346,7 +374,7 @@ void IntegrationAttempt::commitCFG() {
 	CondName = "";
 
       BasicBlock* newBlock = 
-	createBasicBlock(F.getContext(), CondName, CF);
+	createBasicBlock(F.getContext(), CondName, CF, false, false);
 
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 0));
 
@@ -363,7 +391,7 @@ void IntegrationAttempt::commitCFG() {
 	else
 	  BreakName = "";
 
-	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BreakName, CF);
+	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BreakName, CF, false, true);
 	BB->committedBlocks.back().breakBlock = breakBlock;
 
       }
@@ -375,7 +403,7 @@ void IntegrationAttempt::commitCFG() {
 	CheckName = "";
 
       BasicBlock* newBlock =
-	createBasicBlock(F.getContext(), CheckName, CF);	
+	createBasicBlock(F.getContext(), CheckName, CF, false, false);	
 
       // New block-let starts from instruction #1
       BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, 1));
@@ -423,7 +451,7 @@ void IntegrationAttempt::commitCFG() {
 	    // contain a failure check.
 	    if(IA->hasFailedReturnPath()) {
 
-	      BasicBlock* newBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF);
+	      BasicBlock* newBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Pref) + "OOL callexit" : "", CF, false, false);
 	      BB->committedBlocks.push_back(CommittedBlock(newBlock, newBlock, j+1));
 
 	    }
@@ -444,12 +472,12 @@ void IntegrationAttempt::commitCFG() {
 
 	  if(pass->verbosePCs || requiresBreakCode(SI)) {
 
-	    BasicBlock* breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfsbreak" : "", CF);
+	    BasicBlock* breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfsbreak" : "", CF, false, true);
 	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	  }
 
-	  BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF);
+	  BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".vfspass" : "", CF, false, false);
 	  BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j + 1));
 
 	}
@@ -475,13 +503,13 @@ void IntegrationAttempt::commitCFG() {
 	  // For most kinds of break this should belong to the old subblock;
 	  // for invoke instructions it should belong to the new one so that the old one's break edge
 	  // doesn't have an intermediary block and so can be used for the unwind edge.
-	  breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF);
+	  breakBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".tlbreak" : "", CF, false, true);
 	  if(!inst_is<InvokeInst>(SI))
 	    BB->committedBlocks.back().breakBlock = breakBlock;
 
 	}
 
-	BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF);
+	BasicBlock* newSpecBlock = createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".checkpass" : "", CF, false, false);
 	BB->committedBlocks.push_back(CommittedBlock(newSpecBlock, newSpecBlock, j+1));
 
 	if(inst_is<InvokeInst>(SI) && breakBlock)
@@ -496,7 +524,7 @@ void IntegrationAttempt::commitCFG() {
     if(pass->verbosePCs && hasLiveIgnoredEdges(BB)) {
 
       BB->committedBlocks.back().breakBlock = 
-	createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".directbreak" : "", CF);
+	createBasicBlock(F.getContext(), VerboseNames ? StringRef(Name) + ".directbreak" : "", CF, false, true);
 
     }
 
@@ -890,7 +918,7 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
 
       // Create an unreachable BB to branch to:
       BasicBlock* UBB = createBasicBlock(I->invar->I->getContext(), VerboseNames ? "synth-unreachable" : "", 
-					 getFunctionRoot()->CommitF);
+					 getFunctionRoot()->CommitF, false, true);
       // The following is only currently needed when running with int-omit-checks: exceptions lead
       // to immediate death, but we still need a landingpad to produce a sane module.
       if(LandingPadInst* LPI = dyn_cast<LandingPadInst>(getBBInvar(succIdx)->BB->getFirstNonPHI())) {
@@ -1474,9 +1502,11 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
     if(IA->isEnabled()) {
 
       if(!IA->instructionsCommitted) {
+
 	IA->activeCaller = I;
 	IA->commitArgsAndInstructions();
 	IA->instructionsCommitted = true;
+
       }
 
       if(!IA->commitsOutOfLine()) {
@@ -1638,7 +1668,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	    if(markUnreachable) {
 	      successTarget = createBasicBlock(emitBB->getContext(), 
 					       VerboseNames ? "invoke-unreachable" : "", 
-					       emitBB->getParent());
+					       emitBB->getParent(), false, true);
 	      new UnreachableInst(emitBB->getContext(), successTarget);
 	    }
 
@@ -2609,9 +2639,9 @@ void InlineAttempt::commitArgsAndInstructions() {
     if(uniqueParent) {
 
       if(CommitF)
-	release_assert(CommitBlocks.empty());
+	release_assert(CommitBlocks.empty() && CommitFailedBlocks.empty());
 
-      uniqueParent->inheritCommitBlocksAndFunctions(CommitBlocks, CommitFunctions);
+      uniqueParent->inheritCommitBlocksAndFunctions(CommitBlocks, CommitFailedBlocks, CommitFunctions);
 
     }
 
@@ -2704,7 +2734,7 @@ static void unregisterCommittedAllocations(Function* F) {
 
 }
 
-static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<BasicBlock*>& CommitBlocks) {
+static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<BasicBlock*>& CommitBlocks, std::vector<BasicBlock*>& CommitFailedBlocks) {
 
   for(std::vector<Function*>::iterator it = CommitFunctions.begin(), 
 	itend = CommitFunctions.end(); it != itend; ++it) {
@@ -2731,17 +2761,28 @@ static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<Basic
 
   CommitBlocks.clear();
 
+  for(std::vector<BasicBlock*>::iterator it = CommitFailedBlocks.begin(),
+	itend = CommitFailedBlocks.end(); it != itend; ++it) {
+
+    unregisterCommittedAllocations(*it);
+    (*it)->dropAllReferences();
+    delete *it;
+
+  }
+
+  CommitFailedBlocks.clear();
+
 }
 
 void InlineAttempt::releaseCommittedChildren() {
 
-  releaseCC(CommitFunctions, CommitBlocks);
+  releaseCC(CommitFunctions, CommitBlocks, CommitFailedBlocks);
 
 }
 
 void PeelAttempt::releaseCommittedChildren() {
 
-  releaseCC(CommitFunctions, CommitBlocks);
+  releaseCC(CommitFunctions, CommitBlocks, CommitFailedBlocks);
 
 }
 

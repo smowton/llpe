@@ -12,6 +12,7 @@
 #include "llvm/Pass.h"
 #include "llvm/Value.h"
 #include "llvm/BasicBlock.h"
+#include "llvm/Function.h"
 #include "llvm/Constant.h"
 #include "llvm/Argument.h"
 #include "llvm/Instruction.h"
@@ -32,9 +33,6 @@
 
 namespace llvm {
 
-class Function;
-class BasicBlock;
-class Instruction;
 class AliasAnalysis;
 class PHINode;
 class NonLocalDepResult;
@@ -1452,14 +1450,14 @@ protected:
   Value* getCommittedValueOrBlock(ShadowInstruction* I, uint32_t idx, ConstantInt*& failValue, BasicBlock*& failBlock);
   BasicBlock* getInvokeNormalSuccessor(ShadowInstruction*, bool& toCheckBlock);
   void releaseMemoryPostCommit();
-  BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock = false);
+  BasicBlock* createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock, bool isFailedBlock);
   BasicBlock* CloneBasicBlockFrom(const BasicBlock* BB,
 				  ValueToValueMapTy& VMap,
 				  const Twine &NameSuffix, 
 				  Function* F,
 				  uint32_t startIdx);
   void addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp);
-  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs) = 0;
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewFCBs, std::vector<Function*>& NewFs) = 0;
   void markAllocationsAndFDsCommitted();
 
   // Function sharing
@@ -1668,7 +1666,7 @@ public:
   void setExitingStores(void*, StoreKind);
   void setExitingStore(void*, ShadowBBInvar*, const Loop*, StoreKind);
 
-  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewCFBs, std::vector<Function*>& NewFs);
 
   ShadowBB* getUniqueExitingBlock2(ShadowBBInvar* BBI, const Loop* exitLoop, bool& bail);
   ShadowBB* getUniqueExitingBlock();
@@ -1706,8 +1704,8 @@ class PeelAttempt {
    ShadowLoopInvar* invarInfo;
 
    std::vector<PeelIteration*> Iterations;
-
    std::vector<BasicBlock*> CommitBlocks;
+   std::vector<BasicBlock*> CommitFailedBlocks;
    std::vector<Function*> CommitFunctions;
 
    PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
@@ -1799,7 +1797,9 @@ class InlineAttempt : public IntegrationAttempt {
   IntegrationAttempt* uniqueParent;
 
   Function* CommitF;
+  Function::iterator firstFailedBlock;
   std::vector<BasicBlock*> CommitBlocks;
+  std::vector<BasicBlock*> CommitFailedBlocks;
   std::vector<Function*> CommitFunctions;
   BasicBlock* entryBlock;
   BasicBlock* returnBlock;
@@ -1997,7 +1997,7 @@ class InlineAttempt : public IntegrationAttempt {
   void finaliseAndCommit(bool inLoopAnalyser);
   void inheritCommitFunctionCall(bool);
 
-  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<Function*>& NewFs);
+  virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewFCBs, std::vector<Function*>& NewFs);
 
 };
 
@@ -2309,6 +2309,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  void setAllNeededTop(DSELocalStore*);
  bool IHPFoldIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, SmallVector<uint64_t, 4>& OpInts, ValSetType& ImpType, ImprovedVal& Improved);
  void DeleteDeadInstruction(Instruction *I);
+ void createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL);
 
  extern char ihp_workdir[];
  extern bool IHPSaveDOTFiles;
