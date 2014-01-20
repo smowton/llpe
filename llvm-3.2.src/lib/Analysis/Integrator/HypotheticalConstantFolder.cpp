@@ -784,7 +784,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
     ImpType = ValSetTypeScalar;
     Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
 
-    if(comparingHeapPointer && needsRuntimeCheck) {
+    if(comparingHeapPointer && needsRuntimeCheck && !pass->omitMallocChecks) {
 
       ShadowValue& heapOp = op0Arg == zero ? op1 : op0;
 

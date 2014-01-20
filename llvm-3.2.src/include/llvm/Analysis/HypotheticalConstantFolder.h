@@ -500,6 +500,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool programSingleThreaded;
    bool omitChecks;
+   bool omitMallocChecks;
 
    DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
 

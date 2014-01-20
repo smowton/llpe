@@ -111,6 +111,7 @@ static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
 static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
 static cl::opt<bool> SingleThreaded("int-single-threaded");
 static cl::opt<bool> OmitChecks("int-omit-checks");
+static cl::opt<bool> OmitMallocChecks("int-omit-malloc-checks");
 static cl::list<std::string> SplitFunctions("int-force-split");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
@@ -2902,6 +2903,7 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->programSingleThreaded = SingleThreaded;
   this->useGlobalInitialisers = UseGlobalInitialisers;
   this->omitChecks = OmitChecks;
+  this->omitMallocChecks = OmitMallocChecks;
   if(this->omitChecks && !this->programSingleThreaded) {
 
     errs() << "omit-checks currently requires single-threaded\n";
