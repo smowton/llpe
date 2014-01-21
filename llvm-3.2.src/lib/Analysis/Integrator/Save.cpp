@@ -2102,8 +2102,6 @@ bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal&
 
 }
 
-
-
 Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar) {

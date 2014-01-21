@@ -446,6 +446,14 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 
 	ShadowArg* SArg = &(it->IA->argShadows[i]);
 	ShadowValue Op = getPathConditionOperand(A.stackIdx, A.instBB, A.instIdx);
+
+	// Can't use noteIndirectUse since that deals with allocations being used by synthetic
+	// pointers and the similar case of FDs.
+	if(Op.isInst() || Op.isArg()) {
+	  std::vector<std::pair<ShadowValue, uint32_t> >& Users = GlobalIHP->indirectDIEUsers[Op];
+	  // TODO: figure out what to register the dependency against
+	  // when indirectDIEUsers stops being a simple set of used things.
+	}
     
 	release_assert((!SArg->i.PB) && "Path condition functions shouldn't be reentrant");
 
@@ -705,9 +713,9 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
       Type* StrcmpArgTys[2] = { Int8Ptr, Int8Ptr };
       FunctionType* StrcmpType = FunctionType::get(IntTy, ArrayRef<Type*>(StrcmpArgTys, 2), false);
 
-      Function* StrcmpFun = emitBlock->getParent()->getParent()->getFunction("strcmp");
+      Function* StrcmpFun = getGlobalModule()->getFunction("strcmp");
       if(!StrcmpFun)
-	StrcmpFun = cast<Function>(emitBlock->getParent()->getParent()->getOrInsertFunction("strcmp", StrcmpType));
+	StrcmpFun = cast<Function>(getGlobalModule()->getOrInsertFunction("strcmp", StrcmpType));
       
       if(testRoot->getType() != Int8Ptr) {
 	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
@@ -793,7 +801,23 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
     for(SmallVector<PathFuncArg, 1>::iterator argit = it->args.begin(),
 	  argend = it->args.end(); argit != argend; ++argit, ++i) {
 
-      verifyArgs[i] = getCommittedValue(getPathConditionSV(argit->stackIdx, argit->instBB, argit->instIdx));
+      ShadowValue argVal = getPathConditionSV(argit->stackIdx, argit->instBB, argit->instIdx);
+      verifyArgs[i] = getCommittedValue(argVal);
+
+      if(!verifyArgs[i]) {
+
+	// Path conditions can request args in other contexts if there is a target stack.
+	// They might be legitimately not committed yet; rather than use the patch-refs
+	// system again, just re-synthesise the instruction here.
+
+	ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(getIVSRef(argVal));
+	release_assert(IVS);
+	release_assert(IVS->Values.size() == 1);
+	verifyArgs[i] = trySynthVal(0, it->VerifyF->getFunctionType()->getParamType(i), IVS->SetType, IVS->Values[0], emitBlock);
+
+      }
+
+      release_assert(verifyArgs[i]);
       
     }
 

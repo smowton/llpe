@@ -464,7 +464,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallSet<CallInst*, 4> pessimisticLocks;
 
    // Of an allocation or FD, record instructions that may use it in the emitted program.
-   DenseMap<ShadowInstruction*, std::vector<std::pair<ShadowValue, uint32_t> > > indirectDIEUsers;
+   DenseMap<ShadowValue, std::vector<std::pair<ShadowValue, uint32_t> > > indirectDIEUsers;
    // Of a successful copy instruction, records the values read.
    DenseMap<ShadowInstruction*, SmallVector<IVSRange, 4> > memcpyValues;
 

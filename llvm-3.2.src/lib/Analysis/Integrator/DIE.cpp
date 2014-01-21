@@ -538,71 +538,73 @@ bool IntegrationAttempt::valueIsDead(ShadowValue V) {
     // At the moment only FDs and allocations have indirect users like this.
     // These are instructions that don't directly use this instruction
     // but will do in the final committed program. Check that each is dead:
+
+    DenseMap<ShadowValue, std::vector<std::pair<ShadowValue, uint32_t > > >::iterator findit = 
+      GlobalIHP->indirectDIEUsers.find(V);
+    if(findit != GlobalIHP->indirectDIEUsers.end()) {
+
+      // TODO: come up with a more memory-efficient way to determine when an allocation, FD or similar
+      // can be removed.
+
+      return false;
+
+      /*
+      // First check if users have already been committed:
+      release_assert(I->i.PB && 
+      isa<ImprovedValSetSingle>(I->i.PB) && 
+      cast<ImprovedValSetSingle>(I->i.PB)->Values.size() == 1);
+	
+      if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isPtrIdx()) {
+
+      AllocData* AD = getAllocData(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V);
+      if(AD->PatchRefs.size())
+      return false;
+
+      }
+      else if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isFdIdx()) {
+
+      FDGlobalState& GFDS = GlobalIHP->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
+      if(GFDS.PatchRefs.size())
+      return false;
+
+      }
+      else {
+
+      release_assert(0 && "Not an allocation, not an FD, but has indirect users?");
+
+      }
+
+      std::vector<std::pair<ShadowValue, uint32_t> >& Users = findit->second;
+
+      for(uint32_t i = 0; i < Users.size(); ++i) {
+
+      // If the IA has been deallocated then the user must have been committed already
+      // or thrown away, and can be spotted as a patch request.
+      if(!pass->IAs[Users[i].second])
+      continue;
+
+      if(!willBeDeleted(Users[i].first)) {
+
+      if(verbose)
+      errs() << itcache(V) << " used by " << itcache(Users[i].first) << "\n";	      
+
+      return false;
+
+      }
+
+      */
+
+    }
+
     if(ShadowInstruction* I = V.getInst()) {
 
-      DenseMap<ShadowInstruction*, std::vector<std::pair<ShadowValue, uint32_t > > >::iterator findit = 
-	GlobalIHP->indirectDIEUsers.find(I);
-      if(findit != GlobalIHP->indirectDIEUsers.end()) {
-
-	return false;
-
-	/*
-	// First check if users have already been committed:
-	release_assert(I->i.PB && 
-		       isa<ImprovedValSetSingle>(I->i.PB) && 
-		       cast<ImprovedValSetSingle>(I->i.PB)->Values.size() == 1);
-	
-	if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isPtrIdx()) {
-
-	  AllocData* AD = getAllocData(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V);
-	  if(AD->PatchRefs.size())
-	    return false;
-
-	}
-	else if(cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.isFdIdx()) {
-
-	  FDGlobalState& GFDS = GlobalIHP->fds[cast<ImprovedValSetSingle>(I->i.PB)->Values[0].V.getFd()];
-	  if(GFDS.PatchRefs.size())
-	    return false;
-
-	}
-	else {
-
-	  release_assert(0 && "Not an allocation, not an FD, but has indirect users?");
-
-	}
-
-	std::vector<std::pair<ShadowValue, uint32_t> >& Users = findit->second;
-
-	for(uint32_t i = 0; i < Users.size(); ++i) {
-
-	  // If the IA has been deallocated then the user must have been committed already
-	  // or thrown away, and can be spotted as a patch request.
-	  if(!pass->IAs[Users[i].second])
-	    continue;
-
-	  if(!willBeDeleted(Users[i].first)) {
-
-	    if(verbose)
-	      errs() << itcache(V) << " used by " << itcache(Users[i].first) << "\n";	      
-
-	    return false;
-
-	  }
-
-	}
-
-	*/
-
-      }
-
       if(InlineAttempt* IA = getInlineAttempt(I)) {
-
+	
 	if(IA->hasFailedReturnPath())
 	  return false;
-
+	
       }
-
+    
     }
 
     DIVisitor DIV(V);
