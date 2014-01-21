@@ -1115,6 +1115,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       ConstantInt* switchVal = 0;
       BasicBlock* switchBlock = 0;
       Value* replVal = getCommittedValueOrBlock(I, i, switchVal, switchBlock);
+      release_assert(replVal);
       newTerm->setOperand(i, replVal);
 
       if(switchVal || switchBlock)
@@ -1319,6 +1320,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	uint32_t targetInst = it->second.isFifo ? I->invar->idx + 1 : I->invar->idx;
 	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, targetInst);
 	BasicBlock* successTarget = emitBBIter->specBlock;
+
+	release_assert(failTarget && successTarget && CheckTest);
       
 	if(breakBlock != emitBB) {
 
@@ -1449,6 +1452,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
     // Branch to the real read instruction on failure:
     BasicBlock* successTarget = emitBBIter->specBlock;
     
+    release_assert(successTarget && failTarget && CheckTest);
     BranchInst::Create(failTarget, successTarget, CheckTest, emitBB);
 
     return true;
@@ -1483,6 +1487,7 @@ BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, b
     BasicBlock* failBlock = 0;
 
     Value* opV = getCommittedValueOrBlock(I, I->getNumOperands() - 2, ignFailValue, failBlock);
+    release_assert(opV);
 
     if(failBlock)
 	release_assert(0 && "Case not covered yet: invoke instruction with ignored normal return edge");
@@ -1676,6 +1681,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	  }
 
+	  release_assert(successTarget && failTarget && CallFailed);
 	  BranchInst::Create(successTarget, failTarget, CallFailed, emitBB);
 
 	}
@@ -1835,6 +1841,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
     BasicBlock* failBlock = 0;
 
     Value* opV = getCommittedValueOrBlock(I, i, ignFailValue, failBlock);
+    release_assert(opV);
     Type* needTy = newI->getOperand(i)->getType();
     newI->setOperand(i, getValAsType(opV, needTy, newI));
 

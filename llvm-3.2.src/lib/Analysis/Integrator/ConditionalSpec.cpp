@@ -766,6 +766,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
     
   }
   
+  release_assert(emitBlockIt->specBlock && failTarget && resultInst);
   BranchInst::Create(emitBlockIt->specBlock, failTarget, resultInst, emitBlock);
 
 }
@@ -853,6 +854,7 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
     }
     
     // Branch to next check or to failed block.
+    release_assert(emitBlockIt->specBlock && failTarget && VCond);
     BranchInst::Create(emitBlockIt->specBlock, failTarget, VCond, emitBlock);
 
   }
@@ -2668,6 +2670,8 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingl
       thisCheck = newCheck;
 
   }
+  
+  release_assert(thisCheck && "Check synthesis failed?");
 
   return thisCheck;
 
@@ -2766,6 +2770,7 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator e
     
   }
 
+  release_assert(successTarget && failTarget && prevCheck);
   BranchInst::Create(successTarget, failTarget, prevCheck, emitBB); 
 
   return emitIt;
@@ -2871,6 +2876,7 @@ IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterat
     
   }
 
+  release_assert(successTarget && failTarget && Check);
   BranchInst::Create(successTarget, failTarget, Check, emitBB);
 
   return emitIt;

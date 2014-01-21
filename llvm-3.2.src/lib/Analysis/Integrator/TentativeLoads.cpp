@@ -798,6 +798,9 @@ bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, Improved
 
     IVS.setOverdef();
 
+    // Instruction no longer checkable:
+    SI.isThreadLocal = TLS_NEVERCHECK;
+
     // Overwrite the pointer in the store to prevent future readers from encountering it again.
     ImprovedValSetSingle OD(ValSetTypeUnknown, true);
     ImprovedValSetSingle ReadP;
