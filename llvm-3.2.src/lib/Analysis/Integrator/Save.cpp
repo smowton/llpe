@@ -1853,8 +1853,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
     
   }
    
-  // If it's an allocation instruction, either store it to a global if globalised
-  // or just record the emitted allocation otherwise.
+  // If it's an allocation instruction, record the committed instruction.
   ShadowValue Base;
   AllocData* AD;
   if(getBaseObject(ShadowValue(I), Base) && 

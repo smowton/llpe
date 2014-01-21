@@ -84,7 +84,17 @@ void llvm::DeleteDeadInstruction(Instruction *I) {
   NowDeadInsts.push_back(I);
 
   do {
+    
     Instruction *DeadInst = NowDeadInsts.pop_back_val();
+
+    // Protect heap allocations and FDs, which might receive extra
+    // references from users that were committed before they were
+    // in patchReferences.
+
+    if(GlobalIHP->committedHeapAllocations.count(DeadInst))
+      continue;
+    if(GlobalIHP->committedFDs.count(DeadInst))
+      continue;
 
     // This instruction is dead, zap it, in stages.
 
