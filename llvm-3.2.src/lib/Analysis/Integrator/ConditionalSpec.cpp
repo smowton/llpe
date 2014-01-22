@@ -2699,7 +2699,15 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(SI->i.PB);
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
 
-      if(it.val().isWhollyUnknown())
+      ImprovedValSetSingle* thisIVS = &it.val();
+
+      // Overdef doesn't assert anything about the value...
+      if(thisIVS->isWhollyUnknown())
+	continue;
+      
+      // ...and neither does undef.
+      if(thisIVS->Values.size() == 1 && thisIVS->SetType == ValSetTypeScalar &&
+	 thisIVS->Values[0].V.isVal() && isa<UndefValue>(thisIVS->Values[0].V.getVal()))
 	continue;
 
       // Shift value to least significant position:

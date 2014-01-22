@@ -1862,6 +1862,13 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
     }
 
   }
+  else if(isa<UndefValue>(FromC)) {
+
+    Type* Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+    Constant* SubC = UndefValue::get(Target);
+    AddIVSConst(Offset, TargetSize, SubC);
+
+  }
   else {
 
     // C is a primitive, constant-aggregate-zero, constant-data-array or similar.
