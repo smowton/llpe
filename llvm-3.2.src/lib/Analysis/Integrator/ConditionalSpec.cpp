@@ -472,6 +472,17 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       it->IA->releaseCommittedChildren();
 
       doCallStoreMerge(BB, it->IA);
+      doTLCallMerge(BB, it->IA);
+
+      // Symbolic function has no effect on DSE: it doesn't register its stores for later
+      // elimination, and doesn't contribute to eliminating other stores either.
+
+      doDSECallMerge(BB, it->IA);
+      BB->dseStore->dropReference();
+      BB->dseStore = it->IA->backupDSEStore;
+      BB->dseStore->refCount++;
+      
+      it->IA->releaseBackupStores();
 
       // Make sure a failed version of this block and its successors is created:
       getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
