@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
     if (Verbose) errs() << "Linking in '" << InputFilenames[i] << "'\n";
 
     if (Linker::LinkModules(Composite.get(), M.get(), Linker::DestroySource,
-                            &ErrorMessage)) {
+                            &ErrorMessage, 0)) {
       errs() << argv[0] << ": link error in '" << InputFilenames[i]
              << "': " << ErrorMessage << "\n";
       return 1;

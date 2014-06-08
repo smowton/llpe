@@ -222,7 +222,7 @@ static Module *TestMergedProgram(const BugDriver &BD, Module *M1, Module *M2,
     M1 = CloneModule(M1);
     M2 = CloneModule(M2);
   }
-  if (Linker::LinkModules(M1, M2, Linker::DestroySource, &ErrorMsg)) {
+  if (Linker::LinkModules(M1, M2, Linker::DestroySource, &ErrorMsg, 0)) {
     errs() << BD.getToolName() << ": Error linking modules together:"
            << ErrorMsg << '\n';
     exit(1);
@@ -397,7 +397,7 @@ static bool ExtractLoops(BugDriver &BD,
     // extract another loop.
     std::string ErrorMsg;
     if (Linker::LinkModules(ToNotOptimize, ToOptimizeLoopExtracted, 
-                            Linker::DestroySource, &ErrorMsg)){
+                            Linker::DestroySource, &ErrorMsg, 0)){
       errs() << BD.getToolName() << ": Error linking modules together:"
              << ErrorMsg << '\n';
       exit(1);
@@ -577,7 +577,7 @@ static bool ExtractBlocks(BugDriver &BD,
 
   std::string ErrorMsg;
   if (Linker::LinkModules(ProgClone, Extracted, Linker::DestroySource, 
-                          &ErrorMsg)) {
+                          &ErrorMsg, 0)) {
     errs() << BD.getToolName() << ": Error linking modules together:"
            << ErrorMsg << '\n';
     exit(1);
