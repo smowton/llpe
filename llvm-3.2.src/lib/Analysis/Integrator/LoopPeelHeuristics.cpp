@@ -41,8 +41,6 @@
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/FileSystem.h"
 
-#include "dsa/DataStructure.h"
-
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -93,7 +91,6 @@ static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
 static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
 static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
 static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
-static cl::opt<bool> UseDSA("int-use-dsa");
 static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
 static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
 static cl::list<std::string> LockDomains("int-lock-domain", cl::ZeroOrMore);
@@ -2898,7 +2895,6 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->verboseOverdef = VerboseOverdef;
   this->enableSharing = EnableFunctionSharing;
   this->verboseSharing = VerboseFunctionSharing;
-  this->useDSA = UseDSA;
   this->verbosePCs = VerbosePathConditions;
   this->programSingleThreaded = SingleThreaded;
   this->useGlobalInitialisers = UseGlobalInitialisers;
@@ -3655,11 +3651,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
   GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
-  if(UseDSA) {
-    errs() << "Loading DSA...";
-    GlobalDSA = &getAnalysis<EQTDDataStructures>();
-    errs() << "done\n";
-  }
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
   GInt8 = Type::getInt8Ty(M.getContext());
@@ -3789,8 +3780,6 @@ void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   else {
     AU.addRequiredID(BAAInfo->getTypeInfo());
   }
-  if(UseDSA)
-    AU.addRequired<EQTDDataStructures>();
   //AU.setPreservesAll();
   
 }

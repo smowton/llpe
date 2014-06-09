@@ -70,7 +70,6 @@ class MemSetInst;
 class MemTransferInst;
 class ShadowLoopInvar;
 class TargetLibraryInfo;
-class EQTDDataStructures;
 class ShadowBB;
 class TrackedStore;
 class PersistPrinter; // Opaque here, defined in AsmWriter
@@ -87,7 +86,6 @@ inline void release_assert_fail(const char* str) {
 extern DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
 extern TargetLibraryInfo* GlobalTLI;
-extern EQTDDataStructures* GlobalDSA;
 extern IntegrationHeuristicsPass* GlobalIHP;
 
 struct ShadowBBVisitor {
@@ -449,7 +447,6 @@ class IntegrationHeuristicsPass : public ModulePass {
    SmallDenseMap<Function*, ReallocatorFn, 4> reallocatorFunctions;
    SmallDenseMap<Function*, Function*> modelFunctions;
    SmallPtrSet<Function*, 4> yieldFunctions;
-   bool useDSA;
 
    ArgStore* argStores;
 
