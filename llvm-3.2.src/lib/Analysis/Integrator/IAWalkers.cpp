@@ -393,7 +393,8 @@ void ForwardIAWalker::walkInternal() {
       if(StoppedCI) {
 
 	// Enter this call instruction from its entry block:
-	if(InlineAttempt* IA = BB->IA->getInlineAttempt(StoppedCI)) {
+	InlineAttempt* IA;
+	if((IA = BB->IA->getInlineAttempt(StoppedCI)) && !IA->isCommitted()) {
 
 	  // Get entry block:
 	  ShadowBB* BB = IA->getBB(0);
