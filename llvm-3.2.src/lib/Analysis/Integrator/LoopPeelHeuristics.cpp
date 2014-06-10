@@ -40,6 +40,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/DIBuilder.h"
 
 #include <sstream>
 #include <string>
@@ -110,6 +111,7 @@ static cl::opt<bool> SingleThreaded("int-single-threaded");
 static cl::opt<bool> OmitChecks("int-omit-checks");
 static cl::opt<bool> OmitMallocChecks("int-omit-malloc-checks");
 static cl::list<std::string> SplitFunctions("int-force-split");
+static cl::opt<bool> EmitFakeDebug("int-emit-fake-debug");
 
 ModulePass *llvm::createIntegrationHeuristicsPass() {
   return new IntegrationHeuristicsPass();
@@ -2924,6 +2926,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   }
 
   this->llioConfigFile = LLIOConfFile;
+  this->emitFakeDebug = EmitFakeDebug;
+
+  if(this->emitFakeDebug) {
+      DIBuilder DIB(*F.getParent());
+      DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
+      this->fakeDebugType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
+  }
 
 }
 

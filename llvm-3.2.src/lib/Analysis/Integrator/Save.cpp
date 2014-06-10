@@ -12,6 +12,7 @@
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/DIBuilder.h"
 
 #include "../../VMCore/LLVMContextImpl.h"
 
@@ -2580,6 +2581,17 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 
 }
 
+static void applyLocToBlocks(const DebugLoc& loc, const std::vector<BasicBlock*>& blocks) {
+
+    for(std::vector<BasicBlock*>::const_iterator it = blocks.begin(), itend = blocks.end(); it != itend; ++it) {
+	for(BasicBlock::iterator IIt = (*it)->begin(), IEnd = (*it)->end(); IIt != IEnd; ++IIt) {
+	    if(IIt->getDebugLoc().isUnknown())
+		IIt->setDebugLoc(loc);
+	}
+    }
+
+}
+
 void InlineAttempt::commitArgsAndInstructions() {
 
   if(isCommitted()) {
@@ -2636,6 +2648,61 @@ void InlineAttempt::commitArgsAndInstructions() {
     commitInstructions();
 
     fixNonLocalStackUses();
+
+    if(pass->emitFakeDebug) {
+
+	DenseMap<Function*, DebugLoc>::iterator findit = pass->fakeDebugLocs.find(&F);
+	DebugLoc* pFakeLoc;
+
+	if(findit == pass->fakeDebugLocs.end()) {
+
+	    std::string fakeFilename;
+	    {
+		raw_string_ostream RSO(fakeFilename);
+		RSO << "__llpe__" << F.getName();
+	    }
+
+	    DIBuilder DIB(*F.getParent());
+
+	    DIFile fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
+	    DISubprogram fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
+							   fakeFilename, fakeFile, 1,
+							   pass->fakeDebugType, false,
+							   true, 1);
+	    DILexicalBlock fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
+	    DebugLoc newFakeLoc = DebugLoc::getFromDILexicalBlock(fakeBlock);
+	  
+	    pFakeLoc = &(pass->fakeDebugLocs[&F] = newFakeLoc);
+
+	}
+	else {
+
+	    pFakeLoc = &findit->second;
+
+	}
+
+	DebugLoc& fakeLoc = *pFakeLoc;
+
+ 	if(CommitF) {
+
+	    for(Function::iterator it = CommitF->begin(), itend = CommitF->end();
+		it != itend; ++it) {
+
+		for(BasicBlock::iterator IIt = it->begin(), IEnd = it->end(); IIt != IEnd; ++IIt)
+		    if(IIt->getDebugLoc().isUnknown())
+			IIt->setDebugLoc(fakeLoc);
+
+	    }
+
+	}
+	else {
+
+	    applyLocToBlocks(fakeLoc, CommitBlocks);
+	    applyLocToBlocks(fakeLoc, CommitFailedBlocks);
+
+	}
+	
+    }
 
     // Give our committed functions and blocks to our parent context.
     // Do this here rather than in CommitCFG because blocks handling unreachable branches can be

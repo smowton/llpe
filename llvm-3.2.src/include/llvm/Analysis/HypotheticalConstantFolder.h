@@ -15,6 +15,7 @@
 #include "llvm/Function.h"
 #include "llvm/Constant.h"
 #include "llvm/Argument.h"
+#include "llvm/DebugInfo.h"
 #include "llvm/Instruction.h"
 #include "llvm/Instructions.h"
 #include "llvm/GlobalValue.h"
@@ -512,6 +513,10 @@ class IntegrationHeuristicsPass : public ModulePass {
    std::vector<void*> IAs;
 
    PersistPrinter* persistPrinter;
+
+   bool emitFakeDebug;
+   DenseMap<Function*, DebugLoc> fakeDebugLocs;
+   DIType fakeDebugType;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -1838,6 +1843,8 @@ class InlineAttempt : public IntegrationAttempt {
   DSELocalStore* backupDSEStore;
 
   ImprovedValSet* returnValue;
+
+  DebugLoc* dbgLoc;
 
   bool isUnsharable() {
     return hasVFSOps || isModel || (sharing && !sharing->escapingMallocs.empty()) || Callers.empty();
