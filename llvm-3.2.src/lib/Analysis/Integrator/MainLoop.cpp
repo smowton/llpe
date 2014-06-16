@@ -523,7 +523,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   // operands have degraded to the point that the instruction will no longer be resolved.
   // The noteAsExpected function here only tags those which are mentioned in path conditions.
 
-  applyMemoryPathConditions(BB);
+  applyMemoryPathConditions(BB, inLoopAnalyser, inAnyLoop);
   clearAsExpectedChecks(BB);
   noteAsExpectedChecks(BB);
 

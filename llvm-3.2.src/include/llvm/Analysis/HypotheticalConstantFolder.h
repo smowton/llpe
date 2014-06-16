@@ -1289,8 +1289,8 @@ protected:
   bool tryResolveLoadFromVararg(ShadowInstruction* LoadI, ImprovedValSet*& Result);
   bool tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg);
   bool getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result);
-  virtual void applyMemoryPathConditions(ShadowBB*);
-  void applyMemoryPathConditionsFrom(ShadowBB*, PathConditions&, uint32_t);
+  virtual void applyMemoryPathConditions(ShadowBB*, bool inLoopAnalyser, bool inAnyLoop);
+  void applyMemoryPathConditionsFrom(ShadowBB*, PathConditions&, uint32_t, bool inLoopAnalyser, bool inAnyLoop);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*, uint32_t);
   ShadowValue getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx);
 
@@ -1942,7 +1942,7 @@ class InlineAttempt : public IntegrationAttempt {
   void executeCall(uint32_t new_stack_depth);
   void releaseCallLatchStores();
   virtual bool tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef);
-  virtual void applyMemoryPathConditions(ShadowBB*);
+  virtual void applyMemoryPathConditions(ShadowBB*, bool inLoopAnalyser, bool inAnyLoop);
   void addIgnoredBlock(std::string& name);
   virtual void addExtraTags(IntegratorTag* myTag);
   void addExtraTagsFrom(PathConditions&, IntegratorTag* myTag);

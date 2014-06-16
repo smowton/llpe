@@ -387,23 +387,23 @@ void InlineAttempt::noteAsExpectedChecks(ShadowBB* BB) {
 
 }
 
-void IntegrationAttempt::applyMemoryPathConditions(ShadowBB* BB) {
+void IntegrationAttempt::applyMemoryPathConditions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
   
   if(invarInfo->pathConditions)
-    applyMemoryPathConditionsFrom(BB, *invarInfo->pathConditions, UINT_MAX);
+    applyMemoryPathConditionsFrom(BB, *invarInfo->pathConditions, UINT_MAX, inLoopAnalyser, inAnyLoop);
 
 }
 
-void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB) {
+void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
 
   if(targetCallInfo)
-    applyMemoryPathConditionsFrom(BB, pass->pathConditions, targetCallInfo->targetStackDepth);
+    applyMemoryPathConditionsFrom(BB, pass->pathConditions, targetCallInfo->targetStackDepth, inLoopAnalyser, inAnyLoop);
 
-  IntegrationAttempt::applyMemoryPathConditions(BB);
+  IntegrationAttempt::applyMemoryPathConditions(BB, inLoopAnalyser, inAnyLoop);
 
 }
 
-void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& PC, uint32_t targetStackDepth) {
+void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditions& PC, uint32_t targetStackDepth, bool inLoopAnalyser, bool inAnyLoop) {
 
   for(std::vector<PathCondition>::iterator it = PC.StringPathConditions.begin(),
 	itend = PC.StringPathConditions.end(); it != itend; ++it) {
@@ -462,7 +462,7 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       }
 
       it->IA->activeCaller = &BB->insts[0];
-      it->IA->analyseNoArgs(false, false, stack_depth);
+      it->IA->analyseNoArgs(inLoopAnalyser, inAnyLoop, stack_depth);
 
       // This is a bit of a hack -- the whole context is obviously ordained not to
       // be committed from the start and only exists for its side-effects -- but
@@ -472,18 +472,23 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       it->IA->releaseCommittedChildren();
 
       doCallStoreMerge(BB, it->IA);
-      doTLCallMerge(BB, it->IA);
 
-      // Symbolic function has no effect on DSE: it doesn't register its stores for later
-      // elimination, and doesn't contribute to eliminating other stores either.
+      if(!inLoopAnalyser) {
 
-      doDSECallMerge(BB, it->IA);
-      BB->dseStore->dropReference();
-      BB->dseStore = it->IA->backupDSEStore;
-      BB->dseStore->refCount++;
+	  doTLCallMerge(BB, it->IA);
+
+	  // Symbolic function has no effect on DSE: it doesn't register its stores for later
+	  // elimination, and doesn't contribute to eliminating other stores either.
+
+	  doDSECallMerge(BB, it->IA);
+	  BB->dseStore->dropReference();
+	  BB->dseStore = it->IA->backupDSEStore;
+	  BB->dseStore->refCount++;
+
+	  it->IA->releaseBackupStores();
+
+      }
       
-      it->IA->releaseBackupStores();
-
       // Make sure a failed version of this block and its successors is created:
       getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
 
@@ -1286,14 +1291,22 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
 
   if(Ret->getType() != V->getType()) {
 
-    Instruction* insertCastBefore = 0;
-
     if(Instruction* I = dyn_cast<Instruction>(Ret)) {
 
       BasicBlock::iterator BI(I);
       ++BI;
-      insertCastBefore = BI;
-      Ret = getValAsType(Ret, V->getType(), insertCastBefore);
+
+      if(BI == I->getParent()->end()) {
+
+	// Should only happen to a block that is currently being written.
+	Ret = getValAsType(Ret, V->getType(), I->getParent());
+
+      }
+      else {
+
+	Ret = getValAsType(Ret, V->getType(), (Instruction*)BI);
+	
+      }
 
     }
     else {
