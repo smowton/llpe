@@ -3594,12 +3594,14 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
     for(SmallVector<ImprovedVal, 1>::iterator it = PtrSet.Values.begin(), it2 = PtrSet.Values.end(); it != it2; ++it) {
 
-      LocStore* Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
-      if(!Store)
-	continue;
+      LocStore* Store;
 
       if(it->Offset == LLONG_MAX) {
 	LFV3(errs() << "Write through vague pointer; clobber\n");
+
+	Store = StoreBB->getWritableStoreFor(it->V, 0, ULONG_MAX, true);
+	if(!Store)
+	    continue;
 
 	ImprovedValSetSingle OD(ValSetTypeUnknown, true);
 	replaceRangeWithPB(Store->store, OD, 0, ULONG_MAX);
@@ -3607,6 +3609,10 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
       }
       else {
 
+	Store = StoreBB->getWritableStoreFor(it->V, it->Offset, PtrSize, true);
+	if(!Store)
+	  continue;
+	
 	ImprovedValSetSingle oldValSet;
 	if(ValPB.Overdef) {
 
