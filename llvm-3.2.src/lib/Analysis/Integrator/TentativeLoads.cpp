@@ -897,7 +897,7 @@ void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool i
   if(inLoopAnalyser)
     return;
 
-  if(inst_is<LoadInst>(&SI)) {
+  if(inst_is<LoadInst>(&SI) || inst_is<CallInst>(&SI) || inst_is<InvokeInst>(&SI)) {
 
     if(SI.parent->status != BBSTATUS_CERTAIN)
       return;
@@ -979,6 +979,13 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
       replaceUnavailableObjects(SI, inLoopAnalyser);
 
     }
+
+  }
+  else if(inst_is<CallInst>(&SI) || inst_is<InvokeInst>(&SI)) {
+      
+    // This is a little awkwardly placed since expanded calls are not tentative loads,
+    // but this way it's together with load instructions replacing an unavailable object.
+    replaceUnavailableObjects(SI, inLoopAnalyser);
 
   }
   else {
