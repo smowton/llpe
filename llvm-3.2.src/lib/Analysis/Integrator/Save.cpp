@@ -2651,56 +2651,56 @@ void InlineAttempt::commitArgsAndInstructions() {
 
     if(pass->emitFakeDebug) {
 
-	DenseMap<Function*, DebugLoc>::iterator findit = pass->fakeDebugLocs.find(&F);
-	DebugLoc* pFakeLoc;
+      DenseMap<Function*, DebugLoc>::iterator findit = pass->fakeDebugLocs.find(&F);
+      DebugLoc* pFakeLoc;
 
-	if(findit == pass->fakeDebugLocs.end()) {
+      if(findit == pass->fakeDebugLocs.end()) {
 
-	    std::string fakeFilename;
-	    {
-		raw_string_ostream RSO(fakeFilename);
-		RSO << "__llpe__" << F.getName();
-	    }
+	std::string fakeFilename;
+	{
+	  raw_string_ostream RSO(fakeFilename);
+	  RSO << "__llpe__" << F.getName();
+	}
 
-	    DIBuilder DIB(*F.getParent());
+	DIBuilder DIB(*F.getParent());
 
-	    DIFile fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
-	    DISubprogram fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
-							   fakeFilename, fakeFile, 1,
-							   pass->fakeDebugType, false,
-							   true, 1);
-	    DILexicalBlock fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
-	    DebugLoc newFakeLoc = DebugLoc::getFromDILexicalBlock(fakeBlock);
+	DIFile fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
+	DISubprogram fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
+						       fakeFilename, fakeFile, 1,
+						       pass->fakeDebugType, false,
+						       true, 1);
+	DILexicalBlock fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
+	DebugLoc newFakeLoc = DebugLoc::getFromDILexicalBlock(fakeBlock);
 	  
-	    pFakeLoc = &(pass->fakeDebugLocs[&F] = newFakeLoc);
+	pFakeLoc = &(pass->fakeDebugLocs[&F] = newFakeLoc);
+
+      }
+      else {
+
+	pFakeLoc = &findit->second;
+
+      }
+
+      DebugLoc& fakeLoc = *pFakeLoc;
+
+      if(CommitF) {
+
+	for(Function::iterator it = CommitF->begin(), itend = CommitF->end();
+	    it != itend; ++it) {
+
+	  for(BasicBlock::iterator IIt = it->begin(), IEnd = it->end(); IIt != IEnd; ++IIt)
+	    if(IIt->getDebugLoc().isUnknown())
+	      IIt->setDebugLoc(fakeLoc);
 
 	}
-	else {
 
-	    pFakeLoc = &findit->second;
+      }
+      else {
 
-	}
+	applyLocToBlocks(fakeLoc, CommitBlocks);
+	applyLocToBlocks(fakeLoc, CommitFailedBlocks);
 
-	DebugLoc& fakeLoc = *pFakeLoc;
-
- 	if(CommitF) {
-
-	    for(Function::iterator it = CommitF->begin(), itend = CommitF->end();
-		it != itend; ++it) {
-
-		for(BasicBlock::iterator IIt = it->begin(), IEnd = it->end(); IIt != IEnd; ++IIt)
-		    if(IIt->getDebugLoc().isUnknown())
-			IIt->setDebugLoc(fakeLoc);
-
-	    }
-
-	}
-	else {
-
-	    applyLocToBlocks(fakeLoc, CommitBlocks);
-	    applyLocToBlocks(fakeLoc, CommitFailedBlocks);
-
-	}
+      }
 	
     }
 
