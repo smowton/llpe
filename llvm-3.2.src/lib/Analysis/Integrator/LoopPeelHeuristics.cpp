@@ -2929,9 +2929,9 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
   this->emitFakeDebug = EmitFakeDebug;
 
   if(this->emitFakeDebug) {
-      DIBuilder DIB(*F.getParent());
-      DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
-      this->fakeDebugType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
+    DIBuilder DIB(*F.getParent());
+    DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
+    this->fakeDebugType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
   }
 
 }

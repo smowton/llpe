@@ -50,15 +50,15 @@ ImprovedValSetMulti::ImprovedValSetMulti(const ImprovedValSetMulti& other) : Imp
 
 // Only declare multis equal when the topmost map is trivially equal.
 // It still might be possible to flatten the maps to discover they represent the same information.
-bool llvm::operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2) {
+bool llvm::operator==(const ImprovedValSetMulti& PB1, const ImprovedValSetMulti& PB2) {
 
-  ImprovedValSetMulti::MapIt 
+  ImprovedValSetMulti::ConstMapIt 
     it1 = PB1.Map.begin(), it1end = PB1.Map.end(), 
     it2 = PB2.Map.begin(), it2end = PB2.Map.end();
 
   for(; it1 != it1end && it2 != it2end; ++it1, ++it2) {
 
-    if(it1.start() != it2.start() || it1.stop() != it2.stop() || it1.val() != it2.val())
+    if(it1.start() != it2.start() || it1.stop() != it2.stop() || it1.value() != it2.value())
       return false;
 
   }
@@ -632,7 +632,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
 
 }
 
-int32_t ShadowValue::getHeapKey() {
+int32_t ShadowValue::getHeapKey() const {
 
   switch(t) {
 
@@ -662,7 +662,7 @@ int32_t ShadowValue::getHeapKey() {
 
 }
 
-uint64_t ShadowValue::getAllocSize(OrdinaryLocalStore* M) {
+uint64_t ShadowValue::getAllocSize(OrdinaryLocalStore* M) const {
 
   switch(t) {
   case SHADOWVAL_PTRIDX:
@@ -694,7 +694,7 @@ uint64_t llvm::getAllocSize(InlineAttempt* IA, uint32_t idx) {
 
 }
 
-uint64_t ShadowValue::getAllocSize(IntegrationAttempt* IA) {
+uint64_t ShadowValue::getAllocSize(IntegrationAttempt* IA) const {
 
   switch(t) {
   case SHADOWVAL_PTRIDX:
@@ -722,7 +722,7 @@ ShadowValue& llvm::getAllocWithIdx(int32_t idx) {
 
 }
 
-int32_t ShadowValue::getFrameNo() {
+int32_t ShadowValue::getFrameNo() const {
 
   release_assert((!isInst()) && "Unsafe reference to alloc instruction");
   if(isPtrIdx())
@@ -732,7 +732,7 @@ int32_t ShadowValue::getFrameNo() {
 
 }
 
-LocStore* ShadowBB::getReadableStoreFor(ShadowValue& V) {
+LocStore* ShadowBB::getReadableStoreFor(const ShadowValue& V) {
 
   return localStore->getReadableStoreFor(V);
 
@@ -888,7 +888,7 @@ LocStore* ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   
 }
 
-bool llvm::addIVToPartialVal(ImprovedVal& IV, ValSetType SetType, uint64_t IVOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
+bool llvm::addIVToPartialVal(const ImprovedVal& IV, ValSetType SetType, uint64_t IVOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
 
   release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVToPartialVal");
 
@@ -924,7 +924,7 @@ bool llvm::addIVToPartialVal(ImprovedVal& IV, ValSetType SetType, uint64_t IVOff
 
 }
 
-bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
+bool llvm::addIVSToPartialVal(const ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
 
   // For now we forbid building from bytes when an input is set-typed:
   if(IVS.isWhollyUnknown() || IVS.Values.size() != 1)
@@ -936,7 +936,7 @@ bool llvm::addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uin
 
 void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, bool& shouldTryMulti, std::string* error) {
 
-  ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
+  const ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
   uint64_t IVSSize = ReadBB->getAllocSize(V);
   ImprovedValSetMulti* IVM;
   ImprovedValSetMulti::MapIt it;
@@ -952,7 +952,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     if(it != IVM->Map.end() && it.start() <= Offset && it.stop() >= (Offset + Size)) {
 
-      IVS = &it.val();
+      IVS = &it.value();
       IVSSize = it.stop() - it.start();
       Offset -= it.start();
       LFV3(errs() << "Read fully defined by multi subval " << it.start() << "-" << it.stop() << "\n");
@@ -1053,12 +1053,12 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
     LFV3(errs() << "Merge subval at " << FirstReadByte << "-" << LastReadByte << "\n");
 
-    if(!addIVSToPartialVal(it.val(), FirstReadByte - it.start(), FirstReadByte - Offset, LastReadByte - FirstReadByte, ResultPV, error)) {
+    if(!addIVSToPartialVal(it.value(), FirstReadByte - it.start(), FirstReadByte - Offset, LastReadByte - FirstReadByte, ResultPV, error)) {
       delete ResultPV;
       ResultPV = 0;
       Result.setOverdef();
 
-      if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+      if(it.value().SetType == ValSetTypePB || it.value().SetType == ValSetTypeFD) {
 	if(FirstReadByte == it.start() && LastReadByte == it.stop()) {
 
 	  // This read would read a whole FD or pointer, but can't because we can't express those
@@ -1068,7 +1068,7 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 	  
 	}
       }
-      else if(!it.val().isWhollyUnknown()) {
+      else if(!it.value().isWhollyUnknown()) {
 
 	shouldTryMulti = true;
 	  
@@ -1304,7 +1304,7 @@ static bool mayContainPointers(ImprovedValSet* IV) {
 
   for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
 
-    ImprovedValSetSingle& IVS = it.val();
+    const ImprovedValSetSingle& IVS = it.value();
     if(IVS.SetType == ValSetTypePB || IVS.SetType == ValSetTypeUnknown)
       return true;
 
@@ -1353,7 +1353,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
       SmallVector<IVSRange, 4> Vals;
       for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
 	
-	Vals.push_back(IVSR(it.start() + PtrSet.Values[0].Offset, it.stop() + PtrSet.Values[0].Offset, it.val()));
+	Vals.push_back(IVSR(it.start() + PtrSet.Values[0].Offset, it.stop() + PtrSet.Values[0].Offset, it.value()));
 
       }
 
@@ -1613,7 +1613,7 @@ bool llvm::executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& l
 
 }
 
-uint64_t ShadowValue::getValSize() {
+uint64_t ShadowValue::getValSize() const {
 
   switch(t) {
 
@@ -1631,7 +1631,7 @@ uint64_t ShadowValue::getValSize() {
 
 }
 
-void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
+void llvm::getIVSSubVals(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
   // Subvals only allowed for scalars:
 
@@ -1695,7 +1695,7 @@ void llvm::getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Si
   
 }
 
-void llvm::getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
+void llvm::getIVSSubVal(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
 
   SmallVector<IVSRange, 4> Subvals;
   getIVSSubVals(Src, Offset, Size, 0, Subvals);
@@ -1980,7 +1980,7 @@ Constant* llvm::getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSiz
 
 }
 
-void llvm::replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
+void llvm::replaceRangeWithPB(ImprovedValSet* Target, const ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
 
   if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
     *S = NewVal;
@@ -2104,7 +2104,7 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
 }
 
-void llvm::replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
+void llvm::replaceRangeWithPBs(ImprovedValSet* Target, const SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
 
   if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
     release_assert(NewVals.size() == 1 && Offset == 0);
@@ -2119,7 +2119,7 @@ void llvm::replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>&
 
     for(unsigned i = 0, iend = NewVals.size(); i != iend; ++i) {
 
-      IVSRange& RangeVal = NewVals[i];
+      const IVSRange& RangeVal = NewVals[i];
       it.insert(RangeVal.first.first, RangeVal.first.second, RangeVal.second);
       ++it;
 
@@ -2302,7 +2302,7 @@ void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet*
 
       LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << SubvalOffset << "-" << (SubvalOffset + SubvalSize) << "\n");
       
-      getIVSSubVals(it.val(), SubvalOffset, SubvalSize, it.start(), Results);
+      getIVSSubVals(it.value(), SubvalOffset, SubvalSize, it.start(), Results);
       Offset += SubvalSize;
       Size -= SubvalSize;
       ++it;
@@ -2342,7 +2342,7 @@ void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet*
 	LFV3(errs() << "Add val at " << it.start() << "-" << it.stop() << " subval " << "0-" << Size << "\n");
 
 	// Overlap on the right: extract sub-val.
-	getIVSSubVals(it.val(), 0, Size, it.start(), Results);
+	getIVSSubVals(it.value(), 0, Size, it.start(), Results);
 	Offset += Size;
 	Size = 0;
 	break;
@@ -2353,7 +2353,7 @@ void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet*
 	LFV3(errs() << "Add whole val at " << it.start() << "-" << it.stop() << "\n");
 
 	// No overlap: use whole value.
-	Results.push_back(IVSR(it.start(), it.stop(), it.val()));
+	Results.push_back(IVSR(it.start(), it.stop(), it.value()));
 	Offset += (it.stop() - it.start());
 	Size -= (it.stop() - it.start());
 	++it;
@@ -2939,27 +2939,27 @@ struct ReachableObjectVisitor {
 
   SmallSet<ShadowValue, 8> seenObjects;
 
-  virtual void visitPtr(ImprovedValSetSingle& Ptr, ShadowBB* BB) { }
-  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { return true; }
+  virtual void visitPtr(const ImprovedValSetSingle& Ptr, ShadowBB* BB) { }
+  virtual bool visitObject(const ShadowValue& Obj, ShadowBB* BB) { return true; }
   virtual bool shouldContinue() { return true; }
 
 };
 
-static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V);
+static void visitReachableObjects(const ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V);
 
-static void visitReachableObjects(ImprovedValSet* Obj, ShadowBB* BB, ReachableObjectVisitor& V) {
+static void visitReachableObjects(const ImprovedValSet* Obj, ShadowBB* BB, ReachableObjectVisitor& V) {
 
-  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(Obj)) {
+  if(const ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(Obj)) {
 
     visitReachableObjects(*IVS, BB, V);
 
   }
   else {
 
-    ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(Obj);
-    for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
+    const ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(Obj);
+    for(ImprovedValSetMulti::ConstMapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
 
-      visitReachableObjects(it.val(), BB, V);
+      visitReachableObjects(it.value(), BB, V);
 
     }
 
@@ -2976,7 +2976,7 @@ static bool isFunction(const Value* V) {
 
 }
 
-static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V) {
+static void visitReachableObjects(const ImprovedValSetSingle& Ptr, ShadowBB* BB, ReachableObjectVisitor& V) {
 
   V.visitPtr(Ptr, BB);
   if(!V.shouldContinue())
@@ -2987,7 +2987,7 @@ static void visitReachableObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB, Reach
 
   for(uint32_t i = 0, ilim = Ptr.Values.size(); i != ilim; ++i) {
 
-    ShadowValue& ThisPtr = Ptr.Values[i].V;
+    const ShadowValue& ThisPtr = Ptr.Values[i].V;
 
     switch(ThisPtr.t) {
     case SHADOWVAL_GV:
@@ -3021,7 +3021,7 @@ struct ReachesAllPointersVisitor : public ReachableObjectVisitor {
   bool ignoreOldObjects;
   ReachesAllPointersVisitor(bool ignoreOld) : mayReachAll(false), ignoreOldObjects(ignoreOld) { }
 
-  virtual void visitPtr(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+  virtual void visitPtr(const ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
     if(Ptr.isWhollyUnknown()) {
       if((!ignoreOldObjects) || !Ptr.isOldValue())
@@ -3036,7 +3036,7 @@ struct ReachesAllPointersVisitor : public ReachableObjectVisitor {
 
 };
 
-static bool reachesAllPointers(ImprovedValSetSingle& Ptr, ShadowBB* BB, bool ignoreOldObjects) {
+static bool reachesAllPointers(const ImprovedValSetSingle& Ptr, ShadowBB* BB, bool ignoreOldObjects) {
 
   ReachesAllPointersVisitor V(ignoreOldObjects);
   visitReachableObjects(Ptr, BB, V);
@@ -3046,7 +3046,7 @@ static bool reachesAllPointers(ImprovedValSetSingle& Ptr, ShadowBB* BB, bool ign
 
 struct SetMAOVisitor : public ReachableObjectVisitor {
 
-  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
+  virtual bool visitObject(const ShadowValue& Obj, ShadowBB* BB) { 
 
     // Don't explore objects reachable this way, it's already known MAO
     if(!BB->localStore->es.noAliasOldObjects.count(Obj))
@@ -3061,7 +3061,7 @@ struct SetMAOVisitor : public ReachableObjectVisitor {
 
 };
 
-static void setObjectsMayAliasOld(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+static void setObjectsMayAliasOld(const ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(reachesAllPointers(Ptr, BB, true)) {
     BB->setAllObjectsMayAliasOld();
@@ -3078,7 +3078,7 @@ static void setValueMayAliasOld(ShadowValue V, ShadowBB* BB) {
   if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(V))) {
 
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
-      setObjectsMayAliasOld(it.val(), BB);
+      setObjectsMayAliasOld(it.value(), BB);
 
   }
   else {
@@ -3093,7 +3093,7 @@ static void setValueMayAliasOld(ShadowValue V, ShadowBB* BB) {
 
 struct SetTGVisitor : public ReachableObjectVisitor {
 
-  virtual bool visitObject(ShadowValue& Obj, ShadowBB* BB) { 
+  virtual bool visitObject(const ShadowValue& Obj, ShadowBB* BB) { 
 
     // Don't explore objects reachable this way
     if(!BB->localStore->es.threadLocalObjects.count(Obj))
@@ -3108,7 +3108,7 @@ struct SetTGVisitor : public ReachableObjectVisitor {
 
 };
 
-static void setObjectsThreadGlobal(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
+static void setObjectsThreadGlobal(const ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(reachesAllPointers(Ptr, BB, false)) {
     BB->setAllObjectsThreadGlobal();
@@ -3126,7 +3126,7 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
   if(ImprovedValSetMulti* IVM = dyn_cast_or_null<ImprovedValSetMulti>(tryGetIVSRef(V))) {
 
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
-      setObjectsThreadGlobal(it.val(), BB);
+      setObjectsThreadGlobal(it.value(), BB);
 
   }
   else {
@@ -3457,7 +3457,7 @@ void ShadowBB::clobberGlobalObjects() {
   
 }
 
-static void pointerEscaped(ShadowValue V, ShadowBB* BB) {
+static void pointerEscaped(const ShadowValue V, ShadowBB* BB) {
 
   if(BB->localStore->es.unescapedObjects.count(V)) {
 
@@ -3468,7 +3468,7 @@ static void pointerEscaped(ShadowValue V, ShadowBB* BB) {
 
 }
 
-static void IVSEscaped(ImprovedValSetSingle* IVS, ShadowBB* BB) {
+static void IVSEscaped(const ImprovedValSetSingle* IVS, ShadowBB* BB) {
 
   if(IVS->isWhollyUnknown() || IVS->SetType != ValSetTypePB)
     return;
@@ -3495,7 +3495,7 @@ void llvm::valueEscaped(ShadowValue V, ShadowBB* BB) {
 
       ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(IVS);
       for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it)
-	IVSEscaped(&(it.val()), BB);
+	IVSEscaped(&(it.value()), BB);
 
     }
   
@@ -4101,7 +4101,7 @@ void LocStore::simplifyStore(LocStore* LS) {
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(),
 	  itend = IVM->Map.end(); it != itend; ++it) {
 
-      replaceRangeWithPB(IVM2, it.val(), it.start(), it.stop() - it.start());
+      replaceRangeWithPB(IVM2, it.value(), it.start(), it.stop() - it.start());
 	  
     }
 
@@ -4365,7 +4365,7 @@ bool PeelIteration::ctxContains(IntegrationAttempt* IA) {
 
 }
 
-AllocData* ShadowValue::getAllocData(OrdinaryLocalStore* Map) {
+AllocData* ShadowValue::getAllocData(OrdinaryLocalStore* Map) const {
 
   release_assert(isPtrIdx());
   if(u.PtrOrFd.frame == -1)

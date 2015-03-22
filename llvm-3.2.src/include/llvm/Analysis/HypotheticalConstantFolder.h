@@ -896,7 +896,7 @@ class OpCallback {
 
 class DIVisitor;
 
-inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
+inline bool operator==(const ImprovedValSetSingle& PB1, const ImprovedValSetSingle& PB2) {
 
   if(PB1.SetType != PB2.SetType)
     return false;
@@ -910,8 +910,12 @@ inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
   if(PB1.Values.size() != PB2.Values.size())
     return false;
 
-  std::sort(PB1.Values.begin(), PB1.Values.end());
-  std::sort(PB2.Values.begin(), PB2.Values.end());
+  // These are sets, so changing the order like this is acceptable
+  ImprovedValSetSingle* MPB1 = const_cast<ImprovedValSetSingle*>(&PB1);
+  ImprovedValSetSingle* MPB2 = const_cast<ImprovedValSetSingle*>(&PB2);
+
+  std::sort(MPB1->Values.begin(), MPB1->Values.end());
+  std::sort(MPB2->Values.begin(), MPB2->Values.end());
 
   for(unsigned i = 0; i < PB1.Values.size(); ++i)
     if(PB1.Values[i] != PB2.Values[i])
@@ -921,9 +925,9 @@ inline bool operator==(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
 
 }
 
-bool operator==(ImprovedValSetMulti& PB1, ImprovedValSetMulti& PB2);
+bool operator==(const ImprovedValSetMulti& PB1, const ImprovedValSetMulti& PB2);
 
-inline bool operator!=(ImprovedValSetSingle& PB1, ImprovedValSetSingle& PB2) {
+inline bool operator!=(const ImprovedValSetSingle& PB1, const ImprovedValSetSingle& PB2) {
 
   return !(PB1 == PB2);
 
@@ -2121,7 +2125,7 @@ inline ShadowValue getStackAllocationWithIndex(InlineAttempt* IA, uint32_t i) {
   return IA->getAllocaWithIdx(i).allocValue;
 }
 
-inline IntegrationAttempt* ShadowValue::getCtx() {
+inline IntegrationAttempt* ShadowValue::getCtx() const {
 
   switch(t) {
   case SHADOWVAL_ARG:
@@ -2194,8 +2198,8 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
 
 
  // Load forwarding v3 functions:
- bool addIVToPartialVal(ImprovedVal& IV, ValSetType SetType, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
- bool addIVSToPartialVal(ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
+ bool addIVToPartialVal(const ImprovedVal& IV, ValSetType SetType, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
+ bool addIVSToPartialVal(const ImprovedValSetSingle& IVS, uint64_t IVSOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error);
  void readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, bool& shouldTryMulti, std::string* error);
  void readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error);
  void executeStoreInst(ShadowInstruction* StoreSI);
@@ -2204,15 +2208,15 @@ inline IntegrationAttempt* ShadowValue::getCtx() {
  bool executeCmpXchg(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool& loadedVararg);
  void propagateStoreFlags(ImprovedValSetSingle& WrittenPtr, ImprovedValSetSingle& WrittenVal, ShadowBB* StoreBB);
 
- void getIVSSubVals(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
- void getIVSSubVal(ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
+ void getIVSSubVals(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
+ void getIVSSubVal(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest);
  void getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest);
  Constant* valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType);
  void getConstSubVal(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result);
  Constant* getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType = 0);
  void clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size);
- void replaceRangeWithPB(ImprovedValSet* Target, ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
- void replaceRangeWithPBs(ImprovedValSet* Target, SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
+ void replaceRangeWithPB(ImprovedValSet* Target, const ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size);
+ void replaceRangeWithPBs(ImprovedValSet* Target, const SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size);
  void truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& replacementStart);
  void truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n);
  void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValSetMulti::MapIt& replacementStart);

@@ -343,20 +343,20 @@ void ImprovedValSetMulti::dropReference() {
 
 }
 
-void ImprovedValSetSingle::print(raw_ostream& RSO, bool brief) {
+void ImprovedValSetSingle::print(raw_ostream& RSO, bool brief) const {
 
   printPB(RSO, *this, brief);
 
 }
 
-void ImprovedValSetMulti::print(raw_ostream& RSO, bool brief) {
+void ImprovedValSetMulti::print(raw_ostream& RSO, bool brief) const {
 
   RSO << "Multi [" << MapRefCount << "]: {\n";
   
-  for(MapIt it = Map.begin(), itend = Map.end(); it != itend; ++it) {
+  for(ConstMapIt it = Map.begin(), itend = Map.end(); it != itend; ++it) {
 
     RSO << it.start() << "-" << it.stop() << " -> ";
-    it.val().print(RSO, brief);
+    it.value().print(RSO, brief);
     RSO << "\n";
 
   }
@@ -397,7 +397,7 @@ void llvm::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
     out << "Overdef";
   else {
     out << "{ ";
-    for(SmallVector<ImprovedVal, 4>::iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
+    for(SmallVector<ImprovedVal, 4>::const_iterator it = PB.Values.begin(), it2 = PB.Values.end(); it != it2; ++it) {
 
       if(it != PB.Values.begin())
 	out << ", ";

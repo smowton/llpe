@@ -746,7 +746,7 @@ bool FDGlobalState::isAvailable() {
 
 }
 
-bool ShadowValue::objectAvailable() {
+bool ShadowValue::objectAvailable() const {
 
   switch(t) {
   case SHADOWVAL_OTHER: 

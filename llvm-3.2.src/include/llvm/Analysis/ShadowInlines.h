@@ -134,49 +134,49 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
   static ShadowValue getInt64(uint64_t i) { return ShadowValue(SHADOWVAL_CI64, i); }
   static ShadowValue getInt(Type*, uint64_t i);
 
-  bool isInval() {
+  bool isInval() const {
     return t == SHADOWVAL_INVAL;
   }
-  bool isArg() {
+  bool isArg() const {
     return t == SHADOWVAL_ARG;
   }
-  bool isInst() {
+  bool isInst() const {
     return t == SHADOWVAL_INST;
   }
-  bool isVal() {
+  bool isVal() const {
     return t == SHADOWVAL_OTHER;
   }
-  bool isGV() {
+  bool isGV() const {
     return t == SHADOWVAL_GV;
   }
-  bool isPtrIdx() {
+  bool isPtrIdx() const {
     return t == SHADOWVAL_PTRIDX;
   }
-  bool isFdIdx() {
+  bool isFdIdx() const {
     return t == SHADOWVAL_FDIDX || t == SHADOWVAL_FDIDX64;
   }
-  bool isConstantInt() {
+  bool isConstantInt() const {
     return t == SHADOWVAL_CI8 || t == SHADOWVAL_CI16 || t == SHADOWVAL_CI32 || t == SHADOWVAL_CI64;
   }
-  ShadowArg* getArg() {
+  ShadowArg* getArg() const {
     return t == SHADOWVAL_ARG ? u.A : 0;
   }
-  ShadowInstruction* getInst() {
+  ShadowInstruction* getInst() const {
     return t == SHADOWVAL_INST ? u.I : 0;
   }
-  Value* getVal() {
+  Value* getVal() const {
     return t == SHADOWVAL_OTHER ? u.V : 0;
   }
-  ShadowGV* getGV() {
+  ShadowGV* getGV() const {
     return t == SHADOWVAL_GV ? u.GV : 0;
   }
-  bool getCI(uint64_t& Out) {
+  bool getCI(uint64_t& Out) const {
     bool isci = isConstantInt();
     if(isci)
       Out = u.CI;
     return isci;
   }
-  bool getSignedCI(int64_t& Out) {
+  bool getSignedCI(int64_t& Out) const {
     bool isci = isConstantInt();
     if(isci) {
       switch(t) {
@@ -199,26 +199,26 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
     return isci;
   }
 
-  Type* getNonPointerType();
-  ShadowValue stripPointerCasts();
-  IntegrationAttempt* getCtx();
-  Value* getBareVal();
-  const Loop* getScope();
-  const Loop* getNaturalScope();
-  bool isIDObject();
-  InstArgImprovement* getIAI();
-  LLVMContext& getLLVMContext();
+  Type* getNonPointerType() const;
+  ShadowValue stripPointerCasts() const;
+  IntegrationAttempt* getCtx() const;
+  Value* getBareVal() const;
+  const Loop* getScope() const;
+  const Loop* getNaturalScope() const;
+  bool isIDObject() const;
+  InstArgImprovement* getIAI() const;
+  LLVMContext& getLLVMContext() const;
   void setCommittedVal(Value* V);
-  bool objectAvailable();
-  const MDNode* getTBAATag();
-  uint64_t getAllocSize(OrdinaryLocalStore*);
-  uint64_t getAllocSize(IntegrationAttempt*);
-  int32_t getFrameNo();
-  int32_t getHeapKey();
-  int32_t getFramePos() {
+  bool objectAvailable() const;
+  const MDNode* getTBAATag() const;
+  uint64_t getAllocSize(OrdinaryLocalStore*) const;
+  uint64_t getAllocSize(IntegrationAttempt*) const;
+  int32_t getFrameNo() const;
+  int32_t getHeapKey() const;
+  int32_t getFramePos() const {
     return getHeapKey();
   }
-  int32_t getFd() {
+  int32_t getFd() const {
     switch(t) {
     case SHADOWVAL_FDIDX:
     case SHADOWVAL_FDIDX64:
@@ -228,10 +228,10 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
     }
   }
   
-  AllocData* getAllocData(OrdinaryLocalStore* Map);
-  bool isNullOrConst();
-  bool isNullPointer();
-  uint64_t getValSize();
+  AllocData* getAllocData(OrdinaryLocalStore* Map) const;
+  bool isNullOrConst() const;
+  bool isNullPointer() const;
+  uint64_t getValSize() const;
 
 };
 
@@ -478,9 +478,9 @@ ImprovedValSet(bool M) : isMulti(M) { }
   virtual void dropReference() = 0;
   virtual bool isWritableMulti() = 0;
   virtual ImprovedValSet* getReadableCopy() = 0;
-  virtual void print(raw_ostream&, bool brief = false) = 0;
+  virtual void print(raw_ostream&, bool brief = false) const = 0;
   virtual ~ImprovedValSet() {}
-  virtual bool isWhollyUnknown() = 0;
+  virtual bool isWhollyUnknown() const = 0;
   
 };
 
@@ -503,15 +503,15 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   virtual void dropReference();
 
-  bool isInitialised() {
+  bool isInitialised() const {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() > 0;
   }
 
-  virtual bool isWhollyUnknown() {
+  virtual bool isWhollyUnknown() const {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() == 0;
   }
 
-  bool isOldValue() {
+  bool isOldValue() const {
     return (!Overdef) && SetType == ValSetTypeOldOverdef;
   }
   
@@ -723,7 +723,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   bool coerceToType(Type* Target, uint64_t TargetSize, std::string* error, bool allowImplicitPtrToInt = true);
   bool canCoerceToType(Type* Target, uint64_t TargetSize, std::string* error, bool allowImplicitPtrToInt = true);
-  virtual void print(raw_ostream&, bool brief = false);
+  virtual void print(raw_ostream&, bool brief = false) const;
   
 };
 
@@ -792,11 +792,11 @@ struct ImprovedValSetMulti : public ImprovedValSet {
     return this;
   }
 
-  virtual bool isWhollyUnknown() {
+  virtual bool isWhollyUnknown() const {
     return false;
   }
 
-  virtual void print(raw_ostream&, bool brief = false);
+  virtual void print(raw_ostream&, bool brief = false) const;
 
 };
 
@@ -1370,7 +1370,7 @@ struct ShadowBB {
   DenseMap<ShadowValue, LocStore>& getReadableStoreMapFor(ShadowValue&);
   LocStore* getWritableStoreFor(ShadowValue&, int64_t Off, uint64_t Size, bool writeSingleObject);
   LocStore* getOrCreateStoreFor(ShadowValue&, bool* isNewStore);
-  LocStore* getReadableStoreFor(ShadowValue& V);
+  LocStore* getReadableStoreFor(const ShadowValue& V);
   void pushStackFrame(InlineAttempt*);
   void popStackFrame();
   void setAllObjectsMayAliasOld();
@@ -1483,7 +1483,7 @@ extern Type* GInt16;
 extern Type* GInt32;
 extern Type* GInt64;
 
-inline const MDNode* ShadowValue::getTBAATag() {
+inline const MDNode* ShadowValue::getTBAATag() const {
 
   switch(t) {
   case SHADOWVAL_INST:
@@ -1494,7 +1494,7 @@ inline const MDNode* ShadowValue::getTBAATag() {
 
 }
 
-inline Value* ShadowValue::getBareVal() {
+inline Value* ShadowValue::getBareVal() const {
 
   switch(t) {
   case SHADOWVAL_ARG:
@@ -1512,7 +1512,7 @@ inline Value* ShadowValue::getBareVal() {
 
 }
 
-inline const Loop* ShadowValue::getScope() {
+inline const Loop* ShadowValue::getScope() const {
 
   switch(t) {
   case SHADOWVAL_INST:
@@ -1523,7 +1523,7 @@ inline const Loop* ShadowValue::getScope() {
   
 }
 
-inline const Loop* ShadowValue::getNaturalScope() {
+inline const Loop* ShadowValue::getNaturalScope() const {
 
   switch(t) {
   case SHADOWVAL_INST:
@@ -1536,13 +1536,13 @@ inline const Loop* ShadowValue::getNaturalScope() {
 
 extern bool isIdentifiedObject(const Value*);
 
-inline bool ShadowValue::isIDObject() {
+inline bool ShadowValue::isIDObject() const {
 
   return isIdentifiedObject(getBareVal());
 
 }
 
-inline InstArgImprovement* ShadowValue::getIAI() {
+inline InstArgImprovement* ShadowValue::getIAI() const {
 
   switch(t) {
   case SHADOWVAL_INST:
@@ -1555,7 +1555,7 @@ inline InstArgImprovement* ShadowValue::getIAI() {
 
 }
 
-inline LLVMContext& ShadowValue::getLLVMContext() {
+inline LLVMContext& ShadowValue::getLLVMContext() const {
   switch(t) {
   case SHADOWVAL_INST:
     return u.I->invar->I->getContext();
@@ -2153,7 +2153,7 @@ inline void setReplacement(ShadowArg* SA, Constant* C) {
 
 }
 
-inline ShadowValue ShadowValue::stripPointerCasts() {
+inline ShadowValue ShadowValue::stripPointerCasts() const {
 
   switch(t) {
   case SHADOWVAL_ARG:
@@ -2178,7 +2178,7 @@ inline ShadowValue ShadowValue::stripPointerCasts() {
 
 }
 
-inline bool ShadowValue::isNullOrConst() {
+inline bool ShadowValue::isNullOrConst() const {
 
   if(t == SHADOWVAL_GV)
     return u.GV->G->isConstant();
@@ -2189,7 +2189,7 @@ inline bool ShadowValue::isNullOrConst() {
 
 }
 
-inline bool ShadowValue::isNullPointer() {
+inline bool ShadowValue::isNullPointer() const {
 
   switch(t) {
   case SHADOWVAL_OTHER:

@@ -393,7 +393,7 @@ template<class ChildType, class ExtraState> struct SharedTreeRoot {
 SharedTreeRoot() : root(0), height(0) { }
   void clear(std::vector<ShadowValue>* simplified);
   void dropReference(std::vector<ShadowValue>* simplified);
-  ChildType* getReadableStoreFor(ShadowValue& V);
+  ChildType* getReadableStoreFor(const ShadowValue& V);
   ChildType* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
   void growToHeight(uint32_t newHeight);
   void grow(uint32_t idx);
@@ -416,7 +416,7 @@ static uint32_t getRequiredHeight(uint32_t idx) {
 
 }
 
-template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType, ExtraState>::getReadableStoreFor(ShadowValue& V) {
+template<class ChildType, class ExtraState> ChildType* SharedTreeRoot<ChildType, ExtraState>::getReadableStoreFor(const ShadowValue& V) {
 
   // Empty heap?
   if(height == 0)
@@ -673,7 +673,7 @@ LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCou
   std::vector<ChildType>& getWritableFrame(int32_t frameNo);
   void pushStackFrame(InlineAttempt*);
   void popStackFrame();
-  ChildType* getReadableStoreFor(ShadowValue& V);
+  ChildType* getReadableStoreFor(const ShadowValue& V);
   ChildType* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
 
 };
@@ -702,7 +702,7 @@ ChildType* LocalStoreMap<ChildType, ExtraState>::getOrCreateStoreFor(ShadowValue
 
 }
 
-template<class ChildType, class ExtraState> ChildType* LocalStoreMap<ChildType, ExtraState>::getReadableStoreFor(ShadowValue& V) {
+template<class ChildType, class ExtraState> ChildType* LocalStoreMap<ChildType, ExtraState>::getReadableStoreFor(const ShadowValue& V) {
   
   int32_t frameNo = V.getFrameNo();
   if(frameNo == -1)

@@ -2472,7 +2472,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
 
 }
 
-Type* ShadowValue::getNonPointerType() {
+Type* ShadowValue::getNonPointerType() const {
 
   switch(t) {
   case SHADOWVAL_ARG:
