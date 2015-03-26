@@ -2093,7 +2093,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
 }
 
-bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal& IV) {
+bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, const ImprovedVal& IV) {
 
   if(Ty == ValSetTypeScalar)
     return true;
@@ -2109,7 +2109,7 @@ bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal&
 
 }
 
-Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB) {
+Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, const ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar) {
    

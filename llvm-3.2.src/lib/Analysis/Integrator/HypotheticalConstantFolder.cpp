@@ -1806,11 +1806,13 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
     Ops[0] = std::make_pair(ValSetTypeScalar, ImprovedVal(SubVal));
     MultiCmpResult MCRHere = MCRMAYBE;
 
-    for(uint32_t i = 0; i < it.val().Values.size(); ++i) {
+    const ImprovedValSetSingle& IVS = it.value();
+
+    for(uint32_t i = 0; i < IVS.Values.size(); ++i) {
       
       ValSetType ThisVST;
       ImprovedVal ThisV;
-      Ops[1] = std::make_pair(it.val().SetType, it.val().Values[i]);
+      Ops[1] = std::make_pair(IVS.SetType, IVS.Values[i]);
       tryEvaluateResult(SI, Ops, ThisVST, ThisV, 0);
       if(ThisVST != ValSetTypeScalar) {
 	MCRHere = MCRMAYBE;
@@ -1865,7 +1867,9 @@ static void flattenIVM(ImprovedValSetMulti* InIVM, uint64_t resSize, int64_t Shi
       int64_t ShiftedStart = ((int64_t)it.start()) + ShiftInt;
       int64_t ShiftedStop = ((int64_t)it.stop()) + ShiftInt;
 
-      if(!addIVToPartialVal(it.val().Values[elems[thisElem++]], it.val().SetType, std::max(-ShiftedStart, (int64_t)0), std::max(ShiftedStart, (int64_t)0), std::min(ShiftedStop, (int64_t)resSize) - std::max(ShiftedStart, (int64_t)0), &PV, 0)) {
+      const ImprovedValSetSingle& IVS = it.value();
+
+      if(!addIVToPartialVal(IVS.Values[elems[thisElem++]], IVS.SetType, std::max(-ShiftedStart, (int64_t)0), std::max(ShiftedStart, (int64_t)0), std::min(ShiftedStop, (int64_t)resSize) - std::max(ShiftedStart, (int64_t)0), &PV, 0)) {
 
 	Result.setOverdef();
 	return;    
@@ -1950,7 +1954,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
       bool overdefInRange = false;
       uint32_t setProduct = 1;
       SmallVector<uint32_t, 4> setSizesInRange;
-      ImprovedValSetSingle* uniqueVal = 0;
+      const ImprovedValSetSingle* uniqueVal = 0;
       for(ImprovedValSetMulti::MapIt it = InIVM->Map.begin(), endit = InIVM->Map.end(); it != endit; ++it) {
 
 	// Out of range left?
@@ -1961,19 +1965,21 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	if(it.start() + ShiftInt >= (uint64_t)resSize)
 	  continue;
 
-	setSizesInRange.push_back(it.val().Values.size());
+	const ImprovedValSetSingle& IVS = it.value();
 
-	if(!(it.val().SetType == ValSetTypeScalar || it.val().Overdef || !it.val().isInitialised()))
+	setSizesInRange.push_back(IVS.Values.size());
+
+	if(!(IVS.SetType == ValSetTypeScalar || IVS.Overdef || !IVS.isInitialised()))
 	  ComplexValuesInRange = true;
 
-	if(it.val().isWhollyUnknown())
+	if(IVS.isWhollyUnknown())
 	  overdefInRange = true;
 
-	if(it.val().Values.size() > 0)
-	  setProduct *= it.val().Values.size();
+	if(IVS.Values.size() > 0)
+	  setProduct *= IVS.Values.size();
 
 	if(!uniqueValid) {
-	  uniqueVal = &(it.val());
+	  uniqueVal = &(IVS);
 	  uniqueValid = true;
 	}
 	else
@@ -2024,18 +2030,26 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	  ImprovedValSetMulti::MapIt newVal = NewIVM->Map.find(it.start());
 
 	  if(ShiftedStart < 0) {
-	    if(canTruncate(newVal.val()))
+	    if(canTruncate(newVal.value()))
 	      truncateRight(newVal, -ShiftedStart);
-	    else
-	      newVal.val().setOverdef();
+	    else {
+	      ImprovedValSetSingle OD(newVal.value().SetType, true);
+	      uint64_t oldStart = it.start(), oldStop = it.stop();
+	      it.erase();
+	      it.insert(oldStart, oldStop, OD);
+	    }
 	  }
 	  else if(ShiftedStop > resSize) {
-	    if(canTruncate(newVal.val())) {
+	    if(canTruncate(newVal.value())) {
 	      ImprovedValSetMulti::MapIt ign;
 	      truncateLeft(newVal, ShiftedStop - resSize, ign);
 	    }
-	    else
-	      newVal.val().setOverdef();
+	    else {
+	      ImprovedValSetSingle OD(newVal.value().SetType, true);
+	      uint64_t oldStart = it.start(), oldStop = it.stop();
+	      it.erase();
+	      it.insert(oldStart, oldStop, OD);
+	    }
 	  }
 	 
 	}
@@ -2081,7 +2095,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
       for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
 
-	if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	if(it.value().SetType == ValSetTypePB || it.value().SetType == ValSetTypeFD) {
 	  for(uint32_t i = it.start(), ilim = it.stop(); i != ilim; ++i) {
 	    if(Mask[i])
 	      anyNonScalarVisible = true;
@@ -2104,7 +2118,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
 	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
 
-	  if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	  if(it.value().SetType == ValSetTypePB || it.value().SetType == ValSetTypeFD) {
 	    
 	    Type* valType = Type::getIntNTy(SI->invar->I->getContext(), it.stop() - it.start());
 	    Constant* Zero = Constant::getNullValue(valType);
@@ -2114,7 +2128,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	  }
 	  else {
 
-	    if(!addIVSToPartialVal(it.val(), 0, it.start(), it.stop() - it.start(), &PV, 0)) {
+	    if(!addIVSToPartialVal(it.value(), 0, it.start(), it.stop() - it.start(), &PV, 0)) {
 	      NewIV = newOverdefIVS();
 	      return true;
 	    }
@@ -2150,7 +2164,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	NewIV = NewIVM;
 	for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), endit = IVM->Map.end(); it != endit; ++it) {
 
-	  if(it.val().SetType == ValSetTypePB || it.val().SetType == ValSetTypeFD) {
+	  if(it.value().SetType == ValSetTypePB || it.value().SetType == ValSetTypeFD) {
 
 	    bool thisPreserved = true;
 	    for(uint32_t i = it.start(), ilim = it.stop(); i != ilim; ++i) {
@@ -2159,12 +2173,12 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	    }
 
 	    if(thisPreserved)
-	      NewIVM->Map.insert(it.start(), it.stop(), it.val());
+	      NewIVM->Map.insert(it.start(), it.stop(), it.value());
 	    else
 	      NewIVM->Map.insert(it.start(), it.stop(), ImprovedValSetSingle(ValSetTypeUnknown, true));
 
 	  }
-	  else if(it.val().SetType == ValSetTypeScalar) {
+	  else if(it.value().SetType == ValSetTypeScalar) {
 	    
 	    ImprovedValSetSingle newIVS;
 
@@ -2173,11 +2187,11 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	    Constant* SubMask = constFromBytes(&(Mask[it.start()]), SubMaskType, GlobalTD);
 	    Ops[0] = std::make_pair(ValSetTypeScalar, ImprovedVal(SubMask));
 
-	    for(uint32_t i = 0; i < it.val().Values.size(); ++i) {
+	    for(uint32_t i = 0; i < it.value().Values.size(); ++i) {
 
 	      ValSetType ThisVST;
 	      ImprovedVal ThisV;
-	      Ops[1] = std::make_pair(ValSetTypeScalar, it.val().Values[i]);
+	      Ops[1] = std::make_pair(ValSetTypeScalar, it.value().Values[i]);
 	      tryEvaluateResult(SI, Ops, ThisVST, ThisV, 0);
 	      if(ThisVST != ValSetTypeScalar) {
 		newIVS.setOverdef();

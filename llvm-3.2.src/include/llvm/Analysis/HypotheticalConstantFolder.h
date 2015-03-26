@@ -715,15 +715,15 @@ inline void deleteIV(ImprovedValSet* I) {
   
 }
 
-inline ImprovedValSetSingle* copyIVS(ImprovedValSetSingle* IVS) {
+inline ImprovedValSetSingle* copyIVS(const ImprovedValSetSingle* IVS) {
 
   return new (GlobalIHP->IVSAllocator.Allocate()) ImprovedValSetSingle(*IVS);  
 
 }
 
-inline ImprovedValSet* copyIV(ImprovedValSet* IV) {
+inline ImprovedValSet* copyIV(const ImprovedValSet* IV) {
 
-  if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV))
+  if(const ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV))
     return copyIVS(IVS);
   else
     return new ImprovedValSetMulti(*cast<ImprovedValSetMulti>(IV));
@@ -1437,11 +1437,11 @@ protected:
   bool synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB);
   bool synthCommittedPointer(ShadowValue*, Type*, ImprovedVal, BasicBlock* emitBB, Value*&);
   bool canSynthMTI(ShadowInstruction* I);
-  bool canSynthVal(ShadowValue* I, ValSetType Ty, ImprovedVal& IV);
+  bool canSynthVal(ShadowValue* I, ValSetType Ty, const ImprovedVal& IV);
   bool canSynthPointer(ShadowValue* I, ImprovedVal IV);
   void emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions);
   bool trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB);
-  Value* trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, ImprovedVal& IV, BasicBlock* emitBB);
+  Value* trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, const ImprovedVal& IV, BasicBlock* emitBB);
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
   bool trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
@@ -1496,7 +1496,7 @@ protected:
   void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   virtual void populateFailedBlock(uint32_t idx);
   virtual void populateFailedHeaderPHIs(const Loop*);
-  Value* emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB);
+  Value* emitCompareCheck(Value* realInst, const ImprovedValSetSingle* IVS, BasicBlock* emitBB);
   Instruction* emitCompositeCheck(Value*, Value*, BasicBlock* emitBB);
   Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
   SmallVector<CommittedBlock, 1>::iterator emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowBB* BB);
@@ -1540,7 +1540,7 @@ protected:
   void addCheckpointFailedBlocks();
   void squashUnavailableObjects(ShadowInstruction& SI, ImprovedValSet*, bool inLoopAnalyser);
   void squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
-  bool squashUnavailableObject(ShadowInstruction& SI, ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize);
+  bool squashUnavailableObject(ShadowInstruction& SI, const ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize);
   void replaceUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser);
 
   // Function splitting in the commit stage
@@ -2220,7 +2220,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
  void truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& replacementStart);
  void truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n);
  void truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValSetMulti::MapIt& replacementStart);
- bool canTruncate(ImprovedValSetSingle& S);
+ bool canTruncate(const ImprovedValSetSingle& S);
 
  void readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore, uint64_t ASize);
  void readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, SmallVector<IVSRange, 4>& Results);

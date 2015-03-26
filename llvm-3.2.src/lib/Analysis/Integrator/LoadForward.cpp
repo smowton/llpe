@@ -2042,10 +2042,14 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
     uint64_t oldStart = found.start();
     uint64_t oldStop = found.stop();
 
-    if(canTruncate(found.val()))
+    if(canTruncate(found.value()))
       truncateRight(found, Offset - found.start());
-    else
-      found.val().setOverdef();
+    else {
+      ImprovedValSetSingle OD(found.value().SetType, true);
+      found.erase();
+      M->Map.insert(oldStart, oldStop, OD);
+      found = M->Map.find(oldStart);
+    }
 
     // Some truncate paths don't update the value's stop index (e.g. the setOverdef just above)
     // so ensure it is correct here:
@@ -2091,10 +2095,15 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
     ImprovedValSetMulti::MapIt replacementStart = found;
     uint64_t oldStart = found.start();
 
-    if(canTruncate(found.val()))
+    if(canTruncate(found.value()))
       truncateLeft(found, found.stop() - LastByte, replacementStart);
-    else
-      found.val().setOverdef();
+    else {
+      ImprovedValSetSingle OD(found.value().SetType, true);
+      uint64_t oldStop = found.stop();
+      found.erase();
+      found.insert(oldStart, oldStop, OD);
+      replacementStart = found;
+    }
 
     M->CoveredBytes -= (LastByte - oldStart);
     replacementStart.setStartUnchecked(LastByte);
@@ -2140,7 +2149,7 @@ void llvm::replaceRangeWithPBs(ImprovedValSet* Target, const SmallVector<IVSRang
 
 void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& firstPtr) {
 
-  ImprovedValSetSingle& S = it.val();
+  const ImprovedValSetSingle& S = it.value();
   firstPtr = it;
 
   // Dodge problem of taking e.g. { complex_val, other_complex_val } that
@@ -2150,8 +2159,11 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
     SmallVector<IVSRange, 4> SubVals;
     Constant* OldC = getSingleConstant(S.Values[0].V);
     getConstSubVals(ShadowValue(OldC), off, size, /* reporting offset = */ it.start(), SubVals);
-    if(SubVals.size() == 1)
-      S = SubVals[0].second;
+    if(SubVals.size() == 1) {
+      uint64_t oldStart = it.start(), oldStop = it.stop();
+      it.erase();
+      it.insert(oldStart, oldStop, SubVals[0].second);
+    }
     else {
 
       // Replace single with several:
@@ -2179,18 +2191,24 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
 
   }
 
-  for(uint32_t i = 0; i < S.Values.size(); ++i) {
+  ImprovedValSetSingle newVal = S;
 
-    Constant* OldC = getSingleConstant(S.Values[i].V);
+  for(uint32_t i = 0; i < newVal.Values.size(); ++i) {
+
+    Constant* OldC = getSingleConstant(newVal.Values[i].V);
     Constant* NewC = getSubConst(OldC, off, size);
     if(NewC)
-      S.Values[i].V = ShadowValue(NewC);
+      newVal.Values[i].V = ShadowValue(NewC);
     else {
-      S.setOverdef();
-      return;
+      newVal.setOverdef();
+      break;
     }
 
   }
+
+  uint64_t oldStart = it.start(), oldStop = it.stop();
+  it.erase();
+  it.insert(oldStart, oldStop, newVal);
 
 }
 
@@ -2199,13 +2217,17 @@ void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
   // Remove bytes from the RHS, leaving a value of size n bytes.
   // it points at the current value that should be altered.
 
-  ImprovedValSetSingle& S = it.val();
+  const ImprovedValSetSingle& S = it.value();
 
   if(S.isWhollyUnknown())
     return;
   if(S.SetType == ValSetTypeScalarSplat) {
     release_assert(S.Values.size() == 1 && "Splat set can't be multivalued");
-    S.Values[0].Offset = (int64_t)n;
+    ImprovedValSetSingle newVal = S;
+    newVal.Values[0].Offset = (int64_t)n;
+    uint64_t oldStart = it.start(), oldStop = it.stop();
+    it.erase(); // Moves iterator to the right
+    it.insert(oldStart, oldStop, newVal); // Moves iterator to point at new entry
     return;
   }
 
@@ -2225,13 +2247,17 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValS
   // extents and set firstPtr appropriately.
   firstPtr = it;
 
-  ImprovedValSetSingle& S = it.val();
+  const ImprovedValSetSingle& S = it.value();
 
   if(S.isWhollyUnknown())
     return;
   if(S.SetType == ValSetTypeScalarSplat) {
     release_assert(S.Values.size() == 1 && "Splat value must be single-valued");
-    S.Values[0].Offset = (int64_t)n;
+    ImprovedValSetSingle newVal = S;
+    newVal.Values[0].Offset = (int64_t)n;
+    uint64_t oldStart = it.start(), oldStop = it.stop();
+    it.erase(); // Moves iterator to the right
+    it.insert(oldStart, oldStop, newVal); // Moves iterator to point at new entry    
     return;
   }
 
@@ -2241,7 +2267,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValS
 
 }
 
-bool llvm::canTruncate(ImprovedValSetSingle& S) {
+bool llvm::canTruncate(const ImprovedValSetSingle& S) {
 
   return 
     S.isWhollyUnknown() || 

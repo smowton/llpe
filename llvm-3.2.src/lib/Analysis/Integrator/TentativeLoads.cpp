@@ -527,7 +527,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, 
     SmallVector<IVSRange, 4> vals;
     for(ImprovedValSetMulti::MapIt it = IV->Map.begin(), itend = IV->Map.end(); it != itend; ++it) {
 
-      if(it.val().isWhollyUnknown())
+      if(it.value().isWhollyUnknown())
 	continue;      
 
       ImprovedVal ReadPtr = Ptr;
@@ -749,13 +749,13 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
 
 }
 
-bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize) {
+bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, const ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize) {
 
   bool squash = false;
 
   for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim && !squash; ++i) {
 
-    ImprovedVal& IV = IVS.Values[i];
+    const ImprovedVal& IV = IVS.Values[i];
 
     if(IVS.SetType == ValSetTypePB) {
 
@@ -796,8 +796,6 @@ bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, Improved
     IVS.print(errs(), false);
     errs() << " read by " << itcache(&SI) << "\n";
 
-    IVS.setOverdef();
-
     // Instruction no longer checkable:
     SI.isThreadLocal = TLS_NEVERCHECK;
 
@@ -821,15 +819,22 @@ bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, Improved
 
 void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, ImprovedValSet* PB, bool inLoopAnalyser) {
 
-  if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(PB))
-    squashUnavailableObject(SI, *IVS, inLoopAnalyser, SI.getOperand(0), 0, GlobalTD->getTypeStoreSize(SI.getType()));
+  if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(PB)) {
+    if(squashUnavailableObject(SI, *IVS, inLoopAnalyser, SI.getOperand(0), 0, GlobalTD->getTypeStoreSize(SI.getType())))
+      IVS->setOverdef();
+  }
   else {
 
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(PB);
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end();
 	it != itend; ++it) {
 
-      squashUnavailableObject(SI, it.val(), inLoopAnalyser, SI.getOperand(0), it.start(), it.stop() - it.start());
+      if(squashUnavailableObject(SI, it.value(), inLoopAnalyser, SI.getOperand(0), it.start(), it.stop() - it.start())) {
+	ImprovedValSetSingle OD(it.value().SetType, true);
+	uint64_t oldStart = it.start(), oldStop = it.stop();
+	it.erase();
+	it.insert(oldStart, oldStop, OD);
+      }
 
     }
 
@@ -859,6 +864,8 @@ void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool in
 	  it != itend; ++it) {
 
 	if(squashUnavailableObject(SI, it->second, inLoopAnalyser, SI.getCopySource(), it->first.first, it->first.second - it->first.first)) {
+
+	  it->second.setOverdef();
 
 	  // Undo storing the pointer or FD.
 

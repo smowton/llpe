@@ -139,9 +139,9 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
   for(DSEMapTy::iterator it = M->begin(), itend = M->end(); it != itend; ++it) {
 
     errs() << it.start() << "-" << it.stop() << ": { ";
-    DSEMapEntry& entry = it.val();
+    const DSEMapEntry& entry = it.value();
 
-    for(DSEMapEntry::iterator eit = entry.begin(), eend = entry.end(); eit != eend; ++eit) {
+    for(DSEMapEntry::const_iterator eit = entry.begin(), eend = entry.end(); eit != eend; ++eit) {
 
       TrackedStore* TS = *eit;
 

@@ -1109,7 +1109,7 @@ struct TrackedStore {
 
   TrackedStore(ShadowInstruction* _I, uint64_t ob);
   ~TrackedStore();
-  bool canKill();
+  bool canKill() const;
   void kill();
   void derefBytes(uint64_t nBytes);
 
@@ -1641,14 +1641,14 @@ template<class X> inline X* cast_val(ShadowValue V) {
   }
 }
 
-static Constant* CIToConst(ShadowValue V) {
+static Constant* CIToConst(const ShadowValue V) {
 
   Type* CITy = V.getNonPointerType();
   return ConstantInt::get(CITy, V.u.CI, true);
 
 }
 
-inline Constant* getSingleConstant(ShadowValue V) {
+inline Constant* getSingleConstant(const ShadowValue V) {
 
   if(V.t == SHADOWVAL_OTHER)
     return cast<Constant>(V.u.V);  
@@ -1661,9 +1661,9 @@ inline Constant* getSingleConstant(ShadowValue V) {
 
 }
 
-inline bool hasSingleConstant(ImprovedValSet* IV) {
+inline bool hasSingleConstant(const ImprovedValSet* IV) {
 
-  ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV);
+  const ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(IV);
   if(!IVS)
     return false;
   if(IVS->Overdef || IVS->Values.size() != 1 || IVS->SetType != ValSetTypeScalar)
@@ -1672,7 +1672,7 @@ inline bool hasSingleConstant(ImprovedValSet* IV) {
 
 }
 
-inline Constant* getSingleConstant(ImprovedValSet* IV) {
+inline Constant* getSingleConstant(const ImprovedValSet* IV) {
   
   if(!hasSingleConstant(IV))
     return 0;
@@ -1680,7 +1680,7 @@ inline Constant* getSingleConstant(ImprovedValSet* IV) {
 
 }
 
-inline bool hasConstReplacement(ShadowArg* SA) {
+inline bool hasConstReplacement(const ShadowArg* SA) {
 
   if(!SA->i.PB)
     return false;
@@ -1688,7 +1688,7 @@ inline bool hasConstReplacement(ShadowArg* SA) {
 
 }
 
-inline Constant* getConstReplacement(ShadowArg* SA) {
+inline Constant* getConstReplacement(const ShadowArg* SA) {
 
   if(!SA->i.PB)
     return 0;
@@ -1696,7 +1696,7 @@ inline Constant* getConstReplacement(ShadowArg* SA) {
 
 }
 
-inline bool hasConstReplacement(ShadowInstruction* SI) {
+inline bool hasConstReplacement(const ShadowInstruction* SI) {
 
   if(!SI->i.PB)
     return false;
@@ -1704,7 +1704,7 @@ inline bool hasConstReplacement(ShadowInstruction* SI) {
 
 }
 
-inline Constant* getConstReplacement(ShadowInstruction* SI) {
+inline Constant* getConstReplacement(const ShadowInstruction* SI) {
 
   if(!SI->i.PB)
     return 0;
@@ -1714,7 +1714,7 @@ inline Constant* getConstReplacement(ShadowInstruction* SI) {
 
 inline ImprovedValSet* getIVSRef(ShadowValue V);
 
-inline bool hasConstReplacement(ShadowValue SV) {
+inline bool hasConstReplacement(const ShadowValue SV) {
 
   switch(SV.t) {
 

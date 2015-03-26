@@ -2649,7 +2649,7 @@ Instruction* IntegrationAttempt::emitCompositeCheck(Value* realInst, Value* CV, 
 
 }
 
-Value* IntegrationAttempt::emitCompareCheck(Value* realInst, ImprovedValSetSingle* IVS, BasicBlock* emitBB) {
+Value* IntegrationAttempt::emitCompareCheck(Value* realInst, const ImprovedValSetSingle* IVS, BasicBlock* emitBB) {
 
   release_assert(isa<Instruction>(realInst) && "Checked instruction must be residualised");
 
@@ -2723,15 +2723,15 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
     ImprovedValSetMulti* IVM = cast<ImprovedValSetMulti>(SI->i.PB);
     for(ImprovedValSetMulti::MapIt it = IVM->Map.begin(), itend = IVM->Map.end(); it != itend; ++it) {
 
-      ImprovedValSetSingle* thisIVS = &it.val();
+      const ImprovedValSetSingle& thisIVS = it.value();
 
       // Overdef doesn't assert anything about the value...
-      if(thisIVS->isWhollyUnknown())
+      if(thisIVS.isWhollyUnknown())
 	continue;
       
       // ...and neither does undef.
-      if(thisIVS->Values.size() == 1 && thisIVS->SetType == ValSetTypeScalar &&
-	 thisIVS->Values[0].V.isVal() && isa<UndefValue>(thisIVS->Values[0].V.getVal()))
+      if(thisIVS.Values.size() == 1 && thisIVS.SetType == ValSetTypeScalar &&
+	 thisIVS.Values[0].V.isVal() && isa<UndefValue>(thisIVS.Values[0].V.getVal()))
 	continue;
 
       // Shift value to least significant position:
@@ -2742,7 +2742,7 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
       Type* SubTy = Type::getIntNTy(emitBB->getContext(), (it.stop() - it.start()) * 8);
       Value* Truncated = new TruncInst(Shifted, SubTy, "", emitBB);
 
-      Value* ThisCheck = emitCompareCheck(Truncated, &it.val(), emitBB);
+      Value* ThisCheck = emitCompareCheck(Truncated, &thisIVS, emitBB);
       if(!PrevCheck)
 	PrevCheck = ThisCheck;
       else

@@ -58,7 +58,7 @@ TrackedStore::~TrackedStore() {
 
 }
 
-bool TrackedStore::canKill() {
+bool TrackedStore::canKill() const {
 
   if(isNeeded)
     return false;
@@ -204,28 +204,40 @@ void TrackedAlloc::dropReference() {
 static bool GCStores(DSEMapTy::iterator argit) {
 
   uint64_t entrySize = (argit.stop() - argit.start());
-  DSEMapEntry& entry = argit.val();
+  const DSEMapEntry& entry = argit.value();
 
-  for(DSEMapEntry::iterator entryit = entry.begin(); entryit != entry.end(); ++entryit) {
+  bool willChange = false;
 
-    TrackedStore* thisStore = *entryit;
-    if(!thisStore->canKill()) {
+  for(DSEMapEntry::const_iterator entryit = entry.begin(); 
+      entryit != entry.end() && !willChange; ++entryit) {
 
-      thisStore->derefBytes(entrySize);
-
-      if(&*entryit == &entry.back()) {
-	entry.pop_back();
-	break;
-      }
-      else {
-	std::swap(*entryit, entry.back());
-	entry.pop_back();
-	continue;
-      }
-
-    }
+    const TrackedStore* thisStore = *entryit;
+    if(!thisStore->canKill())
+      willChange = true;
 
   }
+
+  // I think if this was empty it shouldn't be here at all?
+  // So most likely this always returns false here.
+  if(!willChange)
+    return entry.size() == 0;
+
+  DSEMapEntry newEntry;
+
+  for(DSEMapEntry::const_iterator entryit = entry.begin(); entryit != entry.end(); ++entryit) {
+
+    TrackedStore* thisStore = *entryit;
+    if(!thisStore->canKill())
+      thisStore->derefBytes(entrySize);
+    else
+      newEntry.push_back(thisStore);
+
+  }
+
+  // Replace like this due to IntervalMap's immutable values.
+  uint64_t oldStart = argit.start(), oldStop = argit.stop();
+  argit.erase();
+  argit.insert(oldStart, oldStop, newEntry);
 
   return entry.size() == 0;
 
@@ -241,7 +253,7 @@ DSEMapPointer DSEMapPointer::getReadableCopy() {
     
   for(DSEMapTy::iterator it = M->begin(), itend = M->end(); it != itend;) {
 
-    DSEMapEntry& oldEntry = it.val();
+    const DSEMapEntry& oldEntry = it.value();
 
     uint64_t entrySize = (it.stop() - it.start());
 
@@ -252,18 +264,17 @@ DSEMapPointer DSEMapPointer::getReadableCopy() {
     }
     else {
 
-      newMap->insert(it.start(), it.stop(), DSEMapEntry());
-      DSEMapTy::iterator newEntryIt = newMap->find(it.start());
-      release_assert(newEntryIt != newMap->end());
-      DSEMapEntry* newEntry = &newEntryIt.val();
+      DSEMapEntry newEntry;
 	
-      for(DSEMapEntry::iterator entryit = oldEntry.begin(); entryit != oldEntry.end(); ++entryit) {
+      for(DSEMapEntry::const_iterator entryit = oldEntry.begin(); entryit != oldEntry.end(); ++entryit) {
 
 	TrackedStore* thisStore = *entryit;
-	newEntry->push_back(thisStore);
+	newEntry.push_back(thisStore);
 	thisStore->outstandingBytes += entrySize;
 
       }
+
+      newMap->insert(it.start(), it.stop(), newEntry);
 
       ++it;
 
@@ -279,9 +290,9 @@ DSEMapPointer DSEMapPointer::getReadableCopy() {
 
 }
 
-static void derefBytes(DSEMapEntry& entry, uint64_t nBytes) {
+static void derefBytes(DSEMapEntry* entry, uint64_t nBytes) {
 
-  for(DSEMapEntry::iterator entryit = entry.begin(); entryit != entry.end(); ++entryit)
+  for(DSEMapEntry::iterator entryit = entry->begin(); entryit != entry->end(); ++entryit)
     (*entryit)->derefBytes(nBytes);
   
 }
@@ -295,8 +306,11 @@ void DSEMapPointer::release() {
 
     uint64_t entrySize = (it.stop() - it.start());
 
-    DSEMapEntry& oldEntry = it.val();
-    derefBytes(oldEntry, entrySize);
+    // Hack around IntervalMap's immutable values -- we certainly
+    // don't alter the DSEMapEntry in such a way that would affect
+    // an equality comparison, but we do need to mutate the TrackedStores it contains.
+    const DSEMapEntry& oldEntry = it.value();
+    derefBytes(const_cast<DSEMapEntry*>(&oldEntry), entrySize);
 
   }
 
@@ -316,9 +330,9 @@ void DSEMapPointer::dropReference() {
 
 }
 
-static void setAllNeeded(DSEMapEntry& entry) {
+static void setAllNeeded(DSEMapEntry* entry) {
 
-  for(DSEMapEntry::iterator it = entry.begin(), itend = entry.end(); it != itend; ++it)
+  for(DSEMapEntry::iterator it = entry->begin(), itend = entry->end(); it != itend; ++it)
     (*it)->isNeeded = true;
 
 }
@@ -327,8 +341,9 @@ static void setAllNeeded(DSEMapTy& M) {
 
   for(DSEMapTy::iterator it = M.begin(), itend = M.end(); it != itend; ++it) {
 
-    DSEMapEntry& entry = it.val();
-    setAllNeeded(entry);
+    const DSEMapEntry& entry = it.value();
+    // See DSEMapPointer::release for justification of the const_cast.
+    setAllNeeded(const_cast<DSEMapEntry*>(&entry));
 
   }
 
@@ -456,7 +471,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
       uint64_t oldStop = toit.stop();
       toit.setStop(fromit.start());
-      mergeTo->M->insert(fromit.start(), oldStop, toit.val());
+      mergeTo->M->insert(fromit.start(), oldStop, toit.value());
        
       toit = mergeTo->M->find(fromit.start());
 
@@ -492,7 +507,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
       uint64_t oldStop = toit.stop();
       toit.setStop(fromit.stop());
-      mergeTo->M->insert(fromit.stop(), oldStop, toit.val());
+      mergeTo->M->insert(fromit.stop(), oldStop, toit.value());
 
     }
       
@@ -507,23 +522,42 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
   for(; fromit != mergeFrom->M->end(); ++fromit) {
 
-    DSEMapEntry& fromEntry = fromit.val();
+    const DSEMapEntry& fromEntry = fromit.value();
 	
     for(; toit.stop() <= fromit.stop(); ++toit) {
 
-      DSEMapEntry& toEntry = toit.val();
+      const DSEMapEntry& toEntry = toit.value();
       uint64_t entrySize = toit.stop() - toit.start();
+
+      bool willAdd = false;
 	
-      for(DSEMapEntry::iterator it = fromEntry.begin(), itend = fromEntry.end(); it != itend; ++it) {
+      for(DSEMapEntry::const_iterator it = fromEntry.begin(), itend = fromEntry.end(); it != itend && !willAdd; ++it) {
+
+	TrackedStore* fromStore = *it;
+	if(std::find(toEntry.begin(), toEntry.end(), fromStore) == toEntry.end())
+	  willAdd = true;
+
+      }
+
+      if(!willAdd)
+	continue;
+
+      DSEMapEntry newEntry = toEntry;
+      
+      for(DSEMapEntry::const_iterator it = fromEntry.begin(), itend = fromEntry.end(); it != itend && !willAdd; ++it) {
 
 	TrackedStore* fromStore = *it;
 	if(std::find(toEntry.begin(), toEntry.end(), fromStore) != toEntry.end())
 	  continue;
 
-	toEntry.push_back(fromStore);
+	newEntry.push_back(fromStore);
 	fromStore->outstandingBytes += entrySize;
 
       }
+
+      uint64_t oldStart = toit.start(), oldStop = toit.stop();
+      toit.erase(); // Moves iterator right
+      toit.insert(oldStart, oldStop, newEntry); // Restores iterator to same position as before.
 
     }
 
@@ -541,11 +575,11 @@ void DSEMapPointer::useWriters(int64_t Offset, uint64_t Size) {
 
   for(DSEMapTy::iterator it = M->find(Offset), itend = M->end(); it != itend && it.start() < End; it.erase()) {
     
-    DSEMapEntry& E = it.val();
-    for(DSEMapEntry::iterator Eit = E.begin(), Eend = E.end(); Eit != Eend; ++Eit)
-      (*Eit)->isNeeded = true;
+    const DSEMapEntry& E = it.value();
+    for(DSEMapEntry::const_iterator Eit = E.begin(), Eend = E.end(); Eit != Eend; ++Eit)
+      (const_cast<TrackedStore*>(*Eit))->isNeeded = true;
 
-    derefBytes(E, it.stop() - it.start());
+    derefBytes(const_cast<DSEMapEntry*>(&E), it.stop() - it.start());
     
   }
 
@@ -564,12 +598,12 @@ void DSEMapPointer::setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* 
       
       uint64_t oldStop = it.stop();
       it.setStop(Offset);
-      derefBytes(it.val(), std::min(oldStop, End) - Offset);
+      derefBytes(const_cast<DSEMapEntry*>(&it.value()), std::min(oldStop, End) - Offset);
 
       if(oldStop > End) {
 
 	// Punched a hole in a single value: duplicate it and we're done.
-	M->insert(End, oldStop, it.val());
+	M->insert(End, oldStop, it.value());
 	break;
 
       }
@@ -579,7 +613,7 @@ void DSEMapPointer::setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* 
     }
     else if(it.stop() > End) {
 
-      derefBytes(it.val(), End - it.start());
+      derefBytes(const_cast<DSEMapEntry*>(&it.value()), End - it.start());
       it.setStart(End);
 
       ++it;
@@ -588,7 +622,7 @@ void DSEMapPointer::setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* 
     else {
 
       // Wholly within the cleared range.
-      derefBytes(it.val(), it.stop() - it.start());
+      derefBytes(const_cast<DSEMapEntry*>(&it.value()), it.stop() - it.start());
       it.erase();
 
     }
