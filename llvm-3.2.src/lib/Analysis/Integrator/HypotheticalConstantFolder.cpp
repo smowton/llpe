@@ -1589,7 +1589,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   else if(isa<LoadInst>(I))
     newConst = ConstantFoldLoadFromConstPtr(instOperands[0], GlobalTD);
   else
-    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, GlobalTD, GlobalTLI, /* preserveGEPSign = */ true);
+    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, GlobalTD, GlobalTLI);
 
   if(newConst) {
 

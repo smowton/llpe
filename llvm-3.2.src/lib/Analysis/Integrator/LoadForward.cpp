@@ -9,14 +9,11 @@
 #include "llvm/GlobalVariable.h"
 #include "llvm/DataLayout.h"
 #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LLPECopyPaste.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
-
-#include "dsa/DataStructure.h"
-#include "dsa/DSGraph.h"
-#include "dsa/DSNode.h"
 
 #include <memory>
 
@@ -281,11 +278,11 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
   if(Other.isPartial()) {
 
     tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
-    // ReadDataFromGlobal assumes a zero-initialised buffer!
+    // XXXReadDataFromGlobal assumes a zero-initialised buffer!
     memset(tempBuf, 0, FirstNotDef - FirstDef);
 
-    if(!ReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
-      DEBUG(dbgs() << "ReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
+    if(!XXXReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
+      DEBUG(dbgs() << "XXXReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
       if(error)
 	*error = "RDFG";
       return false;
@@ -1874,7 +1871,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
     // C is a primitive, constant-aggregate-zero, constant-data-array or similar.
     // Attempt bytewise extraction and present as a CDA.
     SmallVector<uint8_t, 16> Buffer(TargetSize);
-    if(ReadDataFromGlobal(FromC, Offset, Buffer.data(), TargetSize, *GlobalTD)) {
+    if(XXXReadDataFromGlobal(FromC, Offset, Buffer.data(), TargetSize, *GlobalTD)) {
 
       Constant* SubC;
       if(TargetSize <= 8) {
@@ -1920,7 +1917,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
       it != itend; ++it) {
 
     uint8_t* ReadPtr = &(buffer.data()[it->first.first]);
-    if(!ReadDataFromGlobal(getSingleConstant(it->second.Values[0].V), 0, ReadPtr, it->first.second - it->first.first, *GlobalTD))
+    if(!XXXReadDataFromGlobal(getSingleConstant(it->second.Values[0].V), 0, ReadPtr, it->first.second - it->first.first, *GlobalTD))
       return 0;
 
   }
