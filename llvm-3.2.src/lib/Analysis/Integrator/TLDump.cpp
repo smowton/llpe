@@ -1,6 +1,5 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Analysis/LoopInfo.h"
 
 namespace llvm {
 
@@ -14,7 +13,7 @@ namespace llvm {
 
       PeelAttempt* LPA;
       if(BB->invar->naturalScope && 
-	 BB->invar->naturalScope->getHeader() == BB->invar->BB &&
+	 BB->invar->naturalScope->headerIdx == BB->invar->idx &&
 	 (LPA = IA->getPeelAttempt(BB->invar->naturalScope)) &&
 	 LPA->isTerminated()) {
 
@@ -55,7 +54,7 @@ namespace llvm {
 
       PeelAttempt* LPA;
       if(BB->invar->naturalScope && 
-	 BB->invar->naturalScope->getHeader() == BB->invar->BB &&
+	 BB->invar->naturalScope->headerIdx == BB->invar->idx &&
 	 (LPA = IA->getPeelAttempt(BB->invar->naturalScope)) &&
 	 LPA->isTerminated()) {
 

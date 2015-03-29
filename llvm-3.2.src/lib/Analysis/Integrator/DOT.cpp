@@ -5,7 +5,6 @@
 #include "llvm/Instruction.h"
 
 #include "llvm/Analysis/CFGPrinter.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
@@ -201,7 +200,7 @@ bool InlineAttempt::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInv
 
 bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) {
 
-  if(FromBB->BB == L->getLoopLatch() && ToBB->BB == L->getHeader()) {
+  if(FromBB->idx == L->latchIdx && ToBB->idx == L->headerIdx) {
 
     Out << "\"Next iteration header\"";
     return true;
@@ -218,7 +217,7 @@ bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInv
 
 }
 
-void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
+void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
 
   if(brief && ((!SB) || shouldIgnoreEdge(BBI, SBI)))
     return;
@@ -393,7 +392,7 @@ void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, Sh
 
 }
 
-void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain) {
+void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain) {
 
   if(brief && !BB)
     return;
@@ -535,7 +534,7 @@ bool IntegrationAttempt::blockLiveInAnyScope(ShadowBBInvar* BB) {
 
   if(BB->naturalScope != L) {
 
-    const Loop* enterL = immediateChildLoop(L, BB->naturalScope);
+    const ShadowLoopInvar* enterL = immediateChildLoop(L, BB->naturalScope);
     if(PeelAttempt* LPA = getPeelAttempt(enterL)) {
 
       if(LPA->Iterations.back()->iterStatus == IterationStatusFinal) {
@@ -560,24 +559,24 @@ bool IntegrationAttempt::blockLiveInAnyScope(ShadowBBInvar* BB) {
 
 }
 
-void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief) {
+void IntegrationAttempt::describeLoopAsDOT(const ShadowLoopInvar* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief) {
 
   SmallVector<std::string, 4> deferredEdges;
 
   if(brief && !BBs[headerIdx])
     return;
 
-  ShadowLoopInvar& LInfo = *(invarInfo->LInfo[DescribeL]);
+  ShadowBBInvar* HeaderBBI = getBBInvar(headerIdx);
 
-  Out << "subgraph \"cluster_" << DOT::EscapeString(DescribeL->getHeader()->getName()) << "\" {";
-
-  bool loopIsIgnored = pass->shouldIgnoreLoop(DescribeL->getHeader()->getParent(), DescribeL->getHeader());
+  Out << "subgraph \"cluster_" << DOT::EscapeString(HeaderBBI->BB->getName()) << "\" {";
+  
+  bool loopIsIgnored = pass->shouldIgnoreLoop(&F, getBBInvar(DescribeL->headerIdx)->BB);
   bool loopExplored = false;
   bool loopTerminated = false;
 
   if(!loopIsIgnored) {
 
-    DenseMap<const Loop*, PeelAttempt*>::iterator InlIt = peelChildren.find(DescribeL);
+    DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator InlIt = peelChildren.find(DescribeL);
     if(InlIt != peelChildren.end()) {
       loopExplored = true;
       if(InlIt->second->isTerminated())
@@ -595,7 +594,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
   else if(brief) {
 
     // Draw the header branching to all exiting blocks, to each exit block.
-    std::vector<uint32_t>& exitingIdxs = LInfo.exitingBlocks;
+    const std::vector<uint32_t>& exitingIdxs = DescribeL->exitingBlocks;
 
     SmallVector<ShadowBBInvar*, 4> liveExitingBlocks;
 
@@ -612,14 +611,14 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
     describeBlockAsDOT(getBBInvar(headerIdx + BBsOffset), getBB(headerIdx + BBsOffset), 0, 0, Out, &liveExitingBlocks, brief, loopTerminated);
 
-    std::vector<std::pair<uint32_t, uint32_t> >& exitEdges = LInfo.exitEdges;
+    const std::vector<std::pair<uint32_t, uint32_t> >& exitEdges = DescribeL->exitEdges;
 
     for(SmallVector<ShadowBBInvar*, 4>::iterator it = liveExitingBlocks.begin(), it2 = liveExitingBlocks.end(); it != it2; ++it) {
       
       ShadowBBInvar* BBI = *it;
       SmallVector<ShadowBBInvar*, 4> Targets;
 
-      for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it3 = exitEdges.begin(), it4 = exitEdges.end(); it3 != it4; ++it3) {
+      for(std::vector<std::pair<uint32_t, uint32_t> >::const_iterator it3 = exitEdges.begin(), it4 = exitEdges.end(); it3 != it4; ++it3) {
 
 	if(it3->first == BBI->idx) {
 
@@ -648,7 +647,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
   }
 						     
-  Out << "label = \"Loop " << DOT::EscapeString(DescribeL->getHeader()->getName()) << " (";
+  Out << "label = \"Loop " << DOT::EscapeString(HeaderBBI->BB->getName()) << " (";
 
   if(loopIsIgnored) {
 
@@ -683,7 +682,7 @@ void IntegrationAttempt::describeLoopAsDOT(const Loop* DescribeL, uint32_t heade
 
 }
 
-void IntegrationAttempt::describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges) {
+void IntegrationAttempt::describeScopeAsDOT(const ShadowLoopInvar* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges) {
 
   ShadowBBInvar* BBI;
   uint32_t i;
@@ -755,7 +754,7 @@ void IntegrationAttempt::saveDOT() {
   for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it)
     it->second->saveDOT();
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
     for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i)
@@ -832,11 +831,11 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
   std::string ign;
   describeAsDOT(os, ign, false);
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     std::string newPath;
     raw_string_ostream RSO(newPath);
-    RSO << path << "/loop_" << it->first->getHeader()->getName();
+    RSO << path << "/loop_" << getBBInvar(it->first->headerIdx)->BB->getName();
     mkdir(RSO.str().c_str(), 0777);
     it->second->describeTreeAsDOT(RSO.str());
 

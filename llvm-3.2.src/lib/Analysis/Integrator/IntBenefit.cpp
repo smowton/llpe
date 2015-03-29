@@ -5,7 +5,6 @@
 #include "llvm/Function.h"
 #include "llvm/BasicBlock.h"
 #include "llvm/Constants.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -60,7 +59,7 @@ int64_t IntegrationAttempt::getResidualInstructions() {
   // Total excluding explored child loops:
   int64_t totalInstructions = ((int)getTotalInstructions()) - ((int)getElimdInstructions());
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     totalInstructions += it->second->getResidualInstructions();
 
@@ -105,7 +104,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
     if(!BB)
       continue;
 
-    const Loop* BBL = BB->invar->outerScope;
+    const ShadowLoopInvar* BBL = BB->invar->outerScope;
     if(L != BBL)
       continue;
 
@@ -150,7 +149,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     unsigned iterCount = it->second->Iterations.size();
     for(unsigned i = 0; i < iterCount; ++i) {
@@ -210,7 +209,7 @@ void IntegrationAttempt::findProfitableIntegration() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     if(!it->second->isEnabled())
       continue;
@@ -239,11 +238,11 @@ void IntegrationAttempt::findProfitableIntegration() {
     if(!BB)
       continue;
    
-    const Loop* BBL = BB->invar->outerScope;
+    const ShadowLoopInvar* BBL = BB->invar->outerScope;
     
     if(L != BBL && ((!L) || L->contains(BBL))) {
 
-      DenseMap<const Loop*, PeelAttempt*>::iterator findit = peelChildren.find(immediateChildLoop(L, BBL));
+      DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator findit = peelChildren.find(immediateChildLoop(L, BBL));
 
       // Count unexpanded loops as ours:
       if(findit == peelChildren.end() || (!findit->second->isEnabled()) || (!findit->second->isTerminated()))
@@ -302,7 +301,7 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
   
   for(BasicBlock::iterator BI = BBI->BB->begin(), BE = BBI->BB->end(); BI != BE; ++BI, ++i) {
       
-    const Loop* BBL = BBI->naturalScope;
+    const ShadowLoopInvar* BBL = BBI->naturalScope;
     if(L != BBL && ((!L) || L->contains(BBL))) {
 
       // Count unexplored loops as part of my own context.
@@ -361,13 +360,13 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
 }
 
-void IntegrationAttempt::collectLoopStats(const Loop* LoopI) {
+void IntegrationAttempt::collectLoopStats(const ShadowLoopInvar* LoopI) {
 
-  DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(LoopI);
+  DenseMap<const ShadowLoopInvar*, PeelAttempt*>::const_iterator it = peelChildren.find(LoopI);
 
   if(it == peelChildren.end()) {
 
-    for(uint32_t i = invarInfo->LInfo[LoopI]->headerIdx; i < invarInfo->BBs.size(); ++i) {
+    for(uint32_t i = LoopI->headerIdx; i < invarInfo->BBs.size(); ++i) {
       ShadowBBInvar* BBI = getBBInvar(i);
       if(!LoopI->contains(BBI->naturalScope))
 	break;
@@ -389,14 +388,16 @@ void IntegrationAttempt::collectAllBlockStats() {
 
 void InlineAttempt::collectAllLoopStats() {
 
-  for(LoopInfo::iterator LoopI = pass->LIs[&F]->begin(), LoopE = pass->LIs[&F]->end(); LoopI != LoopE; ++LoopI)
+  for(SmallVector<ShadowLoopInvar*, 4>::const_iterator LoopI = invarInfo->TopLevelLoops.begin(), 
+	LoopE = invarInfo->TopLevelLoops.end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
 
 }
 
 void PeelIteration::collectAllLoopStats() {
 
-  for(Loop::iterator LoopI = L->begin(), LoopE = L->end(); LoopI != LoopE; ++LoopI)
+  for(SmallVector<ShadowLoopInvar*, 1>::const_iterator LoopI = L->childLoops.begin(), 
+	LoopE = L->childLoops.end(); LoopI != LoopE; ++LoopI)
     collectLoopStats(*LoopI);
 
 }
@@ -422,7 +423,7 @@ void IntegrationAttempt::collectStats() {
       it->second->collectStats();
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it)
     it->second->collectStats();
 
 }

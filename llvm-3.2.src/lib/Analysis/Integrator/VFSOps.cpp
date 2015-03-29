@@ -6,7 +6,6 @@
 #include "llvm/Instructions.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/System/Path.h"
@@ -974,7 +973,7 @@ void IntegrationAttempt::tryKillAllVFSOps() {
     it->second->tryKillAllVFSOps();
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
     if(!it->second->isEnabled())
       continue;
     for(unsigned i = 0; i < it->second->Iterations.size(); ++i)

@@ -173,12 +173,11 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
 }
 
 PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
-			 const Loop* _L, int depth) 
+			 const ShadowLoopInvar* _L, int depth) 
   : pass(Pass), parent(P), F(_F), residualInstructions(-1), nesting_depth(depth), stack_depth(0), 
     enabled(true), L(_L), totalIntegrationGoodness(0), integrationGoodnessValid(false)
 {
 
-  invarInfo = parent->invarInfo->LInfo[L];
   SeqNumber = Pass->IAs.size();
   Pass->IAs.push_back(this);
 
@@ -198,7 +197,7 @@ IntegrationAttempt::~IntegrationAttempt() {
   for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
     II->second->dropReferenceFrom(II->first);
   } 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
     delete (PI->second);
   }
 
@@ -313,26 +312,12 @@ Module& IntegrationAttempt::getModule() {
 
 }
 
-const Loop* IntegrationHeuristicsPass::applyIgnoreLoops(const Loop* L) {
+const ShadowLoopInvar* IntegrationHeuristicsPass::applyIgnoreLoops(const ShadowLoopInvar* L, Function* F, ShadowFunctionInvar* FInfo) {
 
-  if(!L)
-    return 0;
-
-  Function* F = L->getHeader()->getParent();
-  
-  while(L && shouldIgnoreLoop(F, L->getHeader())) {
-
-    L = L->getParentLoop();
-
-  }
+  while(L && shouldIgnoreLoop(F, FInfo->BBs[L->headerIdx].BB))
+    L = L->parent;
 
   return L;
-
-}
-
-const Loop* IntegrationAttempt::applyIgnoreLoops(const Loop* InstL) {
-
-  return pass->applyIgnoreLoops(InstL);
 
 }
 
@@ -574,7 +559,7 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
 InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* SI, bool ignoreScope, bool& created, bool& needsAnalyse) {
 
   created = false;
-
+  
   InlineAttempt* Result;
   if(!callCanExpand(SI, Result))
     return 0;
@@ -673,7 +658,7 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
     for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
@@ -890,7 +875,7 @@ void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
 
     if(BB->invar->naturalScope != L) {
 
-      const Loop* ChildL = immediateChildLoop(L, BB->invar->naturalScope);
+      const ShadowLoopInvar* ChildL = immediateChildLoop(L, BB->invar->naturalScope);
       if(PeelAttempt* ChildPA = getPeelAttempt(ChildL)) {
 
 	if(ChildPA->isTerminated()) {
@@ -921,9 +906,9 @@ void PeelIteration::dropExitingStoreRefs() {
 
   // We will never exit -- drop store refs that belong to exiting edges.
 
-  ShadowLoopInvar* LInfo = parentPA->invarInfo;
+  const ShadowLoopInvar* LInfo = parentPA->L;
 
-  for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
+  for(std::vector<std::pair<uint32_t, uint32_t> >::const_iterator it = LInfo->exitEdges.begin(),
 	itend = LInfo->exitEdges.end(); it != itend; ++it) {
     
     dropExitingStoreRef(it->first, it->second);
@@ -935,8 +920,8 @@ void PeelIteration::dropExitingStoreRefs() {
 void PeelIteration::dropLatchStoreRef() {
 
   // If the last latch block was holding a store ref for the next iteration, drop it.
-  ShadowBB* LatchBB = getBB(parentPA->invarInfo->latchIdx);
-  ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->invarInfo->headerIdx);
+  ShadowBB* LatchBB = getBB(parentPA->L->latchIdx);
+  ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->L->headerIdx);
   
   if(!edgeIsDead(LatchBB->invar, HeaderBBI))
     LatchBB->localStore->dropReference();
@@ -964,10 +949,10 @@ void PeelIteration::checkFinalIteration() {
   // Check whether we now have evidence the loop terminates this time around
   // If it does, queue consideration of each exit PHI; by LCSSA these must belong to our parent.
 
-  ShadowBBInvar* LatchBB = getBBInvar(parentPA->invarInfo->latchIdx);
-  ShadowBBInvar* HeaderBB = getBBInvar(parentPA->invarInfo->headerIdx);
+  ShadowBBInvar* LatchBB = getBBInvar(parentPA->L->latchIdx);
+  ShadowBBInvar* HeaderBB = getBBInvar(parentPA->L->headerIdx);
 
-  if(edgeIsDead(LatchBB, HeaderBB) || pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)) {
+  if(edgeIsDead(LatchBB, HeaderBB) || pass->assumeEndsAfter(&F, getBBInvar(L->headerIdx)->BB, iterationCount)) {
 
     iterStatus = IterationStatusFinal;
 
@@ -1013,7 +998,8 @@ PeelIteration* PeelIteration::getNextIteration() {
 
 bool PeelIteration::allExitEdgesDead() {
 
-  for(std::vector<std::pair<uint32_t, uint32_t> >::iterator EI = parentPA->invarInfo->exitEdges.begin(), EE = parentPA->invarInfo->exitEdges.end(); EI != EE; ++EI) {
+  for(std::vector<std::pair<uint32_t, uint32_t> >::const_iterator EI = parentPA->L->exitEdges.begin(), 
+	EE = parentPA->L->exitEdges.end(); EI != EE; ++EI) {
 
     ShadowBBInvar* EStart = getBBInvar(EI->first);
     ShadowBBInvar* EEnd = getBBInvar(EI->second);
@@ -1036,10 +1022,10 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
     LPDEBUG("Loop known to exit: will not create next iteration\n");
     return 0;
   }
+  
+  const std::pair<uint32_t, uint32_t>& OE = parentPA->L->optimisticEdge;
 
-  std::pair<uint32_t, uint32_t>& OE = parentPA->invarInfo->optimisticEdge;
-
-  bool willIterate = parentPA->invarInfo->alwaysIterate;
+  bool willIterate = parentPA->L->alwaysIterate;
 
   if((!willIterate) && OE.first != 0xffffffff) {
     ShadowBBInvar* OE1 = getBBInvar(OE.first);
@@ -1051,8 +1037,8 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
   // Usually this is case due to optimistic edges and such, but could also result from
   // executing unreachable within the loop.
   if(willIterate) {
-    ShadowBBInvar* latchBB = getBBInvar(parentPA->invarInfo->latchIdx);
-    ShadowBBInvar* headerBB = getBBInvar(parentPA->invarInfo->headerIdx);
+    ShadowBBInvar* latchBB = getBBInvar(parentPA->L->latchIdx);
+    ShadowBBInvar* headerBB = getBBInvar(parentPA->L->headerIdx);
     if(edgeIsDead(latchBB, headerBB))
       return 0;
   }
@@ -1083,9 +1069,9 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
 }
 
-PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
+PeelAttempt* IntegrationAttempt::getPeelAttempt(const ShadowLoopInvar* L) {
 
-  DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.find(L);
+  DenseMap<const ShadowLoopInvar*, PeelAttempt*>::const_iterator it = peelChildren.find(L);
   if(it != peelChildren.end())
     return it->second;
 
@@ -1093,9 +1079,9 @@ PeelAttempt* IntegrationAttempt::getPeelAttempt(const Loop* L) {
 
 }
 
-PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
+PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const ShadowLoopInvar* NewL) {
 
-  if(pass->shouldIgnoreLoop(&F, NewL->getHeader()))
+  if(pass->shouldIgnoreLoop(&F, getBBInvar(NewL->headerIdx)->BB))
     return 0;
 
   if(PeelAttempt* PA = getPeelAttempt(NewL))
@@ -1106,7 +1092,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
  
   // Preheaders only have one successor (the header), so this is enough.
   
-  ShadowBB* preheaderBB = getBB(invarInfo->LInfo[NewL]->preheaderIdx);
+  ShadowBB* preheaderBB = getBB(NewL->preheaderIdx);
   if(!blockAssumedToExecute(preheaderBB)) {
    
     LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain/assumed to execute\n");
@@ -1114,21 +1100,11 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const Loop* NewL) {
 
   }
 
-  if(NewL->getLoopPreheader() && NewL->getLoopLatch() && (NewL->getNumBackEdges() == 1)) {
+  LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
+  PeelAttempt* LPA = new PeelAttempt(pass, this, F, NewL, nesting_depth + 1);
+  peelChildren[NewL] = LPA;
 
-    LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
-    PeelAttempt* LPA = new PeelAttempt(pass, this, F, NewL, nesting_depth + 1);
-    peelChildren[NewL] = LPA;
-
-    return LPA;
-
-  }
-  else {
-
-    LPDEBUG("Won't explore loop with header " << NewL->getHeader()->getName() << " because it lacks a preheader, a latch, or both, or has multiple backedges\n");
-    return 0;
-
-  }
+  return LPA;
 
 }
 
@@ -1178,7 +1154,7 @@ BasicBlock* InlineAttempt::getEntryBlock() {
 
 BasicBlock* PeelIteration::getEntryBlock() {
   
-  return L->getHeader();
+  return getBBInvar(L->headerIdx)->BB;
 
 }
 
@@ -1237,8 +1213,8 @@ void PeelIteration::getVarArg(int64_t idx, ImprovedValSet*& Result) {
 }
 
 void PeelIteration::describe(raw_ostream& Stream) const {
-
-  Stream << "(Loop " << L->getHeader()->getName() << "/" << iterationCount << "/" << SeqNumber << ")";
+  
+  Stream << "(Loop " << getLName() << "/" << iterationCount << "/" << SeqNumber << ")";
 
 }
 
@@ -1281,14 +1257,14 @@ void InlineAttempt::printHeader(raw_ostream& OS) const {
 
 void PeelIteration::printHeader(raw_ostream& OS) const {
 
-  OS << "Loop " << L->getHeader()->getName() << " iteration " << iterationCount;
+  OS << "Loop " << getLName() << " iteration " << iterationCount;
   OS << " / " << SeqNumber;
 
 }
 
 void PeelAttempt::printHeader(raw_ostream& OS) const {
   
-  OS << "Loop " << L->getHeader()->getName();
+  OS << "Loop " << getLName();
   OS << " / " << SeqNumber;
 
 }
@@ -1301,7 +1277,7 @@ std::string IntegrationAttempt::getFunctionName() {
 
 void PeelAttempt::print(raw_ostream& OS) const {
 
-  OS << nestingIndent() << "Loop " << L->getHeader()->getName() << (Iterations.back()->iterStatus == IterationStatusFinal ? "(terminated)" : "(not terminated)") << "\n";
+  OS << nestingIndent() << "Loop " << getLName() << (Iterations.back()->iterStatus == IterationStatusFinal ? "(terminated)" : "(not terminated)") << "\n";
 
   for(std::vector<PeelIteration*>::const_iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it) {
 
@@ -1321,7 +1297,7 @@ void IntegrationAttempt::print(raw_ostream& OS) const {
     it->second->print(OS);
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::const_iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
     it->second->print(OS);
   }
 
@@ -1452,7 +1428,7 @@ IntegratorTag* IntegrationAttempt::createTag(IntegratorTag* parent) {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	it2 = peelChildren.end(); it != it2; ++it) {
 
     IntegratorTag* peelTag = it->second->createTag(myTag);
@@ -1496,7 +1472,7 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
   for(IAIterator II = child_calls_begin(this), IE = child_calls_end(this); II != IE; II++) {
     II->second->dumpMemoryUsage(indent+2);
   } 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator PI = peelChildren.begin(), PE = peelChildren.end(); PI != PE; PI++) {
     PI->second->dumpMemoryUsage(indent+1);
   }
 
@@ -1504,7 +1480,7 @@ void IntegrationAttempt::dumpMemoryUsage(int indent) {
 
 void PeelAttempt::dumpMemoryUsage(int indent) {
 
-  errs() << ind(indent) << "Loop " << L->getHeader()->getName() << " (" << Iterations.size() << " iterations)\n";
+  errs() << ind(indent) << "Loop " << getLName() << " (" << Iterations.size() << " iterations)\n";
   for(std::vector<PeelIteration*>::iterator it = Iterations.begin(), it2 = Iterations.end(); it != it2; ++it)
     (*it)->dumpMemoryUsage(indent+1);
 
@@ -2221,14 +2197,6 @@ void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* 
 
 }
 
-static void ignoreAllLoops(SmallSet<BasicBlock*, 1>& IgnHeaders, const Loop* L) {
-
-  IgnHeaders.insert(L->getHeader());
-  for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it)
-    ignoreAllLoops(IgnHeaders, *it);
-
-}
-
 #define CHECK_ARG(i, c) if(((uint32_t)i) >= c.size()) { errs() << "Function " << F.getName() << " has does not have a (zero-based) argument #" << i << "\n"; exit(1); }
 
 static int64_t getInteger(std::string& s, const char* desc) {
@@ -2284,13 +2252,6 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
   errs() << "Block " << name << " not found\n";
   exit(1);
-
-}
-
-BasicBlock* findBlockRaw(Function* F, const char* name) {
-
-  std::string S(name);
-  return findBlockRaw(F, S);
 
 }
 
@@ -2442,30 +2403,18 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
     parseFBB("int-optimistic-loop", *ArgI, *(F.getParent()), LoopF, BB1, BB2);
 
-    const Loop* L = LIs[LoopF]->getLoopFor(BB1);
-    if(!L) {
-      errs() << "Block " << BB1->getName() << " in " << LoopF->getName() << " not in a loop\n";
-      exit(1);
-    }
-    
-    optimisticLoopMap[L] = std::make_pair(BB1, BB2);
+    optimisticLoopMap[std::make_pair(LoopF, BB1)] = BB2;
 
   }
 
   for(cl::list<std::string>::const_iterator ArgI = AlwaysIterLoops.begin(), ArgE = AlwaysIterLoops.end(); ArgI != ArgE; ++ArgI) {
 
     Function* LoopF;
-    BasicBlock *BB;
+    BasicBlock *HBB;
 
-    parseFB("int-always-iterate", *ArgI, *(F.getParent()), LoopF, BB);
-
-    const Loop* L = LIs[LoopF]->getLoopFor(BB);
-    if(!L || (L->getHeader() != BB)) {
-      errs() << "Block " << BB->getName() << " in " << LoopF->getName() << " not a loop header\n";
-      exit(1);
-    }
+    parseFB("int-always-iterate", *ArgI, *(F.getParent()), LoopF, HBB);
     
-    alwaysIterLoops.insert(L);
+    alwaysIterLoops[LoopF].insert(HBB);
 
   }
 
@@ -2508,13 +2457,8 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
     BasicBlock* HBB;
 
     parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
-    const Loop* L = LIs[LF]->getLoopFor(HBB);
-    if(!L || (L->getHeader() != HBB)) {
-      errs() << "Block " << HBB->getName() << " in " << LF->getName() << " not a loop header\n";
-      exit(1);
-    }
-    
-    ignoreAllLoops(ignoreLoops[LF], L);
+
+    ignoreLoopsWithChildren[LF].insert(HBB);
 
   }
 
@@ -3677,9 +3621,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
       DominatorTree* NewDT = new DominatorTree();
       NewDT->runOnFunction(*MI);
       DTs[MI] = NewDT;
-      LoopInfo* NewLI = new LoopInfo();
-      NewLI->runOnFunction(*MI, NewDT);
-      LIs[MI] = NewLI;
     }
 
   }
@@ -3797,6 +3738,14 @@ Module* llvm::getGlobalModule() {
 
   return GlobalIHP->RootIA->F.getParent();
 
+}
+
+std::string PeelAttempt::getLName() const {
+  return Iterations[0]->getLName();
+}
+
+std::string PeelIteration::getLName() const {
+  return getBBInvar(L->headerIdx)->BB->getName();
 }
 
 bool llvm::IHPSaveDOTFiles = true;

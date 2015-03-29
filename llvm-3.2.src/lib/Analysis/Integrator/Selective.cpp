@@ -2,7 +2,6 @@
 // and which queue reconsideration of parts whose results will have changed.
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Instructions.h"
@@ -41,7 +40,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
 

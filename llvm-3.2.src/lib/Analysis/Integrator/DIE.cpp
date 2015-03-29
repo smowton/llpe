@@ -7,7 +7,6 @@
 #include "llvm/DataLayout.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/raw_ostream.h"
@@ -247,9 +246,9 @@ bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisi
 
 bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
 
-  if(PHINode* PN = dyn_cast_inst<PHINode>(I)) {
+  if(inst_is<PHINode>(I)) {
 
-    if(PN->getParent() == L->getHeader()) {
+    if(I->parent->idx == L->headerIdx) {
 
       if(PeelIteration* PI = getNextIteration()) {
 
@@ -291,7 +290,7 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& 
 
 void PeelIteration::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
-  const Loop* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
+  const ShadowLoopInvar* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
 
   PeelAttempt* LPA = getPeelAttempt(immediateChild);
   if(LPA && LPA->isEnabled())
@@ -307,7 +306,7 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
     Visitor.notifyUsersMissed();
 
   // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
-  if(VI->parent->naturalScope == L && VI->I->getParent() == L->getHeader() && isa<PHINode>(VI->I)) {
+  if(VI->parent->naturalScope == L && VI->parent->idx == L->headerIdx && isa<PHINode>(VI->I)) {
 
     Visitor.visit(Iterations[0]->getInst(VI), Iterations[0], VI->parent->idx, VI->idx);
     return;
@@ -358,7 +357,7 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, DIVisitor& Visitor) {
     return;
 
   ShadowInstructionInvar* SII = getInstInvar(User.blockIdx, User.instIdx);
-  const Loop* UserL = SII->parent->outerScope;
+  const ShadowLoopInvar* UserL = SII->parent->outerScope;
 
   if(UserL == L) {
 	  
@@ -374,14 +373,14 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, DIVisitor& Visitor) {
 
     if((!L) || L->contains(UserL)) {
 
-      const Loop* outermostChildLoop = immediateChildLoop(L, UserL);
+      const ShadowLoopInvar* outermostChildLoop = immediateChildLoop(L, UserL);
       // Used in a child loop. Check if that child exists at all and defer to it.
 
       PeelAttempt* LPA = getPeelAttempt(outermostChildLoop);
 
       if(LPA && LPA->isEnabled())
 	LPA->visitVariant(SII, Visitor);
-      else if((!getBB(invarInfo->LInfo[outermostChildLoop]->headerIdx)))
+      else if((!getBB(outermostChildLoop->headerIdx)))
 	Visitor.visit(0, this, User.blockIdx, User.instIdx); // Loop not explored, but a failed version may exist
       else
 	Visitor.notifyUsersMissed();
@@ -663,7 +662,7 @@ void IntegrationAttempt::runDIE() {
 
     if(BB->invar->naturalScope != L) {
 
-      const Loop* EnterL = immediateChildLoop(L, BB->invar->naturalScope);
+      const ShadowLoopInvar* EnterL = immediateChildLoop(L, BB->invar->naturalScope);
       if(PeelAttempt* LPA = getPeelAttempt(EnterL)) {
 
 	for(int i = LPA->Iterations.size() - 1; i >= 0; --i) {
@@ -738,11 +737,11 @@ void InlineAttempt::gatherIndirectUsers() {
 }
 
 // Called only for unbounded loops, which cannot contain expanded subloops, so no need to check.
-void IntegrationAttempt::gatherIndirectUsersInLoop(const Loop* L) {
+void IntegrationAttempt::gatherIndirectUsersInLoop(const ShadowLoopInvar* L) {
 
   uint32_t bbi;
   if(L)
-    bbi = invarInfo->LInfo[L]->headerIdx;
+    bbi = L->headerIdx;
   else
     bbi = 0;
 

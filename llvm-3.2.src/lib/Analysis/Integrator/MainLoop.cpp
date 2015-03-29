@@ -22,7 +22,6 @@
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
@@ -182,13 +181,13 @@ void PeelIteration::getInitialStore(bool inLoopAnalyser) {
   
   if(iterationCount == 0) {
 
-    BBs[0]->takeStoresFrom(parent->getBB(parentPA->invarInfo->preheaderIdx), inLoopAnalyser);
+    BBs[0]->takeStoresFrom(parent->getBB(parentPA->L->preheaderIdx), inLoopAnalyser);
 
   }
   else {
 
     // Take the previous latch's store
-    BBs[0]->takeStoresFrom(parentPA->Iterations[iterationCount-1]->getBB(parentPA->invarInfo->latchIdx), inLoopAnalyser);
+    BBs[0]->takeStoresFrom(parentPA->Iterations[iterationCount-1]->getBB(parentPA->L->latchIdx), inLoopAnalyser);
 
   } 
 
@@ -249,7 +248,7 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData,
 
 }
 
-void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const Loop* exitLoop, StoreKind kind) {
+void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoopInvar* exitLoop, StoreKind kind) {
 
   PeelAttempt* LPA;
 
@@ -312,8 +311,8 @@ void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const Loop* exi
 
 void PeelIteration::setExitingStores(void* S, StoreKind SK) {
 
-  for(std::vector<uint32_t>::iterator it = parentPA->invarInfo->exitingBlocks.begin(),
-	itend = parentPA->invarInfo->exitingBlocks.end(); it != itend; ++it) {
+  for(std::vector<uint32_t>::const_iterator it = parentPA->L->exitingBlocks.begin(),
+	itend = parentPA->L->exitingBlocks.end(); it != itend; ++it) {
 
     ShadowBBInvar* ExitingBBI = getBBInvar(*it);
     setExitingStore(S, ExitingBBI, L, SK);
@@ -346,7 +345,7 @@ void InlineAttempt::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& Ne
 
 }
 
-bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL) {
+bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const ShadowLoopInvar* MyL) {
 
   ShadowBB* BB = getBB(blockIdx);
   if(!BB)
@@ -357,7 +356,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   // Use natural scope rather than scope because even if a loop is
   // ignored we want to notice that it exists so we can call analyseLoop
   ShadowBBInvar* BBI = BB->invar;
-  const Loop* BBL = BBI->naturalScope;
+  const ShadowLoopInvar* BBL = BBI->naturalScope;
 
   if(BBL != MyL) {
 
@@ -374,7 +373,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
       // Give the preheader an extra reference in case we need that store
       // to calculate a general version of the loop body if it doesn't terminate.
-      ShadowBB* PHBB = getBB(LPA->invarInfo->preheaderIdx);
+      ShadowBB* PHBB = getBB(LPA->L->preheaderIdx);
       PHBB->refStores();
 
       bool loopReadsTentativeData, loopContainsCheckedReads;
@@ -457,7 +456,6 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
       // The loop preheader's local store was copied by the loop analysis assuming we'd
       // need it to analyse the loop body, but we've found the loop terminates; drop the extra ref.
-      ShadowLoopInvar* LInfo = invarInfo->LInfo[BBL];
 
       // For the common case where the loop has a single known exit point, perform store simplifications.
       // These apply because the store was forked anticipating failure to establish an iteration count.
@@ -465,7 +463,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
       ShadowBB* ExitingBlock = LPA->Iterations.back()->getUniqueExitingBlock();
 
       std::vector<ShadowValue> simplifyStores;
-      getBB(LInfo->preheaderIdx)->derefStores(ExitingBlock ? &simplifyStores : 0);
+      getBB(BBL->preheaderIdx)->derefStores(ExitingBlock ? &simplifyStores : 0);
 
       for(std::vector<ShadowValue>::iterator it = simplifyStores.begin(),
 	    itend = simplifyStores.end(); it != itend; ++it) {
@@ -668,20 +666,13 @@ void InlineAttempt::releaseCallLatchStores() {
 
 }
 
-void IntegrationAttempt::releaseLatchStores(const Loop* L) {
+void IntegrationAttempt::releaseLatchStores(const ShadowLoopInvar* L) {
 
   // Release loops belonging to sub-calls and loops:
 
-  ShadowLoopInvar* LInfo;
-  uint32_t startBlock;
-  if(L) {
-    LInfo = invarInfo->LInfo[L];
-    startBlock = LInfo->headerIdx;
-  }
-  else {
-    LInfo = 0;
-    startBlock = 0;
-  }
+  uint32_t startBlock = 0;
+  if(L)
+    startBlock = L->headerIdx;
 
   for(uint32_t i = startBlock; i < (BBsOffset + nBBs); ++i) {
 
@@ -693,7 +684,7 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
       continue;
 
     ShadowBBInvar* BBI = BB->invar;
-    const Loop* BBL = BBI->naturalScope;
+    const ShadowLoopInvar* BBL = BBI->naturalScope;
    
     if(BBL != L) {
 
@@ -723,10 +714,10 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
    
   // Release here:
 
-  if(LInfo) {
+  if(L) {
     // Release the latch store that the header will not use again:
     if(pass->latchStoresRetained.erase(std::make_pair(this, L))) {
-      ShadowBB* LBB = getBB(LInfo->latchIdx);
+      ShadowBB* LBB = getBB(L->latchIdx);
       release_assert("Releasing store from dead latch?");
       LBB->derefStores();
     }
@@ -736,22 +727,21 @@ void IntegrationAttempt::releaseLatchStores(const Loop* L) {
 
 // nestedLoop indicates we're being analysed in the context of a loop further out,
 // either in our call or a parent call.
-bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
+bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) {
 
-  ShadowLoopInvar* LInfo = invarInfo->LInfo[L];
   bool anyChange = true;
   bool firstIter = true;
   bool everChanged = false;
   uint64_t iters = 0;
 
-  ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
-  ShadowBB* HBB = getBB(LInfo->headerIdx);
-  ShadowBB* LBB = getBB(LInfo->latchIdx);
+  ShadowBB* PHBB = getBB(L->preheaderIdx);
+  ShadowBB* HBB = getBB(L->headerIdx);
+  ShadowBB* LBB = getBB(L->latchIdx);
 
   LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at entry: " << PHBB->localStore->refCount << "\n");
 
   // Stop iterating if we show that the latch edge died!
-  while(anyChange && (firstIter || !edgeIsDead(getBBInvar(LInfo->latchIdx), HBB->invar))) {
+  while(anyChange && (firstIter || !edgeIsDead(getBBInvar(L->latchIdx), HBB->invar))) {
     
     ++iters;
 
@@ -764,8 +754,8 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
       if(!firstIter) {
 
 	// Drop store references at exit edges: we're going around again.
-	for(std::vector<std::pair<uint32_t, uint32_t> >::iterator it = LInfo->exitEdges.begin(),
-	      itend = LInfo->exitEdges.end(); it != itend; ++it) {
+	for(std::vector<std::pair<uint32_t, uint32_t> >::const_iterator it = L->exitEdges.begin(),
+	      itend = L->exitEdges.end(); it != itend; ++it) {
 
 	  ShadowBB* BB = getBB(it->first);
 
@@ -825,12 +815,12 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
     anyChange = false;
 
-    for(uint32_t i = LInfo->headerIdx; i < (BBsOffset + nBBs); ++i) {
+    for(uint32_t i = L->headerIdx; i < (BBsOffset + nBBs); ++i) {
 
       if(!L->contains(getBBInvar(i)->naturalScope))
 	break;
 
-      if(i == LInfo->headerIdx) {
+      if(i == L->headerIdx) {
 
 	release_assert(pendingEdges && "Decrementing pendingEdges below zero");
 	// Drop the preheader->header or latch->header edge.
@@ -838,12 +828,12 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
       }
 
-      anyChange |= analyseBlock(i, true, true, i == LInfo->headerIdx, L);
+      anyChange |= analyseBlock(i, true, true, i == L->headerIdx, L);
 
     }
 
     if(!LBB)
-      LBB = getBB(LInfo->latchIdx);
+      LBB = getBB(L->latchIdx);
 
     everChanged |= anyChange;
 
@@ -853,7 +843,7 @@ bool IntegrationAttempt::analyseLoop(const Loop* L, bool nestedLoop) {
 
   }
 
-  if(edgeIsDead(getBBInvar(LInfo->latchIdx), HBB->invar))
+  if(edgeIsDead(getBBInvar(L->latchIdx), HBB->invar))
     release_assert(iters == 1 && "Loop analysis found the latch dead but not first time around?");
 
   // Release the preheader store that was held for merging in each iteration:
@@ -893,18 +883,16 @@ void InlineAttempt::executeCall(uint32_t parent_stack_depth) {
 
 }
 
-void IntegrationAttempt::executeLoop(const Loop* ThisL) {
+void IntegrationAttempt::executeLoop(const ShadowLoopInvar* ThisL) {
 
-  ShadowLoopInvar* LInfo = invarInfo->LInfo[ThisL];
-
-  ShadowBB* PHBB = getBB(LInfo->preheaderIdx);
-  ShadowBB* HBB = getBB(LInfo->headerIdx); 
+  ShadowBB* PHBB = getBB(ThisL->preheaderIdx);
+  ShadowBB* HBB = getBB(ThisL->headerIdx); 
 
   // If this context had a retained latch store from previous instances
   // we don't need it anymore, drop now.
   if(pass->latchStoresRetained.erase(std::make_pair(this, ThisL))) {
 
-    ShadowBB* LBB = getBB(LInfo->latchIdx);
+    ShadowBB* LBB = getBB(ThisL->latchIdx);
     release_assert(LBB && "Executed loop with retained latch, but not available?");
     LBB->derefStores();
 
@@ -916,7 +904,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
   // consume a store from their latch blocks.
   HBB->localStore = PHBB->localStore;
 
-  for(uint32_t i = LInfo->headerIdx; i < (BBsOffset + nBBs); ++i) {
+  for(uint32_t i = ThisL->headerIdx; i < (BBsOffset + nBBs); ++i) {
 
     ShadowBB* BB = getBB(i);
     if(!BB)
@@ -937,7 +925,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
     }
     else {
 
-      if(i != LInfo->headerIdx) {
+      if(i != ThisL->headerIdx) {
 	if(!doBlockStoreMerge(BB))
 	  return;
       }
@@ -949,7 +937,7 @@ void IntegrationAttempt::executeLoop(const Loop* ThisL) {
   }
 
   // Drop extra ref given to the header block if one was granted.
-  ShadowBB* LBB = getBB(LInfo->latchIdx);
+  ShadowBB* LBB = getBB(ThisL->latchIdx);
   if(LBB && !edgeIsDead(LBB->invar, HBB->invar))
     LBB->derefStores();
 

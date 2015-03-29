@@ -47,27 +47,57 @@ void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resul
 
 }
 
-void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
-					    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-					    const Loop* L,
-					    DominatorTree* DT) {
+static void ignoreChildLoops(SmallSet<BasicBlock*, 1>& headers, const Loop* L) {
+
+  headers.insert(L->getHeader());
+  for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it)
+    ignoreChildLoops(headers, *it);
+  
+}
+
+ShadowLoopInvar* IntegrationHeuristicsPass::getLoopInfo(ShadowFunctionInvar* FInfo,
+							DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+							const Loop* L,
+							DominatorTree* DT,
+							ShadowLoopInvar* ParentLoop) {
   
   release_assert(L->isLoopSimplifyForm() && L->isLCSSAForm(*DT) && "Don't forget to run loopsimplify and lcssa first!");
 
   ShadowLoopInvar* LInfo = new ShadowLoopInvar();
-  LoopInfo[L] = LInfo;
 
   LInfo->headerIdx = BBIndices[L->getHeader()];
   LInfo->preheaderIdx = BBIndices[L->getLoopPreheader()];
   LInfo->latchIdx = BBIndices[L->getLoopLatch()];
+  LInfo->nBlocks = L->getBlocks().size();
+  LInfo->parent = ParentLoop;
 
-  std::pair<BasicBlock*, BasicBlock*> OptEdge = getOptimisticEdge(L);
-  if(OptEdge.first)
-    LInfo->optimisticEdge = std::make_pair(BBIndices[OptEdge.first], BBIndices[OptEdge.second]);
-  else
-    LInfo->optimisticEdge = std::make_pair(0xffffffff, 0xffffffff);
+  // If we're supposed to ignore this loop and all children, register them now so that applyIgnoreLoops
+  // does the right thing.
 
-  LInfo->alwaysIterate = shouldAlwaysIterate(L);
+  BasicBlock* HBB = L->getHeader();
+  Function* LF = HBB->getParent();
+
+  if(shouldIgnoreLoopChildren(LF, HBB))
+    ignoreChildLoops(ignoreLoops[LF], L);
+
+  LInfo->optimisticEdge = std::make_pair(0xffffffff, 0xffffffff);
+
+  for(uint32_t i = LInfo->headerIdx, ilim = LInfo->headerIdx + L->getNumBlocks(); i != ilim; ++i) {
+
+    // TODO: Fix or discard outerScope.
+    // Note these will be overwritten if the block is also within a child loop.
+    FInfo->BBs[i].outerScope = applyIgnoreLoops(LInfo, LF, FInfo);
+    FInfo->BBs[i].naturalScope = LInfo;
+
+    BasicBlock* OptEdgeSink = getOptimisticEdge(LF, FInfo->BBs[i].BB);
+    if(OptEdgeSink) {
+      release_assert(LInfo->optimisticEdge.first == 0xffffffff && "Only one optimistic edge allowed per loop");
+      LInfo->optimisticEdge = std::make_pair(i, BBIndices[OptEdgeSink]);
+    }
+
+  }
+
+  LInfo->alwaysIterate = shouldAlwaysIterate(LF, HBB);
 
   {
     SmallVector<BasicBlock*, 4> temp;
@@ -97,9 +127,12 @@ void IntegrationHeuristicsPass::getLoopInfo(DenseMap<const Loop*, ShadowLoopInva
 
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
 
-    getLoopInfo(LoopInfo, BBIndices, *it, DT);
+    ShadowLoopInvar* child = getLoopInfo(FInfo, BBIndices, *it, DT, LInfo);
+    LInfo->childLoops.push_back(child);
 
   }
+
+  return LInfo;
 
 }
 
@@ -173,7 +206,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   if(findit != functionInfo.end())
     return findit->second;
 
-  LoopInfo* LI = LIs[&F];
+  // Beware! This LoopInfo instance and whatever Loop objects come from it are only alive until
+  // the next call to getAnalysis. Therefore the ShadowLoopInvar objects we make here
+  // must mirror all information we're interested in from the Loops.
+  LoopInfo* LI = &getAnalysis<LoopInfo>(F);
 
   ShadowFunctionInvar* RetInfoP = new ShadowFunctionInvar();
   functionInfo[&F] = RetInfoP;
@@ -218,8 +254,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
     SBB.F = &RetInfo;
     SBB.idx = i;
     SBB.BB = BB;
-    SBB.naturalScope = LI->getLoopFor(BB);
-    SBB.outerScope = applyIgnoreLoops(SBB.naturalScope);
+    const Loop* BBScope =  LI->getLoopFor(BB);
 
     // Find successor block indices:
 
@@ -245,7 +280,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       
       if(SBB.predIdxs[j] > i) {
 
-	if((!SBB.naturalScope) || SBB.BB != SBB.naturalScope->getHeader()) {
+	if((!BBScope) || SBB.BB != BBScope->getHeader()) {
 
 	  errs() << "Warning: block " << SBB.BB->getName() << " in " << F.getName() << " has predecessor " << (*PI)->getName() << " that comes after it topologically, but this is not a loop header. The program is not in well-nested natural loop form.\n";
 
@@ -392,8 +427,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
 
   DominatorTree* thisDT = &getAnalysis<DominatorTree>(F);
 
-  for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it)
-    getLoopInfo(RetInfo.LInfo, BBIndices, *it, thisDT);
+  for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it) {
+    ShadowLoopInvar* newL = getLoopInfo(&RetInfo, BBIndices, *it, thisDT, 0);
+    RetInfo.TopLevelLoops.push_back(newL);
+  }
 
   // Count alloca instructions at the start of the function; this will control how
   // large the std::vector that represents the frame will be initialised.
@@ -467,20 +504,14 @@ void InlineAttempt::prepareShadows() {
 
 }
 
-void PeelAttempt::getShadowInfo() {
-
-  invarInfo = parent->invarInfo->LInfo[L];
-
-}
-
 void PeelIteration::prepareShadows() {
 
   invarInfo = pass->getFunctionInvarInfo(F);
-  nBBs = L->getBlocks().size();
+  nBBs = L->nBlocks;
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;
-  BBsOffset = parentPA->invarInfo->headerIdx;
+  BBsOffset = parentPA->L->headerIdx;
 
 }
 
@@ -502,7 +533,7 @@ ShadowBB* IntegrationAttempt::getOrCreateBB(ShadowBBInvar* BBI) {
 
 }
 
-ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) {
+ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) const {
 
   return &(invarInfo->BBs[idx]);
 
@@ -694,7 +725,7 @@ ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
 void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
-  std::vector<std::pair<uint32_t, uint32_t> >& EE = LPA->invarInfo->exitEdges;
+  const std::vector<std::pair<uint32_t, uint32_t> >& EE = LPA->L->exitEdges;
 
   for(uint32_t i = 0; i < EE.size(); ++i) {
 
@@ -803,7 +834,7 @@ BasicBlock* ShadowBB::getCommittedBreakBlockAt(uint32_t idx) {
 
 }
 
-ShadowBB* PeelIteration::getUniqueExitingBlock2(ShadowBBInvar* BBI, const Loop* exitLoop, bool& bail) {
+ShadowBB* PeelIteration::getUniqueExitingBlock2(ShadowBBInvar* BBI, const ShadowLoopInvar* exitLoop, bool& bail) {
 
   PeelAttempt* LPA;
 
@@ -851,8 +882,8 @@ ShadowBB* PeelIteration::getUniqueExitingBlock() {
 
   ShadowBB* uniqueBlock = 0;
 
-  for(std::vector<uint32_t>::iterator it = parentPA->invarInfo->exitingBlocks.begin(),
-	itend = parentPA->invarInfo->exitingBlocks.end(); it != itend; ++it) {
+  for(std::vector<uint32_t>::const_iterator it = parentPA->L->exitingBlocks.begin(),
+	itend = parentPA->L->exitingBlocks.end(); it != itend; ++it) {
 
     ShadowBBInvar* ExitingBBI = getBBInvar(*it);
     bool bail = false;

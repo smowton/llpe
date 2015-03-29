@@ -1,7 +1,6 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Function.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 
 using namespace llvm;
@@ -205,7 +204,7 @@ void IntegrationHeuristicsPass::fixNonLocalUses() {
 
 void IntegrationAttempt::inheritCommitFunction() {
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
         itend = peelChildren.end(); it != itend; ++it) {
 
     if((!it->second->isEnabled()) || !it->second->isTerminated())
@@ -261,7 +260,7 @@ uint64_t IntegrationAttempt::findSaveSplits() {
     ShadowBBInvar* BBI = getBBInvar(i);
     if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
 
-      DenseMap<const Loop*, PeelAttempt*>::iterator findit = 
+      DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator findit = 
 	peelChildren.find(immediateChildLoop(L, BBI->naturalScope));
 
       if(findit != peelChildren.end() && findit->second->isTerminated() && findit->second->isEnabled()) {
@@ -288,7 +287,7 @@ uint64_t IntegrationAttempt::findSaveSplits() {
     
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
     if((!it->second->isEnabled()) || !it->second->isTerminated())

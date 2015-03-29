@@ -11,7 +11,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/AliasAnalysis.h" // For isIdentifiedObject
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/PostDominators.h"
 // For elaboration of Calculate et al in Dominators.h:
@@ -45,11 +44,11 @@ bool InlineAttempt::entryBlockIsCertain() {
 bool PeelIteration::entryBlockIsCertain() {
 
   if(iterationCount == 0)
-    return blockCertainlyExecutes(parent->getBB(parentPA->invarInfo->preheaderIdx));
+    return blockCertainlyExecutes(parent->getBB(parentPA->L->preheaderIdx));
 
   // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
   PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
-  return blockCertainlyExecutes(prevIter->getBB(parentPA->invarInfo->latchIdx)) && prevIter->allExitEdgesDead();
+  return blockCertainlyExecutes(prevIter->getBB(parentPA->L->latchIdx)) && prevIter->allExitEdgesDead();
 
 }
 
@@ -276,7 +275,7 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
 }
 
-IntegrationAttempt* IntegrationAttempt::getIAForScope(const Loop* Scope) {
+IntegrationAttempt* IntegrationAttempt::getIAForScope(const ShadowLoopInvar* Scope) {
 
   if((!L) || L->contains(Scope))
     return this;
@@ -285,7 +284,7 @@ IntegrationAttempt* IntegrationAttempt::getIAForScope(const Loop* Scope) {
 
 }
 
-IntegrationAttempt* PeelIteration::getIAForScopeFalling(const Loop* Scope) {
+IntegrationAttempt* PeelIteration::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
 
   if(L == Scope)
     return this;
@@ -293,7 +292,7 @@ IntegrationAttempt* PeelIteration::getIAForScopeFalling(const Loop* Scope) {
 
 }
 
-IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const Loop* Scope) {
+IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
 
   release_assert((!Scope) && "Scope not found (getIAForScopeFalling)");
   return this;

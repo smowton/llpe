@@ -23,7 +23,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/AliasAnalysis.h" // For isIdentifiedObject
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/PostDominators.h"
 // For elaboration of Calculate et al in Dominators.h:
@@ -50,12 +49,12 @@ namespace llvm {
 
   }
 
-  const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child) {
+  const ShadowLoopInvar* immediateChildLoop(const ShadowLoopInvar* Parent, const ShadowLoopInvar* Child) {
 
     // Doh, this makes walking the tree o' loops n^2. Oh well.
-    const Loop* immediateChild = Child;
-    while(immediateChild->getParentLoop() != Parent)
-      immediateChild = immediateChild->getParentLoop();
+    const ShadowLoopInvar* immediateChild = Child;
+    while(immediateChild->parent != Parent)
+      immediateChild = immediateChild->parent;
     return immediateChild;
 
   }
@@ -80,7 +79,7 @@ bool PeelIteration::isOnlyExitingIteration() {
   if(iterStatus != IterationStatusFinal)
     return false;
 
-  if(parentPA->invarInfo->optimisticEdge.first == 0xffffffff)
+  if(parentPA->L->optimisticEdge.first == 0xffffffff)
     return true;
 
   return parentPA->allNonFinalIterationsDoNotExit();
@@ -95,7 +94,7 @@ bool InlineAttempt::isOptimisticPeel() {
 
 bool PeelIteration::isOptimisticPeel() {
 
-  return parentPA->invarInfo->optimisticEdge.first != 0xffffffff;
+  return parentPA->L->optimisticEdge.first != 0xffffffff;
 
 }
 
@@ -200,7 +199,7 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
 
     LPDEBUG("Pulling PHI value from preheader\n");
     // Can just use normal getOperand/replacement here.
-    ShadowBBInvar* PHBBI = getBBInvar(parentPA->invarInfo->preheaderIdx);
+    ShadowBBInvar* PHBBI = getBBInvar(parentPA->L->preheaderIdx);
     int predIdx = PN->getBasicBlockIndex(PHBBI->BB);
     assert(predIdx >= 0 && "Failed to find preheader block");
     return SI->getOperand(predIdx);
@@ -209,7 +208,7 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
   else {
 
     LPDEBUG("Pulling PHI value from previous iteration latch\n");
-    ShadowBBInvar* LBBI = getBBInvar(parentPA->invarInfo->latchIdx);
+    ShadowBBInvar* LBBI = getBBInvar(parentPA->L->latchIdx);
     int predIdx = PN->getBasicBlockIndex(LBBI->BB);
     assert(predIdx >= 0 && "Failed to find latch block");
     // Find equivalent instruction in previous iteration:
@@ -233,8 +232,7 @@ bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resul
 
 bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result) {
 
-  PHINode* PN = cast_inst<PHINode>(SI);
-  bool isHeaderPHI = PN->getParent() == L->getHeader();
+  bool isHeaderPHI = SI->invar->parent->idx == L->headerIdx;
 
   if(isHeaderPHI) {
 

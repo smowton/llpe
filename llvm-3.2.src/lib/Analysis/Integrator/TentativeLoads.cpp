@@ -13,7 +13,6 @@
 #include "llvm/Function.h"
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/DataLayout.h"
 
 using namespace llvm;
@@ -1006,21 +1005,20 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
 
 }
 
-void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const Loop* UL, bool commitDisabledHere, bool secondPass) {
+void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const ShadowLoopInvar* UL, bool commitDisabledHere, bool secondPass) {
 
-  ShadowLoopInvar* NewLInfo = invarInfo->LInfo[UL];
-  ShadowBB* BB = getBB(NewLInfo->headerIdx);
+  ShadowBB* BB = getBB(UL->headerIdx);
 
   // Give header its store:
-  BB->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
+  BB->tlStore = getBB(UL->preheaderIdx)->tlStore;
   
-  if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
+  if(!edgeIsDead(getBBInvar(UL->latchIdx), getBBInvar(UL->headerIdx))) {
 
     if(!secondPass) {
       // Passing true for the last parameter causes the store to be given to the header from the latch
       // and not to any exit blocks. 
       findTentativeLoadsInLoop(UL, commitDisabledHere, false, true);
-      BB->tlStore = getBB(NewLInfo->latchIdx)->tlStore;
+      BB->tlStore = getBB(UL->latchIdx)->tlStore;
     }
     findTentativeLoadsInLoop(UL, commitDisabledHere, true);
 
@@ -1033,7 +1031,7 @@ void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const Loop* UL, bool 
 
 }
 
-void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader) {
+void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass, bool latchToHeader) {
 
   // Don't repeat search due to sharing:
   if(tentativeLoadsRun)
@@ -1041,11 +1039,9 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
   TLProgress();
 
-  ShadowLoopInvar* LInfo = L ? invarInfo->LInfo[L] : 0;
-  
   uint32_t startIdx;
   if(L)
-    startIdx = LInfo->headerIdx;
+    startIdx = L->headerIdx;
   else
     startIdx = 0;
 
@@ -1057,7 +1053,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
     
     if(BB->invar->naturalScope != L) {
 
-      ShadowLoopInvar* NewLInfo = invarInfo->LInfo[BB->invar->naturalScope];
+      const ShadowLoopInvar* NewLInfo = BB->invar->naturalScope;
 
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
@@ -1146,8 +1142,8 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const Loop* L, bool commitDisa
 
 	if(L != this->L && latchToHeader && !L->contains(SuccBBI->naturalScope))
 	  continue;
-	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == LInfo->headerIdx) {
-	  release_assert(BB->invar->idx == LInfo->latchIdx);
+	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == L->headerIdx) {
+	  release_assert(BB->invar->idx == L->latchIdx);
 	  continue;
 	}
 
@@ -1188,7 +1184,7 @@ void IntegrationAttempt::resetTentativeLoads() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
     
     if(!it->second->isTerminated())
@@ -1229,7 +1225,7 @@ void IntegrationAttempt::countTentativeInstructions() {
 
     if(BBI->naturalScope != L) {
 
-      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      const ShadowLoopInvar* subL = immediateChildLoop(L, BBI->naturalScope);
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
 
@@ -1267,7 +1263,7 @@ void IntegrationAttempt::countTentativeInstructions() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
     if(!it->second->isTerminated())
@@ -1366,7 +1362,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
     if(BBI->naturalScope != L) {
 
-      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      const ShadowLoopInvar* subL = immediateChildLoop(L, BBI->naturalScope);
       PeelAttempt* LPA;
 
       if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {

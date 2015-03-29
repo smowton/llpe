@@ -6,7 +6,6 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
@@ -1389,7 +1388,7 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
   if(BBI->naturalScope) {
 
-    ShadowLoopInvar* LInfo = invarInfo->LInfo[BBI->naturalScope];
+    const ShadowLoopInvar* LInfo = BBI->naturalScope;
     if(LInfo->headerIdx == BBIdx)
       ignorePred = LInfo->latchIdx;
 
@@ -1559,7 +1558,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
   // new loop variants and their header phis must be created incomplete and finished on completion.
   // Start it off containing the definition loop, which will never be popped.
   
-  SmallVector<std::pair<const Loop*, PHINode*>, 4> loopStack;
+  SmallVector<std::pair<const ShadowLoopInvar*, PHINode*>, 4> loopStack;
   loopStack.push_back(std::make_pair(OrigSI.parent->naturalScope, (PHINode*)0));
 
   for(uint32_t i = 0, ilim = predBlocks.size(); i != ilim; ++i) {
@@ -1589,13 +1588,13 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
       // we can simply set all such blocks to use the same definition as the preheader; if there are,
       // we must create an incomplete header phi and complete it after exiting.
 
-      const Loop* currentLoop = loopStack.back().first;
+      const ShadowLoopInvar* currentLoop = loopStack.back().first;
       if(currentLoop != thisBBI->naturalScope) {
 
 	if((!currentLoop) || currentLoop->contains(thisBBI->naturalScope)) {
 
 	  // Entered a new loop.
-	  ShadowLoopInvar* LInfo = invarInfo->LInfo[thisBBI->naturalScope];
+	  const ShadowLoopInvar* LInfo = thisBBI->naturalScope;
 
 	  // The entire loop should be in our scope of consideration:
 	  release_assert(OrigSI.parent->idx <= LInfo->preheaderIdx);
@@ -1676,17 +1675,15 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 	  while(thisBBI->naturalScope != loopStack.back().first) {
 
-	    const Loop* exitLoop = loopStack.back().first;
+	    const ShadowLoopInvar* exitLoop = loopStack.back().first;
 
 	    PHINode* PN = loopStack.back().second;
 	    loopStack.pop_back();
 	    // Lowest level loop should never be popped.
 	    release_assert(loopStack.size());
 
-	    ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
-
-	    PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
-			    failedBlocks[LInfo->latchIdx].back().first);
+	    PN->addIncoming(predBlocks[exitLoop->latchIdx - OrigSI.parent->idx].first, 
+			    failedBlocks[exitLoop->latchIdx].back().first);
 
 	  }
 
@@ -1883,16 +1880,14 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
   while(OrigSI.parent->naturalScope != loopStack.back().first) {
 
-    const Loop* exitLoop = loopStack.back().first;
+    const ShadowLoopInvar* exitLoop = loopStack.back().first;
     PHINode* PN = loopStack.back().second;
     loopStack.pop_back();
     // Lowest level loop should never be popped.
     release_assert(loopStack.size());
 
-    ShadowLoopInvar* LInfo = invarInfo->LInfo[exitLoop];
-    
-    PN->addIncoming(predBlocks[LInfo->latchIdx - OrigSI.parent->idx].first, 
-		    failedBlocks[LInfo->latchIdx].back().first);
+    PN->addIncoming(predBlocks[exitLoop->latchIdx - OrigSI.parent->idx].first, 
+		    failedBlocks[exitLoop->latchIdx].back().first);
 
   }
 
@@ -2347,18 +2342,16 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
 
 }
 
-void IntegrationAttempt::populateFailedHeaderPHIs(const Loop*) {}
+void IntegrationAttempt::populateFailedHeaderPHIs(const ShadowLoopInvar*) {}
 
-void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
+void InlineAttempt::populateFailedHeaderPHIs(const ShadowLoopInvar* PopulateL) {
 
   // Add the latch predecessor to each header phi.
-  ShadowLoopInvar* LInfo = invarInfo->LInfo[PopulateL];
-
-  if(failedBlocks.empty() || failedBlocks[LInfo->headerIdx].empty())
+  if(failedBlocks.empty() || failedBlocks[PopulateL->headerIdx].empty())
     return;
 
-  ShadowBBInvar* headerBBI = getBBInvar(LInfo->headerIdx);
-  BasicBlock* headerBlock = failedBlocks[LInfo->headerIdx].front().first;
+  ShadowBBInvar* headerBBI = getBBInvar(PopulateL->headerIdx);
+  BasicBlock* headerBlock = failedBlocks[PopulateL->headerIdx].front().first;
   uint32_t instIdx = 0;
  
   for(BasicBlock::iterator BI = skipMergePHIs(headerBlock->begin()), BE = headerBlock->end();
@@ -2370,11 +2363,11 @@ void InlineAttempt::populateFailedHeaderPHIs(const Loop* PopulateL) {
 
     for(uint32_t i = 0, ilim = PNInfo.operandBBs.size(); i != ilim; ++i) {
 
-      if(PNInfo.operandBBs[i] == LInfo->latchIdx) {
+      if(PNInfo.operandBBs[i] == PopulateL->latchIdx) {
 
 	Value* origPredVal = OrigPN->getIncomingValue(i);
 	ShadowInstIdx predOp = PNInfo.operandIdxs[i];
-	BasicBlock* predBlock = failedBlocks[LInfo->latchIdx].back().first;
+	BasicBlock* predBlock = failedBlocks[PopulateL->latchIdx].back().first;
 	
 	Value* predVal = getUnspecValue(predOp.blockIdx, predOp.instIdx, 
 					origPredVal, predBlock, predBlock->getTerminator());

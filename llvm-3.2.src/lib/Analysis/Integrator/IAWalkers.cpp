@@ -5,7 +5,6 @@
 #include "llvm/Function.h"
 #include "llvm/Instructions.h"
 
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -51,8 +50,8 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
   if(edgeIsDead(ExitingBB, ExitedBB))
     return;
 
-  const Loop* MyL = L;
-  const Loop* ExitingBBL = ExitingBB->outerScope;
+  const ShadowLoopInvar* MyL = L;
+  const ShadowLoopInvar* ExitingBBL = ExitingBB->outerScope;
   if(MyL == ExitingBBL) {
 
     Visitor->visit(getBB(*ExitingBB), Ctx, !firstPred);
@@ -61,7 +60,7 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
   }
   else {
 
-    const Loop* ChildL = immediateChildLoop(MyL, ExitingBBL);
+    const ShadowLoopInvar* ChildL = immediateChildLoop(MyL, ExitingBBL);
     PeelAttempt* LPA = getPeelAttempt(ChildL);
     if(LPA && LPA->isTerminated()) {
 
@@ -118,7 +117,7 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
 WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
-  if(FromBB->invar->BB == L->getHeader()) {
+  if(FromBB->invar->idx == L->headerIdx) {
 
     WalkInstructionResult WIR = Walker->mayAscendFromContext(this, Ctx);
     if(WIR != WIRContinue)
@@ -127,13 +126,13 @@ WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, Backw
     if(iterationCount == 0) {
 
       Walker->leaveLoop(parentPA, Ctx);
-      ShadowBB* BB = parent->getBB(parentPA->invarInfo->preheaderIdx);
+      ShadowBB* BB = parent->getBB(parentPA->L->preheaderIdx);
       Walker->queueWalkFrom(BB->insts.size(), BB, Ctx, false);
 
     }
     else {
 
-      ShadowBB* BB = parentPA->Iterations[iterationCount - 1]->getBB(parentPA->invarInfo->latchIdx);
+      ShadowBB* BB = parentPA->Iterations[iterationCount - 1]->getBB(parentPA->L->latchIdx);
       Walker->queueWalkFrom(BB->insts.size(), BB, Ctx, false);
 
     }
@@ -156,8 +155,8 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
 
   bool firstPred = true;
 
-  const Loop* CtxLoop = L;
-  const Loop* FromBBLoop = FromBB->invar->outerScope;
+  const ShadowLoopInvar* CtxLoop = L;
+  const ShadowLoopInvar* FromBBLoop = FromBB->invar->outerScope;
 
   ShadowBBInvar* FromBBI = FromBB->invar;
 
@@ -186,7 +185,7 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
     }
     else {
 
-      const Loop* BBLoop = BBI->outerScope;
+      const ShadowLoopInvar* BBLoop = BBI->outerScope;
       if(BBLoop == CtxLoop) {
 
 	queueHere = true;
@@ -516,7 +515,7 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
 // edge leading into the 4th do we consider it and all future iterations.
 bool PeelIteration::queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
-  if(PresentBlock->invar->BB == L->getLoopLatch() && NextBlock->BB == L->getHeader()) {
+  if(PresentBlock->invar->idx == L->latchIdx && NextBlock->idx == L->headerIdx) {
 
     PeelIteration* nextIter = getNextIteration();
     if(!nextIter) {
@@ -550,8 +549,8 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 
   bool firstSucc = true;
 
-  const Loop* MyLoop = L;
-  const Loop* BBLoop = BB->invar->outerScope;
+  const ShadowLoopInvar* MyLoop = L;
+  const ShadowLoopInvar* BBLoop = BB->invar->outerScope;
 
   for(uint32_t i = 0, ilim = BB->invar->succIdxs.size(); i != ilim; ++i) { 
 
@@ -571,7 +570,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 
     bool queueHere = false;
 
-    const Loop* SuccLoop = SB->outerScope;
+    const ShadowLoopInvar* SuccLoop = SB->outerScope;
     if(SuccLoop != MyLoop) {
 
       if((!MyLoop) || MyLoop->contains(SuccLoop)) {

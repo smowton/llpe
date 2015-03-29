@@ -203,8 +203,8 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
   ShadowValue stripPointerCasts() const;
   IntegrationAttempt* getCtx() const;
   Value* getBareVal() const;
-  const Loop* getScope() const;
-  const Loop* getNaturalScope() const;
+  const ShadowLoopInvar* getScope() const;
+  const ShadowLoopInvar* getNaturalScope() const;
   bool isIDObject() const;
   InstArgImprovement* getIAI() const;
   LLVMContext& getLLVMContext() const;
@@ -1067,8 +1067,8 @@ struct ShadowBBInvar {
   ImmutableArray<uint32_t> succIdxs;
   ImmutableArray<uint32_t> predIdxs;
   ImmutableArray<ShadowInstructionInvar> insts;
-  const Loop* outerScope;
-  const Loop* naturalScope;
+  const ShadowLoopInvar* outerScope;
+  const ShadowLoopInvar* naturalScope;
 
   inline ShadowBBInvar* getPred(uint32_t i);
   inline uint32_t preds_size();
@@ -1438,11 +1438,24 @@ struct ShadowLoopInvar {
   uint32_t headerIdx;
   uint32_t preheaderIdx;
   uint32_t latchIdx;
+  uint32_t nBlocks;
   std::pair<uint32_t, uint32_t> optimisticEdge;
   std::vector<uint32_t> exitingBlocks;
   std::vector<uint32_t> exitBlocks;
   std::vector<std::pair<uint32_t, uint32_t> > exitEdges;
   bool alwaysIterate;
+  struct ShadowLoopInvar* parent;
+  SmallVector<ShadowLoopInvar*, 1> childLoops;
+
+  bool contains(const ShadowLoopInvar* Other) const {
+
+    if(Other == this)
+      return true;
+    else if(!parent)
+      return false;
+    return parent->contains(Other);
+
+  }
   
 };
 
@@ -1452,10 +1465,10 @@ struct ShadowFunctionInvar {
 
   ImmutableArray<ShadowBBInvar> BBs;
   ImmutableArray<ShadowArgInvar> Args;
-  DenseMap<const Loop*, ShadowLoopInvar*> LInfo;
   int32_t frameSize;
   
   PathConditions* pathConditions;
+  SmallVector<ShadowLoopInvar*, 4> TopLevelLoops;
   
 ShadowFunctionInvar() : frameSize(0), pathConditions(0) {}
 
@@ -1512,7 +1525,7 @@ inline Value* ShadowValue::getBareVal() const {
 
 }
 
-inline const Loop* ShadowValue::getScope() const {
+inline const ShadowLoopInvar* ShadowValue::getScope() const {
 
   switch(t) {
   case SHADOWVAL_INST:
@@ -1523,7 +1536,7 @@ inline const Loop* ShadowValue::getScope() const {
   
 }
 
-inline const Loop* ShadowValue::getNaturalScope() const {
+inline const ShadowLoopInvar* ShadowValue::getNaturalScope() const {
 
   switch(t) {
   case SHADOWVAL_INST:

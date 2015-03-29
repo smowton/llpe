@@ -8,7 +8,6 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CFG.h"
@@ -1006,21 +1005,20 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
 }
 
-void IntegrationAttempt::tryKillStoresInUnboundedLoop(const Loop* UL, bool commitDisabledHere, bool disableWrites) {
+void IntegrationAttempt::tryKillStoresInUnboundedLoop(const ShadowLoopInvar* UL, bool commitDisabledHere, bool disableWrites) {
 
-  ShadowLoopInvar* NewLInfo = invarInfo->LInfo[UL];
-  ShadowBB* BB = getBB(NewLInfo->headerIdx);
+  ShadowBB* BB = getBB(UL->headerIdx);
 	
   // Give header its store:
-  BB->dseStore = getBB(NewLInfo->preheaderIdx)->dseStore;
+  BB->dseStore = getBB(UL->preheaderIdx)->dseStore;
 
-  if(!edgeIsDead(getBBInvar(NewLInfo->latchIdx), getBBInvar(NewLInfo->headerIdx))) {
+  if(!edgeIsDead(getBBInvar(UL->latchIdx), getBBInvar(UL->headerIdx))) {
 
     if(!disableWrites) {
       // Passing true for the last parameter causes the store to be given to the header from the latch
       // and not to any exit blocks. 
       tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, false, true);
-      BB->dseStore = getBB(NewLInfo->latchIdx)->dseStore;
+      BB->dseStore = getBB(UL->latchIdx)->dseStore;
     }
     tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, true);
 
@@ -1033,15 +1031,13 @@ void IntegrationAttempt::tryKillStoresInUnboundedLoop(const Loop* UL, bool commi
 
 }
 
-void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader) {
+void IntegrationAttempt::tryKillStoresInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader) {
 
   DSEProgress();
 
-  ShadowLoopInvar* LInfo = L ? invarInfo->LInfo[L] : 0;
-  
   uint32_t startIdx;
   if(L)
-    startIdx = LInfo->headerIdx;
+    startIdx = L->headerIdx;
   else
     startIdx = 0;
 
@@ -1053,7 +1049,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
     if(BB->invar->naturalScope != L) {
 
-      ShadowLoopInvar* NewLInfo = invarInfo->LInfo[BB->invar->naturalScope];
+      const ShadowLoopInvar* NewLInfo = BB->invar->naturalScope;
 
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
@@ -1130,8 +1126,8 @@ void IntegrationAttempt::tryKillStoresInLoop(const Loop* L, bool commitDisabledH
 
 	if(L != this->L && latchToHeader && !L->contains(SuccBBI->naturalScope))
 	  continue;
-	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == LInfo->headerIdx) {
-	  release_assert(BB->invar->idx == LInfo->latchIdx);
+	else if(L != this->L && (!latchToHeader) && SuccBBI->idx == L->headerIdx) {
+	  release_assert(BB->invar->idx == L->latchIdx);
 	  continue;
 	}
 

@@ -52,10 +52,10 @@ class InlineAttempt;
 class PeelAttempt;
 class IntegrationHeuristicsPass;
 class Function;
-class LoopInfo;
 class DataLayout;
 class AliasAnalysis;
 class Loop;
+class LoopInfo;
 class IntegrationAttempt;
 class PtrToIntInst;
 class IntToPtrInst;
@@ -389,15 +389,15 @@ class IntegrationHeuristicsPass : public ModulePass {
 
  public:
 
-   DenseMap<Function*, LoopInfo*> LIs;
    DenseMap<Function*, ShadowFunctionInvar*> functionInfo;
 
    SmallSet<Function*, 4> alwaysInline;
    SmallSet<Function*, 4> alwaysExplore;
-   DenseMap<const Loop*, std::pair<BasicBlock*, BasicBlock*> > optimisticLoopMap;
-   DenseSet<const Loop*> alwaysIterLoops;
+   DenseMap<std::pair<Function*, BasicBlock*>, BasicBlock* > optimisticLoopMap;
+   DenseMap<Function*, SmallSet<BasicBlock*, 1> > alwaysIterLoops;
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
+   DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoopsWithChildren;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
    DenseSet<Instruction*> simpleVolatileLoads;
@@ -500,7 +500,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    bool omitChecks;
    bool omitMallocChecks;
 
-   DenseSet<std::pair<IntegrationAttempt*, const Loop*> > latchStoresRetained;
+   DenseSet<std::pair<IntegrationAttempt*, const ShadowLoopInvar*> > latchStoresRetained;
 
    GlobalStats stats;
 
@@ -559,12 +559,13 @@ class IntegrationHeuristicsPass : public ModulePass {
      return alwaysExplore.count(F);
    }
    
-   std::pair<BasicBlock*, BasicBlock*> getOptimisticEdge(const Loop* L) {
-     return optimisticLoopMap.lookup(L);
+   BasicBlock* getOptimisticEdge(Function* F, BasicBlock* HBB) {
+     return optimisticLoopMap.lookup(std::make_pair(F, HBB));
    }
 
-   bool shouldAlwaysIterate(const Loop* L) {
-     return alwaysIterLoops.count(L);
+   bool shouldAlwaysIterate(Function* F, BasicBlock* HBB) {
+     DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = alwaysIterLoops.find(F);
+     return it != alwaysIterLoops.end() && it->second.count(HBB);
    }
    
    bool shouldAssumeEdge(Function* F, BasicBlock* BB1, BasicBlock* BB2) {
@@ -576,9 +577,12 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool shouldIgnoreLoop(Function* F, BasicBlock* HBB) {
      DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = ignoreLoops.find(F);
-     if(it == ignoreLoops.end())
-       return false;
-     return it->second.count(HBB);
+     return it != ignoreLoops.end() && it->second.count(HBB);
+   }
+
+   bool shouldIgnoreLoopChildren(Function* F, BasicBlock* HBB) {
+     DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = ignoreLoopsWithChildren.find(F);
+     return it != ignoreLoopsWithChildren.end() && it->second.count(HBB);
    }
 
    bool shouldExpandLoopCalls(Function* F, BasicBlock* HBB) {
@@ -587,8 +591,6 @@ class IntegrationHeuristicsPass : public ModulePass {
        return false;
      return it->second.count(HBB);
    }
-
-  const Loop* applyIgnoreLoops(const Loop*);
 
    bool assumeEndsAfter(Function* F, BasicBlock* HBB, uint64_t C) {
      DenseMap<std::pair<Function*, BasicBlock*>, uint64_t>::iterator it = maxLoopIters.find(std::make_pair(F, HBB));
@@ -609,10 +611,11 @@ class IntegrationHeuristicsPass : public ModulePass {
    unsigned getMallocAlignment();
 
    ShadowFunctionInvar* getFunctionInvarInfo(Function& F);
-   void getLoopInfo(DenseMap<const Loop*, ShadowLoopInvar*>& LoopInfo, 
-		    DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-		    const Loop* L,
-		    DominatorTree*);
+   ShadowLoopInvar* getLoopInfo(ShadowFunctionInvar* FInfo,
+				DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+				const Loop* L,
+				DominatorTree*,
+				ShadowLoopInvar* Parent);
 
    void initShadowGlobals(Module&, uint32_t extraSlots);
    uint64_t getShadowGlobalIndex(GlobalVariable* GV) {
@@ -643,6 +646,8 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    void fixNonLocalUses();
    void initGlobalFDStore();
+
+   const ShadowLoopInvar* applyIgnoreLoops(const ShadowLoopInvar*, Function*, ShadowFunctionInvar*);
 
 };
 
@@ -1090,7 +1095,7 @@ protected:
   uint64_t SeqNumber;
 
   Function& F;
-  const Loop* L;
+  const ShadowLoopInvar* L;
 
   ShadowBB** BBs;
   uint32_t nBBs;
@@ -1105,7 +1110,7 @@ protected:
   bool integrationGoodnessValid;
   uint64_t residualInstructionsHere;
 
-  DenseMap<const Loop*, PeelAttempt*> peelChildren;
+  DenseMap<const ShadowLoopInvar*, PeelAttempt*> peelChildren;
 
   uint32_t pendingEdges;
 
@@ -1124,7 +1129,7 @@ protected:
   bool mayUnwind;
 
  IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
-		    const Loop* _L, int depth, int sdepth) : 
+		    const ShadowLoopInvar* _L, int depth, int sdepth) : 
     improvableInstructions(0),
     improvedInstructions(0),
     residualInstructions(-1),
@@ -1161,8 +1166,6 @@ protected:
   virtual bool edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I);
   bool edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope = false);
   bool blockIsDeadRising(ShadowBBInvar& BBI);
-
-  const Loop* applyIgnoreLoops(const Loop*);
 
   virtual bool entryBlockIsCertain() = 0;
   virtual bool entryBlockAssumed() = 0;
@@ -1203,7 +1206,7 @@ protected:
   ShadowBB* getOrCreateBB(ShadowBBInvar* BBI);
   ShadowBB* getOrCreateBB(uint32_t);
   // virtual for external access:
-  virtual ShadowBBInvar* getBBInvar(uint32_t idx);
+  ShadowBBInvar* getBBInvar(uint32_t idx) const;
   ShadowBB* getUniqueBBRising(ShadowBBInvar* BBI);
   ShadowBB* createBB(uint32_t blockIdx);
   ShadowBB* createBB(ShadowBBInvar*);
@@ -1216,16 +1219,16 @@ protected:
   // The toplevel loop:
   void analyse();
   bool analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t new_stack_depth);
-  bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const Loop* MyL);
+  bool analyseBlock(uint32_t& BBIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const ShadowLoopInvar* MyL);
   bool analyseBlockInstructions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop);
   bool analyseInstruction(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, bool& loadedVarargsHere, bool& bail);
-  bool analyseLoop(const Loop*, bool nestedLoop);
-  void releaseLatchStores(const Loop*);
+  bool analyseLoop(const ShadowLoopInvar*, bool nestedLoop);
+  void releaseLatchStores(const ShadowLoopInvar*);
   virtual void getInitialStore(bool inLoopAnalyser) = 0;
   // Toplevel, execute-only version:
   void execute(uint32_t new_stack_depth);
   void executeBlock(ShadowBB*);
-  void executeLoop(const Loop*);
+  void executeLoop(const ShadowLoopInvar*);
 
   // Constant propagation:
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
@@ -1262,8 +1265,8 @@ protected:
   bool createEntryBlock();
   bool tryEvaluateTerminator(ShadowInstruction* SI, bool tagSuccVararg);
   bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
-  IntegrationAttempt* getIAForScope(const Loop* Scope);
-  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope) = 0;
+  IntegrationAttempt* getIAForScope(const ShadowLoopInvar* Scope);
+  virtual IntegrationAttempt* getIAForScopeFalling(const ShadowLoopInvar* Scope) = 0;
   void setBlockStatus(ShadowBBInvar* BB, ShadowBBStatus);
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
@@ -1284,8 +1287,8 @@ protected:
   bool callCanExpand(ShadowInstruction* Call, InlineAttempt*& Result);
   bool analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop);
  
-  PeelAttempt* getPeelAttempt(const Loop*);
-  PeelAttempt* getOrCreatePeelAttempt(const Loop*);
+  PeelAttempt* getPeelAttempt(const ShadowLoopInvar*);
+  PeelAttempt* getOrCreatePeelAttempt(const ShadowLoopInvar*);
 
   // Load forwarding:
 
@@ -1338,8 +1341,8 @@ protected:
 
   void DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowBB* BB);
   void DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, ShadowInstruction* Writer, ShadowBB* BB);
-  void tryKillStoresInLoop(const Loop* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader = false);
-  void tryKillStoresInUnboundedLoop(const Loop* UL, bool commitDisabledHere, bool disableWrites);
+  void tryKillStoresInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool disableWrites, bool latchToHeader = false);
+  void tryKillStoresInUnboundedLoop(const ShadowLoopInvar* UL, bool commitDisabledHere, bool disableWrites);
   void DSEAnalyseInstruction(ShadowInstruction* I, bool commitDisabledHere, bool disableWrites, bool enterCalls, bool& bail);
 
   // User visitors:
@@ -1358,8 +1361,8 @@ protected:
 
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   bool shouldCheckPB(ShadowValue);
-  void analyseLoopPBs(const Loop* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
-  void gatherIndirectUsersInLoop(const Loop*);
+  void analyseLoopPBs(const ShadowLoopInvar* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
+  void gatherIndirectUsersInLoop(const ShadowLoopInvar*);
   void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
   bool _willBeReplacedOrDeleted(ShadowValue);
   bool willBeReplacedOrDeleted(ShadowValue);
@@ -1385,10 +1388,10 @@ protected:
   void inheritDiagnosticsFrom(IntegrationAttempt*);
   void countTentativeInstructions();
   void printRHS(ShadowValue, raw_ostream& Out);
-  void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
-  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const Loop* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain = false);
-  void describeScopeAsDOT(const Loop* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges);
-  void describeLoopAsDOT(const Loop* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
+  void printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief);
+  void describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain = false);
+  void describeScopeAsDOT(const ShadowLoopInvar* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges);
+  void describeLoopAsDOT(const ShadowLoopInvar* L, uint32_t headerIdx, raw_ostream& Out, bool brief);
   void describeAsDOT(raw_ostream& Out, std::string& otherpath, bool brief);
   std::string getValueColour(ShadowValue, std::string& textColour, bool plain = false);
   std::string getGraphPath(std::string prefix);
@@ -1445,7 +1448,7 @@ protected:
   bool trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result);
   bool trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result);
   void emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB);
-  void commitLoopInstructions(const Loop* ScopeL, uint32_t& i);
+  void commitLoopInstructions(const ShadowLoopInvar* ScopeL, uint32_t& i);
   void commitInstructions();
   bool isCommitted() { 
     return commitState == COMMIT_DONE || commitState == COMMIT_FREED;
@@ -1495,7 +1498,7 @@ protected:
   void collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   virtual void populateFailedBlock(uint32_t idx);
-  virtual void populateFailedHeaderPHIs(const Loop*);
+  virtual void populateFailedHeaderPHIs(const ShadowLoopInvar*);
   Value* emitCompareCheck(Value* realInst, const ImprovedValSetSingle* IVS, BasicBlock* emitBB);
   Instruction* emitCompositeCheck(Value*, Value*, BasicBlock* emitBB);
   Value* emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB);
@@ -1531,8 +1534,8 @@ protected:
   ThreadLocalState shouldCheckCopy(ShadowInstruction& SI, ShadowValue PtrOp, ShadowValue LenSV);
   ThreadLocalState shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize);
   ThreadLocalState shouldCheckLoad(ShadowInstruction& SI);
-  void findTentativeLoadsInLoop(const Loop* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
-  void findTentativeLoadsInUnboundedLoop(const Loop* L, bool commitDisabledHere, bool secondPass);
+  void findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
+  void findTentativeLoadsInUnboundedLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass);
   void TLAnalyseInstruction(ShadowInstruction&, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser);
   void resetTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
@@ -1553,7 +1556,7 @@ protected:
 
   void collectAllBlockStats();
   void collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB);
-  void collectLoopStats(const Loop*);
+  void collectLoopStats(const ShadowLoopInvar*);
   void collectStats();
   virtual void preCommitStats(bool enabledHere);
 
@@ -1658,7 +1661,7 @@ public:
 
   virtual void getInitialStore(bool inLoopAnalyser);
 
-  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  virtual IntegrationAttempt* getIAForScopeFalling(const ShadowLoopInvar* Scope);
   virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
   virtual IntegrationAttempt* getUniqueParent();
@@ -1671,12 +1674,14 @@ public:
   virtual void printHeader(raw_ostream& OS) const;
 
   void setExitingStores(void*, StoreKind);
-  void setExitingStore(void*, ShadowBBInvar*, const Loop*, StoreKind);
+  void setExitingStore(void*, ShadowBBInvar*, const ShadowLoopInvar*, StoreKind);
 
   virtual void inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewCFBs, std::vector<Function*>& NewFs);
 
-  ShadowBB* getUniqueExitingBlock2(ShadowBBInvar* BBI, const Loop* exitLoop, bool& bail);
+  ShadowBB* getUniqueExitingBlock2(ShadowBBInvar* BBI, const ShadowLoopInvar* exitLoop, bool& bail);
   ShadowBB* getUniqueExitingBlock();
+  
+  std::string getLName() const;
 
 };
 
@@ -1703,19 +1708,17 @@ class PeelAttempt {
 
  public:
 
-   const Loop* L;
+   const ShadowLoopInvar* L;
 
    int64_t totalIntegrationGoodness;
    bool integrationGoodnessValid;
-
-   ShadowLoopInvar* invarInfo;
 
    std::vector<PeelIteration*> Iterations;
    std::vector<BasicBlock*> CommitBlocks;
    std::vector<BasicBlock*> CommitFailedBlocks;
    std::vector<Function*> CommitFunctions;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const Loop* _L, int depth);
+   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const ShadowLoopInvar* _L, int depth);
    ~PeelAttempt();
 
    bool analyse(uint32_t parent_stack_depth, bool& readsTentativeData, bool& containsCheckedReads);
@@ -1752,8 +1755,6 @@ class PeelAttempt {
      return Iterations.back()->iterStatus == IterationStatusFinal;
    }
 
-   void getShadowInfo();
-
    void dropExitingStoreRefs();
    void dropNonterminatedStoreRefs();
 
@@ -1762,6 +1763,8 @@ class PeelAttempt {
    IntegratorTag* createTag(IntegratorTag* parent);
 
    void releaseCommittedChildren();
+
+   std::string getLName() const;
 
  };
 
@@ -1934,7 +1937,7 @@ class InlineAttempt : public IntegrationAttempt {
   InlineAttempt* getWritableCopyFrom(ShadowInstruction* SI);
   void dropReferenceFrom(ShadowInstruction* SI);
 
-  virtual IntegrationAttempt* getIAForScopeFalling(const Loop* Scope);
+  virtual IntegrationAttempt* getIAForScopeFalling(const ShadowLoopInvar* Scope);
   virtual void queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc);
 
   virtual IntegrationAttempt* getUniqueParent();
@@ -1977,7 +1980,7 @@ class InlineAttempt : public IntegrationAttempt {
   virtual void popAllocas(OrdinaryLocalStore*);
   virtual void createFailedBlock(uint32_t idx);
   virtual void populateFailedBlock(uint32_t idx);
-  virtual void populateFailedHeaderPHIs(const Loop* PopulateL);
+  virtual void populateFailedHeaderPHIs(const ShadowLoopInvar* PopulateL);
   BasicBlock* getSubBlockForInst(uint32_t, uint32_t);
 
   void tryKillStores(bool commitDisabledHere, bool disableWrites);
@@ -2143,7 +2146,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
  bool allowTotalDefnImplicitCast(Type* From, Type* To);
  bool allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout*);
  std::string ind(int i);
- const Loop* immediateChildLoop(const Loop* Parent, const Loop* Child);
+ const ShadowLoopInvar* immediateChildLoop(const ShadowLoopInvar* Parent, const ShadowLoopInvar* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);
  Constant* intFromBytes(const uint64_t*, unsigned, unsigned, llvm::LLVMContext&);
  

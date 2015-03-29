@@ -6,7 +6,6 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
@@ -61,7 +60,7 @@ void IntegrationAttempt::prepareCommit() {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
 
     unsigned iterCount = it->second->Iterations.size();
     unsigned iterLimit = (it->second->Iterations.back()->iterStatus == IterationStatusFinal) ? iterCount : iterCount - 1;
@@ -73,7 +72,7 @@ void IntegrationAttempt::prepareCommit() {
 	// Loop hasn't been analysed for the general case -- do a rough and ready approximation
 	// that emits any edge that is alive in any iteration.
 
-	ShadowLoopInvar* LInfo = it->second->invarInfo;
+	const ShadowLoopInvar* LInfo = it->second->L;
 	for(uint32_t i = LInfo->headerIdx; i < nBBs && it->first->contains(getBBInvar(i)->naturalScope); ++i) {
 
 	  ShadowBB* BB = getBB(i);
@@ -126,7 +125,7 @@ std::string PeelIteration::getCommittedBlockPrefix() {
   std::string ret;
   {
     raw_string_ostream RSO(ret);
-    RSO << F.getName() << "-L" << L->getHeader()->getName() << "-I" << iterationCount << "-" << SeqNumber << " ";
+    RSO << F.getName() << "-L" << getLName() << "-I" << iterationCount << "-" << SeqNumber << " ";
   }
   return ret;
 
@@ -286,7 +285,7 @@ void IntegrationAttempt::commitCFG() {
   commitState = COMMIT_STARTED;
 
   Function* CF = getFunctionRoot()->CommitF;
-  const Loop* currentLoop = L;
+  const ShadowLoopInvar* currentLoop = L;
   
   initFailedBlockCommit();
 
@@ -306,7 +305,7 @@ void IntegrationAttempt::commitCFG() {
       PeelAttempt* PA = getPeelAttempt(BB->invar->naturalScope);
       if(PA && PA->isEnabled() && PA->isTerminated()) {
 
-	const Loop* skipL = BB->invar->naturalScope;
+	const ShadowLoopInvar* skipL = BB->invar->naturalScope;
 
 	// Create failed blocks before the loop iterations, so they're available as branch targets.
 	for(unsigned j = i + 1; j != nBBs && skipL->contains(getBBInvar(j + BBsOffset)->naturalScope); ++j)
@@ -638,13 +637,13 @@ BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
 BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
-  if(BB->invar->idx == parentPA->invarInfo->latchIdx && succIdx == parentPA->invarInfo->headerIdx) {
+  if(BB->invar->idx == parentPA->L->latchIdx && succIdx == parentPA->L->headerIdx) {
 
     if(PeelIteration* PI = getNextIteration())
       return PI->getBB(succIdx)->committedBlocks.front().specBlock;
     else {
       if(iterStatus == IterationStatusFinal) {
-	release_assert(pass->assumeEndsAfter(&F, L->getHeader(), iterationCount)
+	release_assert(pass->assumeEndsAfter(&F, getBBInvar(L->headerIdx)->BB, iterationCount)
 		       && "Branch to header in final iteration?");
 	markUnreachable = true;
 	return 0;
@@ -792,7 +791,7 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
   PHINode* PN = cast_inst<PHINode>(I);
 
-  if(BB->invar->idx == parentPA->invarInfo->headerIdx) {
+  if(BB->invar->idx == parentPA->L->headerIdx) {
     
     ShadowValue SourceV = getLoopHeaderForwardedOperand(I);
 
@@ -802,13 +801,13 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
     if(iterationCount == 0) {
 
-      SourceBB = parent->getBB(parentPA->invarInfo->preheaderIdx);
+      SourceBB = parent->getBB(parentPA->L->preheaderIdx);
 
     }
     else {
 
       PeelIteration* prevIter = parentPA->Iterations[iterationCount-1];
-      SourceBB = prevIter->getBB(parentPA->invarInfo->latchIdx);
+      SourceBB = prevIter->getBB(parentPA->L->latchIdx);
 
     }
 
@@ -883,7 +882,7 @@ void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
   // Special case: emitting the header PHI of a residualised loop.
   // Make an empty node for the time being; this will be revisted once the loop body is emitted
-  if(BB->invar->naturalScope && BB->invar->naturalScope->getHeader() == BB->invar->BB)
+  if(BB->invar->naturalScope && BB->invar->naturalScope->headerIdx == BB->invar->idx)
     return;
 
   populatePHINode(BB, I, NewPN);
@@ -2446,7 +2445,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
 
 }
 
-void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i) {
+void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, uint32_t& i) {
 
   uint32_t thisLoopHeaderIdx = i;
 
@@ -2466,15 +2465,15 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	for(unsigned j = 0; j < PA->Iterations.size(); ++j)
 	  PA->Iterations[j]->commitInstructions();
 
-	SmallVector<const Loop*, 4> loopStack;
+	SmallVector<const ShadowLoopInvar*, 4> loopStack;
 	loopStack.push_back(ScopeL);
 
 	// If the loop has terminated, skip populating the blocks in this context.
-	const Loop* skipL = BBI->naturalScope;
+	const ShadowLoopInvar* skipL = BBI->naturalScope;
 	while(i < nBBs && skipL->contains(getBBInvar(i + BBsOffset)->naturalScope)) {
 
-	  const Loop* ThisL = getBBInvar(i + BBsOffset)->naturalScope;
-	  const Loop* TopL = loopStack.back();
+	  const ShadowLoopInvar* ThisL = getBBInvar(i + BBsOffset)->naturalScope;
+	  const ShadowLoopInvar* TopL = loopStack.back();
 	  if(ThisL != loopStack.back()) {
 
 	    if((!TopL) || TopL->contains(ThisL))
@@ -2484,7 +2483,7 @@ void IntegrationAttempt::commitLoopInstructions(const Loop* ScopeL, uint32_t& i)
 	      // Exiting subloops, finish failed header PHIs off:
 	      while(ThisL != loopStack.back()) {
 		
-		const Loop* ExitL = loopStack.back();
+		const ShadowLoopInvar* ExitL = loopStack.back();
 		populateFailedHeaderPHIs(ExitL);
 		loopStack.pop_back();
 		
@@ -2871,7 +2870,7 @@ void IntegrationAttempt::markAllocationsAndFDsCommitted() {
 
     if(BBI->naturalScope != L) {
 
-      const Loop* subL = immediateChildLoop(L, BBI->naturalScope);
+      const ShadowLoopInvar* subL = immediateChildLoop(L, BBI->naturalScope);
       PeelAttempt* LPA;
       if((LPA = getPeelAttempt(subL)) && LPA->isTerminated()) {
 

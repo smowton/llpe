@@ -127,7 +127,7 @@ void IntegrationAttempt::preCommitStats(bool enabledHere) {
 
   }
 
-  for(DenseMap<const Loop*, PeelAttempt*>::iterator it = peelChildren.begin(),
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
 
     bool enabled = enabledHere && it->second->isTerminated() && it->second->isEnabled();
