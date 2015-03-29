@@ -6,6 +6,7 @@
 #include "llvm/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPECopyPaste.h"
 #include "llvm/ADT/ValueMap.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
@@ -1988,14 +1989,6 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
 
 }
 
-namespace llvm {
-
-  Type* FindElementAtOffset(Type *Ty, int64_t Offset,
-			    SmallVectorImpl<Value*> &NewIndices,
-			    DataLayout* TD);
-
-}
-
 InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
 
   // frameSize == -1 means no stack frame and the allocation really belongs to our caller.
@@ -2056,7 +2049,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     Type* InTy = BaseI->getType();
     release_assert(isa<PointerType>(InTy));
     InTy = cast<PointerType>(InTy)->getElementType();
-    if(Type* ElTy = FindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
+    if(Type* ElTy = XXXFindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
 
       Result = GetElementPtrInst::Create(BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
       if((!isa<PointerType>(targetType)) || ElTy != cast<PointerType>(targetType)->getElementType())

@@ -308,3 +308,64 @@ bool llvm::XXXReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
   // Otherwise, unknown initializer type.
   return false;
 }
+
+// Pinched from Transforms/InstCombine/InstructionCombining.cpp
+
+Type* llvm::XXXFindElementAtOffset(Type *Ty, int64_t Offset,
+				   SmallVectorImpl<Value*> &NewIndices,
+				   DataLayout* TD) {
+  if (!TD) return 0;
+  if (!Ty->isSized()) return 0;
+
+  // Start with the index over the outer type.  Note that the type size
+  // might be zero (even if the offset isn't zero) if the indexed type
+  // is something like [0 x {int, int}]
+  Type *IntPtrTy = TD->getIntPtrType(Ty->getContext());
+  int64_t FirstIdx = 0;
+  if (int64_t TySize = TD->getTypeAllocSize(Ty)) {
+    FirstIdx = Offset/TySize;
+    Offset -= FirstIdx*TySize;
+
+    // Handle hosts where % returns negative instead of values [0..TySize).
+    if (Offset < 0) {
+      --FirstIdx;
+      Offset += TySize;
+      assert(Offset >= 0);
+    }
+    assert((uint64_t)Offset < (uint64_t)TySize && "Out of range offset");
+  }
+
+  NewIndices.push_back(ConstantInt::get(IntPtrTy, FirstIdx));
+
+  // Index into the types.  If we fail, set OrigBase to null.
+  while (Offset) {
+    // Indexing into tail padding between struct/array elements.
+    if (uint64_t(Offset*8) >= TD->getTypeSizeInBits(Ty))
+      return 0;
+
+    if (StructType *STy = dyn_cast<StructType>(Ty)) {
+      const StructLayout *SL = TD->getStructLayout(STy);
+      assert(Offset < (int64_t)SL->getSizeInBytes() &&
+             "Offset must stay within the indexed type");
+
+      unsigned Elt = SL->getElementContainingOffset(Offset);
+      NewIndices.push_back(ConstantInt::get(Type::getInt32Ty(Ty->getContext()),
+                                            Elt));
+
+      Offset -= SL->getElementOffset(Elt);
+      Ty = STy->getElementType(Elt);
+    } else if (ArrayType *AT = dyn_cast<ArrayType>(Ty)) {
+      uint64_t EltSize = TD->getTypeAllocSize(AT->getElementType());
+      assert(EltSize && "Cannot index into a zero-sized array");
+      NewIndices.push_back(ConstantInt::get(IntPtrTy,Offset/EltSize));
+      Offset %= EltSize;
+      Ty = AT->getElementType();
+    } else {
+      // Otherwise, we can't index into the middle of this atomic type, bail.
+      return 0;
+    }
+  }
+
+  return Ty;
+
+}

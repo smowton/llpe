@@ -1,0 +1,180 @@
+--- /tmp/llvm-3.2.src/lib/VMCore/AsmWriter.cpp	2012-10-24 15:46:16.000000000 +0100
++++ /home/chris/integrator/llvm-3.2.src/lib/VMCore/AsmWriter.cpp	2015-03-29 19:08:12.341687448 +0100
+@@ -38,6 +38,7 @@
+ #include "llvm/Support/ErrorHandling.h"
+ #include "llvm/Support/MathExtras.h"
+ #include "llvm/Support/FormattedStream.h"
++#include "llvm/Support/raw_ostream.h"
+ #include <algorithm>
+ #include <cctype>
+ using namespace llvm;
+@@ -1187,12 +1188,12 @@
+   void writeAllMDNodes();
+ 
+   void printTypeIdentities();
+-  void printGlobal(const GlobalVariable *GV);
++  void printGlobal(const GlobalVariable *GV, bool nameOnly = false);
+   void printAlias(const GlobalAlias *GV);
+   void printFunction(const Function *F);
+   void printArgument(const Argument *FA, Attributes Attrs);
+   void printBasicBlock(const BasicBlock *BB);
+-  void printInstruction(const Instruction &I);
++  void printInstruction(const Instruction &I, bool nameOnly = false);
+ 
+ private:
+   // printInfoComment - Print a little comment after the instruction indicating
+@@ -1425,7 +1426,15 @@
+   }
+ }
+ 
+-void AssemblyWriter::printGlobal(const GlobalVariable *GV) {
++void AssemblyWriter::printGlobal(const GlobalVariable *GV, bool nameOnly) {
++
++  if(nameOnly) {
++
++    Out << "@" << GV->getName();
++    return;
++
++  }
++
+   if (GV->isMaterializable())
+     Out << "; Materializable\n";
+ 
+@@ -1706,25 +1715,34 @@
+ }
+ 
+ // This member is called for each Instruction in a function..
+-void AssemblyWriter::printInstruction(const Instruction &I) {
+-  if (AnnotationWriter) AnnotationWriter->emitInstructionAnnot(&I, Out);
++void AssemblyWriter::printInstruction(const Instruction &I, bool nameOnly) {
++  if (AnnotationWriter && !nameOnly) AnnotationWriter->emitInstructionAnnot(&I, Out);
++
++  if(I.getType()->isVoidTy())
++    nameOnly = false;
+ 
+   // Print out indentation for an instruction.
++  if(!nameOnly)
+   Out << "  ";
+ 
+   // Print out name if it exists...
+   if (I.hasName()) {
+     PrintLLVMName(Out, &I);
+-    Out << " = ";
+   } else if (!I.getType()->isVoidTy()) {
+     // Print out the def slot taken.
+     int SlotNum = Machine.getLocalSlot(&I);
+     if (SlotNum == -1)
+-      Out << "<badref> = ";
++      Out << "<badref>";
+     else
+-      Out << '%' << SlotNum << " = ";
++      Out << '%' << SlotNum;
+   }
+ 
++  if(nameOnly)
++    return;
++  
++  if(!I.getType()->isVoidTy())
++    Out << " = ";
++
+   if (isa<CallInst>(I) && cast<CallInst>(I).isTailCall())
+     Out << "tail ";
+ 
+@@ -2098,6 +2116,91 @@
+     }
+ }
+ 
++namespace llvm {
++
++  struct PersistPrinter {
++
++    SlotTracker SlotTable;
++    formatted_raw_ostream FRSO;
++    raw_null_ostream NullOS;
++    AssemblyWriter W;
++
++    PersistPrinter(Module* M) : SlotTable(M), W(FRSO, SlotTable, M, 0) {}
++    
++  };
++
++  PersistPrinter* getPersistPrinter(Module* M) {
++    return new PersistPrinter(M);
++  }
++
++  void getInstructionsText(PersistPrinter* PP, const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefIMap) {
++
++    PP->SlotTable.incorporateFunction(IF);
++
++    for(Function::const_iterator BI = IF->begin(), BE = IF->end(); BI != BE; ++BI) {
++
++      for(BasicBlock::const_iterator II = BI->begin(), IE = BI->end(); II != IE; ++II) {
++
++       std::string& IStr = IMap[II];
++       raw_string_ostream RSO(IStr);
++       PP->FRSO.setStream(RSO);
++       PP->W.printInstruction(*II);
++       PP->FRSO.flush();
++       std::string& IStrBrief = BriefIMap[II];
++       raw_string_ostream RSOBrief(IStrBrief);
++       PP->FRSO.setStream(RSOBrief);
++       PP->W.printInstruction(*II, true);
++       PP->FRSO.flush();
++           
++      }
++
++    }
++
++    const AttrListPtr &Attrs = IF->getAttributes();
++
++    uint32_t argIdx = 0;
++    for(Function::const_arg_iterator AI = IF->arg_begin(), AE = IF->arg_end(); AI != AE; ++AI, ++argIdx) {
++
++      std::string& IStr = IMap[AI];
++      raw_string_ostream RSO(IStr);
++      PP->FRSO.setStream(RSO);
++      PP->W.printArgument(AI, Attrs.getParamAttributes(argIdx));
++      PP->FRSO.flush();
++      BriefIMap[AI] = IMap[AI];
++
++    }
++
++    // Reset the slotTable ready to deal with another function
++    PP->SlotTable.purgeFunction();
++    // The FRSO must not be left attached to an RSO that is shorter-lived than it,
++    // as on the next setStream it will try to flush to it again.
++    PP->FRSO.setStream(PP->NullOS);
++
++  }
++
++  void getGVText(PersistPrinter* PP, const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
++
++    for(Module::const_global_iterator it = M->global_begin(), itend = M->global_end(); it != itend; ++it) {
++
++      std::string& GVStr = GVMap[it];
++      raw_string_ostream RSO(GVStr);
++      PP->FRSO.setStream(RSO);
++      PP->W.printGlobal(it);
++      PP->FRSO.flush();
++      std::string& GVStrBrief = BriefGVMap[it];
++      raw_string_ostream RSOBrief(GVStrBrief);
++      PP->FRSO.setStream(RSOBrief);
++      PP->W.printGlobal(it, true);
++      PP->FRSO.flush();
++
++    }
++
++    PP->FRSO.setStream(PP->NullOS);
++
++  }
++
++}
++
+ void Value::print(raw_ostream &ROS, AssemblyAnnotationWriter *AAW) const {
+   if (this == 0) {
+     ROS << "printing a <null> value\n";
+@@ -2158,3 +2261,5 @@
+ 
+ // NamedMDNode::dump() - Allow printing of NamedMDNodes from the debugger.
+ void NamedMDNode::dump() const { print(dbgs(), 0); }
++
++

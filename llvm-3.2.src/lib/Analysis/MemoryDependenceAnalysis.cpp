@@ -28,7 +28,6 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PredIteratorCache.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/DataLayout.h"
@@ -46,8 +45,6 @@ STATISTIC(NumUncacheNonLocalPtr,
           "Number of uncached non-local ptr responses");
 STATISTIC(NumCacheCompleteNonLocalPtr,
           "Number of block queries that were completely cached");
-
-static cl::opt<bool> MallocClobbers("mda-malloc-clobbers");
 
 // Limit for the number of instructions to scan in a block.
 // FIXME: Figure out what a sane value is for this.
@@ -486,7 +483,7 @@ getPointerDependencyFrom(const AliasAnalysis::Location &MemLoc, bool isLoad,
     if (isa<AllocaInst>(Inst) || isNoAliasFn(Inst, TLI)) {
       const Value *AccessPtr = GetUnderlyingObject(MemLoc.Ptr, TD);
       
-      if ((!MallocClobbers) && (AccessPtr == Inst || AA->isMustAlias(Inst, AccessPtr)))
+      if (AccessPtr == Inst || AA->isMustAlias(Inst, AccessPtr))
         return MemDepResult::getDef(Inst);
       // Be conservative if the accessed pointer may alias the allocation.
       if (AA->alias(Inst, AccessPtr) != AliasAnalysis::NoAlias)

@@ -567,7 +567,7 @@ public:
   /// the specified element as a float.
   float getElementAsFloat(unsigned i) const;
   
-  /// getElementAsDouble - If this is an sequential container of doubless, return
+  /// getElementAsDouble - If this is an sequential container of doubles, return
   /// the specified element as a double.
   double getElementAsDouble(unsigned i) const;
   

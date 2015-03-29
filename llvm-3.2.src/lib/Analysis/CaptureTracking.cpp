@@ -27,23 +27,20 @@ bool CaptureTracker::shouldExplore(Use *U) { return true; }
 
 namespace {
   struct SimpleCaptureTracker : public CaptureTracker {
-    explicit SimpleCaptureTracker(bool ReturnCaptures, bool PSCap)
-      : ReturnCaptures(ReturnCaptures), PHISelectCaptures(PSCap), Captured(false) {}
+    explicit SimpleCaptureTracker(bool ReturnCaptures)
+      : ReturnCaptures(ReturnCaptures), Captured(false) {}
 
     void tooManyUses() { Captured = true; }
 
     bool captured(Use *U) {
       if (isa<ReturnInst>(U->getUser()) && !ReturnCaptures)
         return false;
-      if ((isa<PHINode>(U->getUser()) || isa<SelectInst>(U->getUser())) && !PHISelectCaptures)
-	return false;
 
       Captured = true;
       return true;
     }
 
     bool ReturnCaptures;
-    bool PHISelectCaptures;
 
     bool Captured;
   };
@@ -57,7 +54,7 @@ namespace {
 /// storing the value (or part of it) into memory anywhere automatically
 /// counts as capturing it or not.
 bool llvm::PointerMayBeCaptured(const Value *V,
-                                bool ReturnCaptures, bool StoreCaptures, bool PHISelectCaptures) {
+                                bool ReturnCaptures, bool StoreCaptures) {
   assert(!isa<GlobalValue>(V) &&
          "It doesn't make sense to ask whether a global is captured.");
 
@@ -67,7 +64,7 @@ bool llvm::PointerMayBeCaptured(const Value *V,
   // take advantage of this.
   (void)StoreCaptures;
 
-  SimpleCaptureTracker SCT(ReturnCaptures, PHISelectCaptures);
+  SimpleCaptureTracker SCT(ReturnCaptures);
   PointerMayBeCaptured(V, &SCT);
   return SCT.Captured;
 }
@@ -139,12 +136,10 @@ void llvm::PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker) {
           return;
       // Storing to the pointee does not cause the pointer to be captured.
       break;
-    case Instruction::PHI:
-    case Instruction::Select:
-      if(Tracker->captured(U))
-	return;
     case Instruction::BitCast:
     case Instruction::GetElementPtr:
+    case Instruction::PHI:
+    case Instruction::Select:
       // The original value is not captured via this if the new value isn't.
       for (Instruction::use_iterator UI = I->use_begin(), UE = I->use_end();
            UI != UE; ++UI) {

@@ -70,19 +70,19 @@ static const Module *getModuleFromVal(const Value *V) {
 static void PrintCallingConv(unsigned cc, raw_ostream &Out)
 {
   switch (cc) {
-  case CallingConv::Fast:         Out << "fastcc"; break;
-  case CallingConv::Cold:         Out << "coldcc"; break;
-  case CallingConv::X86_StdCall:  Out << "x86_stdcallcc"; break;
-  case CallingConv::X86_FastCall: Out << "x86_fastcallcc"; break;
-  case CallingConv::X86_ThisCall: Out << "x86_thiscallcc"; break;
-  case CallingConv::Intel_OCL_BI: Out << "intel_ocl_bicc"; break;
-  case CallingConv::ARM_APCS:     Out << "arm_apcscc"; break;
-  case CallingConv::ARM_AAPCS:    Out << "arm_aapcscc"; break;
-  case CallingConv::ARM_AAPCS_VFP:Out << "arm_aapcs_vfpcc"; break;
-  case CallingConv::MSP430_INTR:  Out << "msp430_intrcc"; break;
-  case CallingConv::PTX_Kernel:   Out << "ptx_kernel"; break;
-  case CallingConv::PTX_Device:   Out << "ptx_device"; break;
-  default:                        Out << "cc" << cc; break;
+    case CallingConv::Fast:         Out << "fastcc"; break;
+    case CallingConv::Cold:         Out << "coldcc"; break;
+    case CallingConv::X86_StdCall:  Out << "x86_stdcallcc"; break;
+    case CallingConv::X86_FastCall: Out << "x86_fastcallcc"; break;
+    case CallingConv::X86_ThisCall: Out << "x86_thiscallcc"; break;
+    case CallingConv::Intel_OCL_BI: Out << "intel_ocl_bicc"; break;
+    case CallingConv::ARM_APCS:     Out << "arm_apcscc"; break;
+    case CallingConv::ARM_AAPCS:    Out << "arm_aapcscc"; break;
+    case CallingConv::ARM_AAPCS_VFP:Out << "arm_aapcs_vfpcc"; break;
+    case CallingConv::MSP430_INTR:  Out << "msp430_intrcc"; break;
+    case CallingConv::PTX_Kernel:   Out << "ptx_kernel"; break;
+    case CallingConv::PTX_Device:   Out << "ptx_device"; break;
+    default:                        Out << "cc" << cc; break;
   }
 }
  
@@ -160,27 +160,27 @@ static void PrintLLVMName(raw_ostream &OS, const Value *V) {
 
 /// TypePrinting - Type printing machinery.
 namespace {
-  class TypePrinting {
-    TypePrinting(const TypePrinting &) LLVM_DELETED_FUNCTION;
-    void operator=(const TypePrinting&) LLVM_DELETED_FUNCTION;
-  public:
+class TypePrinting {
+  TypePrinting(const TypePrinting &) LLVM_DELETED_FUNCTION;
+  void operator=(const TypePrinting&) LLVM_DELETED_FUNCTION;
+public:
 
-    /// NamedTypes - The named types that are used by the current module.
-    TypeFinder NamedTypes;
+  /// NamedTypes - The named types that are used by the current module.
+  TypeFinder NamedTypes;
 
-    /// NumberedTypes - The numbered types, along with their value.
-    DenseMap<StructType*, unsigned> NumberedTypes;
+  /// NumberedTypes - The numbered types, along with their value.
+  DenseMap<StructType*, unsigned> NumberedTypes;
 
 
-    TypePrinting() {}
-    ~TypePrinting() {}
+  TypePrinting() {}
+  ~TypePrinting() {}
 
-    void incorporateTypes(const Module &M);
+  void incorporateTypes(const Module &M);
 
-    void print(Type *Ty, raw_ostream &OS);
+  void print(Type *Ty, raw_ostream &OS);
 
-    void printStructBody(StructType *Ty, raw_ostream &OS);
-  };
+  void printStructBody(StructType *Ty, raw_ostream &OS);
+};
 } // end anonymous namespace.
 
 
@@ -232,7 +232,7 @@ void TypePrinting::print(Type *Ty, raw_ostream &OS) {
     print(FTy->getReturnType(), OS);
     OS << " (";
     for (FunctionType::param_iterator I = FTy->param_begin(),
-	   E = FTy->param_end(); I != E; ++I) {
+	  E = FTy->param_end(); I != E; ++I) {
       if (I != FTy->param_begin())
         OS << ", ";
       print(*I, OS);
@@ -322,87 +322,87 @@ void TypePrinting::printStructBody(StructType *STy, raw_ostream &OS) {
 
 namespace {
 
-  /// This class provides computation of slot numbers for LLVM Assembly writing.
-  ///
-  class SlotTracker {
-  public:
-    /// ValueMap - A mapping of Values to slot numbers.
-    typedef DenseMap<const Value*, unsigned> ValueMap;
+/// This class provides computation of slot numbers for LLVM Assembly writing.
+///
+class SlotTracker {
+public:
+  /// ValueMap - A mapping of Values to slot numbers.
+  typedef DenseMap<const Value*, unsigned> ValueMap;
 
-  private:
-    /// TheModule - The module for which we are holding slot numbers.
-    const Module* TheModule;
+private:
+  /// TheModule - The module for which we are holding slot numbers.
+  const Module* TheModule;
 
-    /// TheFunction - The function for which we are holding slot numbers.
-    const Function* TheFunction;
-    bool FunctionProcessed;
+  /// TheFunction - The function for which we are holding slot numbers.
+  const Function* TheFunction;
+  bool FunctionProcessed;
 
-    /// mMap - The slot map for the module level data.
-    ValueMap mMap;
-    unsigned mNext;
+  /// mMap - The slot map for the module level data.
+  ValueMap mMap;
+  unsigned mNext;
 
-    /// fMap - The slot map for the function level data.
-    ValueMap fMap;
-    unsigned fNext;
+  /// fMap - The slot map for the function level data.
+  ValueMap fMap;
+  unsigned fNext;
 
-    /// mdnMap - Map for MDNodes.
-    DenseMap<const MDNode*, unsigned> mdnMap;
-    unsigned mdnNext;
-  public:
-    /// Construct from a module
-    explicit SlotTracker(const Module *M);
-    /// Construct from a function, starting out in incorp state.
-    explicit SlotTracker(const Function *F);
+  /// mdnMap - Map for MDNodes.
+  DenseMap<const MDNode*, unsigned> mdnMap;
+  unsigned mdnNext;
+public:
+  /// Construct from a module
+  explicit SlotTracker(const Module *M);
+  /// Construct from a function, starting out in incorp state.
+  explicit SlotTracker(const Function *F);
 
-    /// Return the slot number of the specified value in it's type
-    /// plane.  If something is not in the SlotTracker, return -1.
-    int getLocalSlot(const Value *V);
-    int getGlobalSlot(const GlobalValue *V);
-    int getMetadataSlot(const MDNode *N);
+  /// Return the slot number of the specified value in it's type
+  /// plane.  If something is not in the SlotTracker, return -1.
+  int getLocalSlot(const Value *V);
+  int getGlobalSlot(const GlobalValue *V);
+  int getMetadataSlot(const MDNode *N);
 
-    /// If you'd like to deal with a function instead of just a module, use
-    /// this method to get its data into the SlotTracker.
-    void incorporateFunction(const Function *F) {
-      TheFunction = F;
-      FunctionProcessed = false;
-    }
+  /// If you'd like to deal with a function instead of just a module, use
+  /// this method to get its data into the SlotTracker.
+  void incorporateFunction(const Function *F) {
+    TheFunction = F;
+    FunctionProcessed = false;
+  }
 
-    /// After calling incorporateFunction, use this method to remove the
-    /// most recently incorporated function from the SlotTracker. This
-    /// will reset the state of the machine back to just the module contents.
-    void purgeFunction();
+  /// After calling incorporateFunction, use this method to remove the
+  /// most recently incorporated function from the SlotTracker. This
+  /// will reset the state of the machine back to just the module contents.
+  void purgeFunction();
 
-    /// MDNode map iterators.
-    typedef DenseMap<const MDNode*, unsigned>::iterator mdn_iterator;
-    mdn_iterator mdn_begin() { return mdnMap.begin(); }
-    mdn_iterator mdn_end() { return mdnMap.end(); }
-    unsigned mdn_size() const { return mdnMap.size(); }
-    bool mdn_empty() const { return mdnMap.empty(); }
+  /// MDNode map iterators.
+  typedef DenseMap<const MDNode*, unsigned>::iterator mdn_iterator;
+  mdn_iterator mdn_begin() { return mdnMap.begin(); }
+  mdn_iterator mdn_end() { return mdnMap.end(); }
+  unsigned mdn_size() const { return mdnMap.size(); }
+  bool mdn_empty() const { return mdnMap.empty(); }
 
-    /// This function does the actual initialization.
-    inline void initialize();
+  /// This function does the actual initialization.
+  inline void initialize();
 
-    // Implementation Details
-  private:
-    /// CreateModuleSlot - Insert the specified GlobalValue* into the slot table.
-    void CreateModuleSlot(const GlobalValue *V);
+  // Implementation Details
+private:
+  /// CreateModuleSlot - Insert the specified GlobalValue* into the slot table.
+  void CreateModuleSlot(const GlobalValue *V);
 
-    /// CreateMetadataSlot - Insert the specified MDNode* into the slot table.
-    void CreateMetadataSlot(const MDNode *N);
+  /// CreateMetadataSlot - Insert the specified MDNode* into the slot table.
+  void CreateMetadataSlot(const MDNode *N);
 
-    /// CreateFunctionSlot - Insert the specified Value* into the slot table.
-    void CreateFunctionSlot(const Value *V);
+  /// CreateFunctionSlot - Insert the specified Value* into the slot table.
+  void CreateFunctionSlot(const Value *V);
 
-    /// Add all of the module level global variables (and their initializers)
-    /// and function declarations, but not the contents of those functions.
-    void processModule();
+  /// Add all of the module level global variables (and their initializers)
+  /// and function declarations, but not the contents of those functions.
+  void processModule();
 
-    /// Add all of the functions arguments, basic blocks, and instructions.
-    void processFunction();
+  /// Add all of the functions arguments, basic blocks, and instructions.
+  void processFunction();
 
-    SlotTracker(const SlotTracker &) LLVM_DELETED_FUNCTION;
-    void operator=(const SlotTracker &) LLVM_DELETED_FUNCTION;
-  };
+  SlotTracker(const SlotTracker &) LLVM_DELETED_FUNCTION;
+  void operator=(const SlotTracker &) LLVM_DELETED_FUNCTION;
+};
 
 }  // end anonymous namespace
 

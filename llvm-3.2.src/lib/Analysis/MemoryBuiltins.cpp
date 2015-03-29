@@ -69,7 +69,7 @@ static const AllocFnsTy AllocationFnData[] = {
 };
 
 
-static Function *getCalledFunction(const Value *V, bool LookThroughBitCast, bool allowInternal = false) {
+static Function *getCalledFunction(const Value *V, bool LookThroughBitCast) {
   if (LookThroughBitCast)
     V = V->stripPointerCasts();
 
@@ -78,7 +78,7 @@ static Function *getCalledFunction(const Value *V, bool LookThroughBitCast, bool
     return 0;
 
   Function *Callee = CS.getCalledFunction();
-  if (!Callee || !(allowInternal || Callee->isDeclaration()))
+  if (!Callee || !Callee->isDeclaration())
     return 0;
   return Callee;
 }
@@ -87,9 +87,8 @@ static Function *getCalledFunction(const Value *V, bool LookThroughBitCast, bool
 /// known allocation function, and NULL otherwise.
 static const AllocFnsTy *getAllocationData(const Value *V, AllocType AllocTy,
                                            const TargetLibraryInfo *TLI,
-                                           bool LookThroughBitCast = false,
-					   bool allowInternal = false) {
-  Function *Callee = getCalledFunction(V, LookThroughBitCast, allowInternal);
+                                           bool LookThroughBitCast = false) {
+  Function *Callee = getCalledFunction(V, LookThroughBitCast);
   if (!Callee)
     return 0;
 
@@ -158,8 +157,8 @@ bool llvm::isNoAliasFn(const Value *V, const TargetLibraryInfo *TLI,
 /// \brief Tests if a value is a call or invoke to a library function that
 /// allocates uninitialized memory (such as malloc).
 bool llvm::isMallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
-                          bool LookThroughBitCast, bool allowInternal) {
-  return getAllocationData(V, MallocLike, TLI, LookThroughBitCast, allowInternal);
+                          bool LookThroughBitCast) {
+  return getAllocationData(V, MallocLike, TLI, LookThroughBitCast);
 }
 
 /// \brief Tests if a value is a call or invoke to a library function that
@@ -187,9 +186,8 @@ bool llvm::isReallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
 /// is a malloc call.  Since CallInst::CreateMalloc() only creates calls, we
 /// ignore InvokeInst here.
 const CallInst *llvm::extractMallocCall(const Value *I,
-                                        const TargetLibraryInfo *TLI,
-					bool allowInternal) {
-  return isMallocLikeFn(I, TLI, allowInternal) ? dyn_cast<CallInst>(I) : 0;
+                                        const TargetLibraryInfo *TLI) {
+  return isMallocLikeFn(I, TLI) ? dyn_cast<CallInst>(I) : 0;
 }
 
 static Value *computeArraySize(const CallInst *CI, const DataLayout *TD,
@@ -300,12 +298,12 @@ const CallInst *llvm::extractCallocCall(const Value *I,
 
 
 /// isFreeCall - Returns non-null if the value is a call to the builtin free()
-const CallInst *llvm::isFreeCall(const Value *I, const TargetLibraryInfo *TLI, bool allowInternal) {
+const CallInst *llvm::isFreeCall(const Value *I, const TargetLibraryInfo *TLI) {
   const CallInst *CI = dyn_cast<CallInst>(I);
   if (!CI)
     return 0;
   Function *Callee = CI->getCalledFunction();
-  if (Callee == 0 || !(allowInternal || Callee->isDeclaration()))
+  if (Callee == 0 || !Callee->isDeclaration())
     return 0;
 
   StringRef FnName = Callee->getName();
