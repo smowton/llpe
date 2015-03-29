@@ -1,0 +1,103 @@
+--- /tmp/llvm-3.2.src/lib/Transforms/Scalar/SimplifyLibCalls.cpp	2012-11-12 00:28:15.000000000 +0000
++++ /home/chris/integrator/llvm-3.2.src/lib/Transforms/Scalar/SimplifyLibCalls.cpp	2013-05-02 16:14:05.618020204 +0100
+@@ -31,14 +31,22 @@
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/Debug.h"
+ #include "llvm/Support/raw_ostream.h"
++#include "llvm/Support/CommandLine.h"
+ #include "llvm/DataLayout.h"
+ #include "llvm/Target/TargetLibraryInfo.h"
+ #include "llvm/Config/config.h"            // FIXME: Shouldn't depend on host!
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++
+ using namespace llvm;
+ 
+ STATISTIC(NumSimplified, "Number of library calls simplified");
+ STATISTIC(NumAnnotated, "Number of attributes added to library functions");
+ 
++static cl::opt<bool> AllowInternalCalls("libcalls-allow-internal");
++
+ static cl::opt<bool> UnsafeFPShrink("enable-double-float-shrink", cl::Hidden,
+                                    cl::init(false),
+                                    cl::desc("Enable unsafe double to float "
+@@ -755,6 +763,41 @@
+   }
+ };
+ 
++struct ReallocOpt : public LibCallOptimization {
++
++  virtual Value* CallOptimizer(Function *Callee, CallInst *CI, IRBuilder<> &B) {
++
++    const FunctionType *FT = Callee->getFunctionType();
++    if (FT->getNumParams() != 2 ||
++       !FT->getParamType(0)->isPointerTy() ||
++       !FT->getReturnType()->isPointerTy())
++      return 0;
++
++    Value* PtrOperand = CI->getArgOperand(0);
++    if(Constant* C = dyn_cast<Constant>(PtrOperand)) {
++
++      if(C->isNullValue()) {
++
++       // Realloc of null == malloc.
++       
++       Module* M = Callee->getParent();
++       Value* Malloc = M->getFunction("malloc");
++       if(!Malloc)
++         return 0;
++
++       CallInst *MallocCI = B.CreateCall(Malloc, CI->getArgOperand(1));
++       return MallocCI;
++
++      }
++
++    }
++
++    return 0;
++
++  }
++
++};
++
+ } // end anonymous namespace.
+ 
+ //===----------------------------------------------------------------------===//
+@@ -778,6 +821,8 @@
+     SPrintFOpt SPrintF; PrintFOpt PrintF;
+     FWriteOpt FWrite; FPutsOpt FPuts; FPrintFOpt FPrintF;
+     PutsOpt Puts;
++    // Realloc Optimization
++    ReallocOpt Realloc;
+ 
+     bool Modified;  // This is only used by doInitialization.
+   public:
+@@ -904,6 +949,10 @@
+   AddOpt(LibFunc::fputs, &FPuts);
+   Optimizations["fprintf"] = &FPrintF;
+   Optimizations["puts"] = &Puts;
++
++  // Realloc optimization
++  Optimizations["realloc"] = &Realloc;
++
+ }
+ 
+ 
+@@ -928,9 +977,14 @@
+ 
+       // Ignore indirect calls and calls to non-external functions.
+       Function *Callee = CI->getCalledFunction();
+-      if (Callee == 0 || !Callee->isDeclaration() ||
++      if(Callee == 0)
++        continue;
++
++      if(!AllowInternalCalls) {
++	if(!Callee->isDeclaration() ||
+           !(Callee->hasExternalLinkage() || Callee->hasDLLImportLinkage()))
+         continue;
++      }
+ 
+       // Ignore unknown calls.
+       LibCallOptimization *LCO = Optimizations.lookup(Callee->getName());
