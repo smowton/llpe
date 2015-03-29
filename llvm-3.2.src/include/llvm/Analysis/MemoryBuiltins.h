@@ -47,7 +47,7 @@ bool isNoAliasFn(const Value *V, const TargetLibraryInfo *TLI,
 /// \brief Tests if a value is a call or invoke to a library function that
 /// allocates uninitialized memory (such as malloc).
 bool isMallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
-                    bool LookThroughBitCast = false, bool allowInternal = false);
+                    bool LookThroughBitCast = false);
 
 /// \brief Tests if a value is a call or invoke to a library function that
 /// allocates zero-filled memory (such as calloc).
@@ -72,11 +72,10 @@ bool isReallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
 /// extractMallocCall - Returns the corresponding CallInst if the instruction
 /// is a malloc call.  Since CallInst::CreateMalloc() only creates calls, we
 /// ignore InvokeInst here.
-const CallInst *extractMallocCall(const Value *I, const TargetLibraryInfo *TLI, bool allowInternal = false);
+const CallInst *extractMallocCall(const Value *I, const TargetLibraryInfo *TLI);
 static inline CallInst *extractMallocCall(Value *I,
-                                          const TargetLibraryInfo *TLI,
-					  bool allowInternal = false) {
-  return const_cast<CallInst*>(extractMallocCall((const Value*)I, TLI, allowInternal));
+                                          const TargetLibraryInfo *TLI) {
+  return const_cast<CallInst*>(extractMallocCall((const Value*)I, TLI));
 }
 
 /// isArrayMalloc - Returns the corresponding CallInst if the instruction 
@@ -127,10 +126,10 @@ static inline CallInst *extractCallocCall(Value *I,
 //
 
 /// isFreeCall - Returns non-null if the value is a call to the builtin free()
-const CallInst *isFreeCall(const Value *I, const TargetLibraryInfo *TLI, bool allowInternal = false);
+const CallInst *isFreeCall(const Value *I, const TargetLibraryInfo *TLI);
   
-static inline CallInst *isFreeCall(Value *I, const TargetLibraryInfo *TLI, bool allowInternal = false) {
-  return const_cast<CallInst*>(isFreeCall((const Value*)I, TLI, allowInternal));
+static inline CallInst *isFreeCall(Value *I, const TargetLibraryInfo *TLI) {
+  return const_cast<CallInst*>(isFreeCall((const Value*)I, TLI));
 }
 
   
