@@ -176,10 +176,14 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
     // SRet is an ABI-compliance thing too, and is illegal when the return type is not void.
 
-    NewF->removeAttribute(0, Attributes::get(F->getContext(), Attributes::ZExt));
-    NewF->removeAttribute(0, Attributes::get(F->getContext(), Attributes::SExt));
+    auto attrs = NewF->getAttributes();
+
+    attrs = attrs.removeAttribute(F->getContext(), AttributeSet::ReturnIndex, Attribute::ZExt);
+    attrs = attrs.removeAttribute(F->getContext(), AttributeSet::ReturnIndex, Attribute::SExt);
     if(NewFType->getNumParams() != 0)
-      NewF->removeAttribute(1, Attributes::get(F->getContext(), Attributes::StructRet));
+      attrs = attrs.removeAttribute(F->getContext(), 1, Attribute::StructRet);
+
+    NewF->setAttributes(attrs);
 
   }
 
@@ -253,11 +257,9 @@ void InlineAttempt::commitCFG() {
 
     if(hasFailedReturnPath()) {
 
-      Twine PreName;
+      std::string PreName;
       if(VerboseNames)
 	PreName = "prereturn";
-      else
-	PreName = "";
 
       failedReturnBlock = createBasicBlock(F.getContext(), PreName, CommitF, false, true);
 
@@ -357,9 +359,9 @@ void IntegrationAttempt::commitCFG() {
 	// The previous block will contain a path condition check: give it a break block that will
 	// sit on the edge from specialised to unspecialised code.
 
-	Twine BlockName;
+	std::string BlockName;
 	if(VerboseNames)
-	  BlockName = BB->invar->BB->getName() + ".break";
+	  BlockName = (BB->invar->BB->getName() + ".break").str();
 	else
 	  BlockName = "";
 	BasicBlock* breakBlock = createBasicBlock(F.getContext(), BlockName, CF, false, true);
@@ -367,9 +369,9 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
-      Twine CondName;
+      std::string CondName;
       if(VerboseNames)
-	CondName = BB->invar->BB->getName() + ".pathcond";
+	CondName = (BB->invar->BB->getName() + ".pathcond").str();
       else
 	CondName = "";
 
@@ -385,9 +387,9 @@ void IntegrationAttempt::commitCFG() {
 
       if(pass->verbosePCs || requiresBreakCode(&BB->insts[0])) {
 	
-	Twine BreakName;
+	std::string BreakName;
 	if(VerboseNames)
-	  BreakName = BB->invar->BB->getName() + ".break";
+	  BreakName = (BB->invar->BB->getName() + ".break").str();
 	else
 	  BreakName = "";
 
@@ -396,9 +398,9 @@ void IntegrationAttempt::commitCFG() {
 
       }
 
-      Twine CheckName;
+      std::string CheckName;
       if(VerboseNames)
-	CheckName = BB->invar->BB->getName() + ".vfscheck";
+	CheckName = (BB->invar->BB->getName() + ".vfscheck").str();
       else
 	CheckName = "";
 
@@ -1531,16 +1533,12 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	FunctionType* FType = IA->F.getFunctionType();
 
-	// Build a call to IA->CommitF with same attributes but perhaps less arguments.
-	// Most of this code borrowed from Transforms/IPO/DeadArgumentElimination.cpp
+	// Build a call to IA->CommitF with some parameters stubbed out (replaced with undef)
+	// if not required.
 
 	ImmutableCallSite OldCI(I->invar->I);
-
-	SmallVector<AttributeWithIndex, 8> AttributesVec;
-	const AttrListPtr &CallPAL = OldCI.getAttributes();
-
-	Attributes FnAttrs = CallPAL.getFnAttributes();
-	  
+	AttributeSet attrs = OldCI.getAttributes();
+	
 	std::vector<Value*> Args;
 
 	uint32_t ilim;
@@ -1551,10 +1549,6 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	for(uint32_t i = 0; i != ilim; ++i) {
 	    
-	  Attributes Attrs = CallPAL.getParamAttributes(i + 1);
-	  if(Attrs.hasAttributes())
-	    AttributesVec.push_back(AttributeWithIndex::get(i + 1, Attrs));
-
 	  // (Except this bit, a clone of emitInst)
 
 	  Type* needTy;
@@ -1578,12 +1572,6 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	  Args.push_back(getValAsType(opV, needTy, emitBB));
 
 	}
-
-	if (FnAttrs.hasAttributes())
-	  AttributesVec.push_back(AttributeWithIndex::get(AttrListPtr::FunctionIndex,
-							  FnAttrs));
-	  
-	AttrListPtr NewCallPAL = AttrListPtr::get(emitBB->getContext(), AttributesVec);
 
 	release_assert(IA->CommitF);
 	Instruction* NewI;
@@ -1627,7 +1615,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	CallSite NewCI(NewI);
 	 
 	NewCI.setCallingConv(OldCI.getCallingConv());
-	NewCI.setAttributes(NewCallPAL);
+	NewCI.setAttributes(attrs);
 	
 	if(CallInst* CI = dyn_cast_inst<CallInst>(I)) {
 	  if(CI->isTailCall())
