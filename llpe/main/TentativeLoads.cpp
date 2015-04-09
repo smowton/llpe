@@ -224,7 +224,7 @@ static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool c
     break;
   default:
     release_assert(0 && "Bad path condition type");
-    llvm_unreachable();
+    llvm_unreachable("Bad path condition type");
   }
 
   markGoodBytes(CondSV, Len, contextEnabled, BB, Cond.offset);

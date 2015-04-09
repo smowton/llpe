@@ -751,7 +751,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
   default:
     
     release_assert(0 && "Bad path condition type");
-    llvm_unreachable();
+    llvm_unreachable("Bad path condition type");
 
   }
 

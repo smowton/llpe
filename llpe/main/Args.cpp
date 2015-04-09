@@ -15,22 +15,21 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 using namespace llvm;
 
 static void readWholeFile(std::string& path, std::string& out, bool addnewline) {
 
-  OwningPtr<MemoryBuffer> MB;
-  error_code err = MemoryBuffer::getFile(path, MB);
-  if(!MB) {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> MB = MemoryBuffer::getFile(path);
+  if(std::error_code ec = MB.getError()) {
 
-    errs() << "Failed to load from " << path << ": " << err.message() << "\n";
+    errs() << "Failed to load from " << path << ": " << ec.message() << "\n";
     exit(1);
 
   }
 
-  out = MB->getBuffer();
+  out = (*MB)->getBuffer();
   if(addnewline && (out.size() == 0 || out[out.size() - 1] != '\n')) {
     out += '\n';
   }  

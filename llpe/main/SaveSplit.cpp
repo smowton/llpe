@@ -51,7 +51,7 @@ static Instruction* getInsertLocation(Value* V) {
   else {
 
     release_assert(0 && "Bad value type in getInsertLocation");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in getInsertLocation");
 
   }
 
@@ -72,7 +72,7 @@ static Function* getFunctionFor(Value* V) {
   else {
 
     release_assert(0 && "Bad value type in getFunctionFor");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in getInsertLocation");
 
   }
 

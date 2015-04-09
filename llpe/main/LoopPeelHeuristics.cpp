@@ -1182,7 +1182,7 @@ bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
     return false;
   default:
     release_assert(0 && "Bad value type in isGlobalIdentifiedObject");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in isGlobalIdentifiedObject");
   }
 
 }
@@ -3163,7 +3163,7 @@ void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, Pa
       }
     default:
       release_assert(0 && "Bad path condition type");
-      llvm_unreachable();
+      llvm_unreachable("Bad path condition type");
     }
 
     PathCondition newCond((uint32_t)fStackIdx, 

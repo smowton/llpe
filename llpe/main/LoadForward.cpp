@@ -647,7 +647,7 @@ int32_t ShadowValue::getHeapKey() const {
     return GlobalIHP->argStores[u.A->invar->A->getArgNo()].heapIdx;
   case SHADOWVAL_INST:
     release_assert(0 && "Unsafe reference to heap key of instruction");
-    llvm_unreachable();
+    llvm_unreachable("Unsafe reference to heap key of instruction");
   case SHADOWVAL_PTRIDX:
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
@@ -1518,7 +1518,7 @@ bool llvm::executeAtomicRMW(ShadowInstruction* SI, ImprovedValSet*& OldPB, bool&
 	newVal = std::min(op1Val, op2Val); break;
       default:
 	release_assert(0 && "AtomicRMW doesn't handle all cases!");
-	llvm_unreachable();
+	llvm_unreachable("AtomicRMW doesn't handle all cases!");
       }
 
       ShadowValue NewSV = ShadowValue::getInt(SI->getType(), newVal);

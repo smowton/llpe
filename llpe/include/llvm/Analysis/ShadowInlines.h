@@ -193,7 +193,7 @@ ShadowValue(ShadowValType Ty, uint64_t _CI) : t(Ty) { u.CI = _CI; }
 	Out = (int64_t)(uint64_t)u.CI;
 	break;
       default:
-	llvm_unreachable();
+	llvm_unreachable("Bad integer type");
       }
     }
     return isci;
@@ -1520,7 +1520,7 @@ inline Value* ShadowValue::getBareVal() const {
     return u.V;
   default:
     release_assert(0 && "Bad value type in getBareVal");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in getBareVal");
   }
 
 }
@@ -1618,7 +1618,7 @@ template<class X> inline bool val_is(ShadowValue V) {
   }
   default:
     release_assert(0 && "Bad value type in val_is");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in val_is");
   }
 }
 
@@ -1634,7 +1634,7 @@ template<class X> inline X* dyn_cast_val(ShadowValue V) {
     return dyn_cast_inst<X>(V.u.I);
   default:
     release_assert(0 && "Bad value type in dyn_cast_val");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in dyn_cast_val");
   }
 }
 
@@ -1650,7 +1650,7 @@ template<class X> inline X* cast_val(ShadowValue V) {
     return cast_inst<X>(V.u.I);
   default:
     release_assert(0 && "Cast of bad SV");
-    llvm_unreachable();
+    llvm_unreachable("Cast of bad SV");
   }
 }
 
@@ -1749,7 +1749,7 @@ inline bool hasConstReplacement(const ShadowValue SV) {
     return SV.getVal() && isa<Constant>(SV.getVal());
   default:
     release_assert(0 && "Bad SV type in hasConstReplacement");
-    llvm_unreachable();
+    llvm_unreachable("Bad SV type in hasConstReplacement");
 
   }
 
@@ -1777,7 +1777,7 @@ inline Constant* getConstReplacement(ShadowValue SV) {
     return dyn_cast_or_null<Constant>(SV.getVal());
   default:
     release_assert(0 && "Bad SV type in getConstReplacement");
-    llvm_unreachable();
+    llvm_unreachable("Bad SV type in getConstReplacement");
 
   }
 
@@ -1879,7 +1879,7 @@ inline void getIVOrSingleVal(ShadowValue V, ImprovedValSet*& IVS, std::pair<ValS
     break;
   default:
     release_assert(0 && "Bad value type in getIVOrSingleVal");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in getIVOrSingleVal");
   }
 
 }
@@ -1974,7 +1974,7 @@ inline bool getImprovedValSetSingle(ShadowValue V, ImprovedValSetSingle& OutPB) 
 
   default:
     release_assert(0 && "Bad value type in getImprovedValSetSingle");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in getImprovedValSetSingle");
 
   }
 
@@ -2038,7 +2038,7 @@ inline void addValToPB(ShadowValue& V, ImprovedValSetSingle& ResultPB) {
 
   default:
     release_assert(0 && "Bad value type in addValToPB");
-    llvm_unreachable();
+    llvm_unreachable("Bad value type in addValToPB");
     
   }
 
@@ -2186,7 +2186,7 @@ inline ShadowValue ShadowValue::stripPointerCasts() const {
     return u.V->stripPointerCasts();
   default:
     release_assert(0 && "Bad val type in stripPointerCasts");
-    llvm_unreachable();
+    llvm_unreachable("Bad val type in stripPointerCasts");
   }
 
 }

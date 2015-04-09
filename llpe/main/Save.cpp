@@ -571,7 +571,7 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
     return getSingleConstant(SV);
   default:
     release_assert(0 && "Bad SV type");
-    llvm_unreachable();
+    llvm_unreachable("Bad SV type");
   }
   
 }

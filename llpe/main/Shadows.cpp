@@ -810,7 +810,7 @@ bool ShadowValue::objectAvailable() const {
     return GlobalIHP->fds[getFd()].isAvailable();
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
-    llvm_unreachable();
+    llvm_unreachable("Bad SV type in objectAvailableFrom");
   }
   
 }

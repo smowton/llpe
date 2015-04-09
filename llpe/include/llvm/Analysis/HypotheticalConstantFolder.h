@@ -14,12 +14,14 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
@@ -780,7 +782,7 @@ inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
   case SHADOWVAL_INVAL:
   default:
     release_assert(0 && "getImprovedValSetSingle on uninit value");
-    llvm_unreachable();
+    llvm_unreachable("getImprovedValSetSingle on uninit value");
 
   }
 

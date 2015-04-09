@@ -273,7 +273,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
     break;
   case PathConditionTypeFptrmem:
     release_assert(0 && "Bad path condition type");
-    llvm_unreachable();
+    llvm_unreachable("Bad path condition type");
   }
 
   Out << " PC: ";
