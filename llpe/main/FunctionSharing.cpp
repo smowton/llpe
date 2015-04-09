@@ -176,7 +176,7 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
 
   }
 
-  std::pair<DenseMap<ShadowValue, ImprovedValSet*>::iterator, bool> it = Root->sharing->externalDependencies.insert(std::make_pair<ShadowValue, ImprovedValSet*>(V, 0));
+  std::pair<DenseMap<ShadowValue, ImprovedValSet*>::iterator, bool> it = Root->sharing->externalDependencies.insert(std::make_pair(V, (ImprovedValSet*)0));
 
   // Already registered?
   if(!it.second)

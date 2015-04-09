@@ -4,11 +4,12 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Support/InstIterator.h"
 
 using namespace llvm;
 
@@ -20,7 +21,8 @@ void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resul
   if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
     return;
 
-  if(!Visited.insert(BB))
+  auto insertres = Visited.insert(BB);
+  if(!insertres.second)
     return;
 
   // Follow loop exiting edges if any
@@ -184,8 +186,13 @@ void IntegrationHeuristicsPass::initShadowGlobals(Module& M, uint32_t extraSlots
 
 const GlobalValue* llvm::getUnderlyingGlobal(const GlobalValue* V) {
 
-  if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V))
-    return getUnderlyingGlobal(GA->getAliasedGlobal());
+  if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V)) {
+    const GlobalValue* Aliasee = dyn_cast_or_null<GlobalValue>(GA->getAliasee());
+    if(!Aliasee)
+      return 0;
+    else
+      return getUnderlyingGlobal(Aliasee);
+  }
   return V;
 
 }
@@ -425,7 +432,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
   // all loops consist of that block + L->getBlocks().size() further, contiguous blocks,
   // making is-in-loop easy to compute.
 
-  DominatorTree* thisDT = &getAnalysis<DominatorTree>(F);
+  DominatorTree* thisDT = DTs[&F];
 
   for(LoopInfo::iterator it = LI->begin(), it2 = LI->end(); it != it2; ++it) {
     ShadowLoopInvar* newL = getLoopInfo(&RetInfo, BBIndices, *it, thisDT, 0);
@@ -929,8 +936,11 @@ bool ShadowInstruction::hasOrderingConstraint() {
     return !cast_inst<StoreInst>(this)->isUnordered();
   case Instruction::AtomicRMW:
     return cast_inst<AtomicRMWInst>(this)->getOrdering() > Unordered;
-  case Instruction::AtomicCmpXchg:
-    return cast_inst<AtomicCmpXchgInst>(this)->getOrdering() > Unordered;
+  case Instruction::AtomicCmpXchg: 
+    {
+      auto cmpx = cast_inst<AtomicCmpXchgInst>(this);
+      return cmpx->getSuccessOrdering() > Unordered || cmpx->getFailureOrdering() > Unordered;
+    }
   case Instruction::Fence:
     return true;
   default:
