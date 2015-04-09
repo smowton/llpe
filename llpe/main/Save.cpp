@@ -4,6 +4,7 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LLPECopyPaste.h"
@@ -13,8 +14,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/IR/DIBuilder.h"
-
-#include "../../VMCore/LLVMContextImpl.h"
 
 #include <unistd.h>
 #include <stdlib.h>

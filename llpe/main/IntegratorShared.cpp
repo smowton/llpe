@@ -2,7 +2,7 @@
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -14,8 +14,6 @@ using namespace llvm;
 namespace llvm {
   class TargetLibraryInfo;
 }
-
-// Implement functions called from AA and so which must be linked into core LLVM.
 
 std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
@@ -35,9 +33,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	else if(CastVal.first == ValSetTypeScalar) {
 	  if(ConstantExpr* SubCE = dyn_cast_or_null<ConstantExpr>(getSingleConstant(CastVal.second.V))) {
 	    if(SubCE->getOpcode() == Instruction::PtrToInt)
-	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
+	      return std::make_pair(ValSetTypeScalar, ImprovedVal(SubCE->getOperand(0)));
 	  }
-	  return std::make_pair(ValSetTypeScalar, ConstantExpr::getIntToPtr(CE->getOperand(0), CE->getType()));
+	  return std::make_pair(ValSetTypeScalar, ImprovedVal(ConstantExpr::getIntToPtr(CE->getOperand(0), CE->getType())));
 	}
 	else
 	  return std::make_pair(ValSetTypeUnknown, ImprovedVal());
@@ -50,9 +48,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	else if(CastVal.first == ValSetTypeScalar) {
 	  if(ConstantExpr* SubCE = dyn_cast_or_null<ConstantExpr>(getSingleConstant(CastVal.second.V))) {
 	    if(SubCE->getOpcode() == Instruction::IntToPtr)
-	      return std::make_pair(ValSetTypeScalar, SubCE->getOperand(0));
+	      return std::make_pair(ValSetTypeScalar, ImprovedVal(SubCE->getOperand(0)));
 	  }
-	  return std::make_pair(ValSetTypeScalar, ConstantExpr::getPtrToInt(CE->getOperand(0), CE->getType()));
+	  return std::make_pair(ValSetTypeScalar, ImprovedVal(ConstantExpr::getPtrToInt(CE->getOperand(0), CE->getType())));
 	}
 	else
 	  return std::make_pair(ValSetTypeUnknown, ImprovedVal());
@@ -107,9 +105,9 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	if(Op1.first == ValSetTypeScalar && Op2.first == ValSetTypeScalar) {
 
 	  if(CE->getOpcode() == Instruction::Add)
-	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getAdd(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
+	    return std::make_pair(ValSetTypeScalar, ImprovedVal(ConstantExpr::getAdd(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
 	  else
-	    return std::make_pair(ValSetTypeScalar, (ConstantExpr::getSub(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
+	    return std::make_pair(ValSetTypeScalar, ImprovedVal(ConstantExpr::getSub(getSingleConstant(Op1.second.V), getSingleConstant(Op2.second.V))));
 
 	}
 

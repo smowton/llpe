@@ -1,4 +1,6 @@
 
+#define DEBUG_TYPE "DIE"
+
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/IR/Instructions.h"
@@ -8,7 +10,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/CFG.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <vector>
@@ -94,7 +96,7 @@ public:
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(UserI);
       if((!IA) || (!IA->isEnabled()) || IA->commitsOutOfLine()) {
-	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << UserI->parent->IA->itcache(UserI) << "\n");
+	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << itcache(UserI) << "\n");
 	maybeLive = true;
 	return;
       }
@@ -335,7 +337,7 @@ void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visit
 void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
 
   if(parentPA->isTerminated()) {
-    assert(isa<PHINode>(UserI));
+    assert(inst_is<PHINode>(UserI));
     if(UserI->parent->naturalScope != L)
       parent->visitExitPHI(UserI, Visitor);
     else

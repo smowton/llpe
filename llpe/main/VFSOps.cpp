@@ -1,4 +1,6 @@
 
+#define DEBUG_TYPE "VFSOps"
+
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
@@ -9,7 +11,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/System/Path.h"
-#include "llvm/Support/CFG.h"
+#include "llvm/IR/CFG.h"
 #include <fcntl.h> // For O_RDONLY et al
 #include <unistd.h>
 #include <sys/types.h>
@@ -84,7 +86,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
-      DEBUG(dbgs() << "Open forwarding error: " << fwdError << "\n");
+      DEBUG(dbgs() << "Open forwarding error\n");
       success = false;
       
     }
@@ -285,19 +287,19 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	  if(tryGetConstantIntReplacement(SI->getCallArgOperand(1), RawMode64)) {
 	    int RawMode = (int)RawMode64;
 	    if(RawMode & O_WRONLY) {
-	      LPDEBUG("Can't promote open call " << itcache(*CI) << " because it is not O_RDONLY\n");
+	      LPDEBUG("Can't promote open call " << itcache(SI) << " because it is not O_RDONLY\n");
 	      return true;
 	    }
 	  }
 	  else {
-	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its mode argument can't be resolved\n");
+	    LPDEBUG("Can't promote open call " << itcache(SI) << " because its mode argument can't be resolved\n");
 	    return true;
 	  }
 	  
 	  ShadowValue NameArg = SI->getCallArgOperand(0);
 	  std::string Filename;
 	  if (!getConstantString(NameArg, SI, Filename)) {
-	    LPDEBUG("Can't promote open call " << itcache(*CI) << " because its filename argument is unresolved\n");
+	    LPDEBUG("Can't promote open call " << itcache(SI) << " because its filename argument is unresolved\n");
 	    return true;
 	  }
 
@@ -331,28 +333,28 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	}
 	else {
 	  
-	  LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because it calls something else\n");
+	  LPDEBUG("Unable to identify " << itcache(SI) << " as an open call because it calls something else\n");
 
 	}
 
       }
       else {
 	
-	LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because its target is unknown\n");
+	LPDEBUG("Unable to identify " << itcache(SI) << " as an open call because its target is unknown\n");
 
       }
 
     }
     else {
 
-      LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because the symbol 'open' resolves to something with inappropriate type!\n");
+      LPDEBUG("Unable to identify " << itcache(SI) << " as an open call because the symbol 'open' resolves to something with inappropriate type!\n");
 
     }
 
   }
   else {
 
-    LPDEBUG("Unable to identify " << itcache(*CI) << " as an open call because no symbol 'open' is in scope\n");
+    LPDEBUG("Unable to identify " << itcache(SI) << " as an open call because no symbol 'open' is in scope\n");
 
   }
 
@@ -567,7 +569,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 	struct stat file_stat;
 	if(::stat(FDS.filename.c_str(), &file_stat) == -1) {
 	  
-	  LPDEBUG("Failed to stat " << OS.Name << "\n");
+	  LPDEBUG("Failed to stat " << FDS.filename << "\n");
 	  return true;
 	  
 	}
@@ -621,7 +623,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
     struct stat file_stat;
     if(::stat(FDS.filename.c_str(), &file_stat) == -1) {
-      LPDEBUG("Failed to stat " << OS.Name << "\n");
+      LPDEBUG("Failed to stat " << FDS.filename << "\n");
       FDS.pos = (uint64_t)-1;
       return true;
     }
@@ -638,7 +640,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     }
 
     // OK, we know what this read operation does. Record that and queue another exploration from this point.
-    LPDEBUG("Successfully resolved " << itcache(*SI) << " which reads " << cBytes << " bytes\n");
+    LPDEBUG("Successfully resolved " << itcache(SI) << " which reads " << cBytes << " bytes\n");
     
     noteVFSOp();
 
@@ -701,10 +703,10 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
     
     switch(aliasesFD(readFD, FD)) {
     case AliasAnalysis::MayAlias:
-      LPDEBUG("Can't resolve VFS call because FD argument of " << itcache(*VFSCall) << " is unresolved\n");
+      LPDEBUG("Can't resolve VFS call because FD argument of " << itcache(VFSCall) << " is unresolved\n");
       return WIRStopWholeWalk;
     case AliasAnalysis::NoAlias:
-      LPDEBUG("Ignoring " << itcache(*VFSCall) << " which references a different file\n");
+      LPDEBUG("Ignoring " << itcache(VFSCall) << " which references a different file\n");
       return WIRContinue;
     case AliasAnalysis::MustAlias:
       return WIRStopThisPath;

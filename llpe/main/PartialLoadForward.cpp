@@ -3,18 +3,20 @@
 // or a load i8 that gets a sub-field of a store i64.
 // I also handle forwarding from read() operations here, since it's a lot like a forward from a memcpy.
 
+#define DEBUG_TYPE "PartialLoadForward"
+
 #include <llvm/Analysis/HypotheticalConstantFolder.h>
 
-#include <llvm/Instructions.h>
-#include <llvm/Type.h>
-#include <llvm/IntrinsicInst.h>
-#include <llvm/GlobalVariable.h>
+#include <llvm/IR/Instructions.h>
+#include <llvm/IR/Type.h>
+#include <llvm/IR/IntrinsicInst.h>
+#include <llvm/IR/GlobalVariable.h>
 
 #include <llvm/Analysis/ConstantFolding.h>
 #include <llvm/Target/TargetData.h>
-#include <llvm/Support/CallSite.h>
+#include <llvm/IR/CallSite.h>
 #include <llvm/Support/Debug.h>
-#include <llvm/Support/GetElementPtrTypeIterator.h>
+#include <llvm/IR/GetElementPtrTypeIterator.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <errno.h>
@@ -65,7 +67,7 @@ bool llvm::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint6
     << "Load Ptr   = " << *LoadPtr << "\n";
     abort();
 #endif
-    LPDEBUG("*** AA Failure ***\n");
+    DEBUG(dbgs() << "*** AA Failure ***\n");
     return false;
   }
   

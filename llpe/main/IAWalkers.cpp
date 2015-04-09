@@ -1,4 +1,6 @@
 
+#define DEBUG_TYPE "IAWalkers"
+
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/IR/BasicBlock.h"
@@ -520,7 +522,7 @@ bool PeelIteration::queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInv
     PeelIteration* nextIter = getNextIteration();
     if(!nextIter) {
 
-      LPDEBUG("FIAW: Analysing loop in parent context because loop " << L->getHeader()->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
+      LPDEBUG("FIAW: Analysing loop in parent context because loop " << getBBInvar(L->headerIdx)->BB->getName() << " does not yet have iteration " << iterationCount+1 << "\n");
       Walker->queueWalkFrom(0, parent->getBB(*NextBlock), Ctx, !firstSucc);
 
     }
@@ -583,7 +585,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
 	}
 	else if(PeelAttempt* LPA = getPeelAttempt(SuccLoop)) {
 	  
-	  assert(SuccLoop->getHeader() == SB->BB);
+	  assert(SuccLoop->headerIdx == SB->idx);
 	  Walker->enterLoop(LPA, Ctx);
 	  Walker->queueWalkFrom(0, LPA->Iterations[0]->getBB(*SB), Ctx, !firstSucc);
 	  firstSucc = false;

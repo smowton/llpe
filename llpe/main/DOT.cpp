@@ -6,6 +6,7 @@
 
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FileSystem.h"
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
@@ -726,17 +727,18 @@ void IntegrationAttempt::saveDOT2(bool brief) {
 
   std::string filename;
   getSavedDotName(brief, filename);
-  std::string error;
-  raw_fd_ostream RFO(filename.c_str(), error);
+  std::error_code error;
+  raw_fd_ostream RFO(filename.c_str(), error, sys::fs::F_None);
 
-  if(error.size()) {
+  if(error) {
 
-    errs() << "Failed to open " << filename << ": " << error << "\n";
+    errs() << "Failed to open " << filename << ": " << error.message() << "\n";
     return;
 
   }
 
-  describeAsDOT(RFO, error /* unused, just a dummy std::string */, brief);
+  std::string ignored;
+  describeAsDOT(RFO, ignored, brief);
 
 }
 
@@ -818,12 +820,12 @@ void IntegrationAttempt::describeTreeAsDOT(std::string path) {
 
   std::string graphPath = getGraphPath(path);
 
-  std::string error;
-  raw_fd_ostream os(graphPath.c_str(), error);
+  std::error_code error;
+  raw_fd_ostream os(graphPath.c_str(), error, sys::fs::F_None);
 
-  if(!error.empty()) {
+  if(error) {
 
-    errs() << "Failed to open " << graphPath << ": " << error << "\n";
+    errs() << "Failed to open " << graphPath << ": " << error.message() << "\n";
     return;
 
   }
