@@ -5,7 +5,7 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/Dominators.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
@@ -2216,11 +2216,9 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
       BasicBlock::iterator splitIterator = toSplit->begin();
       std::advance(splitIterator, instsToSplit);
 
-      Twine SplitName;
+      std::string SplitName;
       if(VerboseNames)
-	SplitName = toSplit->getName() + ".checksplit";
-      else
-	SplitName = "";
+	SplitName = (toSplit->getName() + ".checksplit").str();
 
       BasicBlock* splitBlock = 
 	toSplit->splitBasicBlock(splitIterator, SplitName);

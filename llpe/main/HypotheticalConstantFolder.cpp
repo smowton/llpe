@@ -28,7 +28,7 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/DataLayout.h"
 
 #include <string>
@@ -371,7 +371,7 @@ static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
       return ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
     break;
   default:
-    LPDEBUG("Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
+    DEBUG(dbgs() << "Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
     break;
   }
 
