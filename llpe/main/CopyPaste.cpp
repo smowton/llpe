@@ -313,7 +313,7 @@ bool llvm::XXXReadDataFromGlobal(Constant *C, uint64_t ByteOffset,
 
 Type* llvm::XXXFindElementAtOffset(Type *Ty, int64_t Offset,
 				   SmallVectorImpl<Value*> &NewIndices,
-				   DataLayout* TD) {
+				   const DataLayout* TD) {
   if (!TD) return 0;
   if (!Ty->isSized()) return 0;
 

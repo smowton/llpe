@@ -86,7 +86,7 @@ inline void release_assert_fail(const char* str) {
 
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
 
-extern DataLayout* GlobalTD;
+extern const DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
 extern TargetLibraryInfo* GlobalTLI;
 extern IntegrationHeuristicsPass* GlobalIHP;
@@ -406,7 +406,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    
    DenseMap<ShadowInstruction*, std::string> optimisticForwardStatus;
 
-   DataLayout* TD;
+   const DataLayout* TD;
    AliasAnalysis* AA;
 
    InlineAttempt* RootIA;
@@ -518,7 +518,7 @@ class IntegrationHeuristicsPass : public ModulePass {
 
    bool emitFakeDebug;
    DenseMap<Function*, DebugLoc> fakeDebugLocs;
-   DIType fakeDebugType;
+   DICompositeType fakeDebugType;
 
    explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
 
@@ -822,11 +822,11 @@ struct PartialVal {
 
   uint64_t markPaddingBytes(Type*);
 
-  bool addPartialVal(PartialVal& PV, DataLayout* TD, std::string* error);
+  bool addPartialVal(PartialVal& PV, const DataLayout* TD, std::string* error);
   bool isComplete();
   bool* getValidArray(uint64_t);
-  bool convertToBytes(uint64_t, DataLayout*, std::string* error);
-  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string* error);
+  bool convertToBytes(uint64_t, const DataLayout*, std::string* error);
+  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, const DataLayout* TD, std::string* error);
 
   void initByteArray(uint64_t);
   
@@ -2143,10 +2143,10 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
 
 }
 
- Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout*);
- Constant* constFromBytes(unsigned char*, Type*, DataLayout*);
+ Constant* extractAggregateMemberAt(Constant* From, int64_t Offset, Type* Target, uint64_t TargetSize, const DataLayout*);
+ Constant* constFromBytes(unsigned char*, Type*, const DataLayout*);
  bool allowTotalDefnImplicitCast(Type* From, Type* To);
- bool allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout*);
+ bool allowTotalDefnImplicitPtrToInt(Type* From, Type* To, const DataLayout*);
  std::string ind(int i);
  const ShadowLoopInvar* immediateChildLoop(const ShadowLoopInvar* Parent, const ShadowLoopInvar* Child);
  Constant* getConstReplacement(Value*, IntegrationAttempt*);

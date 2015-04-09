@@ -26,7 +26,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/Dominators.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/Passes.h"
@@ -35,10 +35,10 @@
 #include "llvm/Analysis/PHITransAddr.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/IR/DataLayout.h"
-#include "llvm/Support/CFG.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/GetElementPtrTypeIterator.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/IR/DIBuilder.h"
 
@@ -112,10 +112,6 @@ static cl::opt<bool> OmitChecks("int-omit-checks");
 static cl::opt<bool> OmitMallocChecks("int-omit-malloc-checks");
 static cl::list<std::string> SplitFunctions("int-force-split");
 static cl::opt<bool> EmitFakeDebug("int-emit-fake-debug");
-
-ModulePass *llvm::createIntegrationHeuristicsPass() {
-  return new IntegrationHeuristicsPass();
-}
 
 static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functions for pervasive integration benefit",
 						 false /* Only looks at CFG */,
@@ -524,17 +520,17 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
 
   Function* FCalled = getCalledFunction(SI);
   if(!FCalled) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it's an uncertain indirect call\n");
+    LPDEBUG("Ignored " << itcache(SI) << " because it's an uncertain indirect call\n");
     return false;
   }
 
   if(FCalled->isDeclaration()) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because we don't know the function body\n");
+    LPDEBUG("Ignored " << itcache(SI) << " because we don't know the function body\n");
     return false;
   }
 
   if(!shouldInlineFunction(SI, FCalled)) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
+    LPDEBUG("Ignored " << itcache(SI) << " because it shouldn't be inlined (not on certain path, and would cause recursion)\n");
     return false;
   }
 
@@ -548,7 +544,7 @@ bool IntegrationAttempt::callCanExpand(ShadowInstruction* SI, InlineAttempt*& Re
     return false;
 
   if(functionIsBlacklisted(FCalled)) {
-    LPDEBUG("Ignored " << itcache(*CI) << " because it is a special function we are not allowed to inline\n");
+    LPDEBUG("Ignored " << itcache(SI) << " because it is a special function we are not allowed to inline\n");
     return false;
   }
 
@@ -621,7 +617,7 @@ InlineAttempt* IntegrationAttempt::getOrCreateInlineAttempt(ShadowInstruction* S
 
   checkTargetStack(SI, IA);
 
-  LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(*CI) << "\n");
+  LPDEBUG("Inlining " << FCalled->getName() << " at " << itcache(SI) << "\n");
 
   return IA;
 
@@ -977,7 +973,7 @@ PeelIteration* PeelAttempt::getOrCreateIteration(unsigned iter) {
   //  if(MaxContexts != 0 && pass->SeqNumber > MaxContexts)
   //    return 0;
   
-  LPDEBUG("Peeling iteration " << iter << " of loop " << L->getHeader()->getName() << "\n");
+  LPDEBUG("Peeling iteration " << iter << " of loop " << getLName() << "\n");
 
   mainPhaseProgress();
 
@@ -1048,20 +1044,20 @@ PeelIteration* PeelIteration::getOrCreateNextIteration() {
 
   if(!willIterate) {
 
-    LPDEBUG("Won't peel loop " << L->getHeader()->getName() << " yet because at least one exit edge is still alive\n");
+    LPDEBUG("Won't peel loop " << getLName() << " yet because at least one exit edge is still alive\n");
     return 0;
       
   }
   /*
   else if(iterationCount > 1000) {
 
-    LPDEBUG("Won't peel loop " << L->getHeader()->getName() << ": max iterations 1000\n");
+    LPDEBUG("Won't peel loop " << getLName() << ": max iterations 1000\n");
     return 0;
 
   }
   */
 
-  //errs() << "Peel loop " << L->getHeader()->getName() << "\n";
+  //errs() << "Peel loop " << getLName() << "\n";
 
   iterStatus = IterationStatusNonFinal;
   LPDEBUG("Loop known to iterate: creating next iteration\n");
@@ -1095,12 +1091,12 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const ShadowLoopInvar* N
   ShadowBB* preheaderBB = getBB(NewL->preheaderIdx);
   if(!blockAssumedToExecute(preheaderBB)) {
    
-    LPDEBUG("Will not expand loop " << NewL->getHeader()->getName() << " because the preheader is not certain/assumed to execute\n");
+    LPDEBUG("Will not expand loop " << getBBInvar(NewL->headerIdx)->BB->getName() << " because the preheader is not certain/assumed to execute\n");
     return 0;
 
   }
 
-  LPDEBUG("Inlining loop with header " << NewL->getHeader()->getName() << "\n");
+  LPDEBUG("Inlining loop with header " << getBBInvar(NewL->headerIdx)->BB->getName() << "\n");
   PeelAttempt* LPA = new PeelAttempt(pass, this, F, NewL, nesting_depth + 1);
   peelChildren[NewL] = LPA;
 
@@ -1566,14 +1562,14 @@ bool llvm::allowTotalDefnImplicitCast(Type* From, Type* To) {
 
 }
 
-bool llvm::allowTotalDefnImplicitPtrToInt(Type* From, Type* To, DataLayout* TD) {
+bool llvm::allowTotalDefnImplicitPtrToInt(Type* From, Type* To, const DataLayout* TD) {
 
   return From->isPointerTy() && To->isIntegerTy() && TD->getTypeSizeInBits(To) >= TD->getTypeSizeInBits(From);
 
 }
 
 // Target == 0 -> don't care about the returned type.
-Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* Target, uint64_t TargetSize, DataLayout* TD) {
+Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* Target, uint64_t TargetSize, const DataLayout* TD) {
 
   Type* FromType = FromC->getType();
   uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
@@ -1662,7 +1658,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
 
 }
 
-Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, DataLayout* TD) {
+Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, const DataLayout* TD) {
 
   if(Ty->isVectorTy() || Ty->isFloatingPointTy() || Ty->isIntegerTy()) {
 
@@ -1881,7 +1877,7 @@ static time_t getFileMtime(std::string& filename) {
 void IntegrationHeuristicsPass::writeLliowdConfig() {
 
   raw_ostream* Outp;
-  std::auto_ptr<raw_fd_ostream> Fdp;
+  std::unique_ptr<raw_fd_ostream> Fdp;
 
   if(llioConfigFile.empty()) {
 
@@ -1891,11 +1887,11 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
   }
   else {
 
-    std::string openerror;
-    Fdp.reset(new raw_fd_ostream(llioConfigFile.c_str(), openerror));
-    if(openerror.size()) {
+    std::error_code openerror;
+    Fdp.reset(new raw_fd_ostream(llioConfigFile.c_str(), openerror, sys::fs::F_None));
+    if(openerror) {
 
-      errs() << "Failed to open " << llioConfigFile << ", using stdout\n";
+      errs() << "Failed to open " << llioConfigFile << ", using stdout: " << openerror.message() << "\n";
       Fdp.reset();
       Outp = &outs();
 
@@ -1980,11 +1976,11 @@ void IntegrationHeuristicsPass::commit() {
   if(!StatsFile.empty()) {
 
     postCommitStats();
-
-    std::string error;
-    raw_fd_ostream RFO(StatsFile.c_str(), error);
-    if(!error.empty())
-      errs() << "Failed to open " << StatsFile << ": " << error << "\n";
+    
+    std::error_code error;
+    raw_fd_ostream RFO(StatsFile.c_str(), error, sys::fs::F_None);
+    if(error)
+      errs() << "Failed to open " << StatsFile << ": " << error.message() << "\n";
     else
       stats.print(RFO);
   }
@@ -2874,8 +2870,11 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
   if(this->emitFakeDebug) {
     DIBuilder DIB(*F.getParent());
+    DIFile file = DIB.createFile("llpe.file", "/nonesuch");
     DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
-    this->fakeDebugType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
+    DIBasicType retType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
+    DITypeArray functionParamTypes = DIB.getOrCreateTypeArray(ArrayRef<Metadata*>((Metadata*)retType));
+    this->fakeDebugType = DIB.createSubroutineType(file, functionParamTypes);
   }
 
 }
@@ -3242,7 +3241,7 @@ static bool getAllocSitesFrom(Value* V, std::vector<Value*>& sites, DenseSet<Val
     case Instruction::Invoke:
       {
 	ImmutableCallSite CS(I);
-	if(CS.paramHasAttr(0, Attributes::NoAlias)) {
+	if(CS.paramHasAttr(0, Attribute::NoAlias)) {
 	  sites.push_back(V);
 	  return true;
 	}
@@ -3599,7 +3598,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
     exit(1);
   }
 
-  TD = getAnalysisIfAvailable<DataLayout>();
+  TD = &getAnalysisIfAvailable<DataLayoutPass>()->getDataLayout();
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
@@ -3619,7 +3618,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
     if(!MI->isDeclaration()) {
       DominatorTree* NewDT = new DominatorTree();
-      NewDT->runOnFunction(*MI);
+      NewDT->recalculate(*MI);
       DTs[MI] = NewDT;
     }
 
@@ -3721,7 +3720,6 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
   AU.addRequired<AliasAnalysis>();
-  AU.addRequired<DominatorTree>();
   AU.addRequired<LoopInfo>();
   const PassInfo* BAAInfo = lookupPassInfo(StringRef("basicaa"));
   if(!BAAInfo) {

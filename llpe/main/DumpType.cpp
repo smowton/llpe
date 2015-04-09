@@ -34,7 +34,6 @@ public:
 
   /// getAnalysisUsage - We do not modify anything.
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    AU.addRequired<DataLayout>();
     AU.setPreservesAll();
   }
 };
@@ -82,7 +81,7 @@ bool DumpTypePass::runOnModule(Module &M) {
 
   }
 
-  DataLayout* DL = &getAnalysis<DataLayout>();
+  const DataLayout* DL = &getAnalysis<DataLayoutPass>().getDataLayout();
   Layout = DL->getStructLayout(Print);
 
   return false;

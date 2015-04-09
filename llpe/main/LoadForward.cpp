@@ -1,4 +1,6 @@
 
+#define DEBUG_TYPE "LoadForward"
+
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
 #include "llvm/IR/Function.h"
@@ -217,7 +219,7 @@ bool PartialVal::isComplete() {
 
 }
 
-bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string* error) {
+bool PartialVal::convertToBytes(uint64_t size, const DataLayout* TD, std::string* error) {
 
   if(isByteArray())
     return true;
@@ -232,7 +234,7 @@ bool PartialVal::convertToBytes(uint64_t size, DataLayout* TD, std::string* erro
 
 }
 
-bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, DataLayout* TD, std::string* error) {
+bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, const DataLayout* TD, std::string* error) {
 
   if(isEmpty()) {
 
@@ -377,7 +379,7 @@ Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size
   }
 
   // Finally build it from bytes.
-  std::auto_ptr<std::string> error(RSO ? new std::string() : 0);
+  std::unique_ptr<std::string> error(RSO ? new std::string() : 0);
   if(!PV.convertToBytes(Size, GlobalTD, error.get())) {
     if(RSO)
       *RSO << *error;
@@ -494,7 +496,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
   ImprovedValSetSingle LIPB;
   getImprovedValSetSingle(LI->getOperand(0), LIPB);
 
-  std::auto_ptr<raw_string_ostream> RSO(report ? new raw_string_ostream(*report) : 0);
+  std::unique_ptr<raw_string_ostream> RSO(report ? new raw_string_ostream(*report) : 0);
 
   LI->isThreadLocal = TLS_NEVERCHECK;
 
@@ -513,7 +515,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
     if(!LI->parent->localStore->es.threadLocalObjects.count(LIPB.Values[i].V))
       LI->isThreadLocal = TLS_MUSTCHECK;
 
-    std::auto_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
+    std::unique_ptr<std::string> ThisError(RSO.get() ? new std::string() : 0);
     ImprovedValSetSingle ThisPB;
     ImprovedValSetMulti* ThisMulti = 0;
 
@@ -575,7 +577,7 @@ static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::str
 bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*& NewPB, bool& loadedVararg) {
 
   ImprovedValSetSingle ConstResult;
-  std::auto_ptr<std::string> error(pass->verboseOverdef ? new std::string() : 0);
+  std::unique_ptr<std::string> error(pass->verboseOverdef ? new std::string() : 0);
 
   if(tryResolveLoadFromVararg(LI, NewPB))
     return true;
@@ -1150,7 +1152,7 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
   if(ResultPV) {
 
     LFV3(errs() << "Read used a PV\n");
-    std::auto_ptr<raw_string_ostream> RSO(error ? new raw_string_ostream(*error) : 0);
+    std::unique_ptr<raw_string_ostream> RSO(error ? new raw_string_ostream(*error) : 0);
 
     Constant* PVConst = PVToConst(*ResultPV, RSO.get(), Size, V.getLLVMContext());
     ShadowValue PVConstV(PVConst);
@@ -3024,7 +3026,7 @@ static void visitReachableObjects(const ImprovedValSetSingle& Ptr, ShadowBB* BB,
       break;
     }
 
-    if(!V.seenObjects.insert(Ptr.Values[i].V))
+    if(!V.seenObjects.insert(Ptr.Values[i].V).second)
       continue;
 
     if(!V.visitObject(Ptr.Values[i].V, BB))

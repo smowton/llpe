@@ -18,7 +18,7 @@ namespace llvm {
 
   Type* XXXFindElementAtOffset(Type *Ty, int64_t Offset,
 			       SmallVectorImpl<Value*> &NewIndices,
-			       DataLayout* TD);
+			       const DataLayout* TD);
 
 } // End namespace llvm
 
