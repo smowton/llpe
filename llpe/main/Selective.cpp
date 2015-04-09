@@ -3,8 +3,8 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Instructions.h"
 
 using namespace llvm;
 

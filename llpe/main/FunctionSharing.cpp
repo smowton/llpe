@@ -1,7 +1,7 @@
 
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Function.h"
+#include "llvm/IR/Function.h"
 #include "llvm/ADT/DenseMap.h"
 
 using namespace llvm;

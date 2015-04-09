@@ -1,8 +1,8 @@
 // Functions to describe the hierarchy of peel and inline attempts in DOT format for easy review.
 
-#include "llvm/Function.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/Instruction.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Instruction.h"
 
 #include "llvm/Analysis/CFGPrinter.h"
 #include "llvm/Support/raw_ostream.h"

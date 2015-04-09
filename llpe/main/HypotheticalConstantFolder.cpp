@@ -15,9 +15,9 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Instructions.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/BasicBlock.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -31,7 +31,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/DataLayout.h"
 
 #include <string>
 

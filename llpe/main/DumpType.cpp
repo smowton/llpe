@@ -1,8 +1,8 @@
 
 #include "llvm/Pass.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/DataLayout.h"
-#include "llvm/Module.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 

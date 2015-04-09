@@ -1,9 +1,9 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Module.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Dominators.h"
 #include "llvm/Support/MathExtras.h"

@@ -3,11 +3,11 @@
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
-#include "llvm/DataLayout.h"
-#include "llvm/GlobalValue.h"
-#include "llvm/GlobalVariable.h"
-#include "llvm/Function.h"
-#include "llvm/Operator.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Operator.h"
 
 using namespace llvm;
 

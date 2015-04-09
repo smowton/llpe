@@ -1,8 +1,8 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/BasicBlock.h"
-#include "llvm/Function.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
 
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Support/raw_ostream.h"

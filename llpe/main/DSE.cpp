@@ -3,9 +3,9 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Instructions.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/IntrinsicInst.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -13,7 +13,7 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/DataLayout.h"
 
 #include <vector>
 

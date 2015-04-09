@@ -1,10 +1,10 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Instructions.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/IntrinsicInst.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Support/Debug.h"

@@ -18,10 +18,10 @@
 
 #define DEBUG_TYPE "looppeelheuristics"
 #include "llvm/Pass.h"
-#include "llvm/Instructions.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/Module.h"
-#include "llvm/IntrinsicInst.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
@@ -34,13 +34,13 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/PHITransAddr.h"
 #include "llvm/Target/TargetLibraryInfo.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GetElementPtrTypeIterator.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/DIBuilder.h"
+#include "llvm/IR/DIBuilder.h"
 
 #include <sstream>
 #include <string>

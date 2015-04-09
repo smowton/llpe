@@ -1,6 +1,6 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
-#include "llvm/Function.h"
+#include "llvm/IR/Function.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 
 using namespace llvm;

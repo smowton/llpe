@@ -1,9 +1,9 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/BasicBlock.h"
-#include "llvm/Function.h"
-#include "llvm/Instructions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
 
 #include "llvm/Support/Debug.h"
 

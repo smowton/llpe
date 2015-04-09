@@ -4,10 +4,10 @@
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 
-#include "llvm/Instruction.h"
-#include "llvm/BasicBlock.h"
-#include "llvm/Function.h"
-#include "llvm/Module.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Assembly/Writer.h"
 #include "llvm/Support/raw_ostream.h"

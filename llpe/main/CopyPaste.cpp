@@ -1,11 +1,11 @@
 
 #include "llvm/Analysis/LLPECopyPaste.h"
-#include "llvm/Constant.h"
-#include "llvm/Constants.h"
-#include "llvm/Instruction.h"
-#include "llvm/Type.h"
-#include "llvm/DerivedTypes.h"
-#include "llvm/DataLayout.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/DataLayout.h"
 
 using namespace llvm;
 
