@@ -1,3 +1,12 @@
+//===-- Args.cpp ----------------------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Implement specialisation w.r.t. environment or argv.
 
 #include <stdlib.h>

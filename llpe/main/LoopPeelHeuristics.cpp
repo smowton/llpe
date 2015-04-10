@@ -1,18 +1,9 @@
-//===- LoopPeelHeuristics.cpp - Find loops that we might want to try peeling --------===//
+//===-- LoopPeelHeuristics.cpp --------------------------------------------===//
 //
-// The LLVM Compiler Infrastructure
+//                                  LLPE
 //
 // This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
-//
-//===----------------------------------------------------------------------===//
-//
-// This pass uses some heuristics to figure out loops that might be worth peeling.
-// Basically this is simplistic SCCP plus some use of MemDep to find out how many instructions
-// from the loop body would likely get evaluated if we peeled an iterations.
-// We also consider the possibility of concurrently peeling a group of nested loops.
-// The hope is that the information provided is both more informative and quicker to obtain than just speculatively
-// peeling and throwing a round of -std-compile-opt at the result.
+// License. See LICENSE.txt for details.
 //
 //===----------------------------------------------------------------------===//
 

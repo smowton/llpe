@@ -1,4 +1,11 @@
-
+//===-- FunctionSharing.cpp -----------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
 #include "llvm/IR/Function.h"

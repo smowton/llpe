@@ -1,3 +1,12 @@
+//===- PartialLoadForward.cpp ---------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Some functions converted from Transforms/Scalar/GVN.cpp that try to deal with cases when loads are clobbered by writes which define them
 // but do so in a more complicated way than just an equal-sized write to the same pointer. For example, a memcpy that covers the load
 // or a load i8 that gets a sub-field of a store i64.

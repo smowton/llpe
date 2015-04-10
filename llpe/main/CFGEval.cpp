@@ -1,3 +1,11 @@
+//===-- CFGEval.cpp -------------------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
 
 #define DEBUG_TYPE "hypotheticalconstantfolder"
 

@@ -1,3 +1,12 @@
+//===- Selective.cpp ------------------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Functions which enable / disable inlining or peeling of particular sub-elements of the program
 // and which queue reconsideration of parts whose results will have changed.
 

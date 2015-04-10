@@ -1,3 +1,12 @@
+//===- Print.cpp ----------------------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Implement a cache of textual representations of instructions, mostly for debug mode.
 // Otherwise the operator<< implementation completely indexes the bitcode file on every run.
 // This is also punitively expensive for the DOT output code.

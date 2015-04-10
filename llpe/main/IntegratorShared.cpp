@@ -1,3 +1,11 @@
+//===-- IntegratorShared.cpp ----------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/Analysis/ConstantFolding.h"

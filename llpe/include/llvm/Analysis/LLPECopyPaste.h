@@ -1,3 +1,13 @@
+//===-- LLPECopyPaste.h ---------------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
+
+// These are functions copy-pasted from the LLVM core source.
 
 #ifndef LLPECP_H
 #define LLPECP_H

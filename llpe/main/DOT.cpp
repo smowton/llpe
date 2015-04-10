@@ -1,3 +1,12 @@
+//===-- DOT.cpp -----------------------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Functions to describe the hierarchy of peel and inline attempts in DOT format for easy review.
 
 #include "llvm/IR/Function.h"

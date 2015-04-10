@@ -1,3 +1,12 @@
+//===-- DSE.cpp -----------------------------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Dead store elimination using essentially the same technique as Transforms/Scalar/DSE.cpp,
 // only taking into account that we've been computing a probable flow through the program.
 

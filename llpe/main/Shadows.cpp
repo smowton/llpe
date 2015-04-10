@@ -1,3 +1,12 @@
+//===- Shadows.cpp --------------------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Implement guts of instruction and block shadow structures, as well as utility routines for generating them
 // from a function or block.
 

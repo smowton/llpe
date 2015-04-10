@@ -1,3 +1,11 @@
+//===-- HypotheticalConstantFolder.h --------------------------------------===//
+//
+//                                  LLPE
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.txt for details.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_HYPO_CONSTFOLD_H
 #define LLVM_HYPO_CONSTFOLD_H

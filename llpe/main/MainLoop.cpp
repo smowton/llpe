@@ -1,3 +1,12 @@
+//===- MainLoop.cpp -------------------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // Implement the main loop for exploring and specialising a program.
 // Algorithm:
 // For each BB in a topologically ordered walk of the CFG:

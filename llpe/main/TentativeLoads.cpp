@@ -1,3 +1,12 @@
+//===- TentativeLoads.cpp -------------------------------------------------===//
+//
+// The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
 // A mini-analysis that spots tentative loads and memcpy instructions.
 // These are loads whose incoming dataflow (a) crosses a /yield point/, a point where we must assume
 // that another thread got a chance to run and messed with our state, (b) is not dominated
