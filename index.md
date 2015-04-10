@@ -9,7 +9,7 @@ LLPE is a partial evaluator for LLVM bitcode. It is suitable for specialising pr
 Features
 --------
 
-* Supports a very large subset of LLVM intermediate representation, including specialising programs that use inter-thread communication, interact with the operating system and partial support for exceptions. It has near-perfect support for the C language, and apart from the exception limitations it has broad C++ support.
+* Supports a very large subset of LLVM intermediate representation, including specialising programs that use inter-thread communication or interact with the operating system, and partial support for exceptions. It has near-perfect support for the C language, and apart from the exception limitations it has broad C++ support.
 * Specialisation can eliminate direct arithmetic operations, control flow, memory operations and memory allocations.
 * Specialises programs even when the premises of specialisation may be falsified at runtime (e.g. due to unexpected system call results or interference by other threads); guards are introduced when necessary to ensure correctness by only running specialised code when the premises are satisfied.
 * Supports specialisation with respect to expected command-line parameters, file contents or inter-process communication results (where the latter are expressed in terms of the Linux system call API).
