@@ -1,7 +1,7 @@
 ---
 layout: page
 title: About LLPE
-permalink: /about/
+permalink: /
 ---
 
 LLPE is a partial evaluator for LLVM bitcode. It is suitable for specialising programs written in C, C++, FORTRAN, or any other language that can be compiled to LLVM intermediate representation. Specialisation can used to pare un-needed code from general programs, or to introduce staging to existing programs without manual modification. LLPE is designed to speicalise aggressively with minimal manual input.
