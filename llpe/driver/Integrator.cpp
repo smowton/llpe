@@ -6,9 +6,9 @@
 #define DEBUG_TYPE "integrator"
 
 #include "llvm/Pass.h"
-#include "llvm/Module.h"
-#include "llvm/Transforms/IPO.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -50,8 +50,6 @@ char IntegratorPass::ID = 0;
 static RegisterPass<IntegratorPass> X("integrator", "Pervasive integration",
 				      false /* Only looks at CFG */,
 				      false /* Analysis Pass */);
-
-Pass* llvm::createIntegratorPass() { return new IntegratorPass(); }
 
 // Implement a GUI for leafing through integration results
 
@@ -357,7 +355,7 @@ public:
       break;
     default:
       assert(0 && "Invalid node tag");
-      llvm_unreachable();
+      llvm_unreachable("Invalid node tag");
     }
 
   }
@@ -517,15 +515,15 @@ void IntegratorFrame::redrawImage() {
   delete currentBitmap;
   currentBitmap = 0;
 
-  std::string error;
+  std::error_code error;
   std::string otherpath;
-  raw_fd_ostream RFO(dotpath.c_str(), error);
+  raw_fd_ostream RFO(dotpath.c_str(), error, sys::fs::F_None);
   currentIA->describeAsDOT(RFO, otherpath, brief);
   RFO.close();
 
-  if(!error.empty()) {
+  if(error) {
 
-    errs() << "Failed to open " << dotpath << ": " << error << "\n";
+    errs() << "Failed to open " << dotpath << ": " << error.message() << "\n";
 
   }
   else {
