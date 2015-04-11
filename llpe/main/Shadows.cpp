@@ -270,6 +270,10 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
     SBB.F = &RetInfo;
     SBB.idx = i;
     SBB.BB = BB;
+    // True loop scope will be computed later, but by default...
+    SBB.outerScope = 0;
+    SBB.naturalScope = 0;
+
     const Loop* BBScope =  LI->getLoopFor(BB);
 
     // Find successor block indices:
