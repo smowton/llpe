@@ -378,7 +378,7 @@ ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F
       unsigned k;
       for(k = 0, UI = I->use_begin(); k != nUsers; ++k, ++UI) {
 
-	if(Instruction* UserI = dyn_cast<Instruction>(*UI)) {
+	if(Instruction* UserI = dyn_cast<Instruction>(UI->getUser())) {
 
 	  userIdxs[k] = ShadowInstIdx(BBIndices[UserI->getParent()], IIndices[UserI]);
 
