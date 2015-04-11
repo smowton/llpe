@@ -185,3 +185,69 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
   }
 
 }
+
+#ifndef LLVM_EFFICIENT_PRINTING
+
+// Simple implementations of instruction printing if the LLVM core assembly printer
+// hasn't been patched to make this much more efficient. This becomes a problem
+// once we get beyond hundreds of instructions.
+
+PersistPrinter* llvm::getPersistPrinter(Module*) { return new PersistPrinter(); }
+
+void llvm::getInstructionsText(PersistPrinter*, const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefMap) {
+
+  for(Function::const_iterator FI = IF->begin(), FE = IF->end(); FI != FE; ++FI) {
+
+    const BasicBlock *BB = FI;
+    for(BasicBlock::const_iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+
+      const Instruction* I = BI;
+      std::string instText;
+      {
+	raw_string_ostream RSO(instText);
+	RSO << *I;
+      }
+
+      IMap[I] = instText;
+      if(I->getType()->isVoidTy())
+	BriefMap[I] = instText;
+      else
+	BriefMap[I] = instText.substr(0, instText.find("=") - 1);
+
+    }
+
+  }
+
+  for(Function::const_arg_iterator AI = IF->arg_begin(), AE = IF->arg_end(); AI != AE; ++AI) {
+
+    std::string argText;
+    {
+      raw_string_ostream RSO(argText);
+      RSO << *AI;
+    }
+
+    IMap[(const Argument*)AI] = argText;
+    BriefMap[(const Argument*)AI] = argText;
+
+  }
+
+}
+
+void llvm::getGVText(PersistPrinter*, const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap) {
+
+  for(Module::const_global_iterator it = M->global_begin(), itend = M->global_end(); it != itend; ++it) {
+
+    std::string GVText;
+    {
+      raw_string_ostream RSO(GVText);
+      RSO << *it;
+    }
+
+    GVMap[it] = GVText;
+    BriefGVMap[it] = GVText;
+
+  }
+
+}
+
+#endif

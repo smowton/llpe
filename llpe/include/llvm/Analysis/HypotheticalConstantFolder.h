@@ -83,7 +83,12 @@ class ShadowLoopInvar;
 class TargetLibraryInfo;
 class ShadowBB;
 class TrackedStore;
+
+#ifndef LLVM_EFFICIENT_PRINTING
+class PersistPrinter { };
+#else
 class PersistPrinter; // Opaque here, defined in AsmWriter
+#endif
 
 inline void release_assert_fail(const char* str) {
 
@@ -2164,6 +2169,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
  bool getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors);
 
  // Implemented in VMCore/AsmWriter.cpp, since that file contains a bunch of useful private classes
+ // if LLVM has been patched appropriately; otherwise stubbed out with simple implementations in Print.cpp.
  PersistPrinter* getPersistPrinter(Module*);
  void getInstructionsText(PersistPrinter*, const Function* IF, DenseMap<const Value*, std::string>& IMap, DenseMap<const Value*, std::string>& BriefMap);
  void getGVText(PersistPrinter*, const Module* M, DenseMap<const GlobalVariable*, std::string>& GVMap, DenseMap<const GlobalVariable*, std::string>& BriefGVMap);
