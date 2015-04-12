@@ -1,4 +1,4 @@
-//===-- LoopPeelHeuristics.cpp --------------------------------------------===//
+//===-- Misc.cpp ----------------------------------------------------------===//
 //
 //                                  LLPE
 //
@@ -7,7 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "looppeelheuristics"
+// This file has really just accrued lots of unrelated families of functions,
+// hence its current name. TODO: decide how to split these up in a sensible way.
+
+#define DEBUG_TYPE "llpe-misc"
 #include "llvm/Pass.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/BasicBlock.h"
