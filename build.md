@@ -11,7 +11,7 @@ Building has only been tested under Linux and using the x86-64 architecture; oth
 Building LLPE Trunk
 -------------------
 
-LLPE is distributed as an out-of-tree LLVM module. It builds against at least LLVM 3.6, and possibly earlier or later versions (definitely not 3.2, which has some incompatible changes; however see Building LLPE 3.2 below). It requires LLVM's CMake support files, which are produced when building from source using CMake and may or may not be provided with binary distributions (check for <pre>INSTALL_PREFIX/share/llvm/cmake/LLVMConfig.cmake</pre>)
+LLPE is distributed as an out-of-tree LLVM module. It builds against at least LLVM 3.6, and possibly earlier or later versions (definitely not 3.2, which has some incompatible changes; however see Building LLPE 3.2 below). It requires LLVM's CMake support files, which are produced when building from source using CMake and may or may not be provided with binary distributions (check for <tt>INSTALL_PREFIX/share/llvm/cmake/LLVMConfig.cmake</tt>)
 
 Build steps:
 
@@ -27,9 +27,9 @@ Build steps:
    cd llpe/build
    cmake ../llpe
 
-You should give CMake a build type compatible with the LLVM distribution you're compiling against (e.g. a Debug LLPE build will not build against a Release LLVM). For example, pass <pre>-D CMAKE_BUILD_TYPE:STRING=RelWithDebInfo</pre>.
+You should give CMake a build type compatible with the LLVM distribution you're compiling against (e.g. a Debug LLPE build will not build against a Release LLVM). For example, pass <tt>-D CMAKE_BUILD_TYPE:STRING=RelWithDebInfo</tt>.
 
-If you're building against an LLVM build that hasn't been installed, or CMake doesn't find the installed distribution in its default search path, you might need to include a parameter like <pre>-D CMAKE_PREFIX_PATH=/path/to/my/llvm-3.6-build
+If you're building against an LLVM build that hasn't been installed, or CMake doesn't find the installed distribution in its default search path, you might need to include a parameter like <tt>-D CMAKE_PREFIX_PATH=/path/to/my/llvm-3.6-build</tt>
 
 4. Build:
 
