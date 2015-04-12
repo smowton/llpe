@@ -4,7 +4,7 @@ title: Documentation
 permalink: /docs/
 ---
 
-[Build instructions](/build.md)
+[Build instructions](/build/)
 
 Tutorial: to come soon.
 
