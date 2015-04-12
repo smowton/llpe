@@ -9,7 +9,7 @@
 
 #define DEBUG_TYPE "VFSOps"
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"

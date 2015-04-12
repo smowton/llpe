@@ -13,7 +13,7 @@
 #include <ctype.h>
 #include <string>
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/IR/Module.h"

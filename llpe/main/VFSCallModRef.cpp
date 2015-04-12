@@ -11,7 +11,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Constants.h>
 
-#include <llvm/Analysis/HypotheticalConstantFolder.h>
+#include <llvm/Analysis/LLPE.h>
 #include "llvm/Analysis/AliasAnalysis.h"
 
 // For various structures and constants:

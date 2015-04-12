@@ -9,7 +9,7 @@
 
 #define DEBUG_TYPE "hypotheticalconstantfolder"
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"

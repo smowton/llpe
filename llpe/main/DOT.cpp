@@ -17,7 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FileSystem.h"
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include <sys/stat.h>
 #include <sys/types.h>

@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"

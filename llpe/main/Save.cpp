@@ -14,7 +14,7 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 #include "llvm/Analysis/LLPECopyPaste.h"
 #include "llvm/IR/ValueMap.h"
 #include "llvm/Transforms/Utils/Cloning.h"

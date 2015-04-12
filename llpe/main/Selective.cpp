@@ -10,7 +10,7 @@
 // Functions which enable / disable inlining or peeling of particular sub-elements of the program
 // and which queue reconsideration of parts whose results will have changed.
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Instructions.h"

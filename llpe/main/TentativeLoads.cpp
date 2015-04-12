@@ -17,7 +17,7 @@
 // when the load was known to be from a thread-private object. We will set the same flag wherever
 // it's clear that checking this load would be redundant.
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"

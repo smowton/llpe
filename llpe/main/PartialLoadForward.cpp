@@ -14,7 +14,7 @@
 
 #define DEBUG_TYPE "PartialLoadForward"
 
-#include <llvm/Analysis/HypotheticalConstantFolder.h>
+#include <llvm/Analysis/LLPE.h>
 
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Type.h>

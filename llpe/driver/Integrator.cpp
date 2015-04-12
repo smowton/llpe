@@ -7,7 +7,7 @@
 
 #include "llvm/Pass.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"

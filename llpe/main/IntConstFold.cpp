@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 bool llvm::IHPFoldIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, SmallVector<uint64_t, 4>& OpInts, ValSetType& ImpType, ImprovedVal& Improved) {
 

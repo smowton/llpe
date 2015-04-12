@@ -10,7 +10,7 @@
 // Dead store elimination using essentially the same technique as Transforms/Scalar/DSE.cpp,
 // only taking into account that we've been computing a probable flow through the program.
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/BasicBlock.h"

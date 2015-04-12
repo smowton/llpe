@@ -25,7 +25,7 @@
 // For the topo walk, use reverse postorder DFS, where loop headers are entered in the ordering
 // implying that we should at that point enter the loop rather than listing all blocks in some order.
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"

@@ -11,7 +11,7 @@
 // Otherwise the operator<< implementation completely indexes the bitcode file on every run.
 // This is also punitively expensive for the DOT output code.
 
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/BasicBlock.h"

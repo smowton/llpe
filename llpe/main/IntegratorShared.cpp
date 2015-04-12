@@ -9,7 +9,7 @@
 
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/Analysis/HypotheticalConstantFolder.h"
+#include "llvm/Analysis/LLPE.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
