@@ -43,6 +43,8 @@ make
 
 If all works out, you should get build/driver/libLLVMLLPEDriver.so and build/main/libLLVMLLPEMain.so
 
+Next try the [tutorial](/tutorial.md)
+
 Building LLPE 3.2
 -----------------
 
@@ -63,8 +65,16 @@ git checkout 3.2
 
 3. Build LLVM per the LLVM 3.2 [autotools build instructions](http://llvm.org/releases/3.2/docs/GettingStarted.html). Based on experience developing the LLVM 3.6 port there are some errors in debug messages that are usually #ifdef'd out; I recommend building either Release or Release+Asserts, which are better tested; alternatively if you want to build Debug you can just comment out the problematic debug messages.
 
-4. Build the LLPE passes:
+4. Build the LLPE passes. If you're using an in-tree build:
 
 ```
 cd /path/to/llpe/llvm-3.2.src
+cd lib/Analysis/Integrator
+make
+cd ../../Transforms/Integrator
+make
 ```
+
+If all goes well you should get (for example) Release+Debug/lib/IntegratorAnalyses.so and IntegratorTransforms.so.
+
+Next try the [tutorial](/tutorial.md)
