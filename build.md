@@ -19,13 +19,17 @@ Build steps:
 
 2. Checkout from Github:
 
+```
 git clone https://github.com/smowton/llpe.git
+```
 
 3. Make a build directory; run CMake:
 
-   		mkdir llpe/build
-		cd llpe/build
-		cmake ../llpe
+```
+mkdir llpe/build
+cd llpe/build
+cmake ../llpe
+```
 
 You should give CMake a build type compatible with the LLVM distribution you're compiling against (e.g. a Debug LLPE build will not build against a Release LLVM). For example, pass <tt>-D CMAKE\_BUILD\_TYPE:STRING=RelWithDebInfo</tt>.
 
@@ -33,7 +37,9 @@ If you're building against an LLVM build that hasn't been installed, or CMake do
 
 4. Build:
 
-		make
+```
+make
+```
 
 If all works out, you should get build/driver/libLLVMLLPEDriver.so and build/main/libLLVMLLPEMain.so
 
@@ -50,11 +56,15 @@ Build steps:
 
 2. Checkout from Github:
 
-   			git clone https://github.com/smowton/llpe.git
-			git checkout 3.2
+```
+git clone https://github.com/smowton/llpe.git
+git checkout 3.2
+```
 
 3. Build LLVM per the LLVM 3.2 [autotools build instructions](http://llvm.org/releases/3.2/docs/GettingStarted.html). Based on experience developing the LLVM 3.6 port there are some errors in debug messages that are usually #ifdef'd out; I recommend building either Release or Release+Asserts, which are better tested; alternatively if you want to build Debug you can just comment out the problematic debug messages.
 
 4. Build the LLPE passes:
 
-   		 	 cd /path/to/llpe/llvm-3.2.src
+```
+cd /path/to/llpe/llvm-3.2.src
+```
