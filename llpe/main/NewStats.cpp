@@ -147,7 +147,7 @@ void IntegrationAttempt::preCommitStats(bool enabledHere) {
 
 }
 
-void IntegrationHeuristicsPass::postCommitStats() {
+void LLPEAnalysisPass::postCommitStats() {
 
   for(SmallVector<Function*, 4>::iterator it = commitFunctions.begin(),
 	itend = commitFunctions.end(); it != itend; ++it) {

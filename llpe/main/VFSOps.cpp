@@ -1035,7 +1035,7 @@ bool llvm::getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t
 
 }
 
-void IntegrationHeuristicsPass::initGlobalFDStore() {
+void LLPEAnalysisPass::initGlobalFDStore() {
 
   // Reserve a slot for stdin.
   fds.push_back(FDGlobalState(true /* is a fifo */));

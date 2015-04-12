@@ -61,7 +61,7 @@ void IntegrationAttempt::resetDeadInstructions() {
 
 }
 
-void IntegrationHeuristicsPass::rerunDSEAndDIE() {
+void LLPEAnalysisPass::rerunDSEAndDIE() {
 
   if(mustRecomputeDIE) {
     RootIA->resetDeadArgsAndInstructions();

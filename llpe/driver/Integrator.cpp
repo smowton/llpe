@@ -25,18 +25,18 @@ using namespace llvm;
 
 // For communication with wxWidgets, since there doesn't seem to be any easy way
 // of passing a parameter to WxApp's constructor.
-static IntegrationHeuristicsPass* IHP;
+static LLPEAnalysisPass* IHP;
 static bool IntegratorCancelled = false;
 
 static cl::opt<bool> AcceptAllInt("integrator-accept-all", cl::init(false));
 
 namespace {
 
-  class IntegratorPass : public ModulePass {
+  class LLPEPass : public ModulePass {
   public:
 
     static char ID;
-    IntegratorPass() : ModulePass(ID) {}
+    LLPEPass() : ModulePass(ID) {}
 
     bool runOnModule(Module& M);
 
@@ -46,8 +46,8 @@ namespace {
 
 }
 
-char IntegratorPass::ID = 0;
-static RegisterPass<IntegratorPass> X("integrator", "Pervasive integration",
+char LLPEPass::ID = 0;
+static RegisterPass<LLPEPass> X("llpe", "LLPE Partial Evaluation",
 				      false /* Only looks at CFG */,
 				      false /* Analysis Pass */);
 
@@ -604,9 +604,9 @@ void IntegratorFrame::OnSearchFunctions(wxCommandEvent& event) {
 
 IMPLEMENT_APP_NO_MAIN(IntegratorApp)
 
-bool IntegratorPass::runOnModule(Module& M) {
+bool LLPEPass::runOnModule(Module& M) {
 
-  IHP = &getAnalysis<IntegrationHeuristicsPass>();
+  IHP = &getAnalysis<LLPEAnalysisPass>();
 
   if(!AcceptAllInt) {
   
@@ -628,10 +628,10 @@ bool IntegratorPass::runOnModule(Module& M) {
 
 }
 
-void IntegratorPass::getAnalysisUsage(AnalysisUsage& AU) const {
+void LLPEPass::getAnalysisUsage(AnalysisUsage& AU) const {
 
   IHPSaveDOTFiles = !AcceptAllInt;
-  AU.addRequired<IntegrationHeuristicsPass>();
+  AU.addRequired<LLPEAnalysisPass>();
 
 }
 

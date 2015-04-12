@@ -332,7 +332,7 @@ static IHPFunctionInfo VFSCallFunctions[] = {
 
 };
 
-void IntegrationHeuristicsPass::initMRInfo(Module* M) {
+void LLPEAnalysisPass::initMRInfo(Module* M) {
 
   for(uint32_t i = 0; VFSCallFunctions[i].Name; ++i) {
 
@@ -343,7 +343,7 @@ void IntegrationHeuristicsPass::initMRInfo(Module* M) {
 
 }
 
-IHPFunctionInfo* IntegrationHeuristicsPass::getMRInfo(Function* F) {
+IHPFunctionInfo* LLPEAnalysisPass::getMRInfo(Function* F) {
 
   DenseMap<Function*, IHPFunctionInfo>::iterator findit = functionMRInfo.find(F);
   if(findit == functionMRInfo.end())

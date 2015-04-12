@@ -66,7 +66,7 @@ static void ignoreChildLoops(SmallSet<BasicBlock*, 1>& headers, const Loop* L) {
   
 }
 
-ShadowLoopInvar* IntegrationHeuristicsPass::getLoopInfo(ShadowFunctionInvar* FInfo,
+ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
 							DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 							const Loop* L,
 							DominatorTree* DT,
@@ -147,7 +147,7 @@ ShadowLoopInvar* IntegrationHeuristicsPass::getLoopInfo(ShadowFunctionInvar* FIn
 
 }
 
-void IntegrationHeuristicsPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
+void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
 
   uint32_t i = 0;
   uint32_t nGlobals = std::distance(M.global_begin(), M.global_end());
@@ -216,7 +216,7 @@ static const GlobalVariable* getGlobalVar(const Value* V) {
 
 }
 
-ShadowFunctionInvar* IntegrationHeuristicsPass::getFunctionInvarInfo(Function& F) {
+ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
 
   DenseMap<Function*, ShadowFunctionInvar*>::iterator findit = functionInfo.find(&F);
   if(findit != functionInfo.end())

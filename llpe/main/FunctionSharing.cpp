@@ -282,7 +282,7 @@ bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
 }
 
 
-void IntegrationHeuristicsPass::addSharableFunction(InlineAttempt* IA) {
+void LLPEAnalysisPass::addSharableFunction(InlineAttempt* IA) {
   
   if(!enableSharing)
     return;
@@ -292,7 +292,7 @@ void IntegrationHeuristicsPass::addSharableFunction(InlineAttempt* IA) {
 
 }
 
-void IntegrationHeuristicsPass::removeSharableFunction(InlineAttempt* IA) {
+void LLPEAnalysisPass::removeSharableFunction(InlineAttempt* IA) {
 
   if(!enableSharing)
     return;
@@ -305,7 +305,7 @@ void IntegrationHeuristicsPass::removeSharableFunction(InlineAttempt* IA) {
 
 }
 
-InlineAttempt* IntegrationHeuristicsPass::findIAMatching(ShadowInstruction* SI) {
+InlineAttempt* LLPEAnalysisPass::findIAMatching(ShadowInstruction* SI) {
 
   if(!enableSharing)
     return 0;

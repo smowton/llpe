@@ -169,7 +169,7 @@ void InlineAttempt::fixNonLocalStackUses() {
 
 }
 
-void IntegrationHeuristicsPass::fixNonLocalUses() {
+void LLPEAnalysisPass::fixNonLocalUses() {
 
   // Similar to the above, but also take care of FDs which are always global.
 

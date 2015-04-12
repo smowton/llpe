@@ -617,7 +617,7 @@ static uint32_t countPathConditionsAtBlockStartIn(ShadowBBInvar* BB, uint32_t st
   
 }
 
-uint32_t IntegrationHeuristicsPass::countPathConditionsAtBlockStart(ShadowBBInvar* BB, IntegrationAttempt* IA) {
+uint32_t LLPEAnalysisPass::countPathConditionsAtBlockStart(ShadowBBInvar* BB, IntegrationAttempt* IA) {
 
   // Returns the number of path conditions that will be checked /before the start of BB/.
   // This does not include conditions listed in AsDefIntPathConditions which are checked

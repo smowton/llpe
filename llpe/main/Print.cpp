@@ -24,7 +24,7 @@
 
 using namespace llvm;
 
-DenseMap<const Value*, std::string>& IntegrationHeuristicsPass::getFunctionCache(const Function* F, bool brief) {
+DenseMap<const Value*, std::string>& LLPEAnalysisPass::getFunctionCache(const Function* F, bool brief) {
 
   DenseMap<const Function*, DenseMap<const Value*, std::string>* >& Map = brief ? briefFunctionTextCache : functionTextCache;
   DenseMap<const Function*, DenseMap<const Value*, std::string>* >::iterator FI = Map.find(F);
@@ -41,19 +41,19 @@ DenseMap<const Value*, std::string>& IntegrationHeuristicsPass::getFunctionCache
 
 }
 
-void IntegrationHeuristicsPass::populateGVCaches(const Module* M) {
+void LLPEAnalysisPass::populateGVCaches(const Module* M) {
 
   getGVText(persistPrinter, M, GVCache, GVCacheBrief);
 
 }
 
-DenseMap<const GlobalVariable*, std::string>& IntegrationHeuristicsPass::getGVCache(bool brief) {
+DenseMap<const GlobalVariable*, std::string>& LLPEAnalysisPass::getGVCache(bool brief) {
 
   return brief ? GVCacheBrief : GVCache;
 
 }
 
-void IntegrationHeuristicsPass::printValue(raw_ostream& ROS, const Value* V, bool brief) {
+void LLPEAnalysisPass::printValue(raw_ostream& ROS, const Value* V, bool brief) {
 
   if(!cacheDisabled) {
 
@@ -97,7 +97,7 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& ROS, const Value* V, boo
 
 }
 
-void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, bool brief) {
+void LLPEAnalysisPass::printValue(raw_ostream& Stream, ShadowValue V, bool brief) {
 
   if(V.isInval()) {
     Stream << "NULL";
@@ -134,7 +134,7 @@ void IntegrationHeuristicsPass::printValue(raw_ostream& Stream, ShadowValue V, b
 
 }
 
-void IntegrationHeuristicsPass::disableValueCache() {
+void LLPEAnalysisPass::disableValueCache() {
 
   cacheDisabled = true;
   

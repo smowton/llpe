@@ -85,7 +85,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
 }
 
 // Fetch a newline-delimited command-line (saves escaping spaces etc) and provide a char** argv replacement.
-void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigned argvIdx, unsigned& argc) {
+void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx, unsigned& argc) {
 
   std::string argvtext;
   readWholeFile(path, argvtext, true);
@@ -172,7 +172,7 @@ void IntegrationHeuristicsPass::loadArgv(Function* F, std::string& path, unsigne
 }
 
 // Fetch an environment (newline-delimited key=value settings) from path and provide a constant suitable for replacing the char** environ pointer.
-Constant* IntegrationHeuristicsPass::loadEnvironment(Module& M, std::string& path) {
+Constant* LLPEAnalysisPass::loadEnvironment(Module& M, std::string& path) {
 
   std::string useenv;
   readWholeFile(path, useenv, true);

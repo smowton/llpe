@@ -49,7 +49,7 @@
 
 using namespace llvm;
 
-char IntegrationHeuristicsPass::ID = 0;
+char LLPEAnalysisPass::ID = 0;
 
 static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
 static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
@@ -107,11 +107,11 @@ static cl::opt<bool> OmitMallocChecks("int-omit-malloc-checks");
 static cl::list<std::string> SplitFunctions("int-force-split");
 static cl::opt<bool> EmitFakeDebug("int-emit-fake-debug");
 
-static RegisterPass<IntegrationHeuristicsPass> X("intheuristics", "Score functions for pervasive integration benefit",
+static RegisterPass<LLPEAnalysisPass> X("llpe-analysis", "LLPE Analysis",
 						 false /* Only looks at CFG */,
 						 true /* Analysis Pass */);
 
-InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, 
+InlineAttempt::InlineAttempt(LLPEAnalysisPass* Pass, Function& F, 
 			     ShadowInstruction* _CI, int depth,
 			     bool pathCond) : 
   IntegrationAttempt(Pass, F, 0, depth, 0)
@@ -149,7 +149,7 @@ InlineAttempt::InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F,
 
 }
 
-PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
+PeelIteration::PeelIteration(LLPEAnalysisPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, 
 			     Function& F, int iter, int depth) :
   IntegrationAttempt(Pass, F, PP->L, depth, 0),
   iterationCount(iter),
@@ -162,7 +162,7 @@ PeelIteration::PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt
   prepareShadows();
 }
 
-PeelAttempt::PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, 
+PeelAttempt::PeelAttempt(LLPEAnalysisPass* Pass, IntegrationAttempt* P, Function& _F, 
 			 const ShadowLoopInvar* _L, int depth) 
   : pass(Pass), parent(P), F(_F), residualInstructions(-1), nesting_depth(depth), stack_depth(0), 
     enabled(true), L(_L), totalIntegrationGoodness(0), integrationGoodnessValid(false)
@@ -302,7 +302,7 @@ Module& IntegrationAttempt::getModule() {
 
 }
 
-const ShadowLoopInvar* IntegrationHeuristicsPass::applyIgnoreLoops(const ShadowLoopInvar* L, Function* F, ShadowFunctionInvar* FInfo) {
+const ShadowLoopInvar* LLPEAnalysisPass::applyIgnoreLoops(const ShadowLoopInvar* L, Function* F, ShadowFunctionInvar* FInfo) {
 
   while(L && shouldIgnoreLoop(F, FInfo->BBs[L->headerIdx].BB))
     L = L->parent;
@@ -451,7 +451,7 @@ static const char* blacklistedFnNames[] = {
 };
 
 
-void IntegrationHeuristicsPass::initBlacklistedFunctions(Module& M) {
+void LLPEAnalysisPass::initBlacklistedFunctions(Module& M) {
 
   uint32_t nfns = sizeof(blacklistedFnNames) / sizeof(blacklistedFnNames[0]);
 
@@ -1758,11 +1758,11 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, const DataLayout*
 
 }
 
-void IntegrationHeuristicsPass::print(raw_ostream &OS, const Module* M) const {
+void LLPEAnalysisPass::print(raw_ostream &OS, const Module* M) const {
   RootIA->print(OS);
 }
 
-void IntegrationHeuristicsPass::releaseMemory(void) {
+void LLPEAnalysisPass::releaseMemory(void) {
   if(RootIA) {
     delete RootIA;
     RootIA = 0;
@@ -1868,7 +1868,7 @@ static time_t getFileMtime(std::string& filename) {
   
 }
 
-void IntegrationHeuristicsPass::writeLliowdConfig() {
+void LLPEAnalysisPass::writeLliowdConfig() {
 
   raw_ostream* Outp;
   std::unique_ptr<raw_fd_ostream> Fdp;
@@ -1933,7 +1933,7 @@ void IntegrationHeuristicsPass::writeLliowdConfig() {
 
 }
 
-void IntegrationHeuristicsPass::commit() {
+void LLPEAnalysisPass::commit() {
 
   if(!(omitChecks || llioDependentFiles.empty())) {
 
@@ -2163,7 +2163,7 @@ static void parseFBI(const char* paramName, const std::string& arg, Module& M, F
 
 }
 
-void IntegrationHeuristicsPass::setParam(InlineAttempt* IA, long Idx, Constant* Val) {
+void LLPEAnalysisPass::setParam(InlineAttempt* IA, long Idx, Constant* Val) {
 
   Type* Target = IA->F.getFunctionType()->getParamType(Idx);
 
@@ -2245,7 +2245,7 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
 }
 
-void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
+void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstants, uint32_t& argvIdxOut) {
 
   this->mallocAlignment = MallocAlignment;
   
@@ -2873,13 +2873,13 @@ void IntegrationHeuristicsPass::parseArgs(Function& F, std::vector<Constant*>& a
 
 }
 
-unsigned IntegrationHeuristicsPass::getMallocAlignment() {
+unsigned LLPEAnalysisPass::getMallocAlignment() {
 
   return mallocAlignment;
 
 }
 
-void IntegrationHeuristicsPass::runDSEAndDIE() {
+void LLPEAnalysisPass::runDSEAndDIE() {
 
   errs() << "Killing memory instructions";
   RootIA->tryKillStores(false, false);
@@ -2931,7 +2931,7 @@ static Type* getIntTypeAtOffset(Type* Ty, uint64_t Offset) {
 
 }
 
-BasicBlock* IntegrationHeuristicsPass::parsePCBlock(Function* fStack, std::string& bbName) {
+BasicBlock* LLPEAnalysisPass::parsePCBlock(Function* fStack, std::string& bbName) {
 
   if(bbName == "__globals__")
     return 0;
@@ -2942,7 +2942,7 @@ BasicBlock* IntegrationHeuristicsPass::parsePCBlock(Function* fStack, std::strin
   
 }
 
-int64_t IntegrationHeuristicsPass::parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr) {
+int64_t LLPEAnalysisPass::parsePCInst(BasicBlock* bb, Module* M, std::string& instIndexStr) {
 
   if(!bb) {
     GlobalVariable* GV = M->getGlobalVariable(instIndexStr, true);
@@ -2959,7 +2959,7 @@ int64_t IntegrationHeuristicsPass::parsePCInst(BasicBlock* bb, Module* M, std::s
 
 }
 
-void IntegrationHeuristicsPass::parsePathConditions(cl::list<std::string>& L, PathConditionTypes Ty, InlineAttempt* IA) {
+void LLPEAnalysisPass::parsePathConditions(cl::list<std::string>& L, PathConditionTypes Ty, InlineAttempt* IA) {
 
   uint32_t newGVIndex = 0;
   if(Ty == PathConditionTypeString)
@@ -3276,7 +3276,7 @@ static void getAllocSites(Argument* A, std::vector<Value*>& sites) {
 
 }
 
-void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
+void LLPEAnalysisPass::createPointerArguments(InlineAttempt* IA) {
 
   // Try to establish if any incoming pointer arguments are known not to alias
   // the globals, or each other. If so, allocate each a heap slot.
@@ -3390,7 +3390,7 @@ void IntegrationHeuristicsPass::createPointerArguments(InlineAttempt* IA) {
 
 }
 
-void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
+void LLPEAnalysisPass::parseArgsPostCreation(InlineAttempt* IA) {
 
   for(cl::list<std::string>::iterator it = IgnoreBlocks.begin(), itend = IgnoreBlocks.end();
       it != itend; ++it) {
@@ -3561,7 +3561,7 @@ void IntegrationHeuristicsPass::parseArgsPostCreation(InlineAttempt* IA) {
 
 }
 
-void IntegrationHeuristicsPass::createSpecialLocations() {
+void LLPEAnalysisPass::createSpecialLocations() {
 
   for(SmallDenseMap<Function*, SpecialLocationDescriptor>::iterator it = specialLocations.begin(),
 	itend = specialLocations.end(); it != itend; ++it) {
@@ -3585,7 +3585,7 @@ Type* llvm::GInt64;
 
 char llvm::ihp_workdir[] = "/tmp/ihp_XXXXXX";
 
-bool IntegrationHeuristicsPass::runOnModule(Module& M) {
+bool LLPEAnalysisPass::runOnModule(Module& M) {
 
   if(!mkdtemp(ihp_workdir)) {
     errs() << "Failed to create " << ihp_workdir << "\n";
@@ -3711,7 +3711,7 @@ bool IntegrationHeuristicsPass::runOnModule(Module& M) {
 
 }
 
-void IntegrationHeuristicsPass::getAnalysisUsage(AnalysisUsage &AU) const {
+void LLPEAnalysisPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
   AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfo>();

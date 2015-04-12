@@ -60,7 +60,7 @@ class CmpInst;
 class TerminatorInst;
 class InlineAttempt;
 class PeelAttempt;
-class IntegrationHeuristicsPass;
+class LLPEAnalysisPass;
 class Function;
 class DataLayout;
 class AliasAnalysis;
@@ -102,7 +102,7 @@ inline void release_assert_fail(const char* str) {
 extern const DataLayout* GlobalTD;
 extern AliasAnalysis* GlobalAA;
 extern TargetLibraryInfo* GlobalTLI;
-extern IntegrationHeuristicsPass* GlobalIHP;
+extern LLPEAnalysisPass* GlobalIHP;
 
 struct ShadowBBVisitor {
 
@@ -400,7 +400,7 @@ ArgStore(uint32_t hi) : heapIdx(hi) {}
 
 };
 
-class IntegrationHeuristicsPass : public ModulePass {
+class LLPEAnalysisPass : public ModulePass {
 
  public:
 
@@ -533,7 +533,7 @@ class IntegrationHeuristicsPass : public ModulePass {
    DenseMap<Function*, DebugLoc> fakeDebugLocs;
    DICompositeType fakeDebugType;
 
-   explicit IntegrationHeuristicsPass() : ModulePass(ID), cacheDisabled(false) { 
+   explicit LLPEAnalysisPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
      mustRecomputeDIE = false;
@@ -669,13 +669,13 @@ class IntegrationHeuristicsPass : public ModulePass {
 // Define a wrapper class for using the IHP's instruction text cache when printing instructions:
 template<class T> class PrintCacheWrapper {
 
-  IntegrationHeuristicsPass& IHP;
+  LLPEAnalysisPass& IHP;
   T Val;
   bool brief;
 
  public:
  
- PrintCacheWrapper(IntegrationHeuristicsPass& _IHP, T _Val, bool _brief) : IHP(_IHP), Val(_Val), brief(_brief) { }
+ PrintCacheWrapper(LLPEAnalysisPass& _IHP, T _Val, bool _brief) : IHP(_IHP), Val(_Val), brief(_brief) { }
   void printTo(raw_ostream& ROS) {
 
     IHP.printValue(ROS, Val, brief);
@@ -1105,7 +1105,7 @@ protected:
   int nesting_depth;
   int stack_depth;
 
-  IntegrationHeuristicsPass* pass;
+  LLPEAnalysisPass* pass;
 
   uint64_t SeqNumber;
 
@@ -1143,7 +1143,7 @@ protected:
 
   bool mayUnwind;
 
- IntegrationAttempt(IntegrationHeuristicsPass* Pass, Function& _F, 
+ IntegrationAttempt(LLPEAnalysisPass* Pass, Function& _F, 
 		    const ShadowLoopInvar* _L, int depth, int sdepth) : 
     improvableInstructions(0),
     improvedInstructions(0),
@@ -1608,7 +1608,7 @@ class PeelIteration : public IntegrationAttempt {
 
 public:
 
-  PeelIteration(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, int iter, int depth);
+  PeelIteration(LLPEAnalysisPass* Pass, IntegrationAttempt* P, PeelAttempt* PP, Function& F, int iter, int depth);
  
   IntegrationAttempt* parent;
 
@@ -1705,7 +1705,7 @@ class ProcessExternalCallback;
 class PeelAttempt {
    // Not a subclass of IntegrationAttempt -- this is just a helper.
 
-   IntegrationHeuristicsPass* pass;
+   LLPEAnalysisPass* pass;
    IntegrationAttempt* parent;
    Function& F;
 
@@ -1733,7 +1733,7 @@ class PeelAttempt {
    std::vector<BasicBlock*> CommitFailedBlocks;
    std::vector<Function*> CommitFunctions;
 
-   PeelAttempt(IntegrationHeuristicsPass* Pass, IntegrationAttempt* P, Function& _F, const ShadowLoopInvar* _L, int depth);
+   PeelAttempt(LLPEAnalysisPass* Pass, IntegrationAttempt* P, Function& _F, const ShadowLoopInvar* _L, int depth);
    ~PeelAttempt();
 
    bool analyse(uint32_t parent_stack_depth, bool& readsTentativeData, bool& containsCheckedReads);
@@ -1813,7 +1813,7 @@ class InlineAttempt : public IntegrationAttempt {
 
  public:
 
-  InlineAttempt(IntegrationHeuristicsPass* Pass, Function& F, ShadowInstruction* _CI, int depth, bool isPathCond = false);
+  InlineAttempt(LLPEAnalysisPass* Pass, Function& F, ShadowInstruction* _CI, int depth, bool isPathCond = false);
 
   virtual ~InlineAttempt();
 
