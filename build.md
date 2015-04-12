@@ -1,7 +1,7 @@
 ---
 layout: page
 title: Build Instructions
-permalink: /build.md
+permalink: /build/
 ---
 
 This page describes how to build LLPE from source. There are currently two versions: an LLVM 3.2 build that is no longer updated, and the development trunk which currently builds against LLVM 3.6 and will be updated to future LLVM releases as they arise.
