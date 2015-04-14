@@ -43,7 +43,7 @@ make
 
 If all works out, you should get build/driver/libLLVMLLPEDriver.so and build/main/libLLVMLLPEMain.so
 
-Next try the [tutorial](/tutorial.md)
+Next try the [tutorial](/tutorial/)
 
 Building LLPE 3.2
 -----------------
@@ -77,4 +77,4 @@ make
 
 If all goes well you should get (for example) Release+Debug/lib/IntegratorAnalyses.so and IntegratorTransforms.so.
 
-Next try the [tutorial](/tutorial.md)
+Next try the [tutorial](/tutorial/)
