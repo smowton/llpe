@@ -1163,8 +1163,6 @@ protected:
 
   Module& getModule();
 
-  void markContextDead();
-
   Function& getFunction() { return F; }
   
   // virtual for external access:
@@ -1219,7 +1217,6 @@ protected:
   virtual ShadowInstruction* getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) = 0;
   ShadowInstruction* getInst(uint32_t blockIdx, uint32_t instIdx);
   virtual ShadowInstruction* getInst(ShadowInstructionInvar* SII);
-  ShadowInstruction* getMostLocalInst(uint32_t blockIdx, uint32_t instIdx);
 
   // The toplevel loop:
   void analyse();
@@ -1323,7 +1320,6 @@ protected:
 
   virtual ReadFile* tryGetReadFile(ShadowInstruction* CI);
   bool tryPromoteOpenCall(ShadowInstruction* CI);
-  void tryPromoteAllCalls();
   bool tryResolveVFSCall(ShadowInstruction*);
   bool executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename);
   WalkInstructionResult isVfsCallUsingFD(ShadowInstruction* VFSCall, ShadowInstruction* FD, bool ignoreClose);
@@ -1334,13 +1330,10 @@ protected:
   bool isUnusedReadCall(ShadowInstruction*);
   OpenStatus& getOpenStatus(ShadowInstruction*);
   void tryKillAllVFSOps();
-  void markCloseCall(ShadowInstruction*);
   void initialiseFDStore(FDStore*);
 
   // Load forwarding extensions for varargs:
   virtual void getVarArg(int64_t, ImprovedValSet*&) = 0;
-  void disableChildVarargsContexts();
-  bool isVarargsTainted();
   
   // Dead store and allocation elim:
 
@@ -1365,8 +1358,6 @@ protected:
   void resetDeadInstructions();
 
   virtual bool ctxContains(IntegrationAttempt*) = 0;
-  bool shouldCheckPB(ShadowValue);
-  void analyseLoopPBs(const ShadowLoopInvar* L, BasicBlock* CacheThresholdBB, IntegrationAttempt* CacheThresholdIA);
   void gatherIndirectUsersInLoop(const ShadowLoopInvar*);
   void noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB);
   bool _willBeReplacedOrDeleted(ShadowValue);
@@ -1554,7 +1545,6 @@ protected:
   // Function splitting in the commit stage
   
   virtual uint64_t findSaveSplits();
-  void checkNonLocalReference(ShadowValue);
   void inheritCommitFunction();
   
   // Stat collection and printing:
@@ -1572,15 +1562,12 @@ protected:
   virtual void describe(raw_ostream& Stream) const = 0;
   virtual void describeBrief(raw_ostream& Stream) const = 0;
   virtual std::string getFunctionName();
-  virtual int getIterCount() = 0;
 
   void printDebugHeader(raw_ostream& Str) {
     printHeader(Str);
   }
 
   void dumpMemoryUsage(int indent = 0);
-
-  void testLoadWalk(LoadInst* LI);
 
 };
 
@@ -1653,10 +1640,6 @@ public:
   bool allExitEdgesDead(); 
   void dropExitingStoreRef(uint32_t, uint32_t);
 
-  virtual int getIterCount() {
-    return iterationCount;
-  }
-
   void prepareShadows();
   virtual std::string getCommittedBlockPrefix();
   virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
@@ -1701,13 +1684,10 @@ class PeelAttempt {
 
    uint64_t SeqNumber;
 
-   std::string HeaderStr;
-
    int64_t residualInstructions;
 
    int nesting_depth;
    int stack_depth;
-   int debugIndent;
 
    bool enabled;
 
@@ -1771,7 +1751,7 @@ class PeelAttempt {
 
    std::string getLName() const;
 
- };
+};
 
 // Members only needed for an IA with a target call
 struct IATargetInfo {
@@ -1856,8 +1836,6 @@ class InlineAttempt : public IntegrationAttempt {
 
   ImprovedValSet* returnValue;
 
-  DebugLoc* dbgLoc;
-
   bool isUnsharable() {
     return hasVFSOps || isModel || (sharing && !sharing->escapingMallocs.empty()) || Callers.empty();
   }
@@ -1895,10 +1873,6 @@ class InlineAttempt : public IntegrationAttempt {
 
   int64_t NonFPArgIdxToArgIdx(int64_t idx);
   int64_t FPArgIdxToArgIdx(int64_t idx);
-
-  virtual int getIterCount() {
-    return -1;
-  }
 
   virtual bool stackIncludesCallTo(Function*); 
 
