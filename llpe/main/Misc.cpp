@@ -51,60 +51,60 @@ using namespace llvm;
 
 char LLPEAnalysisPass::ID = 0;
 
-static cl::opt<std::string> GraphOutputDirectory("intgraphs-dir", cl::init(""));
-static cl::opt<std::string> RootFunctionName("intheuristics-root", cl::init("main"));
+static cl::opt<std::string> GraphOutputDirectory("llpe-graphs-dir", cl::init(""));
+static cl::opt<std::string> RootFunctionName("llpe-root", cl::init("main"));
 static cl::opt<std::string> EnvFileAndIdx("spec-env", cl::init(""));
 static cl::opt<std::string> ArgvFileAndIdxs("spec-argv", cl::init(""));
-static cl::opt<unsigned> MallocAlignment("int-malloc-alignment", cl::init(1));
+static cl::opt<unsigned> MallocAlignment("llpe-malloc-alignment", cl::init(1));
 static cl::list<std::string> SpecialiseParams("spec-param", cl::ZeroOrMore);
-static cl::list<std::string> AlwaysInlineFunctions("int-always-inline", cl::ZeroOrMore);
-static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMore);
-static cl::list<std::string> AlwaysIterLoops("int-always-iterate", cl::ZeroOrMore);
-static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
-static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
-static cl::list<std::string> IgnoreLoopsWithChildren("int-ignore-loop-children", cl::ZeroOrMore);
-static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
-static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
-static cl::list<std::string> IgnoreBlocks("int-ignore-block", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsInt("int-path-condition-int", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsFptr("int-path-condition-fptr", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsString("int-path-condition-str", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsIntmem("int-path-condition-intmem", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsFptrmem("int-path-condition-fptrmem", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsFunc("int-path-condition-func", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsStream("int-path-condition-stream", cl::ZeroOrMore);
-static cl::list<std::string> PathConditionsGlobalInit("int-path-condition-global-unmodified", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysInlineFunctions("llpe-always-inline", cl::ZeroOrMore);
+static cl::list<std::string> OptimisticLoops("llpe-optimistic-loop", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysIterLoops("llpe-always-iterate", cl::ZeroOrMore);
+static cl::list<std::string> AssumeEdges("llpe-assume-edge", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreLoops("llpe-ignore-loop", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreLoopsWithChildren("llpe-ignore-loop-children", cl::ZeroOrMore);
+static cl::list<std::string> AlwaysExploreFunctions("llpe-always-explore", cl::ZeroOrMore);
+static cl::list<std::string> LoopMaxIters("llpe-loop-max", cl::ZeroOrMore);
+static cl::list<std::string> IgnoreBlocks("llpe-ignore-block", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsInt("llpe-path-condition-int", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFptr("llpe-path-condition-fptr", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsString("llpe-path-condition-str", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsIntmem("llpe-path-condition-intmem", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFptrmem("llpe-path-condition-fptrmem", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsFunc("llpe-path-condition-func", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsStream("llpe-path-condition-stream", cl::ZeroOrMore);
+static cl::list<std::string> PathConditionsGlobalInit("llpe-path-condition-global-unmodified", cl::ZeroOrMore);
 static cl::opt<bool> SkipBenefitAnalysis("skip-benefit-analysis");
-static cl::opt<bool> SkipDIE("skip-int-die");
+static cl::opt<bool> SkipDIE("skip-llpe-die");
 static cl::opt<bool> SkipTL("skip-check-elim");
-static cl::opt<unsigned> MaxContexts("int-stop-after", cl::init(0));
-static cl::opt<bool> VerboseOverdef("int-verbose-overdef");
-static cl::opt<bool> EnableFunctionSharing("int-enable-sharing");
-static cl::opt<bool> VerboseFunctionSharing("int-verbose-sharing");
-static cl::opt<bool> UseGlobalInitialisers("int-use-global-initialisers");
-static cl::list<std::string> SpecialLocations("int-special-location", cl::ZeroOrMore);
-static cl::list<std::string> ModelFunctions("int-model-function", cl::ZeroOrMore);
-static cl::list<std::string> YieldFunctions("int-yield-function", cl::ZeroOrMore);
-static cl::list<std::string> TargetStack("int-target-stack", cl::ZeroOrMore);
-static cl::list<std::string> SimpleVolatiles("int-simple-volatile-load", cl::ZeroOrMore);
-static cl::list<std::string> LockDomains("int-lock-domain", cl::ZeroOrMore);
-static cl::list<std::string> PessimisticLocks("int-pessimistic-lock", cl::ZeroOrMore);
-static cl::opt<bool> DumpDSE("int-dump-dse");
-static cl::opt<bool> DumpTL("int-dump-tl");
-static cl::list<std::string> ForceNoAliasArgs("int-force-noalias-arg", cl::ZeroOrMore);
-static cl::list<std::string> VarAllocators("int-allocator-fn", cl::ZeroOrMore);
-static cl::list<std::string> ConstAllocators("int-allocator-fn-const", cl::ZeroOrMore);
-static cl::opt<bool> VerbosePathConditions("int-verbose-path-conditions");
-static cl::opt<std::string> LLIOPreludeFn("int-prelude-fn", cl::init(""));
-static cl::opt<int> LLIOPreludeStackIdx("int-prelude-stackidx", cl::init(-1));
-static cl::opt<std::string> LLIOConfFile("int-write-llio-conf", cl::init(""));
-static cl::opt<std::string> StatsFile("int-stats-file", cl::init(""));
-static cl::list<std::string> NeverInline("int-never-inline", cl::ZeroOrMore);
-static cl::opt<bool> SingleThreaded("int-single-threaded");
-static cl::opt<bool> OmitChecks("int-omit-checks");
-static cl::opt<bool> OmitMallocChecks("int-omit-malloc-checks");
-static cl::list<std::string> SplitFunctions("int-force-split");
-static cl::opt<bool> EmitFakeDebug("int-emit-fake-debug");
+static cl::opt<unsigned> MaxContexts("llpe-stop-after", cl::init(0));
+static cl::opt<bool> VerboseOverdef("llpe-verbose-overdef");
+static cl::opt<bool> EnableFunctionSharing("llpe-enable-sharing");
+static cl::opt<bool> VerboseFunctionSharing("llpe-verbose-sharing");
+static cl::opt<bool> UseGlobalInitialisers("llpe-use-global-initialisers");
+static cl::list<std::string> SpecialLocations("llpe-special-location", cl::ZeroOrMore);
+static cl::list<std::string> ModelFunctions("llpe-model-function", cl::ZeroOrMore);
+static cl::list<std::string> YieldFunctions("llpe-yield-function", cl::ZeroOrMore);
+static cl::list<std::string> TargetStack("llpe-target-stack", cl::ZeroOrMore);
+static cl::list<std::string> SimpleVolatiles("llpe-simple-volatile-load", cl::ZeroOrMore);
+static cl::list<std::string> LockDomains("llpe-lock-domain", cl::ZeroOrMore);
+static cl::list<std::string> PessimisticLocks("llpe-pessimistic-lock", cl::ZeroOrMore);
+static cl::opt<bool> DumpDSE("llpe-dump-dse");
+static cl::opt<bool> DumpTL("llpe-dump-tl");
+static cl::list<std::string> ForceNoAliasArgs("llpe-force-noalias-arg", cl::ZeroOrMore);
+static cl::list<std::string> VarAllocators("llpe-allocator-fn", cl::ZeroOrMore);
+static cl::list<std::string> ConstAllocators("llpe-allocator-fn-const", cl::ZeroOrMore);
+static cl::opt<bool> VerbosePathConditions("llpe-verbose-path-conditions");
+static cl::opt<std::string> LLIOPreludeFn("llpe-prelude-fn", cl::init(""));
+static cl::opt<int> LLIOPreludeStackIdx("llpe-prelude-stackidx", cl::init(-1));
+static cl::opt<std::string> LLIOConfFile("llpe-write-llio-conf", cl::init(""));
+static cl::opt<std::string> StatsFile("llpe-stats-file", cl::init(""));
+static cl::list<std::string> NeverInline("llpe-never-inline", cl::ZeroOrMore);
+static cl::opt<bool> SingleThreaded("llpe-single-threaded");
+static cl::opt<bool> OmitChecks("llpe-omit-checks");
+static cl::opt<bool> OmitMallocChecks("llpe-omit-malloc-checks");
+static cl::list<std::string> SplitFunctions("llpe-force-split");
+static cl::opt<bool> EmitFakeDebug("llpe-emit-fake-debug");
 
 static RegisterPass<LLPEAnalysisPass> X("llpe-analysis", "LLPE Analysis",
 						 false /* Only looks at CFG */,
@@ -2390,7 +2390,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* LoopF;
     BasicBlock *BB1, *BB2;
 
-    parseFBB("int-optimistic-loop", *ArgI, *(F.getParent()), LoopF, BB1, BB2);
+    parseFBB("llpe-optimistic-loop", *ArgI, *(F.getParent()), LoopF, BB1, BB2);
 
     optimisticLoopMap[std::make_pair(LoopF, BB1)] = BB2;
 
@@ -2401,7 +2401,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* LoopF;
     BasicBlock *HBB;
 
-    parseFB("int-always-iterate", *ArgI, *(F.getParent()), LoopF, HBB);
+    parseFB("llpe-always-iterate", *ArgI, *(F.getParent()), LoopF, HBB);
     
     alwaysIterLoops[LoopF].insert(HBB);
 
@@ -2412,7 +2412,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* AssF;
     BasicBlock *BB1, *BB2;
     
-    parseFBB("int-assume-edge", *ArgI, *(F.getParent()), AssF, BB1, BB2);
+    parseFBB("llpe-assume-edge", *ArgI, *(F.getParent()), AssF, BB1, BB2);
 
     assumeEdges[AssF].insert(std::make_pair(BB1, BB2));
 
@@ -2423,7 +2423,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* LF;
     BasicBlock* HBB;
 
-    parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
+    parseFB("llpe-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoops[LF].insert(HBB);
 
@@ -2434,7 +2434,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* LF;
     BasicBlock* HBB;
 
-    parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
+    parseFB("llpe-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoopsWithChildren[LF].insert(HBB);
 
@@ -2446,7 +2446,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     BasicBlock* HBB;
     uint64_t Count;
     
-    parseFBI("int-loop-max", *ArgI, *(F.getParent()), LF, HBB, Count);
+    parseFBI("llpe-loop-max", *ArgI, *(F.getParent()), LF, HBB, Count);
 
     maxLoopIters[std::make_pair(LF, HBB)] = Count;
 
@@ -2461,7 +2461,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
 
     if(fName.empty() || sizeStr.empty()) {
 
-      errs() << "-int-special-location must have form function_name,size\n";
+      errs() << "-llpe-special-location must have form function_name,size\n";
       exit(1);
 
     }
@@ -2469,12 +2469,12 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* SpecF = F.getParent()->getFunction(fName);
     if(!SpecF) {
 
-      errs() << "-int-special-location: no such function " << fName << "\n";
+      errs() << "-llpe-special-location: no such function " << fName << "\n";
       exit(1);
 
     }
 
-    int64_t size = getInteger(sizeStr, "-int-special-location size");
+    int64_t size = getInteger(sizeStr, "-llpe-special-location size");
     SpecialLocationDescriptor& sd = specialLocations[SpecF];
     sd.storeSize = (uint64_t)size;
     ImprovedValSetSingle* Init = new ImprovedValSetSingle(ValSetTypeScalar);
@@ -2492,7 +2492,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
 
     if(modelFName.empty() || realFName.empty()) {
 
-      errs() << "-int-model-function must have form original_name,new_name";
+      errs() << "-llpe-model-function must have form original_name,new_name";
       exit(1);
 
     }
@@ -2501,7 +2501,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* modelF = F.getParent()->getFunction(modelFName);
     if((!realF) || !modelF) {
 
-      errs() << "-int-model-function: no such function " << realFName << " or " << modelFName << "\n";
+      errs() << "-llpe-model-function: no such function " << realFName << " or " << modelFName << "\n";
       exit(1);
 
     }
@@ -2515,7 +2515,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* YieldF = F.getParent()->getFunction(*ArgI);
     if(!YieldF) {
 
-      errs() << "-int-yield-function: no such function " << *ArgI << "\n";
+      errs() << "-llpe-yield-function: no such function " << *ArgI << "\n";
       exit(1);
 
     }
@@ -2536,28 +2536,28 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     std::getline(istr, instIdxStr, ',');
 
     if(fName.empty() || bbName.empty() || instIdxStr.empty()) {
-      errs() << "int-target-stack must have form functionName,blockName,index\n";
+      errs() << "llpe-target-stack must have form functionName,blockName,index\n";
       exit(1);
     }
 
     Function* StackF = F.getParent()->getFunction(fName);
     if(!StackF) {
-      errs() << "Bad function in int-target-stack\n";
+      errs() << "Bad function in llpe-target-stack\n";
       exit(1);
     }
 
     BasicBlock* BB = findBlockRaw(StackF, bbName);
-    uint32_t instIdx = (uint32_t)getInteger(instIdxStr, "int-target-stack instruction index");
+    uint32_t instIdx = (uint32_t)getInteger(instIdxStr, "llpe-target-stack instruction index");
 
     if(instIdx >= BB->size()) {
-      errs() << "int-target-stack: call instruction index out of range\n";
+      errs() << "llpe-target-stack: call instruction index out of range\n";
       exit(1);
     }
 
     BasicBlock::iterator TestBI = BB->begin();
     std::advance(TestBI, instIdx);
     if((!isa<CallInst>(TestBI)) && (!isa<InvokeInst>(TestBI))) {
-      errs() << "int-target-stack: index does not refer to a call or invoke\n";
+      errs() << "llpe-target-stack: index does not refer to a call or invoke\n";
       exit(1);
     }
     
@@ -2572,13 +2572,13 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     BasicBlock* BB;
     uint64_t Offset;
 
-    parseFBI("int-simple-volatile-load", *it, *(F.getParent()), LoadF, BB, Offset);
+    parseFBI("llpe-simple-volatile-load", *it, *(F.getParent()), LoadF, BB, Offset);
 
     BasicBlock::iterator BI = BB->begin();
     std::advance(BI, Offset);
 
     if(!(isa<LoadInst>(BI) || isa<AtomicRMWInst>(BI) || isa<AtomicCmpXchgInst>(BI))) {
-      errs() << "int-simple-volatile-load: " << *it << " does not denote an atomic op\n";
+      errs() << "llpe-simple-volatile-load: " << *it << " does not denote an atomic op\n";
       exit(1);
     }
 
@@ -2600,7 +2600,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
 
       pos = it->find(',', pos);
       if(pos == std::string::npos) {
-	errs() << "int-lock-domain: usage: lockf,lockblock,lockoffset,global1,...,globaln\n";
+	errs() << "llpe-lock-domain: usage: lockf,lockblock,lockoffset,global1,...,globaln\n";
 	exit(1);
       }
       ++pos;
@@ -2609,13 +2609,13 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
 
     std::string FBI(*it, 0, pos - 1);
 
-    parseFBI("int-lock-domain", FBI, *(F.getParent()), LockF, BB, Offset);
+    parseFBI("llpe-lock-domain", FBI, *(F.getParent()), LockF, BB, Offset);
     BasicBlock::iterator BI = BB->begin();
     std::advance(BI, Offset);
     CallInst* CI = dyn_cast<CallInst>(BI);
     
     if(!CI) {
-      errs() << "int-lock-domain: " << *it << " does not denote a call\n";
+      errs() << "llpe-lock-domain: " << *it << " does not denote a call\n";
       exit(1);
     }
 
@@ -2650,13 +2650,13 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     BasicBlock* BB;
     uint64_t Offset;
 
-    parseFBI("int-pessimistic-lock", *it, *(F.getParent()), LockF, BB, Offset);
+    parseFBI("llpe-pessimistic-lock", *it, *(F.getParent()), LockF, BB, Offset);
     BasicBlock::iterator BI = BB->begin();
     std::advance(BI, Offset);
     CallInst* CI = dyn_cast<CallInst>(BI);
     
     if(!CI) {
-      errs() << "int-pessimistic-lock: " << *it << " does not denote a call\n";
+      errs() << "llpe-pessimistic-lock: " << *it << " does not denote a call\n";
       exit(1);
     }
 
@@ -2667,7 +2667,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
   for(cl::list<std::string>::iterator it = ForceNoAliasArgs.begin(),
 	itend = ForceNoAliasArgs.end(); it != itend; ++it) {
 
-    uint32_t argIdx = (uint32_t)getInteger(*it, "int-force-noalias-arg parameter");
+    uint32_t argIdx = (uint32_t)getInteger(*it, "llpe-force-noalias-arg parameter");
     forceNoAliasArgs.insert(argIdx);
     
   }
@@ -2686,12 +2686,12 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* allocF = F.getParent()->getFunction(fName);
     if(!allocF) {
 
-      errs() << "-int-allocator-fn: must specify a function\n";
+      errs() << "-llpe-allocator-fn: must specify a function\n";
       exit(1);
 
     }
 
-    uint32_t sizeParam = getInteger(idxStr, "int-allocator-fn second param");
+    uint32_t sizeParam = getInteger(idxStr, "llpe-allocator-fn second param");
 
     allocatorFunctions[allocF] = AllocatorFn::getVariableSize(sizeParam);
     SpecialFunctionMap[allocF] = SF_MALLOC;
@@ -2701,12 +2701,12 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
       Function* freeF = F.getParent()->getFunction(freeName);
       if(!freeF) {
 
-	errs() << "-int-allocator-fn: bad release function " << freeName << "\n";
+	errs() << "-llpe-allocator-fn: bad release function " << freeName << "\n";
 	exit(1);
 
       }
       
-      uint32_t releaseArg = getInteger(freeIdxStr, "int-allocator-fn fourth param");
+      uint32_t releaseArg = getInteger(freeIdxStr, "llpe-allocator-fn fourth param");
       deallocatorFunctions[freeF] = DeallocatorFn(releaseArg);
       SpecialFunctionMap[freeF] = SF_FREE;
 
@@ -2732,12 +2732,12 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* allocF = F.getParent()->getFunction(fName);
     if(!allocF) {
 
-      errs() << "-int-allocator-fn-const: must specify a function\n";
+      errs() << "-llpe-allocator-fn-const: must specify a function\n";
       exit(1);
 
     }
 
-    uint32_t size = getInteger(sizeStr, "int-allocator-fn-const second param");
+    uint32_t size = getInteger(sizeStr, "llpe-allocator-fn-const second param");
 
     IntegerType* I32 = Type::getInt32Ty(F.getContext());
 
@@ -2749,12 +2749,12 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
       Function* freeF = F.getParent()->getFunction(freeName);
       if(!freeF) {
 
-	errs() << "-int-allocator-fn: bad release function " << freeName << "\n";
+	errs() << "-llpe-allocator-fn: bad release function " << freeName << "\n";
 	exit(1);
 
       }
 
-      uint32_t releaseArg = getInteger(freeIdxStr, "int-allocator-fn fourth param");
+      uint32_t releaseArg = getInteger(freeIdxStr, "llpe-allocator-fn fourth param");
       deallocatorFunctions[freeF] = DeallocatorFn(releaseArg);
       SpecialFunctionMap[freeF] = SF_FREE;
 
@@ -2765,13 +2765,13 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
       Function* reallocF = F.getParent()->getFunction(reallocName);
       if(!reallocF) {
 
-	errs() << "-int-allocator-fn: bad realloc function " << reallocName << "\n";
+	errs() << "-llpe-allocator-fn: bad realloc function " << reallocName << "\n";
 	exit(1);
 
       }
 
-      uint32_t reallocPtrIdx = getInteger(reallocPtrIdxStr, "int-allocator-fn sixth param");
-      uint32_t reallocSizeIdx = getInteger(reallocPtrIdxStr, "int-allocator-fn seventh param");
+      uint32_t reallocPtrIdx = getInteger(reallocPtrIdxStr, "llpe-allocator-fn sixth param");
+      uint32_t reallocSizeIdx = getInteger(reallocPtrIdxStr, "llpe-allocator-fn seventh param");
       reallocatorFunctions[reallocF] = ReallocatorFn(reallocPtrIdx, reallocSizeIdx);
       SpecialFunctionMap[reallocF] = SF_REALLOC;
 
@@ -2784,7 +2784,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* IgnoreF = F.getParent()->getFunction(*it);
     if(!IgnoreF) {
 
-      errs() << "int-never-inline: no such function " << *it << "\n";
+      errs() << "llpe-never-inline: no such function " << *it << "\n";
       exit(1);
 
     }
@@ -2798,7 +2798,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     Function* SplitF = F.getParent()->getFunction(*it);
     if(!SplitF) {
 
-      errs() << "int-force-split: no such function " << *it << "\n";
+      errs() << "llpe-force-split: no such function " << *it << "\n";
       exit(1);
 
     }
@@ -3393,7 +3393,7 @@ void LLPEAnalysisPass::parseArgsPostCreation(InlineAttempt* IA) {
 
     if(fName != IA->F.getName()) {
 
-      errs() << "int-ignore-block currently only supported in the root function\n";
+      errs() << "llpe-ignore-block currently only supported in the root function\n";
       exit(1);
 
     }
@@ -3428,7 +3428,7 @@ void LLPEAnalysisPass::parseArgsPostCreation(InlineAttempt* IA) {
 
     if(fStackIdxStr.empty() || bbName.empty() || calledName.empty() || verifyName.empty()) {
 
-      errs() << "-int-path-condition-func usage: context-function,context-block,path-function,verify-function" << "\n";
+      errs() << "-llpe-path-condition-func usage: context-function,context-block,path-function,verify-function" << "\n";
       exit(1);
 
     }
