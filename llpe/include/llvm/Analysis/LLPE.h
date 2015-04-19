@@ -413,7 +413,6 @@ class LLPEAnalysisPass : public ModulePass {
    DenseMap<Function*, SmallSet<std::pair<BasicBlock*, BasicBlock*>, 1 > > assumeEdges;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoops;
    DenseMap<Function*, SmallSet<BasicBlock*, 1> > ignoreLoopsWithChildren;
-   DenseMap<Function*, SmallSet<BasicBlock*, 1> > expandCallsLoops;
    DenseMap<std::pair<Function*, BasicBlock*>, uint64_t> maxLoopIters;
    DenseSet<Instruction*> simpleVolatileLoads;
    
@@ -600,13 +599,6 @@ class LLPEAnalysisPass : public ModulePass {
      return it != ignoreLoopsWithChildren.end() && it->second.count(HBB);
    }
 
-   bool shouldExpandLoopCalls(Function* F, BasicBlock* HBB) {
-     DenseMap<Function*, SmallSet<BasicBlock*, 1> >::iterator it = expandCallsLoops.find(F);
-     if(it == expandCallsLoops.end())
-       return false;
-     return it->second.count(HBB);
-   }
-
    bool assumeEndsAfter(Function* F, BasicBlock* HBB, uint64_t C) {
      DenseMap<std::pair<Function*, BasicBlock*>, uint64_t>::iterator it = maxLoopIters.find(std::make_pair(F, HBB));
      if(it == maxLoopIters.end())
@@ -656,8 +648,6 @@ class LLPEAnalysisPass : public ModulePass {
    IHPFunctionInfo* getMRInfo(Function*);
 
    void postCommitStats();
-
-   void saveSplitPhase();
 
    void fixNonLocalUses();
    void initGlobalFDStore();

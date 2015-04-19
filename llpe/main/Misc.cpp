@@ -62,7 +62,6 @@ static cl::list<std::string> OptimisticLoops("int-optimistic-loop", cl::ZeroOrMo
 static cl::list<std::string> AlwaysIterLoops("int-always-iterate", cl::ZeroOrMore);
 static cl::list<std::string> AssumeEdges("int-assume-edge", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoops("int-ignore-loop", cl::ZeroOrMore);
-static cl::list<std::string> ExpandCallsLoops("int-expand-loop-calls", cl::ZeroOrMore);
 static cl::list<std::string> IgnoreLoopsWithChildren("int-ignore-loop-children", cl::ZeroOrMore);
 static cl::list<std::string> AlwaysExploreFunctions("int-always-explore", cl::ZeroOrMore);
 static cl::list<std::string> LoopMaxIters("int-loop-max", cl::ZeroOrMore);
@@ -2427,17 +2426,6 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     parseFB("int-ignore-loop", *ArgI, *(F.getParent()), LF, HBB);
 
     ignoreLoops[LF].insert(HBB);
-
-  }
-
-  for(cl::list<std::string>::const_iterator ArgI = ExpandCallsLoops.begin(), ArgE = ExpandCallsLoops.end(); ArgI != ArgE; ++ArgI) {
-
-    Function* LF;
-    BasicBlock* HBB;
-
-    parseFB("int-expand-loop-calls", *ArgI, *(F.getParent()), LF, HBB);
-
-    expandCallsLoops[LF].insert(HBB);
 
   }
 
