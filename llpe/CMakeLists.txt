@@ -15,3 +15,4 @@ include_directories(${LLVM_INCLUDE_DIRS} include)
 
 add_subdirectory(main)
 add_subdirectory(driver)
+add_subdirectory(utils)
