@@ -6,13 +6,13 @@ permalink: /tutorial/
 
 You will need: a [built](/build) LLPE library and a C-to-LLVM compiler (e.g. [clang](http://clang.llvm.org/))
 
-Here we'll specialise some simple programs to see LLPE's basic capabilities and ways of working. LLPE is run using LLVM's <tt>opt</tt> tool, which runs one or more analysis or optimisation passes over the source program. It requires that all loops in the source program have been placed in canonical form (having a unique preheader, header and latch) and dataflow out of the loop is represented in loop-closed SSA form; thus the standard invocation to prepare and specialise a program is:
+Here we'll specialise a simple program to see LLPE's basic capabilities and ways of working. LLPE is run using LLVM's <tt>opt</tt> tool, which runs one or more analysis or optimisation passes over the source program. It requires that all loops in the source program have been placed in canonical form (having a unique preheader, header and latch) and dataflow out of the loop is represented in loop-closed SSA form; thus the standard invocation to prepare and specialise a program is:
 
 ```
 opt -load /path/to/llpe/build/main/libLLVMLLPEMain.so -load /path/to/llpe/build/driver/libLLVMLLPEDriver.so -loop-simplify -lcssa -llpe unspecialised.bc -o specialised.bc
 ```
 
-In the examples below I will abbreviate this <tt>$LLPE_OPT unspecialised.bc -o specialised.bc</tt>
+In the example below I will abbreviate this <tt>$LLPE_OPT unspecialised.bc -o specialised.bc</tt>
 
 Rarely, loops cannot be represented in canonical form, usually because <tt>goto</tt> statements are used to enter and exit the loop in several places. LLPE will warn you that manual intervention is necessary in this case.
 
@@ -66,8 +66,5 @@ clang spec.bc -o spec
 ./spec
 ```
 
-In this particular example, it was important not to run <tt>clang</tt> with any optmisation flags, or it would have achieved the same simplification for us! LLPE comes into its own, however, when the input programs are sufficiently complex that Clang's or LLVM's conventional optimisers cannot fully exploit the opportunities available, as we will see in the following examples.
+In this particular example, it was important not to run <tt>clang</tt> with any optmisation flags, or it would have achieved the same simplification for us! LLPE comes into its own, however, when the input programs are sufficiently complex that Clang's or LLVM's conventional optimisers cannot fully exploit the opportunities available.
 
-## More examples to come!
-
-This tutorial is a work in progress -- more examples to come very soon (as of 12th April 2015).
