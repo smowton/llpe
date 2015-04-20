@@ -41,7 +41,7 @@ clang -c -emit-llvm cksum.c -o cksum.bc
 opt -load /path/to/llpe/utils/libLLVMLLPEUtils.so -nameblocks cksum.bc -o cksum_names.bc
 ```
 
-Run llvm-dis and find the <tt>cksum</tt> entry block's name: in this example it has been named "1":
+Run <tt>llvm-dis</tt> and find the <tt>cksum</tt> entry block's name: in this example it has been named "1":
 
 ```
 llvm-dis cksum_names.bc -o -
@@ -55,7 +55,7 @@ define i8 @cksum(i8* %input) {
 
 If you see a name like <tt>&lt;label&gt;:4</tt> or no name at all, check you ran <tt>nameblocks</tt> successfully.
 
-Now we can run the specialisation itself (using the same definition of $LLPE_OPT as in the [tutorial](/tutorial/)):
+Now we can run the specialisation itself (using the same definition of <tt>$LLPE_OPT</tt> as in the [tutorial](/tutorial/)):
 
 ```
 $LLPE_OPT -llpe-root cksum \
@@ -68,7 +68,7 @@ $LLPE_OPT -llpe-root cksum \
 
 * <tt>llpe-root</tt> picks the function where specialisation will begin (default <tt>main</tt>)
 * <tt>llpe-force-noalias-arg 0</tt> specifies that the first parameter to <tt>cksum</tt> does not alias any other pointers (e.g. globals, other arguments).
-* <tt>llpe-path-condition-str</tt> says that we should specialise assuming <tt>cksum</tt>'s first argument (<tt>__args__,0</tt>) holds the string <tt>Hello</tt> starting in function <tt>cksum</tt> block <tt>1</tt> (its entry block, the start of the function). Instead of <tt>__args__</tt> we could have named a basic block to make an assumption about an instruction, or <tt>__globals__</tt> to assume about a global variable. We could also have specified a different function and block for the last two arguments to indicate that the assumption, and thus specialisation based upon it, should not begin until the specified program point.
+* <tt>llpe-path-condition-str</tt> says that we should specialise assuming <tt>cksum</tt>'s first argument (<tt>\_\_args\_\_,0</tt>) holds the string <tt>Hello</tt> starting in function <tt>cksum</tt> block <tt>1</tt> (its entry block, the start of the function). Instead of <tt>\_\_args\_\_</tt> we could have named a basic block to make an assumption about an instruction, or <tt>\_\_globals\_\_</tt> to assume about a global variable. We could also have specified a different function and block for the last two arguments to indicate that the assumption, and thus specialisation based upon it, should not begin until the specified program point.
 * <tt>llpe-verbose-path-conditions</tt> says to insert helpful print statements indicating when specialised code is entered and left and for what reason.
 
 If we use <tt>llvm-dis</tt> to examine the specialised code, we will find it begins something like this:
