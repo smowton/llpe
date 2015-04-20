@@ -421,7 +421,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
 
     for(; UI != UE; ++UI, ++j) {
 
-      Value* UsedV = *UI;
+      Value* UsedV = UI->getUser();
       if(Instruction* UsedI = dyn_cast<Instruction>(UsedV)) {
 
 	Users[j] = ShadowInstIdx(BBIndices[UsedI->getParent()], IIndices[UsedI]);
