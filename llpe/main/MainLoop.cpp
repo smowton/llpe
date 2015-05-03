@@ -207,7 +207,8 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t n
   stack_depth = new_stack_depth;
 
   bool anyChange = false;
-
+  
+  // Mark entry block certain or assumed-reached if appropriate
   anyChange |= createEntryBlock();
 
   getInitialStore(inLoopAnalyser);

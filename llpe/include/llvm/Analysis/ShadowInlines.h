@@ -1356,6 +1356,14 @@ struct ShadowBB {
 
   }
 
+  bool isMarkedCertain() {
+    return status == BBSTATUS_CERTAIN;
+  }
+
+  bool isMarkedCertainOrAssumed() {
+    return status == BBSTATUS_CERTAIN || status == BBSTATUS_ASSUMED;
+  }
+
   bool edgeIsDead(ShadowBBInvar* BB2I) {
 
     bool foundLiveEdge = false;

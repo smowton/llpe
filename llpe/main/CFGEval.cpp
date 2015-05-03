@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "hypotheticalconstantfolder"
+#define DEBUG_TYPE "CFGEval"
 
 #include "llvm/Analysis/LLPE.h"
 
@@ -31,42 +31,44 @@ using namespace llvm;
 // Implement instruction/block analysis concerning control flow, i.e. determining a block's
 // status and relatedly analysing terminator instructions.
 
-void IntegrationAttempt::setBlockStatus(ShadowBBInvar* BBI, ShadowBBStatus s) {
-
-  ShadowBB* BB = getOrCreateBB(BBI);
-  BB->status = s;
-    
-}
-
+// Return true if, when LLPE's specialisation assumptions hold, this function is certain
+// to be entered.
 bool InlineAttempt::entryBlockIsCertain() {
 
   if(Callers.empty())
     return true;
   release_assert(!isShared());
-  return blockCertainlyExecutes(Callers[0]->parent);
+  return Callers[0]->parent->isMarkedCertain();
 
 }
 
+// Return true if, when LLPE's specialisation assumptions hold, this loop iteration is certain
+// to be entered.
 bool PeelIteration::entryBlockIsCertain() {
 
   if(iterationCount == 0)
-    return blockCertainlyExecutes(parent->getBB(parentPA->L->preheaderIdx));
+    return parent->getBB(parentPA->L->preheaderIdx)->isMarkedCertain();
 
   // Otherwise it's certain if we're certain to iterate and at least the previous header was certain.
   PeelIteration* prevIter = parentPA->Iterations[iterationCount - 1];
-  return blockCertainlyExecutes(prevIter->getBB(parentPA->L->latchIdx)) && prevIter->allExitEdgesDead();
+  return prevIter->getBB(parentPA->L->latchIdx)->isMarkedCertain() && prevIter->allExitEdgesDead();
 
 }
 
+// Return true if the user has instructed we should explore this function aggressively, using the same
+// rules as for code that is certainly reachable.
 bool InlineAttempt::entryBlockAssumed() {
 
+  // The specialisation root is certainly entered
   if(Callers.empty())
     return true;
 
   release_assert(!isShared());
 
-  if(blockAssumedToExecute(Callers[0]->parent))
+  if(Callers[0]->parent->isMarkedCertainOrAssumed())
     return true;
+
+  // Nominated by the user?
   if(pass->shouldAlwaysExplore(&F))
     return true;
 
@@ -74,15 +76,20 @@ bool InlineAttempt::entryBlockAssumed() {
 
 }
 
+// Return true if the user has instructed we should explore this loop iteration aggressively, using the same
+// rules as for code that is certainly reachable.
 bool PeelIteration::entryBlockAssumed() {
-
-  // Having been entered at all currently signifies at least the assumption that we will run.
+    
+  // A PeelIteration object being created at all indicates at least the assumption that we will run.
   return true;
 
 }
 
+// Create the entry block (function entry point or loop header) and set it certain or assumed-reachable
+// if appropriate. Return true if the block was created or its status changed.
 bool IntegrationAttempt::createEntryBlock() {
 
+  // Block already created? Header status cannot change after creation.
   if(BBs[0])
     return false;
 
@@ -93,13 +100,15 @@ bool IntegrationAttempt::createEntryBlock() {
   else if(entryBlockAssumed())
     newStatus = BBSTATUS_ASSUMED;
 
-  setBlockStatus(getBBInvar(BBsOffset), newStatus);
+  ShadowBB* BB = getOrCreateBB(getBBInvar(BBsOffset));
+  BB->status = newStatus;
 
   return true;
 
 }
 
-// Returns changed.
+// Set edge from block-instance BB with terminator TI to Target alive. Return true
+// if the edge status changed (i.e. it was not already marked alive)
 static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
 
   const unsigned NumSucc = TI->getNumSuccessors();
@@ -111,7 +120,8 @@ static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
 
     if(thisTarget == Target) {
 
-      // Mark this edge alive
+      // Mark this edge alive. In some cases there may be multiple copies of the edge
+      // e.g. for several switch cases with the same destination.
       if(!BB->succsAlive[I])
 	changed = true;
       BB->succsAlive[I] = true;
@@ -124,9 +134,12 @@ static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
 
 }
 
-// Return true on change.
-bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
+// Set outgoing edges alive dependent on the terminator instruction SI.
+// If the terminator is an Invoke instruction, the call has already been run.
+// Return true if anything changed.
+bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
 
+  // TOCHECK: I think this only returns false if the block ends with an Unreachable inst?
   switch(SI->invar->I->getOpcode()) {
   case Instruction::Br:
   case Instruction::Switch:
@@ -143,7 +156,7 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
     bool changed = false;
 
-    // !localStore indicates there were no live normal return paths.
+    // !localStore indicates the invoke instruction doesn't return normally
     if(SI->parent->localStore) {
 
       changed |= !SI->parent->succsAlive[0];
@@ -151,6 +164,9 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
     }      
 
+    // I mark the exceptional edge reachable here if the call is disabled, even though
+    // we might have proved it isn't feasible. This could be improved by converting the
+    // invoke into a call in the final program.
     if((!IA) || (!IA->isEnabled()) || IA->mayUnwind) {
 
       changed |= !SI->parent->succsAlive[1];
@@ -281,35 +297,14 @@ bool IntegrationAttempt::tryEvaluateTerminatorInst(ShadowInstruction* SI) {
 
 }
 
-IntegrationAttempt* IntegrationAttempt::getIAForScope(const ShadowLoopInvar* Scope) {
-
-  if((!L) || L->contains(Scope))
-    return this;
-
-  return getIAForScopeFalling(Scope);
-
-}
-
-IntegrationAttempt* PeelIteration::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
-
-  if(L == Scope)
-    return this;
-  return parent->getIAForScopeFalling(Scope);
-
-}
-
-IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
-
-  release_assert((!Scope) && "Scope not found (getIAForScopeFalling)");
-  return this;
-
-}
-
-// Return true if the result changes:
+// Evaluate the block terminator instruction SI to determine feasible successors, and juggle
+// store reference counts to give a reference to each live successor and drop this block's
+// reference. If the terminator is an Invoke the call has already been explored if appropriate.
+// Returns true if anything changed.
 bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisBlockLoadedVararg) {
 
   // Clarify branch target if possible:
-  bool anyChange = tryEvaluateTerminatorInst(SI);
+  bool anyChange = checkBlockOutgoingEdges(SI);
 
   // Return instruction breaks early to avoid the refcount juggling below:
   // a live return always has one successor, the call-merge.
@@ -408,7 +403,9 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 	newStatus = BBSTATUS_ASSUMED;
 
       ShadowBBInvar* SBB = getBBInvar(BB->invar->succIdxs[i]);
-      IA->setBlockStatus(SBB, newStatus);
+      
+      ShadowBB* BB = IA->getOrCreateBB(SBB);
+      BB->status = newStatus;
 
     }
     
@@ -420,6 +417,12 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
 }
 
+// Check if this block post-dominates the context entry block (that is, if the
+// context is entered, this block will definitely be reached). If it does, and the
+// entry block is certainly- or assumed-reachable, inherit its status.
+// Note this is distinct from LLVM's post-dominator analysis because it takes
+// edges proved dead during partial evaluation into account. It also depends on
+// visiting blocks in topological order.
 void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
 
   for(uint32_t i = 0, ilim = BB->invar->predIdxs.size(); i != ilim; ++i) {

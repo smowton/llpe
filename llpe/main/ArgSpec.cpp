@@ -28,6 +28,7 @@
 
 using namespace llvm;
 
+// Read a file into a std::string
 static void readWholeFile(std::string& path, std::string& out, bool addnewline) {
 
   ErrorOr<std::unique_ptr<MemoryBuffer>> MB = MemoryBuffer::getFile(path);
@@ -45,6 +46,7 @@ static void readWholeFile(std::string& path, std::string& out, bool addnewline) 
 
 }
 
+// Create a new constant global pointing to a maybe-null-terminated string
 GlobalVariable* llvm::getStringArray(std::string& bytes, Module& M, bool addNull) {
 
   Constant* EnvInit = ConstantDataArray::getString(M.getContext(), bytes, addNull);  
@@ -52,6 +54,7 @@ GlobalVariable* llvm::getStringArray(std::string& bytes, Module& M, bool addNull
 
 }
 
+// Create an array of pointers into a constant string, as seen in C's argv and env pointers.
 static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& lineStarts, Module& M) {
 
   GlobalVariable* EnvInitG = getStringArray(bytes, M);

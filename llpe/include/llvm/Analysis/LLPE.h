@@ -1266,10 +1266,9 @@ protected:
 
   bool createEntryBlock();
   bool tryEvaluateTerminator(ShadowInstruction* SI, bool tagSuccVararg);
-  bool tryEvaluateTerminatorInst(ShadowInstruction* SI);
+  bool checkBlockOutgoingEdges(ShadowInstruction* Terminator);
   IntegrationAttempt* getIAForScope(const ShadowLoopInvar* Scope);
   virtual IntegrationAttempt* getIAForScopeFalling(const ShadowLoopInvar* Scope) = 0;
-  void setBlockStatus(ShadowBBInvar* BB, ShadowBBStatus);
   bool shouldAssumeEdge(BasicBlock* BB1, BasicBlock* BB2) {
     return pass->shouldAssumeEdge(&F, BB1, BB2);
   }

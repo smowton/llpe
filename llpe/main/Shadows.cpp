@@ -765,18 +765,6 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
 }
 
-bool llvm::blockAssumedToExecute(ShadowBB* BB) {
-
-  return BB->status != BBSTATUS_UNKNOWN;
-
-}
-
-bool llvm::blockCertainlyExecutes(ShadowBB* BB) {
-
-  return BB->status == BBSTATUS_CERTAIN;
-
-}
-
 bool AllocData::isAvailable() {
 
   if(isCommitted)
@@ -964,3 +952,32 @@ bool ShadowInstruction::hasOrderingConstraint() {
   return false;
 
 }
+
+// Get the context corresponding to Scope.
+// For example, if this context refers to an inner loop and Scope refers to its (grand-)parent,
+// return the enclosing context that matches Scope. If it talks about a child loop,
+// just return this context.
+IntegrationAttempt* IntegrationAttempt::getIAForScope(const ShadowLoopInvar* Scope) {
+
+  if((!L) || L->contains(Scope))
+    return this;
+
+  return getIAForScopeFalling(Scope);
+
+}
+
+IntegrationAttempt* PeelIteration::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
+
+  if(L == Scope)
+    return this;
+  return parent->getIAForScopeFalling(Scope);
+
+}
+
+IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const ShadowLoopInvar* Scope) {
+
+  release_assert((!Scope) && "Scope not found (getIAForScopeFalling)");
+  return this;
+
+}
+
