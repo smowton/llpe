@@ -336,7 +336,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
     if(!BB->succsAlive[i])
       continue;
 
-    if(shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i]))) {
+    if(edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(BB->invar->succIdxs[i]))) {
       if(anyChange)
 	getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[i], 0);
       continue;
@@ -383,7 +383,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
     ShadowBBInvar* SBBI = getBBInvar(BB->invar->succIdxs[i]);
 
-    if(shouldIgnoreEdge(BB->invar, SBBI))
+    if(edgeBranchesToUnspecialisedCode(BB->invar, SBBI))
       continue;
 
     IntegrationAttempt* IA = getIAForScope(SBBI->naturalScope);
@@ -432,7 +432,7 @@ void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
     if(edgeIsDead(predBBI, BB->invar))
       continue;
 
-    if(shouldIgnoreEdge(predBBI, BB->invar))
+    if(edgeBranchesToUnspecialisedCode(predBBI, BB->invar))
       continue;
       
     release_assert(pendingEdges != 0 && "pendingEdges falling below zero");

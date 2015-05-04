@@ -1401,15 +1401,15 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 	
 	// Invoke instruction?
 	if(j == jlim - 1)
-	  getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[0], 0);
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->succIdxs[0], 0);
 	else
-	  getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(i, j + 1);
 
       }
       else if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
 
 	// Special checks *precede* the instruction
-	getFunctionRoot()->markBlockAndSuccsFailed(i, j);
+	getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(i, j);
 
       }
       else if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
@@ -1421,9 +1421,9 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 	  // the only kind of terminator that produces a checkable value.
 	  // If it is an invoke, mark the normal continuation reachable on failure.
 	  if(j == jlim - 1)
-	    getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[0], 0);
+	    getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->succIdxs[0], 0);
 	  else
-	    getFunctionRoot()->markBlockAndSuccsFailed(i, j + 1);
+	    getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(i, j + 1);
 
 	}
 

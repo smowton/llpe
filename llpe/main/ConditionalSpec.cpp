@@ -24,6 +24,8 @@ extern cl::opt<bool> VerboseNames;
 // (that is, situations where the specialiser assumes some condition, specialises according to it,
 //  and at commit time must synthesise duplicate successor blocks: specialised, and unmodified).
 
+// If the user has specified a target callstack, check whether SI (with corresponding context
+// IA) is part of it. 
 void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA) {
 
   InlineAttempt* MyRoot = getFunctionRoot();
@@ -49,20 +51,10 @@ void IntegrationAttempt::checkTargetStack(ShadowInstruction* SI, InlineAttempt* 
 
 }
 
-void InlineAttempt::addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool skipFirst) {
-
-  if(!skipFirst) {
-    if(!Set.insert(idx).second)
-      return;
-  }
-
-  ShadowBBInvar* BBI = getBBInvar(idx);
-  for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim; ++i)
-    addBlockAndSuccs(BBI->succIdxs[i], Set, false);
-
-}
-
-void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
+// Mark block with index 'idx' reachable on unspecialised paths, starting from instruction
+// index 'instIdx'. This might be because the user explicitly nominated "do not specialise
+// this path" or because a runtime check needs to branch here on failure.
+void InlineAttempt::markBlockAndSuccsReachableUnspecialised(uint32_t idx, uint32_t instIdx) {
 
   release_assert(getBBInvar(idx)->insts.size() > instIdx);
 
@@ -72,18 +64,21 @@ void InlineAttempt::markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx) {
   if(!blocksReachableOnFailure)
     blocksReachableOnFailure = new SmallDenseMap<uint32_t, uint32_t, 8>();
 
+  // At least this much of the block already marked reachable?
   SmallDenseMap<uint32_t, uint32_t>::iterator it = blocksReachableOnFailure->find(idx);
   if(it != blocksReachableOnFailure->end() && it->second <= instIdx)
     return;
 
   (*blocksReachableOnFailure)[idx] = instIdx;
 
+  // Mark all successors reachable too.
   ShadowBBInvar* BBI = getBBInvar(idx);
   for(uint32_t i = 0, ilim = BBI->succIdxs.size(); i != ilim; ++i)
-    markBlockAndSuccsFailed(BBI->succIdxs[i], 0);  
+    markBlockAndSuccsReachableUnspecialised(BBI->succIdxs[i], 0);  
 
 }
 
+// Collect block indices that can reach block 'idx' (i.e. its transitive predecessors)
 void InlineAttempt::addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set) {
 
   if(!Set.insert(idx).second)
@@ -95,16 +90,20 @@ void InlineAttempt::addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set) {
 
 }
 
+// The user has nominated this particular call instruction (given as a basic block / instruction offset)
+// as the only interesting call for specialisation. Enumerate blocks that can possibly reach it: we will
+// use this set as a cheap test to identify blocks that we shouldn't bother specialising because they
+// won't reach the target call.
 void InlineAttempt::setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_t stackIdx) {
 
   uint32_t blockIdx = findBlock(invarInfo, arg.first->getName());
   targetCallInfo = new IATargetInfo(blockIdx, arg.second, stackIdx);
 
   addBlockAndPreds(blockIdx, targetCallInfo->mayReachTarget);
-  addBlockAndSuccs(blockIdx, targetCallInfo->mayFollowTarget, true); 
 
 }
 
+// Is CurrBB -> SuccBB an invoke instruction's exceptional control flow edge?
 bool IntegrationAttempt::isExceptionEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
 
   if(isa<InvokeInst>(CurrBB->BB->getTerminator())) {
@@ -118,8 +117,11 @@ bool IntegrationAttempt::isExceptionEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* S
 
 }
 
-bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
+// Has the user marked CurrBB -> SuccBB as a control flow edge we shouldn't specialise along?
+// (i.e. in the final program it will branch to unspecialised code)
+bool IntegrationAttempt::edgeBranchesToUnspecialisedCode(ShadowBBInvar* CurrBB, ShadowBBInvar* SuccBB) {
 
+  // Never specialise code reachable from an invoke instruction throwing.
   if(isExceptionEdge(CurrBB, SuccBB))
     return true;
 
@@ -145,6 +147,14 @@ bool IntegrationAttempt::shouldIgnoreEdge(ShadowBBInvar* CurrBB, ShadowBBInvar* 
 
 }
 
+// This whole family of functions: check whether we have a specialisation assumption assigning a value to V (an instruction or argument) 
+// *when used in UserBlock*. Some assumptions apply immediately when V is defined (i.e. at the start of the function for an argument,
+// or immediately after the instruction executes), whilst for other values the assumption is only applied later (e.g. only assume an argument
+// has a value on a particular code path); in this latter case we must check whether the user block is dominated by the assumption.
+// 'asDef' specifies whether we're checking for an assumption that applies immediately or one that applies later. This functions only apply
+// to path conditions affecting virtual registers: any path condition affecting memory as applied to the store as it takes effect.
+
+// Check for an assumption given with respect to *all* instances of this function
 bool IntegrationAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef) {
 
   if(invarInfo->pathConditions) {
@@ -158,6 +168,8 @@ bool IntegrationAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, st
 
 }
 
+// Check for an ssumption given with respect to a particular call stack, or if that fails, check for assumptions that
+// apply to all instances of this function as above.
 bool InlineAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result, bool asDef) {
 
   if(targetCallInfo) {
@@ -171,12 +183,14 @@ bool InlineAttempt::tryGetPathValue2(ShadowValue V, ShadowBB* UserBlock, std::pa
 
 }
 
+// Specifically find an assumption value that is enforced after definition.
 bool IntegrationAttempt::tryGetPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
 
   return tryGetPathValue2(V, UserBlock, Result, false);
 
 }
 
+// Find an assumption value that is enforced upon definition.
 bool IntegrationAttempt::tryGetAsDefPathValue(ShadowValue V, ShadowBB* UserBlock, std::pair<ValSetType, ImprovedVal>& Result) {
 
   return tryGetPathValue2(V, UserBlock, Result, true);
@@ -194,7 +208,7 @@ bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStac
 
   for(std::vector<PathCondition>::iterator it = PCs.begin(), itend = PCs.end(); it != itend; ++it) {
 
-    /* fromStackIdx must equal instStackIdx for this kind of condition */
+    // fromStackIdx must equal instStackIdx for integer assertions.
 
     if(it->instStackIdx == myStackDepth) {
       
@@ -220,7 +234,7 @@ bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStac
 
 	// Make sure a failed version of the from-block and its successors is created:
 	uint32_t fromBlockIdx = findBlock(UserBlock->IA->invarInfo, it->fromBB);
-	getFunctionRoot()->markBlockAndSuccsFailed(fromBlockIdx, 0);
+	getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(fromBlockIdx, 0);
 
 	Result.first = ValSetTypeScalar;
 	Result.second.V = it->u.val;
@@ -236,6 +250,7 @@ bool IntegrationAttempt::tryGetPathValueFrom(PathConditions& PC, uint32_t myStac
 
 }
 
+// If the user has given a target call stack, walk up the stack from IA to the given depth
 InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth) {
 
   if(depth == UINT_MAX)
@@ -252,43 +267,15 @@ InlineAttempt* llvm::getIAWithTargetStackDepth(InlineAttempt* IA, uint32_t depth
 
 }
 
-ShadowValue IntegrationAttempt::getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx) {
-
-  if(!BB) {
-    
-    ShadowGV* GV = &(GlobalIHP->shadowGlobals[instIdx]);
-    return ShadowValue(GV);
-    
-  }
-
-  IntegrationAttempt* ptrIA;
-  if(stackIdx == UINT_MAX)
-    ptrIA = this;
-  else
-    ptrIA = getIAWithTargetStackDepth(getFunctionRoot(), stackIdx);
-  
-  if(BB == (BasicBlock*)ULONG_MAX) {
-
-    ShadowArg* ptr = &ptrIA->getFunctionRoot()->argShadows[instIdx];
-    return ShadowValue(ptr);
-
-  }
-  else {
-    
-    uint32_t ptrBBIdx = findBlock(ptrIA->invarInfo, BB->getName());
-    return ShadowValue(ptrIA->getInst(ptrBBIdx, instIdx));
-
-  }
-
-}
-
+// Apply the given assumption (path condition) if it applies from block BB. If the user gave a target call stack, apply it only at the appropriate
+// depth; otherwise apply it to all instances of this function.
 void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionTypes condty, ShadowBB* BB, uint32_t targetStackDepth) {
 
   // UINT_MAX signifies a path condition that applies to all instances of this function.
 
   if(it->fromStackIdx == targetStackDepth && it->fromBB == BB->invar->BB) {
 
-    ShadowValue ptrSV = getPathConditionOperand(it->instStackIdx, it->instBB, it->instIdx);
+    ShadowValue ptrSV = getPathConditionSV(it->instStackIdx, it->instBB, it->instIdx);
     ImprovedValSetSingle writePtr;
     if(!getImprovedValSetSingle(ptrSV, writePtr))
       return;
@@ -347,7 +334,7 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
 
     // Make sure a failed version of this block and its successors is created (except for stream conditions, which are checked on reads)
     if(condty != PathConditionTypeStream)
-      getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
+      getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->idx, 0);
 
   }
 
@@ -360,6 +347,7 @@ void llvm::clearAsExpectedChecks(ShadowBB* BB) {
 
 }
 
+// If an assumption is to be made about any value in this function, flag it for runtime check generation.
 void IntegrationAttempt::noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<PathCondition>& PCs, uint32_t stackIdx) {
 
   for(std::vector<PathCondition>::iterator it = PCs.begin(), itend = PCs.end(); it != itend; ++it) {
@@ -378,6 +366,7 @@ void IntegrationAttempt::noteAsExpectedChecksFrom(ShadowBB* BB, std::vector<Path
 
 }
 
+// Flag required runtime checks that apply to all instances of this function.
 void IntegrationAttempt::noteAsExpectedChecks(ShadowBB* BB) {
 
   if(invarInfo->pathConditions)
@@ -385,6 +374,7 @@ void IntegrationAttempt::noteAsExpectedChecks(ShadowBB* BB) {
 
 }
 
+// Flag required runtime checks relating a function in the target call stack, or to a function in general as above.
 void InlineAttempt::noteAsExpectedChecks(ShadowBB* BB) {
 
   if(targetCallInfo)
@@ -394,6 +384,7 @@ void InlineAttempt::noteAsExpectedChecks(ShadowBB* BB) {
 
 }
 
+// Apply all assumptions that are expressed as effects on (symbolic) memory, that apply from block BB.
 void IntegrationAttempt::applyMemoryPathConditions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
   
   if(invarInfo->pathConditions)
@@ -401,6 +392,8 @@ void IntegrationAttempt::applyMemoryPathConditions(ShadowBB* BB, bool inLoopAnal
 
 }
 
+// Apply all assumptions that are expressed as effects on (symbolic) memory, that apply from block BB. Account
+// for conditions that relate to a given target call stack, and then to this function in general.
 void InlineAttempt::applyMemoryPathConditions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
 
   if(targetCallInfo)
@@ -452,7 +445,7 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 	PathFuncArg& A = it->args[i];
 
 	ShadowArg* SArg = &(it->IA->argShadows[i]);
-	ShadowValue Op = getPathConditionOperand(A.stackIdx, A.instBB, A.instIdx);
+	ShadowValue Op = getPathConditionSV(A.stackIdx, A.instBB, A.instIdx);
 
 	// Can't use noteIndirectUse since that deals with allocations being used by synthetic
 	// pointers and the similar case of FDs.
@@ -497,7 +490,7 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
       }
       
       // Make sure a failed version of this block and its successors is created:
-      getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->idx, 0);
+      getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->idx, 0);
 
     }
 
@@ -505,20 +498,8 @@ void IntegrationAttempt::applyMemoryPathConditionsFrom(ShadowBB* BB, PathConditi
 
 }
 
-void InlineAttempt::getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets) {
-
-  for(uint32_t i = 0; i < nBBs; ++i) {
-
-    ShadowBBInvar* BBI = getBBInvar(i);
-    if(!isa<ReturnInst>(BBI->BB->getTerminator()))
-      continue;
-
-    rets.push_back(BBI->BB);
-
-  }
-
-}
-
+// Can this function return having bailed to unspecialised code due to a
+// runtime check failure?
 bool InlineAttempt::hasFailedReturnPath() {
 
   for(uint32_t i = 0; i < nBBs; ++i) {
@@ -536,7 +517,11 @@ bool InlineAttempt::hasFailedReturnPath() {
 
 }
 
-// Save phase bits:
+// Functions to generate unspecialised paths out of specialised code,
+// and to generate runtime checks that branch into them.
+
+// "Failed" throughout refers to blocks reachable upon runtime check failure, e.g. because
+// the real situation did not match an assumption given by the user.
 
 void IntegrationAttempt::initFailedBlockCommit() {}
 
@@ -575,6 +560,7 @@ void InlineAttempt::finishFailedBlockCommit() {
 
 }
 
+// Helper for matching (BB, stackIdx) tuples
 struct matchesFromIdx {
 
   BasicBlock* BB;
@@ -617,11 +603,10 @@ static uint32_t countPathConditionsAtBlockStartIn(ShadowBBInvar* BB, uint32_t st
   
 }
 
+// Returns the number of path conditions that will be checked /before the start of BB/.
+// This does not include conditions listed in AsDefIntPathConditions which are checked
+// as the instruction becomes defined (hence the name), in the midst of the block.
 uint32_t LLPEAnalysisPass::countPathConditionsAtBlockStart(ShadowBBInvar* BB, IntegrationAttempt* IA) {
-
-  // Returns the number of path conditions that will be checked /before the start of BB/.
-  // This does not include conditions listed in AsDefIntPathConditions which are checked
-  // as the instruction becomes defined (hence the name), in the midst of the block.
 
   uint32_t total = 0;
   if(IA->invarInfo->pathConditions)
@@ -635,6 +620,9 @@ uint32_t LLPEAnalysisPass::countPathConditionsAtBlockStart(ShadowBBInvar* BB, In
 
 }
 
+// Fetch the result of the given instruction / block / stack depth. Some magic values:
+// BB might be null indicating a global value, or ULONG_MAX indicating an argument.
+// stackIdx might be UINT_MAX indicating we should search this context.
 ShadowValue IntegrationAttempt::getPathConditionSV(uint32_t instStackIdx, BasicBlock* instBB, uint32_t instIdx) {
 
   if(!instBB) {
@@ -669,6 +657,9 @@ ShadowValue IntegrationAttempt::getPathConditionSV(PathCondition& Cond) {
 
 }
 
+// Generate a check that verifies a user assumption, branching to unspecialised code if it fails.
+// emitBlockIt points to the CommittedBlock where the test code should be emitted. We should move it
+// to point at the next block as a side-effect.
 void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditionTypes Ty, ShadowBB* BB, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt) {
 
   if((stackIdx != UINT_MAX && stackIdx != Cond.fromStackIdx) || BB->invar->BB != Cond.fromBB)
@@ -801,11 +792,16 @@ void IntegrationAttempt::emitPathConditionChecksIn(std::vector<PathCondition>& C
 
 }
 
+// Emit all path condition checks that should take place at the start of block BB.
 void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& PC, uint32_t stackIdx, SmallVector<CommittedBlock, 1>::iterator& emitBlockIt) {
 
+  // Integer, string and integer-memory checks are all straightforward check-and-branch affairs.
   emitPathConditionChecksIn(PC.IntPathConditions, PathConditionTypeInt, BB, stackIdx, emitBlockIt);
   emitPathConditionChecksIn(PC.StringPathConditions, PathConditionTypeString, BB, stackIdx, emitBlockIt);
   emitPathConditionChecksIn(PC.IntmemPathConditions, PathConditionTypeIntmem, BB, stackIdx, emitBlockIt);
+
+  // Function path conditions specify that we should insert a call to a verifier function,
+  // then check its return value is as required.
 
   for(std::vector<PathFunc>::iterator it = PC.FuncPathConditions.begin(), 
 	itend = PC.FuncPathConditions.end(); it != itend; ++it) {
@@ -884,6 +880,10 @@ void IntegrationAttempt::emitPathConditionChecks2(ShadowBB* BB, PathConditions& 
 
 }
 
+// Emit all path condition checks that need to take place at the start of this BB.
+// Return an iterator pointing into its committed (sub-)block list pointing at the block
+// where specialised code should be emitted (the first X sub-blocks having been used to
+// emit check instructions and consequent branches to unspecialised code)
 SmallVector<CommittedBlock, 1>::iterator IntegrationAttempt::emitPathConditionChecks(ShadowBB* BB) {
 
   SmallVector<CommittedBlock, 1>::iterator it = BB->committedBlocks.begin();
@@ -903,6 +903,8 @@ SmallVector<CommittedBlock, 1>::iterator IntegrationAttempt::emitPathConditionCh
   
 }
 
+// Skip over extra PHI nodes introduced at the top of an emitted unspecialised code block,
+// to account for extra control-flow merges from specialised code.
 BasicBlock::iterator InlineAttempt::skipMergePHIs(BasicBlock::iterator it) {
 
   PHINode* PN;
@@ -913,6 +915,8 @@ BasicBlock::iterator InlineAttempt::skipMergePHIs(BasicBlock::iterator it) {
 
 }
 
+// Does this basic block branch direct to unspecialised code, e.g. because an ordinary edge routes
+// away from the path the user is interested in specialising?
 bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
 
   if(pass->omitChecks)
@@ -924,7 +928,7 @@ bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
 
     ShadowBBInvar* TBBI = getBBInvar(BB->invar->succIdxs[i]);
 
-    if(shouldIgnoreEdge(SBBI, TBBI) && (!isExceptionEdge(SBBI, TBBI)) && !edgeIsDead(SBBI, TBBI))
+    if(edgeBranchesToUnspecialisedCode(SBBI, TBBI) && (!isExceptionEdge(SBBI, TBBI)) && !edgeIsDead(SBBI, TBBI))
       return true;
 
   }
@@ -933,8 +937,9 @@ bool IntegrationAttempt::hasLiveIgnoredEdges(ShadowBB* BB) {
 
 }
 
-
-
+// If the user has given a target call (a particular call instruction within this function
+// that is the only interesting target for specialisation), does the given edge branch away from it
+// (i.e. onto a path that cannot each it?)
 bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
 
   if(targetCallInfo && !targetCallInfo->mayReachTarget.count(BBIdx)) {  
@@ -952,6 +957,10 @@ bool InlineAttempt::isSpecToUnspecEdge(uint32_t predBlockIdx, uint32_t BBIdx) {
 
 }
 
+// BB predBlockIdx ends with an invoke instruction. BBIdx is one of its successors. Gather a list of invoke
+// instruction instances that might follow this edge, breaking from specialised to unspecialised code as they
+// do so, due to an exception being thrown within the invoke instance or already having broken to unspec
+// code within the invoke.
 bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
 					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, 
 					    SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
@@ -964,6 +973,9 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
      ((!L) || L->contains(predBBI->naturalScope)) &&
      (LPA = getPeelAttempt(immediateChildLoop(L, predBBI->naturalScope))) &&
      LPA->isEnabled() && LPA->isTerminated()) {
+
+    // We will emit code for each loop instance individually. Find the corresponding instruction
+    // for each instance.
 
     bool ret = false;
 
@@ -1041,6 +1053,8 @@ bool IntegrationAttempt::gatherInvokeBreaks(uint32_t predBlockIdx, uint32_t BBId
 
 }
 
+// Can any invoke instruction at the end of block 'breakFrom' enter unspecialised code
+// at 'breakTo'?
 bool IntegrationAttempt::hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo) {
 
   if(!isa<InvokeInst>(getBBInvar(breakFrom)->BB->getTerminator()))
@@ -1049,6 +1063,9 @@ bool IntegrationAttempt::hasInvokeBreaks(uint32_t breakFrom, uint32_t breakTo) {
 
 }
 
+// Find checks that precede the first specialised instruction in block BBIdx, which check against
+// concurrent modifcation to a file whose contents we're using for specialisation.
+// This will lead to code of the form if(fileHasChanged()) { unspecialisedCode } else { specialisedCode }
 bool IntegrationAttempt::gatherTopOfBlockVFSChecks(uint32_t BBIdx, ShadowInstIdx predOp, Value* predV,
 						   SmallVector<std::pair<Value*, BasicBlock*>, 4>* newPreds, 
 						   SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* newEdgeSources) {
@@ -1101,6 +1118,10 @@ bool IntegrationAttempt::hasTopOfBlockVFSChecks(uint32_t idx) {
 
 }
 
+// Gather branches from specialised to unspecialised code at the end of block predBlockIdx and leading to
+// unspecialised block BBIdx. These could be because the user is not interested in specialising BBIdx,
+// or due to a break from an invoke instruction at the end of predBlock. These breaks are distinct from
+// mid-block breaks resulting from introduced checks, in that they follow the existing CFG.
 void InlineAttempt::gatherSpecToUnspecEdges(uint32_t predBlockIdx, uint32_t BBIdx, ShadowInstIdx predOp, 
 					    Value* predV, SmallVector<std::pair<Value*, BasicBlock*>, 4>& newPreds) {
 
@@ -1135,6 +1156,8 @@ bool InlineAttempt::isSimpleMergeBlock(uint32_t i) {
 
 }
 
+// Find the version of V that is usable in unspecialised block UseBlock, which might involve
+// extra PHI nodes inserted to account for specialised-to-unspecialised branches.
 Value* InlineAttempt::getLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
   Value* Ret = tryGetLocalFailedValue(V, UseBlock);
@@ -1143,6 +1166,7 @@ Value* InlineAttempt::getLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
 }
 
+// As above, but returns null if V is only computed in specialised code.
 Value* InlineAttempt::tryGetLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
   Instruction* I = dyn_cast<Instruction>(V);
@@ -1164,6 +1188,11 @@ Value* InlineAttempt::tryGetLocalFailedValue(Value* V, BasicBlock* UseBlock) {
 
 }
 
+// Collect block instances that will branch from specialised to unspecialised code, mid-block blockIdx, between instIdx and its successor.
+// This means we're performing a test *after* instruction instIdx has been computed (e.g. %x = load %p; %as_expected = $x eq 0)
+// or because we need a test *before* the next instruction (e.g. checking for concurrent file modification before a read call)
+// As with most of these gather-spec-to-unspec functions, we must account for peeled loop iterations. 
+// Out-param 'edges' is not blanked. Return number of edges added.
 uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges) {
 
   ShadowBBInvar* BBI = getBBInvar(blockIdx);
@@ -1224,6 +1253,10 @@ uint32_t IntegrationAttempt::collectSpecIncomingEdges(uint32_t blockIdx, uint32_
 
 }
 
+// V is a Value in the original (pre-specialisation) program; blockIdx / instIdx correspond to V. Get the version of V that should be
+// used in UseBlock. If there is no unspecialised version of V, use the specialised version -- otherwise, we might directly use
+// the unspecialised clone of V, or might use some Phi node that has been inserted to merge the unspecialised and specialised variants.
+// If we need to insert e.g. type casts, insert them before InsertBefore, which is an Instruction in the emitted program.
 Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, BasicBlock* UseBlock, Instruction* InsertBefore) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
@@ -1246,7 +1279,13 @@ Value* InlineAttempt::getUnspecValue(uint32_t blockIdx, uint32_t instIdx, Value*
 
 }
 
-Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore) {
+// Get a specialised variant of V (an original-program Value). blockIdx / instIdx refer to the same
+// original program location. If V / blockIdx / instIdx refers to a child loop of this context,
+// we're talking about the last loop iteration (and since we insist on Loop-closed SSA form,
+// we're necessarily doing this in the context of an exit PHI).
+// Note this only makes sense because at present only loops with a single established iteration count will
+// be emitted in peeled form.
+Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V) {
 
   if(blockIdx == INVALID_BLOCK_IDX) {
 
@@ -1275,7 +1314,7 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
 	 LPA->isTerminated() &&
 	 LPA->isEnabled()) {
 
-	return LPA->Iterations.back()->getSpecValueAnyType(blockIdx, instIdx, V, InsertBefore);
+	return LPA->Iterations.back()->getSpecValueAnyType(blockIdx, instIdx, V);
 	  
       }
       else {
@@ -1290,9 +1329,10 @@ Value* IntegrationAttempt::getSpecValueAnyType(uint32_t blockIdx, uint32_t instI
 
 }
 
+// As above, but additionally insert type conversions as required to match the orignal V.
 Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore) {
 
-  Value* Ret = getSpecValueAnyType(blockIdx, instIdx, V, InsertBefore);
+  Value* Ret = getSpecValueAnyType(blockIdx, instIdx, V);
   if(!Ret)
     return 0;
 
@@ -1329,6 +1369,8 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
 
 }
 
+// Gather specialised versions of bbIdx / instIdx, along with the predecessor blocks coming from specialised to unspecialised code due to top-of-block path condition tests.
+// Either provide the values and blocks or the blocks and contexs, depending on the caller's requirements.
 void IntegrationAttempt::gatherPathConditionEdges(uint32_t bbIdx, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>* preds, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>* IAPreds) {
 
   ShadowBBInvar* BBI = getBBInvar(bbIdx);
@@ -1458,6 +1500,9 @@ BasicBlock::iterator InlineAttempt::commitFailedPHIs(BasicBlock* BB, BasicBlock:
 
 }
 
+// Collect basic block indices that can reach UseBBI by setting predBlocks[bbIdx] to ((Instruction*)ULONG_MAX, instIdx) for each one (actual Instructions will be synthesised by our caller)
+// The instIdx there indicates it is needed up to that instruction index, which can be relevant if blocks are split to introduce specialised-to-unspecialised
+// edges. LimitBBI is the definition block. It terminates the search since it must dominate all users in the original program BB graph.
 void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std::vector<std::pair<Instruction*, uint32_t> >& predBlocks, ShadowBBInvar* LimitBBI) {
 
   if(instIdx == ((uint32_t)-1))
@@ -1491,6 +1536,8 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 
 }
 
+// Create a PHI node merging some specialised instances of SI and some unspecialised variants of it (given as emitted-program BB / Instruction)
+// The specialised instance path might insert type conversions before the predecessor block's terminator.
 static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<std::pair<BasicBlock*, Instruction*>, 4>& unspecPreds, BasicBlock* InsertBB) {
 
   PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, VerboseNames ? "clonemerge" : "", InsertBB->begin());
@@ -1901,6 +1948,7 @@ void InlineAttempt::createForwardingPHIs(ShadowInstructionInvar& OrigSI, Instruc
 
 }
 
+// Are there any specialised instances of BBI in this context or a child?
 bool IntegrationAttempt::hasSpecialisedCompanion(ShadowBBInvar* BBI) {
 
   if(getBB(*BBI))
@@ -1928,9 +1976,9 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
   // Map each instruction operand to the most local PHI translation of the target instruction,
   // or if that doesn't exist the specialised version.
 
-  // If skipTestedInst is true then skip creating
-  // PHI forwards of the second-to-last instruction (i.e. the instruction before the terminator)
-  // as that will be special-cased in populateFailedBlock at the start of the next subblock.
+  // If skipTestedInst is true then skip creating PHI forwards of the second-to-last instruction 
+  // (i.e. the instruction before the terminator) as that will be special-cased in populateFailedBlock 
+  // at the start of the next subblock.
 
   BasicBlock::iterator BE = BB->end();
   Instruction* testedInst;
@@ -2055,6 +2103,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 
 }
 
+// Emit an unspecialised basic block that is known to have no specialised companions.
 void IntegrationAttempt::commitSimpleFailedBlock(uint32_t i) { }
 
 void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
@@ -2072,6 +2121,8 @@ void InlineAttempt::commitSimpleFailedBlock(uint32_t i) {
 
 }
 
+// Fill in bool-vector splitInsts to indicate where this block's specialised-to-unspecialised
+// edges will be inserted due to introduced checks.
 void IntegrationAttempt::getLocalSplitInsts(ShadowBB* BB, bool* splitInsts) {
 
   // Stop before the terminator because invoke instructions are treated specially
@@ -2089,7 +2140,7 @@ void IntegrationAttempt::getLocalSplitInsts(ShadowBB* BB, bool* splitInsts) {
       if(i + 1 != ilim && inst_is<PHINode>(SI) && inst_is<PHINode>(&BB->insts[i+1]))
 	continue;
 
-      // Special checks require a split BEFORE the block:
+      // Special checks require a split BEFORE the instruction:
       if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
 
 	if(i != 0)
@@ -2122,6 +2173,7 @@ bool IntegrationAttempt::hasSplitInsts(ShadowBB* BB) {
 
 }
 
+// Find split points for this context or any child.
 void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 
   if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
@@ -2146,7 +2198,7 @@ void IntegrationAttempt::getSplitInsts(ShadowBBInvar* BBI, bool* splitInsts) {
 
 }
 
-
+// Straightforward basic block cloning, optionally taking a suffix of the block rather than the whole thing.
 BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
 						    ValueToValueMapTy& VMap,
 						    const Twine &NameSuffix, 
@@ -2165,7 +2217,7 @@ BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
     if (II->hasName())
       NewInst->setName(II->getName()+NameSuffix);
     NewBB->getInstList().push_back(NewInst);
-    VMap[II] = NewInst;                // Add instruction map to value.
+    VMap[II] = NewInst;
     
   }
   
@@ -2173,6 +2225,9 @@ BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
 
 }
 
+// If we need any unspecialised variant of BB idx, clone it from the original program code and split it into subblocks
+// as required by any specialised-to-unspecialised mid-block edges. Don't actually introduce subblock PHI nodes
+// or adjust the top-of-block PHI yet.
 void IntegrationAttempt::createFailedBlock(uint32_t idx) {}
 
 void InlineAttempt::createFailedBlock(uint32_t idx) {
@@ -2248,6 +2303,7 @@ void InlineAttempt::createFailedBlock(uint32_t idx) {
 
 }
 
+// Find the emitted-program BasicBlock containing the unspecialised variant of blockIdx / instIdx.
 BasicBlock* InlineAttempt::getSubBlockForInst(uint32_t blockIdx, uint32_t instIdx) {
 
   release_assert(failedBlocks[blockIdx].size() && "Failed block should exist");
@@ -2264,16 +2320,17 @@ BasicBlock* InlineAttempt::getSubBlockForInst(uint32_t blockIdx, uint32_t instId
   
 }
 
-void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds) {
+// Gather specialised variants of instBlock / instIdx, along with the predecessor block on the path from specialised to unspecialised code.
+void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds) {
 
-  if(L != predBlock->naturalScope && ((!L) || L->contains(predBlock->naturalScope))) {
+  if(L != instBlock->naturalScope && ((!L) || L->contains(instBlock->naturalScope))) {
 
     PeelAttempt* LPA;
-    if((LPA = getPeelAttempt(immediateChildLoop(L, predBlock->naturalScope))) &&
+    if((LPA = getPeelAttempt(immediateChildLoop(L, instBlock->naturalScope))) &&
        LPA->isTerminated() && LPA->isEnabled()) {
       
       for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-	LPA->Iterations[i]->collectSpecPreds(predBlock, predIdx, instBlock, instIdx, preds);
+	LPA->Iterations[i]->collectSpecPreds(instBlock, instIdx, preds);
 
       return;
 
@@ -2292,27 +2349,25 @@ void IntegrationAttempt::collectSpecPreds(ShadowBBInvar* predBlock, uint32_t pre
   if(!requiresRuntimeCheck(ShadowValue(SI), true))
     return;
 
-  ShadowBB* PredBB = getBB(*predBlock);
-  if(!PredBB)
-    return;
-
-  BasicBlock* pred = PredBB->getCommittedBreakBlockAt(predIdx);
+  BasicBlock* pred = InstBB->getCommittedBreakBlockAt(instIdx);
   Value* committedVal = getCommittedValue(ShadowValue(SI));
 
   preds.push_back(std::make_pair(committedVal, pred));
 
 }
 
-void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds) {
+// Gather block / value instances of a call, representing the case that the call has internally bailed to unspecialised code and so we
+// must do the same.
+void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds) {
   
-  if(L != predBlock->naturalScope && ((!L) || L->contains(predBlock->naturalScope))) {
+  if(L != instBlock->naturalScope && ((!L) || L->contains(instBlock->naturalScope))) {
 
     PeelAttempt* LPA;
-    if((LPA = getPeelAttempt(immediateChildLoop(L, predBlock->naturalScope))) &&
+    if((LPA = getPeelAttempt(immediateChildLoop(L, instBlock->naturalScope))) &&
        LPA->isTerminated() && LPA->isEnabled()) {
       
       for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
-	LPA->Iterations[i]->collectCallFailingEdges(predBlock, predIdx, instBlock, instIdx, preds);
+	LPA->Iterations[i]->collectCallFailingEdges(instBlock, instIdx, preds);
 
       return;
 
@@ -2329,6 +2384,9 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
   InlineAttempt* IA;
   bool fallThrough = false;
 
+  // Two possible variants: the call commits inline, in which case a special failure-return
+  // block will have been created if it can fail internally, or it commits out-of-line
+  // and a post-return test will be synthesised to check if it failed.
   if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
     if(IA->commitsOutOfLine() && IA->hasFailedReturnPath())
@@ -2339,8 +2397,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
   }
   if(fallThrough || requiresRuntimeCheck(SI, true)) {
 
-    ShadowBB* PredBB = getBB(*predBlock);
-    BasicBlock* pred = PredBB->getCommittedBreakBlockAt(predIdx);
+    BasicBlock* pred = InstBB->getCommittedBreakBlockAt(instIdx);
     Value* committedVal = getCommittedValue(ShadowValue(&InstBB->insts[instIdx]));
     preds.push_back(std::make_pair(committedVal, pred));
     
@@ -2348,6 +2405,7 @@ void IntegrationAttempt::collectCallFailingEdges(ShadowBBInvar* predBlock, uint3
 
 }
 
+// Adjust loop header PHI nodes to account for specialised-to-unspecialised edges.
 void IntegrationAttempt::populateFailedHeaderPHIs(const ShadowLoopInvar*) {}
 
 void InlineAttempt::populateFailedHeaderPHIs(const ShadowLoopInvar* PopulateL) {
@@ -2390,6 +2448,7 @@ void InlineAttempt::populateFailedHeaderPHIs(const ShadowLoopInvar* PopulateL) {
 
 }
 
+// Does a test need to be inserted *before* any instance of blockIdx / instIdx?
 bool IntegrationAttempt::instSpecialTest(uint32_t blockIdx, uint32_t instIdx) {
 
   ShadowBBInvar* BBI = getBBInvar(blockIdx);
@@ -2440,6 +2499,8 @@ bool IntegrationAttempt::subblockEndsWithSpecialTest(uint32_t idx,
 
 }
 
+// Fix the cloned, unspecialised version of block 'idx'. On entry the instructions are straightforward
+// clones of the original program block; we need to introduce PHI nodes to account for spec-to-unspec edges.
 void IntegrationAttempt::populateFailedBlock(uint32_t idx) { }
 
 void InlineAttempt::populateFailedBlock(uint32_t idx) {
@@ -2500,10 +2561,10 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
 
       if(isa<CallInst>(failedI)) {
 	if(!failedI->getType()->isVoidTy())
-	  collectCallFailingEdges(BBI, failedInst, BBI, failedInst, specPreds);
+	  collectCallFailingEdges(BBI, failedInst, specPreds);
       }
       else
-	collectSpecPreds(BBI, failedInst, BBI, failedInst, specPreds);
+	collectSpecPreds(BBI, failedInst, specPreds);
 
       // In the rare circumstance where there is a VFS instruction immediately after a checked
       // call or load, the edges can converge at this failed block because the VFS failing edge
@@ -2591,6 +2652,7 @@ void InlineAttempt::populateFailedBlock(uint32_t idx) {
   
 }
 
+// Synthesise a check that composite value realInst == CV.
 Instruction* IntegrationAttempt::emitCompositeCheck(Value* realInst, Value* CV, BasicBlock* emitBB) {
 
   Type* VTy = CV->getType();
@@ -2648,15 +2710,19 @@ Instruction* IntegrationAttempt::emitCompositeCheck(Value* realInst, Value* CV, 
 
 }
 
+// Synth a check that realInst == IVS, or if IVS is looser than a constant value, realInst satisfies IVS.
 Value* IntegrationAttempt::emitCompareCheck(Value* realInst, const ImprovedValSetSingle* IVS, BasicBlock* emitBB) {
 
   release_assert(isa<Instruction>(realInst) && "Checked instruction must be residualised");
 
   Value* thisCheck = 0;
+  // If IVS is a set, synthesise a big-or check.
   for(uint32_t j = 0, jlim = IVS->Values.size(); j != jlim; ++j) {
 
     Value* newCheck;
 
+    // If all we know is a pointer is *somewhere* within a particular object, check if it falls within
+    // its bounds. (TOCHECK: what about temporarily OOB pointers?)
     if(IVS->SetType == ValSetTypePB && 
        IVS->Values[j].Offset == LLONG_MAX && 
        IVS->Values[j].V.getAllocSize(this) != ULONG_MAX) {
@@ -2700,12 +2766,16 @@ Value* IntegrationAttempt::emitCompareCheck(Value* realInst, const ImprovedValSe
 
 }
 
+// Emit a check that the actual value of SI matches what we established about it during specialisation.
 Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock* emitBB) {
 
   Value* realInst = getCommittedValue(ShadowValue(SI));
   ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(SI->i.PB);
 
   if(!IVS) {
+
+    // The expected value is a list-of-extents (ImprovedValSetMulti). Since we're checking a scalar, this
+    // typically means a vector-of-pointers or something like a file-descriptor-plus-flags in an int64.
 
     Type* I64 = Type::getInt64Ty(emitBB->getContext());
     Value* PrevCheck = 0;
@@ -2760,6 +2830,8 @@ Value* IntegrationAttempt::emitAsExpectedCheck(ShadowInstruction* SI, BasicBlock
 
 }
 
+// Check that loop exit PHIs are as expected. We check them as a block rather than introduce a block
+// split after each one. Emit checks into emitIt; return pointer to the next CommittedBlock.
 SmallVector<CommittedBlock, 1>::iterator
 IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowBB* BB) {
 
@@ -2808,6 +2880,8 @@ IntegrationAttempt::emitExitPHIChecks(SmallVector<CommittedBlock, 1>::iterator e
 
 }
 
+// SI is a memcpy or memmove instruction which we established during specialisation would copy a particular vector
+// of values. Check it actually did so at runtime.
 Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* emitBB) {
 
   release_assert(GlobalIHP->memcpyValues.count(SI) && GlobalIHP->memcpyValues[SI].size() && "memcpyValues not set for checked copy?");
@@ -2854,6 +2928,10 @@ Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* em
 
 }
 
+// Emit a check that SI behaved as expected at runtime. If it's an invoke instruction that means choosing between
+// the block's specialised and unspecialised non-exceptional successors (the throws case has already been taken
+// care of by introducing an invoke -> check_block, unspec_landingpad_block structure before calling this.
+// For normal (non-terminator) instructions this introduces a mid-(original program)-block spec-to-unspec edge.
 SmallVector<CommittedBlock, 1>::iterator
 IntegrationAttempt::emitOrdinaryInstCheck(SmallVector<CommittedBlock, 1>::iterator emitIt, ShadowInstruction* SI) {
 
@@ -2932,6 +3010,7 @@ void llvm::escapePercent(std::string& msg) {
 
 }
 
+// Emit a 'printf' call for debugging when specialisations are entered and exited.
 void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* param, Instruction* insertBefore) {
 
   Type* CharPtr = Type::getInt8PtrTy(emitBB->getContext());

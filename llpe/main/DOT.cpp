@@ -229,7 +229,7 @@ bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInv
 
 void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
 
-  if(brief && ((!SB) || shouldIgnoreEdge(BBI, SBI)))
+  if(brief && ((!SB) || edgeBranchesToUnspecialisedCode(BBI, SBI)))
     return;
 
   std::string edgeString;
@@ -249,7 +249,7 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
   if(edgeIsDead(BBI, SBI)) {
     rso << "[color=gray]";
   }
-  else if(shouldIgnoreEdge(BBI, SBI)) {
+  else if(edgeBranchesToUnspecialisedCode(BBI, SBI)) {
     rso << "[color=red]";
   }
 

@@ -826,9 +826,9 @@ bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& chan
 	// Invoke instructions fail directly to their non-exception successors;
 	// call instructions introduce a break in their basic block.
 	if(inst_is<CallInst>(SI))
-	  getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->idx, SI->invar->idx + 1);
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(SI->parent->invar->idx, SI->invar->idx + 1);
 	else
-	  getFunctionRoot()->markBlockAndSuccsFailed(SI->parent->invar->succIdxs[0], 0);
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(SI->parent->invar->succIdxs[0], 0);
 
       }
 
@@ -860,7 +860,7 @@ void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
 
   ShadowBB* BB = getBB(fromIdx);
   ShadowBBInvar* toBBI = getBBInvar(toIdx);
-  if(BB && (!edgeIsDead(BB->invar, toBBI)) && !shouldIgnoreEdge(BB->invar, toBBI)) {
+  if(BB && (!edgeIsDead(BB->invar, toBBI)) && !edgeBranchesToUnspecialisedCode(BB->invar, toBBI)) {
 
     if(BB->invar->naturalScope != L) {
 

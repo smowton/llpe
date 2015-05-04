@@ -670,7 +670,7 @@ BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
 
 BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
-  if(shouldIgnoreEdge(BB->invar, getBBInvar(succIdx))) {
+  if(edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(succIdx))) {
 
     if(pass->omitChecks) {
       markUnreachable = true;
@@ -947,7 +947,7 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
 	  
       ShadowBBInvar* TargetBBI = getBBInvar(I->invar->operandIdxs[idx].blockIdx);
 
-      if(pass->verbosePCs && shouldIgnoreEdge(BB->invar, TargetBBI) && !isExceptionEdge(BB->invar, TargetBBI)) {
+      if(pass->verbosePCs && edgeBranchesToUnspecialisedCode(BB->invar, TargetBBI) && !isExceptionEdge(BB->invar, TargetBBI)) {
 
 	if(inst_is<SwitchInst>(I)) {
 
@@ -1077,7 +1077,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(BB->succsAlive[i]) {
 
-      if(pass->omitChecks && shouldIgnoreEdge(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
+      if(pass->omitChecks && edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
 	continue;
 
       if(knownSucc == 0xffffffff)

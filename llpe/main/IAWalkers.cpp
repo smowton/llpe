@@ -179,7 +179,7 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
     if(edgeIsDead(BBI, FromBBI))
       continue;
 
-    if(shouldIgnoreEdge(BBI, FromBB->invar)) {
+    if(edgeBranchesToUnspecialisedCode(BBI, FromBB->invar)) {
       if(!Visitor->doIgnoreEdges)
 	Visitor->hitIgnoredEdge();
       continue;
@@ -569,7 +569,7 @@ void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker
     if(edgeIsDead(BB->invar, SB))
       continue;
 
-    if(shouldIgnoreEdge(BB->invar, SB)) {
+    if(edgeBranchesToUnspecialisedCode(BB->invar, SB)) {
       if(!Walker->doIgnoreEdges)
 	Walker->hitIgnoredEdge();
       continue;

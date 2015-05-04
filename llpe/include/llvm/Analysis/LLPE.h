@@ -1300,7 +1300,6 @@ protected:
   virtual void applyMemoryPathConditions(ShadowBB*, bool inLoopAnalyser, bool inAnyLoop);
   void applyMemoryPathConditionsFrom(ShadowBB*, PathConditions&, uint32_t, bool inLoopAnalyser, bool inAnyLoop);
   void applyPathCondition(PathCondition*, PathConditionTypes, ShadowBB*, uint32_t);
-  ShadowValue getPathConditionOperand(uint32_t stackIdx, BasicBlock* BB, uint32_t instIdx);
 
   AllocData* getAllocData(ShadowValue);
   ShadowInstruction* getAllocInst(ShadowValue V);
@@ -1478,13 +1477,13 @@ protected:
 
   void checkTargetStack(ShadowInstruction* SI, InlineAttempt* IA);
   bool isExceptionEdge(ShadowBBInvar*, ShadowBBInvar*);
-  bool shouldIgnoreEdge(ShadowBBInvar*, ShadowBBInvar*);
+  bool edgeBranchesToUnspecialisedCode(ShadowBBInvar*, ShadowBBInvar*);
   bool hasLiveIgnoredEdges(ShadowBB*);
   virtual void initFailedBlockCommit();
   virtual void finishFailedBlockCommit();
   uint32_t collectSpecIncomingEdges(uint32_t blockIdx, uint32_t instIdx, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& edges);
   Value* getSpecValue(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore);
-  Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V, Instruction* InsertBefore);
+  Value* getSpecValueAnyType(uint32_t blockIdx, uint32_t instIdx, Value* V);
   virtual void commitSimpleFailedBlock(uint32_t i);
   void getSplitInsts(ShadowBBInvar*, bool* splits);
   void getLocalSplitInsts(ShadowBB*, bool*);
@@ -1759,7 +1758,6 @@ struct IATargetInfo {
   uint32_t targetCallInst;
   uint32_t targetStackDepth;
   DenseSet<uint32_t> mayReachTarget;
-  DenseSet<uint32_t> mayFollowTarget;
 
 IATargetInfo(uint32_t tCB, uint32_t tCI, uint32_t tSD) : 
     targetCallBlock(tCB), 
@@ -1933,12 +1931,10 @@ class InlineAttempt : public IntegrationAttempt {
   void addExtraTagsFrom(PathConditions&, IntegratorTag* myTag);
 
   // Conditional specialisation:
-  void addBlockAndSuccs(uint32_t idx, DenseSet<uint32_t>& Set, bool skipFirst);
   void addBlockAndPreds(uint32_t idx, DenseSet<uint32_t>& Set);
-  void markBlockAndSuccsFailed(uint32_t idx, uint32_t instIdx);
+  void markBlockAndSuccsReachableUnspecialised(uint32_t idx, uint32_t instIdx);
   void setTargetCall(std::pair<BasicBlock*, uint32_t>& arg, uint32_t stackIdx);
   virtual BasicBlock* getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable);
-  void getFailedReturnBlocks(SmallVector<BasicBlock*, 4>& rets);
   bool hasFailedReturnPath();
   virtual void initFailedBlockCommit();
   virtual void finishFailedBlockCommit();

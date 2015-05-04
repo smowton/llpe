@@ -302,7 +302,7 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   else {
 
     // Arg is local (can't be lower or this is a header phi)
-    if((!edgeIsDead(OpBB, BB)) && !shouldIgnoreEdge(OpBB, BB)) {
+    if((!edgeIsDead(OpBB, BB)) && !edgeBranchesToUnspecialisedCode(OpBB, BB)) {
       ops.push_back(SI->getOperand(valOpIdx));
       if(BBs) {
 	ShadowBB* NewBB = getBBFalling(OpBB);
