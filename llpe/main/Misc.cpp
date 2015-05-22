@@ -1082,7 +1082,7 @@ PeelAttempt* IntegrationAttempt::getOrCreatePeelAttempt(const ShadowLoopInvar* N
   // Preheaders only have one successor (the header), so this is enough.
   
   ShadowBB* preheaderBB = getBB(NewL->preheaderIdx);
-  if(preheaderBB->isMarkedCertainOrAssumed()) {
+  if(!preheaderBB->isMarkedCertainOrAssumed()) {
    
     LPDEBUG("Will not expand loop " << getBBInvar(NewL->headerIdx)->BB->getName() << " because the preheader is not certain/assumed to execute\n");
     return 0;
