@@ -1,3 +1,3 @@
 
-add_library(LLVMLLPEUtils MODULE NameBlocks.cpp)
+add_library(LLVMLLPEUtils MODULE NameBlocks.cpp DumpType.cpp)
 

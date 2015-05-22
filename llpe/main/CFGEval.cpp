@@ -338,7 +338,7 @@ bool IntegrationAttempt::tryEvaluateTerminator(ShadowInstruction* SI, bool thisB
 
     if(edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(BB->invar->succIdxs[i]))) {
       if(anyChange)
-	getFunctionRoot()->markBlockAndSuccsFailed(BB->invar->succIdxs[i], 0);
+	getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->succIdxs[i], 0);
       continue;
     }
 
