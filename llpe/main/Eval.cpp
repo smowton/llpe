@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "hypotheticalconstantfolder"
+#define DEBUG_TYPE "LLPEEval"
 
 #include "llvm/Analysis/LLPE.h"
 
@@ -28,6 +28,9 @@
 #include "llvm/IR/DataLayout.h"
 
 #include <string>
+
+// Core instruction-evaluation functions, called from the main loop to dispatch
+// on instruction type, determine its results and enact its side-effects.
 
 using namespace llvm;
 
@@ -55,43 +58,7 @@ namespace llvm {
 
 }
 
-bool PeelAttempt::allNonFinalIterationsDoNotExit() {
-
-  for(unsigned i = 0; i < Iterations.size() - 1; ++i) {
-
-    if(!Iterations[i]->allExitEdgesDead())
-      return false;
-
-  }
-
-  return true;
-
-}
-
-bool PeelIteration::isOnlyExitingIteration() {
-
-  if(iterStatus != IterationStatusFinal)
-    return false;
-
-  if(parentPA->L->optimisticEdge.first == 0xffffffff)
-    return true;
-
-  return parentPA->allNonFinalIterationsDoNotExit();
-
-}
-
-bool InlineAttempt::isOptimisticPeel() {
-  
-  return false;
-
-}
-
-bool PeelIteration::isOptimisticPeel() {
-
-  return parentPA->L->optimisticEdge.first != 0xffffffff;
-
-}
-
+// Evaluate a merge instruction (phi or select)
 bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB) {
 
   // The case for a resolved select instruction has already been handled.
@@ -131,6 +98,8 @@ bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*&
 
 }
 
+// Merge a vector of values into an ImprovedValSet, if possible. Any fundamentally
+// incompatible values will set NewPB overdefined.
 bool IntegrationAttempt::getMergeValue(SmallVector<ShadowValue, 4>& Vals, ImprovedValSet*& NewPB) {
 
   bool anyInfo = false;
@@ -181,6 +150,8 @@ bool IntegrationAttempt::getMergeValue(SmallVector<ShadowValue, 4>& Vals, Improv
 
 }
 
+// SI is a phi node. Get the value from the previous iteration or preheader
+// as appropriate.
 ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) {
 
   PHINode* PN = cast_inst<PHINode>(SI);
@@ -240,6 +211,9 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 
 }
 
+// Fetch a list of live exit edges ExitingBB -> ExitedBB, and the corresponding operand to exit phi SI, operand valOpIdx.
+// Note that the edge might exit more than one loop. LLPE requires LCSSA-form input, so we know SI is certainly
+// a phi instruction.
 void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
 
   if(edgeIsDead(ExitingBB, ExitedBB))
@@ -286,6 +260,7 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
 
 }
 
+// Fetch the incoming values for phi node SI, operand valOpIdx, which might be a loop exit phi.
 void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
 
   ShadowInstructionInvar* SII = SI->invar;
@@ -315,6 +290,7 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
 
 }
 
+// Evaluate comparing an assumed-successful file descriptor against constant int CmpVal.
 static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
 
   CmpInst::Predicate Pred = CmpI->getPredicate();
@@ -375,7 +351,7 @@ static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
 
 }
 
-// Return true if this turned out to be a compare against open
+// Return true if this turned out to be a compare against a file descriptor
 // (and so false if there's any point trying normal const folding)
 bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
@@ -475,7 +451,7 @@ static unsigned getReversePred(unsigned Pred) {
 
 }
 
-static bool SVNull(ShadowValue& SV) {
+static bool SVIsNull(ShadowValue& SV) {
 
   uint64_t CI;
   if(tryGetConstantInt(SV, CI))
@@ -512,8 +488,8 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
     break;
   }
 
-  bool Op0Null = SVNull(Ops[0].second.V);
-  bool Op1Null = SVNull(Ops[1].second.V);
+  bool Op0Null = SVIsNull(Ops[0].second.V);
+  bool Op1Null = SVIsNull(Ops[1].second.V);
   uint64_t Op0CI, Op1CI;
   APInt Op0AP, Op1AP;
   bool Op0CIValid, Op1CIValid;
@@ -604,6 +580,7 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
 
 }
 
+// Helper: do we know op points to a particular symbolic object or is a constant?
 static bool isIDOrConst(ShadowValue& op) {
 
   if(isGlobalIdentifiedObject(op))
@@ -623,6 +600,7 @@ static bool isIDOrConst(ShadowValue& op) {
 
 }
 
+// Helper: can we find a null-test for the given allocation instruction?
 class FindTestWalker : public ForwardIAWalker {
 
   ShadowInstruction* AllocI;
@@ -683,6 +661,8 @@ public:
 
 };
 
+// Check whether we can assume allocation instruction V is non-null because it has already
+// been null-tested. This should be generalised to drive test results into dominated blocks.
 static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
 
   // I know V is a heap allocation, therefore a heap index.
@@ -721,7 +701,8 @@ static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
 
 }
 
-// Return value as above: true for "we've handled it" and false for "try constant folding"
+// Return value: true for "we've handled it" and false for "try ordinary constant folding".
+// Here we try to resolve comparisons of two pointers, or a pointer against a constant.
 bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned char* needsRuntimeCheck) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
@@ -735,8 +716,8 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   ShadowValue& op0 = Ops[0].second.V;
   ShadowValue& op1 = Ops[1].second.V;
 
-  bool op0Null = SVNull(op0);
-  bool op1Null = SVNull(op1);
+  bool op0Null = SVIsNull(op0);
+  bool op1Null = SVIsNull(op1);
 
   bool op0Fun = (op0.isVal() && isa<Function>(op0.u.V->stripPointerCasts()));
   bool op1Fun = (op1.isVal() && isa<Function>(op1.u.V->stripPointerCasts()));
@@ -810,6 +791,9 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
 
   // 3. Restricted comparison of pointers with a differing base: we can compare for equality only
   // as we don't know memory layout at this stage.
+  // It's possible that in the machine representation pointers with differing bases could have
+  // equal representations, but e.g. LLVM basic alias analysis would already say these don't alias,
+  // so any surprises from LLPE could also have come from standard LLVM optimisation.
 
   if(isIDOrConst(op0) && isIDOrConst(op1) && op0 != op1) {
 
@@ -832,6 +816,8 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
 
 }
 
+// Get a special value to indicate a negated pointer, useful because some other optimisations result
+// in the pointer being temporarily negated during pointer arithmetic.
 static bool tryGetNegatedPointer(ShadowValue checkOp, uint64_t& SubOp0, ShadowValue& SubOp1Base, int64_t& SubOp1Offset) {
 
   if((!checkOp.isInst()) || checkOp.u.I->invar->I->getOpcode() != Instruction::Sub)
@@ -884,6 +870,9 @@ unsigned IntegrationAttempt::getAlignment(ShadowValue V) {
 
 }
 
+// Evaluate pointer arithmetic, other than that using getelementptr. We support addition, subtraction,
+// discovering alignment if we know it, and setting/getting the least significant bits, again if we know
+// the pointer's alignment so this is predictable.
 bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   Instruction* BOp = SI->invar->I;
@@ -1129,6 +1118,9 @@ bool IntegrationAttempt::tryFoldPtrAsIntOp(ShadowInstruction* SI, std::pair<ValS
 #define SO_RESULT_SAME 1
 #define SO_RESULT_UNKNOWN 2
 
+// Execute a special "is-same-object" instruction. These are user-specified tests
+// that check whether two pointers are known to refer to the same object, and can be used
+// to replace ptr >= base && ptr < (base + alloc_size), which LLPE can't model (yet).
 void llvm::executeSameObject(ShadowInstruction* SI) {
 
   int existingResult = 0;
@@ -1198,7 +1190,7 @@ namespace llvm {
   Constant* ConstantFoldExtractValueInstruction(Constant *Agg, ArrayRef<unsigned> Idxs);
 }
 
- bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
+bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
    
   Instruction* BOp = SI->invar->I;
 
@@ -1210,8 +1202,8 @@ namespace llvm {
     break;
   }
   
-  bool Op0Null = SVNull(Ops[0].second.V);
-  bool Op1Null = SVNull(Ops[1].second.V);
+  bool Op0Null = SVIsNull(Ops[0].second.V);
+  bool Op1Null = SVIsNull(Ops[1].second.V);
 
   if(BOp->getOpcode() == Instruction::And) {
 
@@ -1275,6 +1267,10 @@ static Constant* tryCastTo(Constant* C, Type* Ty) {
 
 }
 
+// Analyse instruction SI, whose operands have already been extracted to array Ops,
+// and if we find anything write it to ImpType / Improved. needsRuntimeCheck may be
+// set if we find we're analysing a pointer comparison that needs to be verified
+// at runtime.
 void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI, 
 					   std::pair<ValSetType, ImprovedVal>* Ops, 
 					   ValSetType& ImpType, ImprovedVal& Improved,
@@ -1631,7 +1627,8 @@ static bool containsPtrAsInt(ConstantExpr* CE) {
 
 }
 
-// All Ops are known not to have multi values.
+// All Ops are known not to have multi values. Extract each Op in turn until we've discovered all SI's operands,
+// then call tryEvaluateResult.
 bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx) {
 
   if(OpIdx == SI->getNumOperands()) {
@@ -1716,6 +1713,9 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
 }
 
+// Evaluate a comparison involving one or more composite values -- typically this is a constant array
+// or struct, or a file-descriptor+flags int64, but compilers for non-C languages could make more
+// use of composite-typed instructions.
 bool IntegrationAttempt::tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValSet*& NewIV) {
 
   CmpInst* CI = cast_inst<CmpInst>(SI);
@@ -1767,6 +1767,7 @@ bool IntegrationAttempt::tryEvaluateMultiCmp(ShadowInstruction* SI, ImprovedValS
 
 }
 
+// Equality-compare two composite values. SI is known to be a cmp instruction.
 MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
 
   // EQ is true if true of all fields, false if false anywhere, or unknown otherwise.
@@ -1840,6 +1841,10 @@ MultiCmpResult IntegrationAttempt::tryEvaluateMultiEq(ShadowInstruction* SI) {
 
 }
 
+// Try to flatten elements from the list-of-extents InIVM into a single value Result.
+// ShiftInt and resSize can be used to select a subrange. This will succeed if e.g. we manage
+// to flatten a constant struct into a constant int, but fail if we try to mash incompatible
+// types together, like an integer and a symbolic file descriptor.
 static void flattenIVM(ImprovedValSetMulti* InIVM, uint64_t resSize, int64_t ShiftInt, uint32_t elemsLimit, uint32_t nextElem, uint32_t* elems, SmallVector<uint32_t, 4>& setSizesInRange, ImprovedValSetSingle& Result) {
 
   if(nextElem == elemsLimit) {
@@ -2221,6 +2226,8 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
 }
 
+// Try to evaluate instruction SI: dispatch to either the "normal" or composite-value paths.
+// Instructions with side-effects have already been filtered out.
 bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSet*& NewPB) {
 
   bool anyMultis = false;
@@ -2251,7 +2258,10 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
 
 }
 
-bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB, bool& loadedVararg) {
+// Evaluate general instruction SI. Dispatch to the load-forwarding code or use the ordinary
+// evaluation code in this file as appropriate. Return true if we set NewResult. Set loadedVararg
+// if this context becomes 'tainted' by reading varargs.
+bool IntegrationAttempt::getNewResult(ShadowInstruction* SI, ImprovedValSet*& NewResult, bool& loadedVararg) {
 
   // Special case the merge instructions:
   bool tryMerge = false;
@@ -2259,15 +2269,15 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
   switch(SI->invar->I->getOpcode()) {
     
   case Instruction::Load:
-    return tryForwardLoadPB(SI, NewPB, loadedVararg);
+    return tryForwardLoadPB(SI, NewResult, loadedVararg);
   case Instruction::AtomicRMW:
-    return executeAtomicRMW(SI, NewPB, loadedVararg);
+    return executeAtomicRMW(SI, NewResult, loadedVararg);
   case Instruction::AtomicCmpXchg:
-    return executeCmpXchg(SI, NewPB, loadedVararg);
+    return executeCmpXchg(SI, NewResult, loadedVararg);
   case Instruction::PHI:
     {
       bool Valid;
-      if(tryEvaluateHeaderPHI(SI, Valid, NewPB))
+      if(tryEvaluateHeaderPHI(SI, Valid, NewResult))
 	return Valid;
       tryMerge = true;
       break;
@@ -2277,9 +2287,9 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
       Constant* Cond = getConstReplacement(SI->getOperand(0));
       if(Cond) {
 	if(cast<ConstantInt>(Cond)->isZero())
-	  return copyImprovedVal(SI->getOperand(2), NewPB);
+	  return copyImprovedVal(SI->getOperand(2), NewResult);
 	else
-	  return copyImprovedVal(SI->getOperand(1), NewPB);
+	  return copyImprovedVal(SI->getOperand(1), NewResult);
       }
       else {
 	tryMerge = true;
@@ -2290,7 +2300,7 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
   case Instruction::Invoke:
     {
       if(InlineAttempt* IA = getInlineAttempt(SI)) {
-	NewPB = IA->returnValue;
+	NewResult = IA->returnValue;
 	return true;
       }
       break;
@@ -2306,10 +2316,10 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
   if(tryMerge) {
 
-    tryEvaluateMerge(SI, NewPB);
-    if(!NewPB)
+    tryEvaluateMerge(SI, NewResult);
+    if(!NewResult)
       return true;
-    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB))
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewResult))
       return IVS->isInitialised();
     else
       return true;
@@ -2323,9 +2333,9 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
     }
 
-    tryEvaluateOrdinaryInst(SI, NewPB);
+    tryEvaluateOrdinaryInst(SI, NewResult);
 
-    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewPB)) {
+    if(ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(NewResult)) {
       if(!IVS->isInitialised())
 	IVS->setOverdef();
       if(IVS->isWhollyUnknown()) {
@@ -2342,6 +2352,9 @@ bool IntegrationAttempt::getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB,
 
 }
 
+// The following two functions used to track values that can be indirectly used in the specialised program:
+// allocations and file descriptors. However this method was too memory-inefficient, so for the time being
+// they are never eliminated unless they are trivially unused.
 static bool willUseIndirectly(ImprovedValSet* IV) {
 
   if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(IV)) {
@@ -2383,6 +2396,9 @@ void IntegrationAttempt::noteIndirectUse(ShadowValue V, ImprovedValSet* NewPB) {
 
 }
 
+// Main entry point for this file: (re-)evaluate general instruction or argument V. 
+// If we're analysing an unbounded loop (inLoopAnalyser) we can short-cut this process when analysing 
+// V for the second time, because values only get less informative on repeated analysis.
 bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg) {
 
   ImprovedValSet* OldPB = getIVSRef(V);
@@ -2400,7 +2416,7 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   bool NewPBValid;
 
   ShadowInstruction* SI = V.getInst();
-  NewPBValid = getNewPB(SI, NewPB, loadedVararg);
+  NewPBValid = getNewResult(SI, NewPB, loadedVararg);
 
   // AFAIK only void calls can be rejected this way.
   if(!NewPB)
@@ -2475,63 +2491,6 @@ bool IntegrationAttempt::tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& l
   }
 
   return false;
-
-}
-
-Type* ShadowValue::getNonPointerType() const {
-
-  switch(t) {
-  case SHADOWVAL_ARG:
-    return u.A->getType();
-  case SHADOWVAL_INST:
-    return u.I->getType();
-  case SHADOWVAL_GV:
-    return u.GV->G->getType();
-  case SHADOWVAL_OTHER:
-    return u.V->getType();
-  case SHADOWVAL_FDIDX:
-    return GInt32;
-  case SHADOWVAL_FDIDX64:
-    return GInt64;
-  case SHADOWVAL_CI8:
-    return GInt8;
-  case SHADOWVAL_CI16:
-    return GInt16;
-  case SHADOWVAL_CI32:
-    return GInt32;
-  case SHADOWVAL_CI64:
-    return GInt64;
-  default:
-    release_assert(0 && "Bad SV type");
-    return 0;
-  }
-
-
-}
-
-Type* IntegrationAttempt::getValueType(ShadowValue V) {
-
-  switch(V.t) {
-  case SHADOWVAL_PTRIDX:
-    {
-      AllocData* AD = getAllocData(V);
-      release_assert(AD->allocType);
-      return AD->allocType;
-    }
-  default:
-    return V.getNonPointerType();
-  }
-
-}
-
-namespace llvm {
-
-  raw_ostream& operator<<(raw_ostream& Stream, const IntegrationAttempt& P) {
-
-    P.describe(Stream);
-    return Stream;
-
-  }
 
 }
 

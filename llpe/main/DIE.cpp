@@ -25,6 +25,10 @@
 
 using namespace llvm;
 
+// Functions relating to dead instruction elimination. This used to be a seperate phase, but is now run for each context
+// as soon as possible after PE has completed. It should detect as many instructions as possible that aren't going
+// to have users in the specialised program and save us synthesising them.
+
 static uint32_t DIEProgressN = 0;
 const uint32_t DIEProgressLimit = 10000;
 
@@ -40,6 +44,7 @@ static void DIEProgress() {
 
 }
 
+// Visits each user of a particular instruction or argument we're trying to prove dead.
 class llvm::DIVisitor {
 
 public:
@@ -246,7 +251,8 @@ bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
 }
 
-// Implement a visitor that gets called for every dynamic use of an instruction.
+// Implement logic passing the visitor around. Might genericise this if more situations emerge
+// requiring us to visit users across contexts.
 
 bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
 
@@ -254,6 +260,7 @@ bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisi
 
 }
 
+// See if the next iteration's header phis use I.
 bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
 
   if(inst_is<PHINode>(I)) {
@@ -298,6 +305,7 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& 
 
 }
 
+// Used in each iteration of a loop -- visit each iteration we're aware of.
 void PeelIteration::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
   const ShadowLoopInvar* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
@@ -335,6 +343,7 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
 }
   
+// Defined in-loop, used out-of-loop (but we require LCSSA form, so certainly an exit phi node).
 void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
 
   release_assert(UserI->parent->naturalScope == 0 && "Reached bottom visiting exit PHI");
@@ -424,6 +433,7 @@ void IntegrationAttempt::visitUsers(ShadowValue V, DIVisitor& Visitor) {
 
 }
 
+// Returns true if V is *already* tagged dead.
 static bool _willBeDeleted(ShadowValue V) {
 
   uint32_t dieStatus;
@@ -445,6 +455,7 @@ static bool _willBeDeleted(ShadowValue V) {
 
 }
 
+// Returns true if V is *already* tagged dead and isn't needed for other reasons
 bool llvm::willBeDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
@@ -457,6 +468,7 @@ bool llvm::willBeDeleted(ShadowValue V) {
 
 }
 
+// Returns true if V is *already* tagged dead, and/or will be replaced in the specialised program
 bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
 
   if(_willBeDeleted(V))
@@ -476,6 +488,7 @@ bool IntegrationAttempt::_willBeReplacedOrDeleted(ShadowValue V) {
 
 }
 
+// Returns true if V is *already* tagged dead, and/or will be replaced in the specialised program
 bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
@@ -488,6 +501,7 @@ bool IntegrationAttempt::willBeReplacedOrDeleted(ShadowValue V) {
 
 }
 
+// Returns true if V is *already* tagged dead, and/or will be replaced with a constant in the specialised program
 bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
   if(requiresRuntimeCheck(V, false))
@@ -505,6 +519,7 @@ bool IntegrationAttempt::willBeReplacedWithConstantOrDeleted(ShadowValue V) {
 
 }
 
+// Is this call's return value needed?
 bool InlineAttempt::isOwnCallUnused() {
 
   if(Callers.empty())
@@ -527,6 +542,7 @@ bool InlineAttempt::isOwnCallUnused() {
 
 }
 
+// Tag a value as unused if possible
 bool IntegrationAttempt::valueIsDead(ShadowValue V) {
 
   bool verbose = false;
@@ -733,6 +749,7 @@ void IntegrationAttempt::runDIE() {
 
 }
 
+// Tag allocations and file descriptors that are used indirectly (via memory)
 void InlineAttempt::gatherIndirectUsers() {
 
   for(uint32_t i = 0, ilim = argShadows.size(); i != ilim; ++i) {

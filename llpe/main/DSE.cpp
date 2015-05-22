@@ -26,6 +26,10 @@
 
 #include <vector>
 
+// Functions relating to dead store elimination: identifying stores all of whose users have been eliminated
+// or wired direct to the stored value, so the store itself is no longer needed. This is also attempted
+// for memory-transfer (memcpy, memmove) instructions and read(2) calls that are being specialised away.
+
 using namespace llvm;
 
 static uint32_t DSEProgressN = 0;
@@ -43,12 +47,14 @@ static void DSEProgress() {
 
 }
 
+// Tag dead.
 static void DSEInstructionDead(ShadowInstruction* SI) {
 
   SI->dieStatus |= INSTSTATUS_UNUSED_WRITER;
 
 }
 
+// TrackedStore: a store, which may or may not have been synthesised as a specialised instruction yet, which is eligible for elimination.
 TrackedStore::TrackedStore(ShadowInstruction* _I, uint64_t ob) : I(_I), isCommitted(false), committedInsts(0), nCommittedInsts(0), outstandingBytes(ob), isNeeded(false) {
 
   GlobalIHP->trackedStores[_I] = this;
@@ -66,6 +72,7 @@ TrackedStore::~TrackedStore() {
 
 }
 
+// Eligible for killing?
 bool TrackedStore::canKill() const {
 
   if(isNeeded)
@@ -77,6 +84,8 @@ bool TrackedStore::canKill() const {
 
 }
 
+// Allocations and file descriptors might lack direct users right now
+// but are recorded in ShadowValues, so new users might emerge in future.
 static bool committedInstructionIsDead(Instruction* I) {
 
   return isInstructionTriviallyDead(I, GlobalTLI) && 
@@ -85,6 +94,8 @@ static bool committedInstructionIsDead(Instruction* I) {
 
 }
 
+// Delete a tree of instructions, mostly borrowed from LLVM core, but with
+// added checks to avoid deleting allocations even if they appear dead.
 void llvm::DeleteDeadInstruction(Instruction *I) {
 
   SmallVector<Instruction*, 32> NowDeadInsts;
@@ -137,6 +148,7 @@ void llvm::DeleteDeadInstruction(Instruction *I) {
 
 }
 
+// Tag an instruction dead, or if already synthesised, delete the emitted instructions.
 void TrackedStore::kill() {
 
   if(!isCommitted)
@@ -158,6 +170,10 @@ void TrackedStore::kill() {
 
 }
 
+// Mark nBytes worth of this store un-referenced. Kill it
+// if this makes the whole store un-necessary. This is like lowering
+// a refcount, but we count byte-references instead of references to the store
+// so that e.g. store %x, i32 0; %y = cast %x to i8*; load i8 %y is handled correctly.
 void TrackedStore::derefBytes(uint64_t nBytes) {
 
   release_assert(nBytes <= outstandingBytes);
@@ -182,6 +198,9 @@ DSELocalStore* DSEMapPointer::getMapForBlock(ShadowBB* BB) {
   
 }
 
+// Implement TrackedAlloc, which tracks whether an allocation instruction has been
+// used, perhaps permitting them to be deleted when they go out of scope.
+
 TrackedAlloc::TrackedAlloc(ShadowInstruction* _SI) : SI(_SI), isCommitted(false), nRefs(1), isNeeded(false) {
 
   GlobalIHP->trackedAllocs[_SI] = this;
@@ -195,6 +214,7 @@ TrackedAlloc::~TrackedAlloc() {
 
 }
 
+
 void TrackedAlloc::dropReference() {
 
   if(!(--nRefs)) {
@@ -206,8 +226,11 @@ void TrackedAlloc::dropReference() {
 
   }
     
-
 }
+
+// The DSEMaps used to track killable stores might contain stores that clearly cannot
+// be eliminated because they have been proven maybe-used in the meantime. Remove
+// useless records like this. Return true if the particular record *argit can go away.
 
 static bool GCStores(DSEMapTy::iterator argit) {
 
@@ -251,8 +274,10 @@ static bool GCStores(DSEMapTy::iterator argit) {
 
 }
 
+
 DSEMapPointer DSEMapPointer::getReadableCopy() { 
 
+  // Get a copy of this DSEMap. Called when a DSE map is duplicated due to control flow divergence.
   // At present we always do a real copy and update the byte counts of all referenced stores.
   // Take the opportunity to exclude any stores that turn out to have been needed,
   // both here and at the target (the information is of no further value).
@@ -338,6 +363,7 @@ void DSEMapPointer::dropReference() {
 
 }
 
+// Mark all stores in this entry alive.
 static void setAllNeeded(DSEMapEntry* entry) {
 
   for(DSEMapEntry::iterator it = entry->begin(), itend = entry->end(); it != itend; ++it)
@@ -345,6 +371,7 @@ static void setAllNeeded(DSEMapEntry* entry) {
 
 }
 
+// Mark all stores concering this object alive.
 static void setAllNeeded(DSEMapTy& M) {
 
   for(DSEMapTy::iterator it = M.begin(), itend = M.end(); it != itend; ++it) {
@@ -357,6 +384,7 @@ static void setAllNeeded(DSEMapTy& M) {
 
 }
 
+// Mark all stores affecting this stack frame needed.
 static void setAllNeeded(DSELocalStore::FrameType& frame) {
 
   for(std::vector<DSEMapPointer>::iterator it = frame.store.begin(), itend = frame.store.end();
@@ -372,6 +400,7 @@ static void setAllNeeded(DSELocalStore::FrameType& frame) {
 
 }
 
+// Mark all stores concering this heap node alive.
 static void setAllNeeded(DSELocalStore::NodeType* node, uint32_t height) {
 
   if(height == 0) {
@@ -403,6 +432,8 @@ static void setAllNeeded(DSELocalStore::NodeType* node, uint32_t height) {
 
 }
 
+// Mark all stores alive. Called when an unknown address may be loaded, so all stores
+// crossing this point must live.
 void llvm::setAllNeededTop(DSELocalStore* store) {
 
   // No need for CoW breaks: if a location is needed, it is needed everywhere.
@@ -418,6 +449,7 @@ void llvm::setAllNeededTop(DSELocalStore* store) {
 
 }
 
+// Called at a control-flow merge: merge the store-tracking information from each incoming branch.
 void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, uint64_t ASize, DSEMerger* Visitor) {
 
   // Just union the two stores together. They can't be the same store.
@@ -452,7 +484,12 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
       
   }
 
-  DSEMapTy::iterator fromit = mergeFrom->M->begin();
+  // If we're trying to merge entries that are awkwardly aligned (e.g.
+  // from: |    rec1     | rec2 | rec3 |
+  //   to: | rec4 |     rec5    |
+  // then divide them up and create new records so that the to-map has at least
+  // as many breaks and completely covers the from-map:
+  //  new-to: | rec4 | rec5a| rec5b| rec6 |
 
   for(DSEMapTy::iterator fromit = mergeFrom->M->begin(), fromend = mergeFrom->M->end();
       fromit != fromend; ++fromit) {
@@ -525,7 +562,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
   // at least as often as the from-sequence. Add missing store refs into the to-sequence
   // and account for the new outstanding bytes that result.
 
-  fromit = mergeFrom->M->begin();
+  DSEMapTy::iterator fromit = mergeFrom->M->begin();
   DSEMapTy::iterator toit = mergeTo->M->find(fromit.start());
 
   for(; fromit != mergeFrom->M->end(); ++fromit) {
@@ -573,6 +610,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
 }
 
+// Mark this object range (Offset, Offset+Size] used.
 void DSEMapPointer::useWriters(int64_t Offset, uint64_t Size) {
 
   uint64_t End = (uint64_t)(Offset + Size);
@@ -593,6 +631,8 @@ void DSEMapPointer::useWriters(int64_t Offset, uint64_t Size) {
 
 }
 
+// Insert a new store (or other mem-writing instruction). May kill an existing store
+// (write-after-write) targeting the same location.
 void DSEMapPointer::setWriter(int64_t Offset, uint64_t Size, ShadowInstruction* SI) {
 
   // Punch a hole in this map and insert SI as a new writer.
@@ -661,6 +701,8 @@ DSEMapPointer* ShadowBB::getWritableDSEStore(ShadowValue O) {
 
 }
 
+// Are any of the pointers in IVS uncertain, in the sense that we know the
+// object they refer to but not their offset?
 static bool containsUncertainPointers(ImprovedValSetSingle& IVS) {
 
   for(uint64_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
@@ -674,6 +716,7 @@ static bool containsUncertainPointers(ImprovedValSetSingle& IVS) {
 
 }
 
+// Merge DSE stores on entering BB, drawing a store from each predecessor block.
 void llvm::doDSEStoreMerge(ShadowBB* BB) {
 
   DSEMerger V(BB->IA, false);
@@ -684,6 +727,7 @@ void llvm::doDSEStoreMerge(ShadowBB* BB) {
 
 }
 
+// Merge DSE stores on leaving a call, drawing a store from each live return block.
 void llvm::doDSECallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
   DSEMerger V(BB->IA, false);
@@ -694,6 +738,9 @@ void llvm::doDSECallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
 }
 
+// PtrOp is the pointer operand of some memory-reading instruction in block BB, reading Size bytes.
+// By now we know the reading instruction will be emitted in the specialised program.
+// Mark stores needed as appropriate.
 void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowBB* BB) {
 
   ImprovedValSetSingle IVS;
@@ -738,6 +785,8 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
       
 }
 
+// Writer (from BB) writes through PtrOp, writing Size bytes. If possible, figure out where it writes and record
+// the writer in the block's DSEMap.
 void IntegrationAttempt::DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, ShadowInstruction* Writer, ShadowBB* BB) {
 
   // Occasionally zero-length memset or memcpy instructions get here: these are trivially removed
@@ -758,20 +807,10 @@ void IntegrationAttempt::DSEHandleWrite(ShadowValue PtrOp, uint64_t Size, Shadow
 
 }
 
-void InlineAttempt::tryKillStores(bool commitDisabledHere, bool disableWrites) {
-
-  if(isRootMainCall())
-    BBs[0]->dseStore = new DSELocalStore(0);
-
-  if(invarInfo->frameSize != -1 || !Callers.size()) {
-    BBs[0]->dseStore = BBs[0]->dseStore->getWritableFrameList();
-    BBs[0]->dseStore->pushStackFrame(this);
-  }
-
-  tryKillStoresInLoop(0, commitDisabledHere, disableWrites);
-
-}
-
+// Main DSE entry point: check if this instruction has any DSE consequences (is itself a reader or a killable writer)
+// commitDisabledHere: this context has been analysed, but will not be emitted as specialised code, so any reads will happen for real at runtime.
+// disableWrites: only prove writers to be needed, don't record any new ones in the DSEMap.
+// enterCalls: recurse into calls, used when analysing unbounded loops and recursive functions.
 void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commitDisabledHere, bool disableWrites, bool enterCalls, bool& bail) {
 
   ShadowBB* BB = I->parent;
@@ -1014,6 +1053,22 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
 }
 
+// Try to kill all stores in this context. Generally DSE processes an instruction at a time,
+// but this recursive-descent path is used when analysing unbounded loops and recursion.
+void InlineAttempt::tryKillStores(bool commitDisabledHere, bool disableWrites) {
+
+  if(isRootMainCall())
+    BBs[0]->dseStore = new DSELocalStore(0);
+
+  if(invarInfo->frameSize != -1 || !Callers.size()) {
+    BBs[0]->dseStore = BBs[0]->dseStore->getWritableFrameList();
+    BBs[0]->dseStore->pushStackFrame(this);
+  }
+
+  tryKillStoresInLoop(0, commitDisabledHere, disableWrites);
+
+}
+
 void IntegrationAttempt::tryKillStoresInUnboundedLoop(const ShadowLoopInvar* UL, bool commitDisabledHere, bool disableWrites) {
 
   ShadowBB* BB = getBB(UL->headerIdx);
@@ -1026,10 +1081,14 @@ void IntegrationAttempt::tryKillStoresInUnboundedLoop(const ShadowLoopInvar* UL,
     if(!disableWrites) {
       // Passing true for the last parameter causes the store to be given to the header from the latch
       // and not to any exit blocks. 
-      tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, false, true);
+      tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, /*disableWrites=*/false, /*latchToHeader=*/true);
       BB->dseStore = getBB(UL->latchIdx)->dseStore;
     }
-    tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, true);
+    // This time, mark needed writers but don't record any new writers for elimination, in order to
+    // note writers from later in the loop that are needed in the event it iterates, but not offer in-loop
+    // writers for elimination solely because they aren't needed outside the loop.
+    // Give a DSE store to each exit block this time, not the loop header.
+    tryKillStoresInLoop(BB->invar->naturalScope, commitDisabledHere, /*disableWrites=*/true, /*latchToHeader=*/false);
 
   }
   else {

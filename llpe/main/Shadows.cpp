@@ -559,25 +559,6 @@ ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) const {
 
 }
 
-ShadowBB* IntegrationAttempt::getUniqueBBRising(ShadowBBInvar* BBI) {
-
-  if(BBI->naturalScope == L)
-    return getBB(*BBI);
-
-  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) {
-
-    if(LPA->isTerminated() && LPA->Iterations.back()->isOnlyExitingIteration()) {
-
-      return LPA->Iterations.back()->getUniqueBBRising(BBI);
-
-    }
-
-  }
-
-  return 0;
-
-}
-
 ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
   release_assert((!BBs[blockIdx - BBsOffset]) && "Creating block for the second time");
@@ -980,4 +961,50 @@ IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const ShadowLoopInvar* S
   return this;
 
 }
+
+Type* ShadowValue::getNonPointerType() const {
+
+  switch(t) {
+  case SHADOWVAL_ARG:
+    return u.A->getType();
+  case SHADOWVAL_INST:
+    return u.I->getType();
+  case SHADOWVAL_GV:
+    return u.GV->G->getType();
+  case SHADOWVAL_OTHER:
+    return u.V->getType();
+  case SHADOWVAL_FDIDX:
+    return GInt32;
+  case SHADOWVAL_FDIDX64:
+    return GInt64;
+  case SHADOWVAL_CI8:
+    return GInt8;
+  case SHADOWVAL_CI16:
+    return GInt16;
+  case SHADOWVAL_CI32:
+    return GInt32;
+  case SHADOWVAL_CI64:
+    return GInt64;
+  default:
+    release_assert(0 && "Bad SV type");
+    return 0;
+  }
+
+}
+
+Type* IntegrationAttempt::getValueType(ShadowValue V) {
+
+  switch(V.t) {
+  case SHADOWVAL_PTRIDX:
+    {
+      AllocData* AD = getAllocData(V);
+      release_assert(AD->allocType);
+      return AD->allocType;
+    }
+  default:
+    return V.getNonPointerType();
+  }
+
+}
+
 

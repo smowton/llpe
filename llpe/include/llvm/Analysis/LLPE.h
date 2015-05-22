@@ -1179,7 +1179,6 @@ protected:
 
   virtual void collectAllLoopStats() = 0;
   virtual void printHeader(raw_ostream& OS) const = 0;
-  virtual bool isOptimisticPeel() = 0;
 
   // Simple state-tracking helpers:
 
@@ -1210,7 +1209,6 @@ protected:
   ShadowBB* getOrCreateBB(uint32_t);
   // virtual for external access:
   ShadowBBInvar* getBBInvar(uint32_t idx) const;
-  ShadowBB* getUniqueBBRising(ShadowBBInvar* BBI);
   ShadowBB* createBB(uint32_t blockIdx);
   ShadowBB* createBB(ShadowBBInvar*);
   ShadowInstructionInvar* getInstInvar(uint32_t blockidx, uint32_t instidx);
@@ -1235,7 +1233,7 @@ protected:
   // Constant propagation:
   virtual bool tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result);
   bool tryEvaluate(ShadowValue V, bool inLoopAnalyser, bool& loadedVararg);
-  bool getNewPB(ShadowInstruction* SI, ImprovedValSet*& NewPB, bool& loadedVararg);
+  bool getNewResult(ShadowInstruction* SI, ImprovedValSet*& NewResult, bool& loadedVararg);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSet*& NewPB);
   bool tryEvaluateOrdinaryInst(ShadowInstruction* SI, ImprovedValSetSingle& NewPB, std::pair<ValSetType, ImprovedVal>* Ops, uint32_t OpIdx);
   void tryEvaluateResult(ShadowInstruction* SI, 
@@ -1489,8 +1487,8 @@ protected:
   void getLocalSplitInsts(ShadowBB*, bool*);
   bool hasSplitInsts(ShadowBB*);
   virtual void createFailedBlock(uint32_t idx);
-  void collectSpecPreds(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
-  void collectCallFailingEdges(ShadowBBInvar* predBlock, uint32_t predIdx, ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
+  void collectSpecPreds(ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
+  void collectCallFailingEdges(ShadowBBInvar* instBlock, uint32_t instIdx, SmallVector<std::pair<Value*, BasicBlock*>, 4>& preds);
   virtual void populateFailedBlock(uint32_t idx);
   virtual void populateFailedHeaderPHIs(const ShadowLoopInvar*);
   Value* emitCompareCheck(Value* realInst, const ImprovedValSetSingle* IVS, BasicBlock* emitBB);
@@ -1620,8 +1618,6 @@ public:
   virtual bool isEnabled(); 
   virtual void setEnabled(bool, bool skipStats); 
 
-  virtual bool isOptimisticPeel(); 
-
   virtual void getVarArg(int64_t, ImprovedValSet*&); 
 
   virtual bool ctxContains(IntegrationAttempt*); 
@@ -1634,7 +1630,6 @@ public:
   virtual bool entryBlockIsCertain(); 
   virtual bool entryBlockAssumed(); 
 
-  bool isOnlyExitingIteration(); 
   bool allExitEdgesDead(); 
   void dropExitingStoreRef(uint32_t, uint32_t);
 
@@ -1712,8 +1707,6 @@ class PeelAttempt {
    void visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor); 
    
    void describeTreeAsDOT(std::string path); 
-
-   bool allNonFinalIterationsDoNotExit(); 
 
    void collectStats(); 
    void printHeader(raw_ostream& OS) const; 
@@ -1861,8 +1854,6 @@ class InlineAttempt : public IntegrationAttempt {
   virtual bool canDisable(); 
   virtual bool isEnabled(); 
   virtual void setEnabled(bool, bool skipStats); 
-
-  virtual bool isOptimisticPeel(); 
 
   virtual void getVarArg(int64_t, ImprovedValSet*&); 
 

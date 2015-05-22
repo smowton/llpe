@@ -186,6 +186,17 @@ void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
 
 }
 
+namespace llvm {
+
+  raw_ostream& operator<<(raw_ostream& Stream, const IntegrationAttempt& P) {
+
+    P.describe(Stream);
+    return Stream;
+
+  }
+
+}
+
 #ifndef LLVM_EFFICIENT_PRINTING
 
 // Simple implementations of instruction printing if the LLVM core assembly printer
