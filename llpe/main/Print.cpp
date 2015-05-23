@@ -18,7 +18,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
-#include "llvm/Assembly/Writer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/FormattedStream.h"
 

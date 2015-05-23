@@ -22,7 +22,6 @@
 #include <llvm/IR/GlobalVariable.h>
 
 #include <llvm/Analysis/ConstantFolding.h>
-#include <llvm/Target/TargetData.h>
 #include <llvm/IR/CallSite.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/IR/GetElementPtrTypeIterator.h>

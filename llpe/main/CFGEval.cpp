@@ -24,7 +24,6 @@
 #include "llvm/IR/CFG.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Assembly/Writer.h"
 
 using namespace llvm;
 

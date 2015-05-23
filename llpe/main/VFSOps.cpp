@@ -18,7 +18,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/System/Path.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/IR/CFG.h"
 #include <fcntl.h> // For O_RDONLY et al
 #include <unistd.h>
@@ -311,7 +311,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 	    return true;
 	  }
 
-	  bool exists = sys::Path(Filename).exists();
+	  bool exists = sys::fs::exists(Filename);
 	  pass->forwardableOpenCalls[SI] = new OpenStatus(Filename, exists);
 	  if(exists) {
 
