@@ -11,7 +11,9 @@ Building has only been tested under Linux and using the x86-64 architecture; oth
 Building LLPE Trunk
 -------------------
 
-LLPE is distributed as an out-of-tree LLVM module. It builds against at least LLVM 3.6, and possibly earlier or later versions (definitely not 3.2, which has some incompatible changes; however see Building LLPE 3.2 below). It requires LLVM's CMake support files, which are produced when building from source using CMake and may or may not be provided with binary distributions (check for <tt>INSTALL\_PREFIX/share/llvm/cmake/LLVMConfig.cmake</tt>)
+LLPE is distributed as an out-of-tree LLVM module. It builds against at least LLVM 3.6, and possibly earlier or later versions (definitely not 3.2, which has some incompatible changes; however see Building LLPE 3.2 below). It requires LLVM's CMake support files, which are produced when building from source using CMake and may or may not be provided with binary distributions (check for <tt>INSTALL\_PREFIX/share/llvm/cmake/LLVMConfig.cmake</tt>). The LLVM header files are also required, which are likely distributed as a <tt>-dev</tt> or <tt>-devel</tt> package.
+
+Note that LLVM releases are not generally API compatible, which means that LLPE built against LLVM x.y should only be used with the <tt>opt</tt> program belonging to that same version of LLVM. Point releases (x.y.z) are more likely to be compatible, but if problems occur checking for version incompatibility is always a good idea.
 
 Build steps:
 
@@ -41,7 +43,7 @@ Build steps:
     make
     ```
 
-If all works out, you should get build/driver/libLLVMLLPEDriver.so and build/main/libLLVMLLPEMain.so
+If all works out, you should get build/driver/libLLVMLLPEDriver.so, build/main/libLLVMLLPEMain.so and build/utils/libLLVMLLPEUtils.so
 
 Next try the [tutorial](/tutorial/)
 
