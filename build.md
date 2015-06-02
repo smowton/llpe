@@ -17,7 +17,7 @@ Note that LLVM releases are not generally API compatible, which means that LLPE 
 
 Build steps:
 
-1. Install dependencies. Right now we need wxWdigets to provide our GUI. Install at least version 2.9, which is routinely included with Linux distros.
+1. Install dependencies. Right now we need wxWdigets to provide our GUI and OpenSSL (specifically libcrypto) to compute SHA-1 checksums. Install at least wxWidgets version 2.9, which is routinely included with Linux distros.
 
 2. Checkout from Github:
 
@@ -56,7 +56,7 @@ This version of LLPE uses autotools rather that CMake.
 
 Build steps:
 
-1. Install dependencies (as above, just wxWidgets 2.9 +)
+1. Install dependencies (as above, just wxWidgets 2.9+ and OpenSSL)
 
 2. Checkout from Github:
 
