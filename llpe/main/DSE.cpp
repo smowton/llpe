@@ -72,7 +72,8 @@ TrackedStore::~TrackedStore() {
 
 }
 
-// Eligible for killing?
+// Eligible for killing? isNeeded will have been set if it is needed; committedInsts
+// will have been cleared if it has already been killed.
 bool TrackedStore::canKill() const {
 
   if(isNeeded)
@@ -484,6 +485,10 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
       
   }
 
+  // Nothing to do?
+  if(mergeFrom->M->empty())
+    return;
+  
   // If we're trying to merge entries that are awkwardly aligned (e.g.
   // from: |    rec1     | rec2 | rec3 |
   //   to: | rec4 |     rec5    |
@@ -562,6 +567,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
   // at least as often as the from-sequence. Add missing store refs into the to-sequence
   // and account for the new outstanding bytes that result.
 
+  // mergeFrom->M already known not-empty due to check above.
   DSEMapTy::iterator fromit = mergeFrom->M->begin();
   DSEMapTy::iterator toit = mergeTo->M->find(fromit.start());
 
