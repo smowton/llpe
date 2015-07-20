@@ -912,7 +912,8 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
 	// Repeat this, as a way of effectively sparing it from being needed because
 	// the read requires a runtime check.
-	DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, I, BB);
+	if(requiresRuntimeCheck(ShadowValue(I), true))	
+	  DSEHandleWrite(I->getCallArgOperand(1), RI->second.readSize, I, BB);
 
       }
       else if((F = getCalledFunction(I)) && 
