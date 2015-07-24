@@ -575,7 +575,7 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
     const DSEMapEntry& fromEntry = fromit.value();
 	
-    for(; toit.stop() <= fromit.stop(); ++toit) {
+    for(; toit != mergeTo->M->end() && toit.stop() <= fromit.stop(); ++toit) {
 
       const DSEMapEntry& toEntry = toit.value();
       uint64_t entrySize = toit.stop() - toit.start();
