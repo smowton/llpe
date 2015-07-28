@@ -602,7 +602,7 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
       if(NewIVS->SetType == ValSetTypeVarArg)
 	loadedVararg = true;
 
-      if(NewIVS->SetType == ValSetTypeScalar) {
+      if(NewIVS->SetType == ValSetTypeScalar && !NewIVS->Overdef) {
 
 	release_assert(!NewIVS->Values[0].V.isNullPointer());
 
