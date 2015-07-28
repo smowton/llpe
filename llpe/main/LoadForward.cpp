@@ -2077,7 +2077,8 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
       // -> truncateConstVal must not do any imap searches.
       // The setStartUnchecked command below will make the map well-formed again.
 
-      found.insert(oldStart, oldStop, RHS);
+      found.insert(LastByte, oldStop, RHS);
+      found.setStartUnchecked(oldStart);      
       truncateLeft(found, oldStop - LastByte, replacementStart);
       replacementStart.setStartUnchecked(LastByte);
       M->CoveredBytes += (oldStop - LastByte);
