@@ -216,9 +216,13 @@ TrackedAlloc::~TrackedAlloc() {
 }
 
 
-void TrackedAlloc::dropReference() {
+bool TrackedAlloc::dropReference() {
 
+  bool ret = false;
+    
   if(!(--nRefs)) {
+
+    ret = true;
     
     if((!isNeeded) && (!isCommitted))
       DSEInstructionDead(SI);
@@ -226,6 +230,8 @@ void TrackedAlloc::dropReference() {
     delete this;
 
   }
+
+  return ret;
     
 }
 
@@ -357,10 +363,12 @@ void DSEMapPointer::release() {
 
 }
 
-void DSEMapPointer::dropReference() { 
+bool DSEMapPointer::dropReference() { 
     
   release();
   delete M;
+
+  return true;
 
 }
 
@@ -1227,7 +1235,7 @@ void IntegrationAttempt::tryKillStoresInLoop(const ShadowLoopInvar* L, bool comm
     // Drop the reference belonging to this block.
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
-      BB->dseStore->dropReference();
+      SAFE_DROP_REF(BB->dseStore);
 
   }
 

@@ -61,10 +61,12 @@ TLMapPointer TLMapPointer::getReadableCopy() {
 
 }
 
-void TLMapPointer::dropReference() {
+bool TLMapPointer::dropReference() {
 
   delete M;
   M = 0;
+
+  return true;
 
 }
 
@@ -1177,7 +1179,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
     // Drop the reference belonging to this block.
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
-      BB->tlStore->dropReference();
+      SAFE_DROP_REF(BB->tlStore);
     
   }
 

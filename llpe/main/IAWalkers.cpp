@@ -19,8 +19,24 @@
 
 using namespace llvm;
 
-//// Implement the backward walker:
+// IAWalkers are forwards and backwards generic walkers over function and basic block instances, taking into account
+// block and edge liveness. They are typically used to discover "all-paths" properties concerning a particular instruction,
+// such as for example "is this allocation null-checked on all paths?"
+// Their use is discouraged because they try to step into functions and loop instances, which may have been committed
+// and their analysis results discarded; in this case we have to be conservative about the function's side-effects.
+// Preferably any use of an IAWalker should be merged into the main analysis pass (so e.g. the is-null-checked flag could
+// be maintained along with the symbolic store), but some uses have not yet been converted this way because the desired property
+// is usually or always context-local, so there was little to gain from making the improvement.
 
+// Throughout this file, all the firstPred / shouldCopyContext logic is intended to allow a walker implementation to track some
+// context as we walk and perhaps have that context copied when control flow diverges and merged when it converges.
+
+// The backward walker is currently unused. The forward and backward walkers are also somewhat diverged in feature terms
+// due to the particular needs of previous subclasses.
+
+// Make a backward walker starting from BB / instIdx. initialCtx is an arbitrary context object passed to the visit function;
+// AlreadyVisited may mark some paths already done, and doIgnoreEdges dictates whether the visitor cares about edges
+// leading to unspecialised code.
 BackwardIAWalker::BackwardIAWalker(uint32_t instIdx, ShadowBB* BB, bool skipFirst, void* initialCtx, DenseSet<WLItem>* AlreadyVisited, bool doIgnoreEdges) : IAWalker(initialCtx, doIgnoreEdges) {
 
   PList = &Worklist1;
@@ -55,6 +71,8 @@ struct QueueWalkVisitor : public ShadowBBVisitor {
 
 };
 
+// Walk from ExitedBB, outside some number of nested loops, back to ExitingBB which is inside them. Set firstPred to false after visiting
+// any block instance this way.
 void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, ShadowBBInvar* ExitingBB, ShadowBBVisitor* Visitor, void* Ctx, bool& firstPred) {
 
   if(edgeIsDead(ExitingBB, ExitedBB))
@@ -91,6 +109,7 @@ void IntegrationAttempt::visitLoopExitingBlocksBW(ShadowBBInvar* ExitedBB, Shado
 
 }
 
+// Walk backwards from FromBB: if it's the entry block of this context, walk out to our parent context.
 WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB->invar->BB == &(F.getEntryBlock())) {
@@ -125,6 +144,7 @@ WalkInstructionResult InlineAttempt::queuePredecessorsBW(ShadowBB* FromBB, Backw
 
 }
 
+// Walk backwards from FromBB, into a previous loop iteration or out into our parent context if appropriate.
 WalkInstructionResult PeelIteration::queuePredecessorsBW(ShadowBB* FromBB, BackwardIAWalker* Walker, void* Ctx) {
 
   if(FromBB->invar->idx == L->headerIdx) {
@@ -222,6 +242,7 @@ void IntegrationAttempt::visitNormalPredecessorsBW(ShadowBB* FromBB, ShadowBBVis
 
 }
 
+// Add block BB, instruction idx to the queue of blocks to explore from.
 void IAWalker::queueWalkFrom(uint32_t idx, ShadowBB* BB, void* Ctx, bool shouldCopyContext) {
 
   release_assert(BB && "Queue walk from null BB");
@@ -238,6 +259,7 @@ void IAWalker::queueWalkFrom(uint32_t idx, ShadowBB* BB, void* Ctx, bool shouldC
 
 }
 
+// We're walking backwards into this context; queue any block with a return instruction.
 void IntegrationAttempt::queueReturnBlocks(BackwardIAWalker* Walker, void* Ctx) {
 
   bool firstPred = true;
@@ -256,6 +278,8 @@ void IntegrationAttempt::queueReturnBlocks(BackwardIAWalker* Walker, void* Ctx) 
 
 }
 
+// Backwards walker main loop. The particular walker implementation should be given the chance
+// to visit each block in turn and perhaps terminate the walk because some conclusion has been drawn.
 void BackwardIAWalker::walkInternal() {
 
   while(PList->size() || CList->size()) {
@@ -366,6 +390,7 @@ WalkInstructionResult BackwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB
 
 //// Implement the forward walker:
 
+// Start walking from block BB / instruction idx; doIgnoreEdges dictates whether we care about branches to unspecialised code.
 ForwardIAWalker::ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, void* initialCtx, bool doIgnoreEdges) : IAWalker(initialCtx, doIgnoreEdges) {
 
   if(skipFirst)
@@ -378,6 +403,7 @@ ForwardIAWalker::ForwardIAWalker(uint32_t idx, ShadowBB* BB, bool skipFirst, voi
   
 }
 
+// Forward walker main loop; see comments for BackwardIAWalker... only, y'know, forwards.
 void ForwardIAWalker::walkInternal() {
 
   while(PList->size() || CList->size()) {
@@ -463,6 +489,7 @@ WalkInstructionResult ForwardIAWalker::walkFromInst(uint32_t startidx, ShadowBB*
 
 }
 
+// Recursive functions to descend the context tree when walking out of a loop.
 void InlineAttempt::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
   release_assert((!BB->outerScope) && "Dropped out of scope in queueSuccessorsFWFalling");
@@ -488,6 +515,7 @@ void PeelIteration::queueSuccessorsFWFalling(ShadowBBInvar* BB, ForwardIAWalker*
 
 }
 
+// Walk out of this call if appropriate.
 void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* Ctx) {
 
   if(isa<ReturnInst>(BB->invar->BB->getTerminator())) {
@@ -523,6 +551,9 @@ void InlineAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, voi
 // This gives maximum precision: if we analysed the first 3 iterations and we can show some property
 // along all live paths without reaching the 4th, we can use that knowledge. Only if we find a live
 // edge leading into the 4th do we consider it and all future iterations.
+
+// Note in this sort of case the specialised iterations will not actually get emitted, but the analysis results
+// still hold.
 bool PeelIteration::queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInvar* NextBlock, ForwardIAWalker* Walker, void* Ctx, bool& firstSucc) {
 
   if(PresentBlock->invar->idx == L->latchIdx && NextBlock->idx == L->headerIdx) {
@@ -555,6 +586,7 @@ bool InlineAttempt::queueNextLoopIterationFW(ShadowBB* PresentBlock, ShadowBBInv
   
 }
 
+// Walk forwards, definitely not out of a return block, but possibly into a loop.
 void IntegrationAttempt::queueSuccessorsFW(ShadowBB* BB, ForwardIAWalker* Walker, void* Ctx) {
 
   bool firstSucc = true;

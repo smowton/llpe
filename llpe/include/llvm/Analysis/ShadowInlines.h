@@ -480,11 +480,13 @@ class ImprovedValSetSingle;
 
 typedef std::pair<std::pair<uint64_t, uint64_t>, ImprovedValSetSingle> IVSRange;
 
+#define SAFE_DROP_REF(x) do { if(x->dropReference()) x = 0; } while(0);
+
 struct ImprovedValSet {
 
   bool isMulti;
 ImprovedValSet(bool M) : isMulti(M) { }
-  virtual void dropReference() = 0;
+  virtual bool dropReference() = 0;
   virtual bool isWritableMulti() = 0;
   virtual ImprovedValSet* getReadableCopy() = 0;
   virtual void print(raw_ostream&, bool brief = false) const = 0;
@@ -510,7 +512,7 @@ struct ImprovedValSetSingle : public ImprovedValSet {
 
   virtual ~ImprovedValSetSingle() {}
 
-  virtual void dropReference();
+  virtual bool dropReference();
 
   bool isInitialised() const {
     return Overdef || SetType == ValSetTypeDeallocated || SetType == ValSetTypeOldOverdef || Values.size() > 0;
@@ -792,7 +794,7 @@ struct ImprovedValSetMulti : public ImprovedValSet {
   virtual ~ImprovedValSetMulti() {}
 
   static bool classof(const ImprovedValSet* IVS) { return IVS->isMulti; }
-  virtual void dropReference();
+  virtual bool dropReference();
   bool isWritableMulti() {
     return MapRefCount == 1;
   }
@@ -911,7 +913,7 @@ LocStore(const LocStore& other) : store(other.store) {}
 
   // Simple forwards:
   LocStore getReadableCopy() { return LocStore(store->getReadableCopy());  }
-  void dropReference() {  store->dropReference();  }
+  bool dropReference() {  return store->dropReference();  }
   void print(raw_ostream& RSO, bool brief) { store->print(RSO, brief); }
 
   static void mergeStores(LocStore* mergeFrom, LocStore* mergeTo, uint64_t ASize, MergeBlockVisitor<LocStore, OrdinaryStoreExtraState>*);
@@ -1135,7 +1137,7 @@ struct TrackedAlloc {
   uint64_t nRefs;
   bool isNeeded;
 
-  void dropReference();
+  bool dropReference();
 
   TrackedAlloc(ShadowInstruction* _SI);
   ~TrackedAlloc();
@@ -1178,7 +1180,7 @@ DSEMapPointer(const DSEMapPointer& other) : M(other.M), A(other.A) {}
   bool isValid() { return !!M; }
   void checkMergedResult() { }
   DSEMapPointer getReadableCopy();
-  void dropReference();
+  bool dropReference();
   void release();
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo, 
@@ -1241,7 +1243,7 @@ TLMapPointer(const TLMapPointer& other) : M(other.M) {}
   bool isValid() { return !!M; }
   void checkMergedResult() { }
   TLMapPointer getReadableCopy();
-  void dropReference();
+  bool dropReference();
   void print(raw_ostream& RSO, bool brief);
   static void mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, 
 			  uint64_t ASize, MergeBlockVisitor<TLMapPointer, TLStoreExtraState>* Visitor);
@@ -1282,10 +1284,14 @@ struct FDStore {
   uint32_t refCount;
   std::vector<FDState> fds;
 
-  void dropReference() {
+  bool dropReference() {
 
-    if(!(--refCount))
+    bool ret = false;
+    if(!(--refCount)) {
+      ret = true;
       delete this;
+    }
+    return ret;
 
   }
 
@@ -1410,12 +1416,13 @@ struct ShadowBB {
       ++dseStore->refCount;
   }
   void derefStores(std::vector<ShadowValue>* simplify = 0) {
-    localStore->dropReference(simplify);
-    fdStore->dropReference();
+    if(localStore->dropReference(simplify))
+      localStore = 0;
+    SAFE_DROP_REF(fdStore);
     if(tlStore)
-      tlStore->dropReference();
+      SAFE_DROP_REF(tlStore);
     if(dseStore)
-      dseStore->dropReference();
+      SAFE_DROP_REF(dseStore);
   }
 
   void takeStoresFrom(ShadowBB* Other, bool inLoopAnalyser) {
@@ -1466,11 +1473,12 @@ struct ShadowLoopInvar {
 
   bool contains(const ShadowLoopInvar* Other) const {
 
-    if(Other == this)
-      return true;
-    else if(!parent)
+    if(!Other)
       return false;
-    return parent->contains(Other);
+    else if(Other == this)
+      return true;
+    else
+      return contains(Other->parent);
 
   }
   

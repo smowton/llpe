@@ -298,7 +298,7 @@ void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoo
 
     for(uint32_t i = 0; i != exitingEdges; ++i) {
       
-      ExitingBB->tlStore->dropReference();
+      SAFE_DROP_REF(ExitingBB->tlStore);
       ((TLLocalStore*)S)->refCount++;
     }
     
@@ -309,7 +309,7 @@ void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoo
 
     for(uint32_t i = 0; i != exitingEdges; ++i) {
       
-      ExitingBB->dseStore->dropReference();
+      SAFE_DROP_REF(ExitingBB->dseStore);
       ((DSELocalStore*)S)->refCount++;
     }
     

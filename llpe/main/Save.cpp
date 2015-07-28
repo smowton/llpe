@@ -857,7 +857,7 @@ void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint
 
   }
 
-  getExitPHIOperands(SI, valOpIdx, ops, BBs, false);
+  getExitPHIOperands(SI, valOpIdx, ops, BBs);
 
 
 }

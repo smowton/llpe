@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 // Functions to describe the hierarchy of peel and inline attempts in DOT format for easy review.
+// Used to provide the UI's basic block graph view.
 
 #include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"
@@ -82,6 +83,8 @@ std::string IntegrationAttempt::getValueColour(ShadowValue SV, std::string& text
 
 }
 
+// Helper: shorten str to include at most maxlen characters from the original string,
+// plus some suffix.
 static std::string TruncStr(std::string str, unsigned maxlen) {
 
   if(str.size() > maxlen) {
@@ -95,6 +98,8 @@ static std::string TruncStr(std::string str, unsigned maxlen) {
 
 }
 
+// Replace special characters with HTML escapes, and double backslashes (DOT recognises
+// both forms of escape sequence)
 static std::string escapeHTML(std::string Str) {
 
   for (unsigned i = 0; i != Str.length(); ++i) {
@@ -131,6 +136,7 @@ static std::string escapeHTML(std::string Str) {
 
 }
 
+// Stringify V, with abbreviation and escaping.
 static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA, bool brief=false) {
 
   std::string Esc;
@@ -140,6 +146,8 @@ static std::string escapeHTMLValue(Value* V, IntegrationAttempt* IA, bool brief=
 
 }
 
+// Print any derived result concerning SV (e.g. a constant, or an allocation identifier,
+// or a VFS specialisation report. Print nothing if we don't have a concrete result.
 void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
   
   if(SV.isVal())
@@ -202,12 +210,16 @@ void IntegrationAttempt::printRHS(ShadowValue SV, raw_ostream& Out) {
 
 }
 
+// When we're viewing a loop iteration, we draw target blocks outside this iteration
+// as an opaque label, rather than drawing all the instructions as usual. Get such a special
+// label if applicable. No edges leave this content for a function...
 bool InlineAttempt::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) {
 
   return false;
 
 }
 
+// ...but some do for a loop iteration.
 bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInvar* ToBB, raw_ostream& Out) {
 
   if(FromBB->idx == L->latchIdx && ToBB->idx == L->headerIdx) {
@@ -227,6 +239,8 @@ bool PeelIteration::getSpecialEdgeDescription(ShadowBBInvar* FromBB, ShadowBBInv
 
 }
 
+// Print an edge from BB -> SB. In brief mode, unreachable blocks / edges and branches to
+// unspecialised code are omitted.
 void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, ShadowBBInvar* SBI, ShadowBB* SB, uint32_t i, bool useLabels, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, bool brief) {
 
   if(brief && ((!SB) || edgeBranchesToUnspecialisedCode(BBI, SBI)))
@@ -264,6 +278,7 @@ void IntegrationAttempt::printOutgoingEdge(ShadowBBInvar* BBI, ShadowBB* BB, Sha
 	
 }
 
+// Print path conditions, appearing instruction-like at the top of the relevant block.
 void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB* BB, raw_ostream& Out, bool HTMLEscaped) {
 
   const char* arrow = HTMLEscaped ? " -&gt; " : " -> ";
@@ -402,6 +417,12 @@ void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, Sh
 
 }
 
+// Draw BB (in brief mode dead blocks are omitted). Yellow highlights indicate blocks that will be
+// reached for sure if the specialisation is entered and no implicit checks (e.g. for thread
+// interference) fail; green means the same and additionally the block is not in any loop context;
+// orange means that explicit checks (e.g. user-specified specialisation conditions) must pass too.
+// Light blue means that Clang's vararg code has been special-cased here (a temporary measure
+// until the vararg intrinsic work properly).
 void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, const ShadowLoopInvar* deferEdgesOutside, SmallVector<std::string, 4>* deferredEdges, raw_ostream& Out, SmallVector<ShadowBBInvar*, 4>* forceSuccessors, bool brief, bool plain) {
 
   if(brief && !BB)
@@ -537,6 +558,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
  
 }
 
+// Is BB live in this context or any child loop?
 bool IntegrationAttempt::blockLiveInAnyScope(ShadowBBInvar* BB) {
 
   if(!getBB(*BB))
@@ -569,6 +591,9 @@ bool IntegrationAttempt::blockLiveInAnyScope(ShadowBBInvar* BB) {
 
 }
 
+// In brief mode, draw only the entry and live exit blocks of loop DescribeL.
+// In normal mode, draw its blocks as per usual but with a grouping frame indicating
+// loop structure.
 void IntegrationAttempt::describeLoopAsDOT(const ShadowLoopInvar* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief) {
 
   SmallVector<std::string, 4> deferredEdges;
@@ -692,6 +717,8 @@ void IntegrationAttempt::describeLoopAsDOT(const ShadowLoopInvar* DescribeL, uin
 
 }
 
+// Draw the whole scope DescribeL, which starts at block #headerIdx, and may be null to indicate the
+// outermost (function) scope (in which case headerIdx == 0).
 void IntegrationAttempt::describeScopeAsDOT(const ShadowLoopInvar* DescribeL, uint32_t headerIdx, raw_ostream& Out, bool brief, SmallVector<std::string, 4>* deferredEdges) {
 
   ShadowBBInvar* BBI;
@@ -722,6 +749,7 @@ void IntegrationAttempt::describeScopeAsDOT(const ShadowLoopInvar* DescribeL, ui
 
 }
 
+// If we'll need DOT files for the user interface they are saved as specialisation proceeds.
 void IntegrationAttempt::getSavedDotName(bool brief, std::string& Out) {
 
   raw_string_ostream RSO(Out);
@@ -732,6 +760,7 @@ void IntegrationAttempt::getSavedDotName(bool brief, std::string& Out) {
 
 }
 
+// Save a graph representation of this context.
 void IntegrationAttempt::saveDOT2(bool brief) {
 
   std::string filename;
@@ -751,6 +780,7 @@ void IntegrationAttempt::saveDOT2(bool brief) {
 
 }
 
+// Save both brief and full representations of this context for the UI.
 void IntegrationAttempt::saveDOT() {
 
   if(!IHPSaveDOTFiles)

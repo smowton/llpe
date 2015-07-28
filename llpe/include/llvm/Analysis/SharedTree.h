@@ -27,7 +27,7 @@ SharedTreeNode() : refCount(1) {
 
 }
 
-  void dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified);
+  bool dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified);
   ChildType* getReadableStoreFor(uint32_t idx, uint32_t height);
   ChildType* getOrCreateStoreFor(uint32_t idx, uint32_t height, bool* isNewStore);
   SharedTreeNode* getWritableNode(uint32_t height);
@@ -37,9 +37,13 @@ SharedTreeNode() : refCount(1) {
 };
 
 template<class ChildType, class ExtraState> 
-void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified) {
+bool SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t idx, uint32_t height, std::vector<ShadowValue>* simplified) {
 
+  bool ret = false;
+  
   if(!--refCount) {
+
+    ret = true;
 
     LFV3(errs() << "Freeing node " << this << "\n");
 
@@ -74,6 +78,8 @@ void SharedTreeNode<ChildType, ExtraState>::dropReference(uint32_t idx, uint32_t
     delete this;
 
   }
+
+  return ret;
 
 }
 
@@ -401,7 +407,7 @@ template<class ChildType, class ExtraState> struct SharedTreeRoot {
 
 SharedTreeRoot() : root(0), height(0) { }
   void clear(std::vector<ShadowValue>* simplified);
-  void dropReference(std::vector<ShadowValue>* simplified);
+  bool dropReference(std::vector<ShadowValue>* simplified);
   ChildType* getReadableStoreFor(const ShadowValue& V);
   ChildType* getOrCreateStoreFor(ShadowValue& V, bool* isNewStore);
   void growToHeight(uint32_t newHeight);
@@ -515,9 +521,10 @@ template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, Extra
 
 }
 
-template<class ChildType, class ExtraState> void SharedTreeRoot<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* simplified) {
+template<class ChildType, class ExtraState> bool SharedTreeRoot<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* simplified) {
 
   clear(simplified);
+  return true;
 
 }
 
@@ -531,7 +538,7 @@ template<class ChildType, class ExtraState> struct SharedStoreMap {
 SharedStoreMap(InlineAttempt* _IA, uint32_t initSize) : store(initSize), refCount(1), IA(_IA), empty(true) { }
 
   SharedStoreMap* getWritableStoreMap();
-  void dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified);
+  bool dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified);
   void clear(uint32_t stack_depth, std::vector<ShadowValue>* simplified);
   SharedStoreMap* getEmptyMap(uint32_t stack_depth);
   void print(raw_ostream&, bool brief);
@@ -621,9 +628,13 @@ template<class ChildType, class ExtraState> SharedStoreMap<ChildType, ExtraState
 
 }
 
-template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, ExtraState>::dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified) {
+template<class ChildType, class ExtraState> bool SharedStoreMap<ChildType, ExtraState>::dropReference(uint32_t stack_depth, std::vector<ShadowValue>* simplified) {
 
+  bool ret = false;
+  
   if(!--refCount) {
+
+    ret = true;
 
     LFV3(errs() << "Local map " << this << " freed\n");
     clear(stack_depth, simplified);
@@ -636,6 +647,8 @@ template<class ChildType, class ExtraState> void SharedStoreMap<ChildType, Extra
     LFV3(errs() << "Local map " << this << " refcount down to " << refCount << "\n");
 
   }
+
+  return ret;
 
 }
 
@@ -673,7 +686,7 @@ LocalStoreMap(uint32_t s) : frames(s), heap(), allOthersClobbered(false), refCou
 
   void clear();
   LocalStoreMap* getEmptyMap();
-  void dropReference(std::vector<ShadowValue>* simplified = 0);
+  bool dropReference(std::vector<ShadowValue>* simplified = 0);
   LocalStoreMap* getWritableFrameList();
   void print(raw_ostream&, bool brief = false);
   bool empty();
@@ -829,9 +842,13 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
   
 }
 
-template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* Simplified) {
+template<class ChildType, class ExtraState> bool LocalStoreMap<ChildType, ExtraState>::dropReference(std::vector<ShadowValue>* Simplified) {
 
+  bool ret = false;
+  
   if(!--refCount) {
+
+    ret = true;
 
     LFV3(errs() << "Local map " << this << " freed\n");
     heap.dropReference(Simplified);
@@ -846,6 +863,8 @@ template<class ChildType, class ExtraState> void LocalStoreMap<ChildType, ExtraS
     LFV3(errs() << "Local map " << this << " refcount down to " << refCount << "\n");
 
   }
+
+  return ret;
 
 }
 

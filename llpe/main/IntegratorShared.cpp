@@ -322,17 +322,23 @@ Function* llvm::getCalledFunction(ShadowInstruction* SI) {
 
 }
 
-void ImprovedValSetSingle::dropReference() {
+bool ImprovedValSetSingle::dropReference() {
 
   // Singles can never be shared
   LFV3(errs() << "Drop ref on single val: deleted\n");
   delete this;
 
+  return true;
+
 }
 
-void ImprovedValSetMulti::dropReference() {
+bool ImprovedValSetMulti::dropReference() {
 
+  bool ret = false;
+    
   if(!(--MapRefCount)) {
+
+    ret = true;
 
     LFV3(errs() << "Drop ref on multi: deleted\n");
     if(Underlying)
@@ -346,6 +352,8 @@ void ImprovedValSetMulti::dropReference() {
     LFV3(errs() << "Drop ref on multi: new refcount " << MapRefCount << "\n");
 
   }
+
+  return ret;
 
 }
 

@@ -58,7 +58,9 @@ namespace llvm {
 
 }
 
-// Evaluate a merge instruction (phi or select)
+// Evaluate a merge instruction (phi or select). These produce set-typed values if more than
+// one outcome is possible, and mark symbolic pointers and file descriptors as 'escaped' if this
+// leads to their being members of an overdefined ("could be anything") set.
 bool IntegrationAttempt::tryEvaluateMerge(ShadowInstruction* I, ImprovedValSet*& NewPB) {
 
   // The case for a resolved select instruction has already been handled.
@@ -188,13 +190,14 @@ ShadowValue PeelIteration::getLoopHeaderForwardedOperand(ShadowInstruction* SI) 
 
 }
 
-
+// No phi node special casing required when not in a loop context.
 bool IntegrationAttempt::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result) {
 
   return false;
 
 }
 
+// Special case loop header phi nodes if this is one.
 bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultValid, ImprovedValSet*& result) {
 
   bool isHeaderPHI = SI->invar->parent->idx == L->headerIdx;
@@ -214,7 +217,7 @@ bool PeelIteration::tryEvaluateHeaderPHI(ShadowInstruction* SI, bool& resultVali
 // Fetch a list of live exit edges ExitingBB -> ExitedBB, and the corresponding operand to exit phi SI, operand valOpIdx.
 // Note that the edge might exit more than one loop. LLPE requires LCSSA-form input, so we know SI is certainly
 // a phi instruction.
-void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
+void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpIdx, ShadowBBInvar* ExitingBB, ShadowBBInvar* ExitedBB, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   if(edgeIsDead(ExitingBB, ExitedBB))
     return;
@@ -224,12 +227,12 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
     // Read from child loop if appropriate:
     if(PeelAttempt* PA = getPeelAttempt(immediateChildLoop(L, ExitingBB->naturalScope))) {
 
-      if(PA->isEnabled() && (readFromNonTerminatedLoop || PA->isTerminated())) {
+	if(PA->isEnabled() && PA->isTerminated()) {
 
 	for(unsigned i = 0; i < PA->Iterations.size(); ++i) {
 
 	  PeelIteration* Iter = PA->Iterations[i];
-	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs, readFromNonTerminatedLoop);
+	  Iter->getOperandRising(SI, valOpIdx, ExitingBB, ExitedBB, ops, BBs);
 
 	}
 
@@ -261,7 +264,8 @@ void IntegrationAttempt::getOperandRising(ShadowInstruction* SI, uint32_t valOpI
 }
 
 // Fetch the incoming values for phi node SI, operand valOpIdx, which might be a loop exit phi.
-void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs, bool readFromNonTerminatedLoop) {
+// If BBs is supplied, note the predecessor ShadowBBs for each operand too.
+void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   ShadowInstructionInvar* SII = SI->invar;
   ShadowBBInvar* BB = SII->parent;
@@ -273,7 +277,7 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
   ShadowBBInvar* OpBB = getBBInvar(blockIdx);
 
   if(OpBB->naturalScope != L && ((!L) || L->contains(OpBB->naturalScope)))
-    getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs, readFromNonTerminatedLoop);
+    getOperandRising(SI, valOpIdx, OpBB, BB, ops, BBs);
   else {
 
     // Arg is local (can't be lower or this is a header phi)
@@ -290,7 +294,8 @@ void IntegrationAttempt::getExitPHIOperands(ShadowInstruction* SI, uint32_t valO
 
 }
 
-// Evaluate comparing an assumed-successful file descriptor against constant int CmpVal.
+// Evaluate comparing an assumed-successful file descriptor (i.e. a non-negative value) against constant int CmpVal. For example, this can take care of the typical if(fd != -1) or if(fd < 0) test.
+// As and when LLPE gains support for generic range values, this should be folded into that feature.
 static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
 
   CmpInst::Predicate Pred = CmpI->getPredicate();
@@ -406,6 +411,7 @@ bool IntegrationAttempt::tryFoldOpenCmp(ShadowInstruction* SI, std::pair<ValSetT
 
 }
 
+// If Pred is an unsigned test, return the signed equivalent.
 static unsigned getSignedPred(unsigned Pred) {
 
   switch(Pred) {
@@ -423,6 +429,7 @@ static unsigned getSignedPred(unsigned Pred) {
 
 }
 
+// Return the inverse of Pred, such that a Pred b == b inv-Pred a.
 static unsigned getReversePred(unsigned Pred) {
 
   switch(Pred) {
@@ -470,6 +477,9 @@ static bool SVIsNull(ShadowValue& SV) {
 
 }
 
+// Try to resolve a compare involving non-constant operands. In future this could diagnose
+// inputs with disjoint ranges; for now it just takes care of tests against minimum and maximum
+// values for the comparison's input type.
 bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
@@ -581,6 +591,7 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
 }
 
 // Helper: do we know op points to a particular symbolic object or is a constant?
+// Similar to AliasAnalysis' isIdentifiedObject test.
 static bool isIDOrConst(ShadowValue& op) {
 
   if(isGlobalIdentifiedObject(op))
@@ -600,7 +611,11 @@ static bool isIDOrConst(ShadowValue& op) {
 
 }
 
-// Helper: can we find a null-test for the given allocation instruction?
+// Helper: can we find a null-test for the given allocation instruction? We will try to keep
+// only one null test along any particular path.
+// Ideally one day we will support generic driven conditionals (i.e. noting that b is true or
+// false in the two branches of an if(b) ... else ... block), but for now the well-known
+// if(!(x = malloc(...))) pattern is special-cased.
 class FindTestWalker : public ForwardIAWalker {
 
   ShadowInstruction* AllocI;
@@ -703,6 +718,8 @@ static bool heapPointerAlreadyTested(ShadowValue& V, ShadowInstruction* TestI) {
 
 // Return value: true for "we've handled it" and false for "try ordinary constant folding".
 // Here we try to resolve comparisons of two pointers, or a pointer against a constant.
+// This can take care of null tests, arbitrary comparison of known-offset pointers with a
+// common base, and equality of pointers across different allocations.
 bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved, unsigned char* needsRuntimeCheck) {
 
   CmpInst* CmpI = cast_inst<CmpInst>(SI);
@@ -837,6 +854,8 @@ static bool tryGetNegatedPointer(ShadowValue checkOp, uint64_t& SubOp0, ShadowVa
 
 }
 
+// Fetch alignment if V is a known allocation, and its allocation instruction / global gives an
+// alignment or the user has informed us about the heap allocation alignment.
 unsigned IntegrationAttempt::getAlignment(ShadowValue V) {
 
   unsigned Align = 1;
@@ -1190,6 +1209,7 @@ namespace llvm {
   Constant* ConstantFoldExtractValueInstruction(Constant *Agg, ArrayRef<unsigned> Idxs);
 }
 
+// Resolve x & 0 or x | -1 if possible.
 bool IntegrationAttempt::tryFoldBitwiseOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal>* Ops, ValSetType& ImpType, ImprovedVal& Improved) {
    
   Instruction* BOp = SI->invar->I;

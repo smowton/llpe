@@ -27,11 +27,13 @@ using namespace llvm;
 
 // Functions relating to dead instruction elimination. This used to be a seperate phase, but is now run for each context
 // as soon as possible after PE has completed. It should detect as many instructions as possible that aren't going
-// to have users in the specialised program and save us synthesising them.
+// to have users in the specialised program and save us synthesising them (motivation: creating then deleting an instruction
+// in LLVM is quite expensive, and can 'leak' memory due to uniqued constants)
 
 static uint32_t DIEProgressN = 0;
 const uint32_t DIEProgressLimit = 10000;
 
+// Just print some reassuring progress indicator
 static void DIEProgress() {
 
   DIEProgressN++;
@@ -44,7 +46,8 @@ static void DIEProgress() {
 
 }
 
-// Visits each user of a particular instruction or argument we're trying to prove dead.
+// This visitor will have its visit(...) method called for every user of a particular value V that we're trying to
+// show is dead. It sets maybeLive whenever we conclude V might be necessary in the final program.
 class llvm::DIVisitor {
 
 public:
@@ -187,6 +190,7 @@ public:
 
 };
 
+// Does V allocate memory, either on the stack or by calling a known allocation function?
 static bool isAllocationInstruction(ShadowValue V) {
 
   if(val_is<AllocaInst>(V))
@@ -220,6 +224,8 @@ static bool isAllocationInstruction(ShadowValue V) {
 
 }
 
+// Eliminate some easy cases of instructions that might appear dead, but need to be kept for their side-effects.
+// Some, such as branches, might get eliminated through other means, but shouldn't go away just because they aren't directly used.
 bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 
   if(inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) {
@@ -254,13 +260,17 @@ bool IntegrationAttempt::shouldDIE(ShadowInstruction* I) {
 // Implement logic passing the visitor around. Might genericise this if more situations emerge
 // requiring us to visit users across contexts.
 
+// PeelIteration overrides this; if not overridden this is a function instance and there is no
+// next iteration to worry about.
 bool IntegrationAttempt::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
 
   return false;
 
 }
 
-// See if the next iteration's header phis use I.
+// See if the next iteration's header phis use I. We'll assume they need it if we didn't establish
+// a unique iteration count for this loop, or if there are branches out of specialised code, e.g. due to
+// guard check failures, leading to an unspecialised copy of the loop.
 bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& Visitor) {
 
   if(inst_is<PHINode>(I)) {
@@ -305,7 +315,9 @@ bool PeelIteration::visitNextIterationPHI(ShadowInstructionInvar* I, DIVisitor& 
 
 }
 
-// Used in each iteration of a loop -- visit each iteration we're aware of.
+// VI is an in-loop instruction that uses Visitor.V, a loop invariant. Check whether any
+// iteration will require the value. Assume it is used if we're synthesising an unspecialised
+// copy of the loop for any reason.
 void PeelIteration::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
   const ShadowLoopInvar* immediateChild = immediateChildLoop(L, VI->parent->outerScope);
@@ -318,9 +330,11 @@ void PeelIteration::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor)
 
 }
 
+// Visit each iteration of this loop, looking for VI using Visitor.V. This might involve
+// exploring nested loops recursively.
 void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
-  if(Iterations.back()->iterStatus != IterationStatusFinal)
+  if(!isTerminated())
     Visitor.notifyUsersMissed();
 
   // Is this a header PHI? If so, this definition-from-outside can only matter for the preheader edge.
@@ -343,7 +357,8 @@ void PeelAttempt::visitVariant(ShadowInstructionInvar* VI, DIVisitor& Visitor) {
 
 }
   
-// Defined in-loop, used out-of-loop (but we require LCSSA form, so certainly an exit phi node).
+// Visitor.V is defined in-loop, used out-of-loop by UserI (but we require LCSSA form,
+// so certainly an exit phi node). Check if UserI is alive.
 void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
 
   release_assert(UserI->parent->naturalScope == 0 && "Reached bottom visiting exit PHI");
@@ -351,6 +366,9 @@ void InlineAttempt::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visit
 
 }
 
+// Walk up the tree of loops to find Visitor.V's user UserI. Note if we discover any
+// loop without a known iteration count, the loops will be emitted unchanged and Visitor.V
+// should be marked alive.
 void PeelIteration::visitExitPHI(ShadowInstructionInvar* UserI, DIVisitor& Visitor) {
 
   if(parentPA->isTerminated()) {
@@ -415,6 +433,8 @@ void IntegrationAttempt::visitUser(ShadowInstIdx& User, DIVisitor& Visitor) {
 
 }
 
+// Visit each user for V (== Visitor.V), looking for live users that will require
+// us to synthesise V.
 void IntegrationAttempt::visitUsers(ShadowValue V, DIVisitor& Visitor) {
 
   ImmutableArray<ShadowInstIdx>* Users;

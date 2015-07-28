@@ -885,7 +885,7 @@ void PeelIteration::dropExitingStoreRef(uint32_t fromIdx, uint32_t toIdx) {
 
     }
 
-    BB->localStore->dropReference();
+    SAFE_DROP_REF(BB->localStore);
 
   }
 
@@ -912,8 +912,9 @@ void PeelIteration::dropLatchStoreRef() {
   ShadowBB* LatchBB = getBB(parentPA->L->latchIdx);
   ShadowBBInvar* HeaderBBI = getBBInvar(parentPA->L->headerIdx);
   
-  if(!edgeIsDead(LatchBB->invar, HeaderBBI))
-    LatchBB->localStore->dropReference();
+  if(!edgeIsDead(LatchBB->invar, HeaderBBI)) {
+    SAFE_DROP_REF(LatchBB->localStore);
+  }
 
 }
 

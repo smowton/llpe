@@ -11,8 +11,17 @@
 #include "llvm/IR/Function.h"
 #include "llvm/ADT/DenseMap.h"
 
+// The function sharing code should permit identical invocations of a particular function to share analysis results.
+// However the feature hasn't been tested in some time and is almost certainly bitrotted.
+
+// In theory this should establish reasons why a function shouldn't be shared (e.g. arguments, important memory locations
+// differ, or memory allocations or file descriptors escape, leading to inappropriate conflation of distinct
+// objects), and if all checks pass, share both the analysis and the specialised emitted code.
+
 using namespace llvm;
 
+// The external dependencies are the memory locations, FDs etc that indirectly flow information into
+// this function.
 void InlineAttempt::clearExternalDependencies() {
 
   for(DenseMap<ShadowValue, ImprovedValSet*>::iterator it = sharing->externalDependencies.begin(), 
@@ -28,6 +37,8 @@ void InlineAttempt::clearExternalDependencies() {
 
 void IntegrationAttempt::sharingInit() { }
 
+// Record a copy of the symbolic store as we entered, for use comparing against a future state
+// to determine whether this function instance can be re-used.
 void InlineAttempt::sharingInit() {
 
   if(pass->enableSharing) {
@@ -49,6 +60,7 @@ void InlineAttempt::sharingInit() {
 
 }
 
+// Print our dependencies for debugging purposes.
 void InlineAttempt::dumpSharingState() {
 
   errs() << F.getName() << " / " << SeqNumber << ":";
@@ -77,6 +89,7 @@ void InlineAttempt::dumpSharingState() {
 
 void IntegrationAttempt::sharingCleanup() { }
 
+// Called after the main analysis loop exits this function.
 void InlineAttempt::sharingCleanup() {
 
   if(!pass->enableSharing)
@@ -88,6 +101,11 @@ void InlineAttempt::sharingCleanup() {
   SmallVector<ShadowInstruction*, 4> toRemove;
 
   // Eliminate escaping mallocs that are known to be freed, both as dependencies and escapes.
+  // This tries to permit a function to be re-used by showing its effects are not externally
+  // observable.
+  // The real work has happened during the main analysis loop, where free(...) and similar
+  // functions overwrite the local store with a special Deallocated value, which merges only
+  // with other Deallocated values; it then suffices to check all the return blocks carry that flag.
   for(SmallPtrSet<ShadowInstruction*, 4>::iterator it = sharing->escapingMallocs.begin(),
 	itend = sharing->escapingMallocs.end(); it != itend; ++it) {
 
@@ -162,7 +180,6 @@ void IntegrationAttempt::noteVFSOp() {
 }
 
 // This function depends on V, where V is a memory object.
-// 
 void IntegrationAttempt::noteDependency(ShadowValue V) {
 
   if(!pass->enableSharing)
@@ -200,6 +217,8 @@ void IntegrationAttempt::noteDependency(ShadowValue V) {
 
 }
 
+// Record an allocation which, for the time being, is assumed to escape. sharingCleanup may then
+// determine that in fact it is always freed.
 void IntegrationAttempt::noteMalloc(ShadowInstruction* SI) {
 
   if(!pass->enableSharing)
@@ -211,6 +230,8 @@ void IntegrationAttempt::noteMalloc(ShadowInstruction* SI) {
 
 }
 
+// This context calls some function; ChildIA is a completed analysis of that function.
+// Inherit its external dependencies and escaping allocations.
 void IntegrationAttempt::mergeChildDependencies(InlineAttempt* ChildIA) {
 
   if(!pass->enableSharing)
@@ -281,7 +302,7 @@ bool InlineAttempt::matchesCallerEnvironment(ShadowInstruction* SI) {
 
 }
 
-
+// This function is permissible for sharing!
 void LLPEAnalysisPass::addSharableFunction(InlineAttempt* IA) {
   
   if(!enableSharing)
@@ -305,6 +326,8 @@ void LLPEAnalysisPass::removeSharableFunction(InlineAttempt* IA) {
 
 }
 
+// Before trying to analyse the call at SI, see if we can find an existing analysis
+// that sufficiently resembles the current circumstances to re-use.
 InlineAttempt* LLPEAnalysisPass::findIAMatching(ShadowInstruction* SI) {
 
   if(!enableSharing)
@@ -337,7 +360,11 @@ InlineAttempt* LLPEAnalysisPass::findIAMatching(ShadowInstruction* SI) {
 }
 
 // CoW break this IA, but with the proviso that we're about to run analyseWithArgs() against it,
-// so we can leave work undone if that will reconstruct it anyway.
+// so we can leave work undone if that will reconstruct it anyway. This happens when a call was shared,
+// but it has become clear that actually the circumstances at two of its callsites differ. This happens
+// when iteratively analysing an unbounded loop, for example, and at the first pass a call is approved
+// to re-use an existing analysis, but at a subsequent pass it becomes clear the analysis can't actually
+// be shared.
 
 // This is currently maximally lazy: it makes a blank IA.
 InlineAttempt* InlineAttempt::getWritableCopyFrom(ShadowInstruction* SI) {
