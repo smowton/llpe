@@ -2813,8 +2813,14 @@ static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<Basic
 
     unregisterCommittedAllocations(*it);
     (*it)->dropAllReferences();
-    delete *it;
 
+  }
+
+  for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(),
+	itend = CommitBlocks.end(); it != itend; ++it) {
+
+    delete *it;
+    
   }
 
   CommitBlocks.clear();
@@ -2824,6 +2830,12 @@ static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<Basic
 
     unregisterCommittedAllocations(*it);
     (*it)->dropAllReferences();
+    
+  }
+
+  for(std::vector<BasicBlock*>::iterator it = CommitFailedBlocks.begin(),
+	itend = CommitFailedBlocks.end(); it != itend; ++it) {
+    
     delete *it;
 
   }
