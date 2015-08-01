@@ -1895,7 +1895,7 @@ static void flattenIVM(ImprovedValSetMulti* InIVM, uint64_t resSize, int64_t Shi
 
     }
 
-    Constant* PVConst = PVToConst(PV, 0, resSize, GlobalIHP->RootIA->F.getContext());
+    Constant* PVConst = PVToConst(PV, resSize, GlobalIHP->RootIA->F.getContext());
     ShadowValue PVConstV(PVConst);
     addValToPB(PVConstV, Result);
     
@@ -2155,7 +2155,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
 	ImprovedValSetSingle* NewIVS = newIVS();
 	NewIV = NewIVS;
-	Constant* PVConst = PVToConst(PV, 0, resSize, SI->invar->I->getContext());
+	Constant* PVConst = PVToConst(PV, resSize, SI->invar->I->getContext());
 
 	Constant* MaskedConst = ConstantExpr::getAnd(PVConst, MaskC);
 	if(ConstantExpr* MaskedCE = dyn_cast<ConstantExpr>(MaskedConst))

@@ -2113,7 +2113,7 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
  void executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction*);
  void writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB);
 
- Constant* PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext&);
+ Constant* PVToConst(PartialVal& PV, uint64_t Size, LLVMContext&);
 
  bool doBlockStoreMerge(ShadowBB* BB);
  void doCallStoreMerge(ShadowInstruction* SI);
