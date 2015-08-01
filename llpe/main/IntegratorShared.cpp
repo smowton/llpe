@@ -7,6 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+// File name is historical -- these functions used to be called from LLVM core code, back when we were
+// hacking core passes rather than re-implement part of their logic internally. In due course these
+// should be moved somewhere more appropriate.
+
 #include "llvm/ADT/IntervalMap.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/LLPE.h"
@@ -23,6 +27,8 @@ namespace llvm {
   class TargetLibraryInfo;
 }
 
+// Convert a Value into an ImprovedVal. Simple constants are easy; the tricky it is looking through complex constant
+// expressions involving pointers -- for example, turning &(G[4]) into an appropriate symbolic object and offset.
 std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
   Constant* C = dyn_cast<Constant>(V);
@@ -254,6 +260,8 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 
 }
 
+// Find a Function corresponding to CCalledV. This might be a constant, or might be an indirect
+// function call that has a known target in context.
 static Function* getReplacementFunction(ShadowValue CCalledV) {
 
   ShadowValue CalledV = CCalledV.stripPointerCasts();

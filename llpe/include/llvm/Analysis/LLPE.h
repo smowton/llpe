@@ -793,104 +793,26 @@ inline bool copyImprovedVal(ShadowValue V, ImprovedValSet*& OutPB) {
 
 raw_ostream& operator<<(raw_ostream&, const IntegrationAttempt&);
 
-// Define PartialVal, a container that gives a resolution to a load attempt, either wholly with a value
-// or partially with a Constant plus a byte extent and offset from which that Constant should be read.
-
-enum PartialValType {
-
-  PVEmpty,
-  PVTotal,
-  PVPartial,
-  PVByteArray
-
-};
-
+// PartialVal: a byte array with support functions for turning it into a Constant. 
 struct PartialVal {
 
-  // Might be empty, an SV, a constant with bounding parameters, or an array of bytes.
-  PartialValType type;
-
-  ImprovedVal TotalIV;
-  ValSetType TotalIVType;
-
-  // Used if it's a bounded constant:
-  Constant* C;
-  uint64_t ReadOffset;
-
-  // Used if it's an array of bytes
   uint64_t* partialBuf;
   bool* partialValidBuf;
   uint64_t partialBufBytes;
   bool loadFinished;
 
-  uint64_t markPaddingBytes(Type*);
-
   bool addPartialVal(PartialVal& PV, const DataLayout* TD, std::string* error);
   bool isComplete();
-  bool* getValidArray(uint64_t);
-  bool convertToBytes(uint64_t, const DataLayout*, std::string* error);
-  bool combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, const DataLayout* TD, std::string* error);
-
-  void initByteArray(uint64_t);
+  void combineWith(uint8_t* Other, uint64_t FirstDef, uint64_t FirstNotDef);
+  void combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef);
+  bool combineWith(Constant* C, uint64_t ConstOffset, uint64_t FirstDef, uint64_t FirstNotDef, std::string* error);
   
-  PartialVal(ValSetType TotalType, ImprovedVal Total) : 
-  type(PVTotal), TotalIV(Total), TotalIVType(TotalType), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
-  PartialVal(Constant* _C, uint64_t Off) : 
-  type(PVPartial), TotalIV(), C(_C), ReadOffset(Off), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
- PartialVal() :
-  type(PVEmpty), TotalIV(), C(0), ReadOffset(0), partialBuf(0), partialValidBuf(0), partialBufBytes(0), loadFinished(false) { }
-  PartialVal(uint64_t nBytes); // Byte array constructor
+  PartialVal(uint64_t nBytes);
   PartialVal(const PartialVal& Other);
   PartialVal& operator=(const PartialVal& Other);
   ~PartialVal();
 
-  bool isPartial() { return type == PVPartial; }
-  bool isTotal() { return type == PVTotal; }
-  bool isEmpty() { return type == PVEmpty; }
-  bool isByteArray() { return type == PVByteArray; }
-  
-  static PartialVal getPartial(Constant* _C, uint64_t Off) {
-    return PartialVal(_C, Off);
-  }
-
-  static PartialVal getTotal(ValSetType Type, ImprovedVal IV) {
-    return PartialVal(Type, IV);
-  }
-  
-  static PartialVal getByteArray(uint64_t size) {
-    return PartialVal(size);
-  }
-
 };
-
-#define PVNull PartialVal()
-
-inline bool operator==(PartialVal V1, PartialVal V2) {
-  if(V1.type == PVEmpty && V2.type == PVEmpty)
-    return true;
-  else if(V1.type == PVTotal && V2.type == PVTotal)
-    return V1.TotalIV == V2.TotalIV;
-  else if(V1.type == PVPartial && V2.type == PVPartial)
-    return ((V1.C == V2.C) &&
-	    (V1.ReadOffset == V2.ReadOffset));
-  else if(V1.type == PVByteArray && V2.type == PVByteArray) {
-    if(V1.partialBufBytes != V2.partialBufBytes)
-      return false;
-    for(unsigned i = 0; i < V1.partialBufBytes; ++i) {
-      if(V1.partialValidBuf[i] != V2.partialValidBuf[i])
-	return false;
-      if(V1.partialValidBuf[i] && (((char*)V1.partialBuf)[i]) != (((char*)V2.partialBuf)[i]))
-	return false;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-inline bool operator!=(PartialVal V1, PartialVal V2) {
-   return !(V1 == V2);
-}
 
 class UnaryPred {
  public:
@@ -2132,23 +2054,6 @@ inline IntegrationAttempt* ShadowValue::getCtx() const {
  bool GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint64_t DefinedSize,
 		      ShadowValue DefinerBase, int64_t DefinerOffset, uint64_t DefinerSize,
 		      uint64_t& FirstDef, uint64_t& FirstNotDef, uint64_t& ReadOffset);
-
- bool getPBFromCopy(ShadowValue copySource, ShadowInstruction* copyInst, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t ReadSize, Type* originalType, bool* validBytes, ImprovedValSetSingle& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
- bool getMemsetPV(ShadowInstruction* MSI, uint64_t nbytes, PartialVal& NewPV, std::string& error);
- bool getMemcpyPB(ShadowInstruction* I, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, PartialVal& NewPV, ImprovedValSetSingle& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
- bool getVaStartPV(ShadowInstruction* CI, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
- bool getReallocPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, ImprovedValSetSingle& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
- bool getVaCopyPB(ShadowInstruction* CI, uint64_t FirstDef, uint64_t FirstNotDef, int64_t ReadOffset, uint64_t LoadSize, Type* originalType, bool* validBytes, ImprovedValSetSingle& NewPB, std::string& error, BasicBlock* ctBB, IntegrationAttempt* ctIA);
- bool getReadPV(ShadowInstruction* SI, uint64_t nbytes, int64_t ReadOffset, PartialVal& NewPV, std::string& error);
-
- enum SVAAResult {
-   SVNoAlias,
-   SVMayAlias,
-   SVPartialAlias,
-   SVMustAlias
- };
- 
- bool tryCopyDeadEdges(ShadowBB* FromBB, ShadowBB* ToBB, bool& changed);
 
  bool willBeDeleted(ShadowValue);
 

@@ -7,6 +7,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// This file contains most logic relating to symbolic memory, and evaluating
+// load and store instructions against it.
+
 #define DEBUG_TYPE "LoadForward"
 
 #include "llvm/Analysis/LLPE.h"
@@ -29,6 +32,7 @@
 
 using namespace llvm;
 
+// Bug check: make sure null pointer values haven't been accidentally annotated as scalars.
 static void checkIVSNull(ImprovedValSetSingle& IVS) {
 
   for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
@@ -40,6 +44,12 @@ static void checkIVSNull(ImprovedValSetSingle& IVS) {
 
 }
 
+// An ImprovedValSetMulti represents a composite improved value -- for example,
+// { i32 flags, i32 fd }, which cannot be represented as a constant since the fd
+// is a symbolic object whilst the flags are a simple constant.
+// We use an IntervalMap (named Map) to describe how component IVSes are laid out.
+// They might describe a whole object, or if Underlying is set describe an overlay
+// atop that map.
 ImprovedValSetMulti::ImprovedValSetMulti(uint64_t ASize) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(0), CoveredBytes(0), AllocSize(ASize) { }
 
 ImprovedValSetMulti::ImprovedValSetMulti(const ImprovedValSetMulti& other) : ImprovedValSet(true), Map(GlobalIHP->IMapAllocator), MapRefCount(1), Underlying(other.Underlying), CoveredBytes(other.CoveredBytes), AllocSize(other.AllocSize) {
@@ -80,29 +90,20 @@ bool llvm::operator==(const ImprovedValSetMulti& PB1, const ImprovedValSetMulti&
 
 //// Implement guts of PartialVal:
 
-void PartialVal::initByteArray(uint64_t nbytes) {
+// This represents partial results when bytewise re-interpreting data.
+// The internal byte array is represented as a uint64_t array because
+// this is what the LLVM core reinterpreting function requires.
+// It may also hold a simple constant or a constant with bounds information,
+// if no reinterpretation was necessary.
 
-  type = PVByteArray;
+PartialVal::PartialVal(uint64_t nbytes) : partialBufBytes(nbytes), loadFinished(false) {
 
   uint64_t nqwords = (nbytes + 7) / 8;
   partialBuf = new uint64_t[nqwords];
 
-  if(!partialValidBuf) {
-
-    partialValidBuf = new bool[nbytes];
-    for(uint64_t i = 0; i < nbytes; ++i)
-      partialValidBuf[i] = false;
-
-  }
-
-  partialBufBytes = nbytes;
-  loadFinished = false;
-
-}
-
-PartialVal::PartialVal(uint64_t nbytes) : TotalIV(), C(0), ReadOffset(0), partialValidBuf(0)  {
-
-  initByteArray(nbytes);
+  partialValidBuf = new bool[nbytes];
+  for(uint64_t i = 0; i < nbytes; ++i)
+    partialValidBuf[i] = false;
 
 }
 
@@ -117,25 +118,11 @@ PartialVal& PartialVal::operator=(const PartialVal& Other) {
     partialValidBuf = 0;
   }
 
-  type = Other.type;
-  TotalIV = Other.TotalIV;
-  TotalIVType = Other.TotalIVType;
-  C = Other.C;
-  ReadOffset = Other.ReadOffset;
+  partialBuf = new uint64_t[(Other.partialBufBytes + 7) / 8];
+  memcpy(partialBuf, Other.partialBuf, Other.partialBufBytes);
 
-  if(Other.partialBuf) {
-
-    partialBuf = new uint64_t[(Other.partialBufBytes + 7) / 8];
-    memcpy(partialBuf, Other.partialBuf, Other.partialBufBytes);
-
-  }
-
-  if(Other.partialValidBuf) {
-
-    partialValidBuf = new bool[Other.partialBufBytes];
-    memcpy(partialValidBuf, Other.partialValidBuf, Other.partialBufBytes);
-    
-  }
+  partialValidBuf = new bool[Other.partialBufBytes];
+  memcpy(partialValidBuf, Other.partialValidBuf, Other.partialBufBytes);
 
   partialBufBytes = Other.partialBufBytes;
   loadFinished = Other.loadFinished;
@@ -163,147 +150,14 @@ PartialVal::~PartialVal() {
 
 }
 
-bool* PartialVal::getValidArray(uint64_t nbytes) {
-
-  if(!partialValidBuf) {
-    partialValidBuf = new bool[nbytes];
-    partialBufBytes = nbytes;
-  }
-
-  return partialValidBuf;
-
-}
-
-static uint64_t markPaddingBytes(bool* pvb, Type* Ty, DataLayout* TD) {
-  
-  uint64_t marked = 0;
-
-  if(StructType* STy = dyn_cast<StructType>(Ty)) {
-    
-    const StructLayout* SL = TD->getStructLayout(STy);
-    if(!SL) {
-      DEBUG(dbgs() << "Couldn't get struct layout for type " << *STy << "\n");
-      return 0;
-    }
-
-    uint64_t EIdx = 0;
-    for(StructType::element_iterator EI = STy->element_begin(), EE = STy->element_end(); EI != EE; ++EI, ++EIdx) {
-
-      marked += markPaddingBytes(&(pvb[SL->getElementOffset(EIdx)]), *EI, TD);
-      uint64_t ThisEStart = SL->getElementOffset(EIdx);
-      uint64_t ESize = (TD->getTypeSizeInBits(*EI) + 7) / 8;
-      uint64_t NextEStart = (EIdx + 1 == STy->getNumElements()) ? SL->getSizeInBytes() : SL->getElementOffset(EIdx + 1);
-      for(uint64_t i = ThisEStart + ESize; i < NextEStart; ++i, ++marked) {
-	
-	pvb[i] = true;
-
-      }
-
-    }
-
-  }
-  else if(ArrayType* ATy = dyn_cast<ArrayType>(Ty)) {
-
-    uint64_t ECount = ATy->getNumElements();
-    Type* EType = ATy->getElementType();
-    uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
-
-    uint64_t Offset = 0;
-    for(uint64_t i = 0; i < ECount; ++i, Offset += ESize) {
-
-      marked += markPaddingBytes(&(pvb[Offset]), EType, TD);
-
-    }
-
-  }
-
-  return marked;
-
-}
-
 bool PartialVal::isComplete() {
 
-  return isTotal() || isPartial() || loadFinished;
+  return loadFinished;
 
 }
 
-bool PartialVal::convertToBytes(uint64_t size, const DataLayout* TD, std::string* error) {
-
-  if(isByteArray())
-    return true;
-
-  PartialVal conv(size);
-  if(!conv.combineWith(*this, 0, size, size, TD, error))
-    return false;
-
-  (*this) = conv;
-
-  return true;
-
-}
-
-bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef, uint64_t LoadSize, const DataLayout* TD, std::string* error) {
-
-  if(isEmpty()) {
-
-    if(FirstDef == 0 && (FirstNotDef - FirstDef == LoadSize)) {
-
-      *this = Other;
-      return true;
-
-    }
-    else {
-
-      // Transition to bytewise load forwarding: this value can't satisfy
-      // the entire requirement. Turn into a PVByteArray and fall through.
-      initByteArray(LoadSize);
-
-    }
-
-  }
-
-  assert(isByteArray());
-
-  if(Other.isTotal()) {
-
-    Constant* TotalC = dyn_cast_or_null<Constant>(Other.TotalIV.V.getVal());
-    if(!TotalC) {
-      //LPDEBUG("Unable to use total definition " << itcache(PV.TotalVC) << " because it is not constant but we need to perform byte operations on it\n");
-      if(error)
-	*error = "PP2";
-      return false;
-    }
-    Other.C = TotalC;
-    Other.ReadOffset = 0;
-    Other.type = PVPartial;
-
-  }
-
-  DEBUG(dbgs() << "This store can satisfy bytes (" << FirstDef << "-" << FirstNotDef << "] of the source load\n");
-
-  // Store defined some of the bytes we need! Grab those, then perhaps complete the load.
-
-  unsigned char* tempBuf;
-
-  if(Other.isPartial()) {
-
-    tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
-    // XXXReadDataFromGlobal assumes a zero-initialised buffer!
-    memset(tempBuf, 0, FirstNotDef - FirstDef);
-
-    if(!XXXReadDataFromGlobal(Other.C, Other.ReadOffset, tempBuf, FirstNotDef - FirstDef, *TD)) {
-      DEBUG(dbgs() << "XXXReadDataFromGlobal failed; perhaps the source " << *(Other.C) << " can't be bitcast?\n");
-      if(error)
-	*error = "RDFG";
-      return false;
-    }
-
-  }
-  else {
-
-    tempBuf = (unsigned char*)Other.partialBuf;
-
-  }
+// Copy bytes in from the given buffer, targeting the range (FirstDef-FirstNotDef], marking each valid.
+void PartialVal::combineWith(uint8_t* Other, uint64_t FirstDef, uint64_t FirstNotDef) {
 
   assert(FirstDef < partialBufBytes);
   assert(FirstNotDef <= partialBufBytes);
@@ -314,14 +168,14 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
       continue;
     }
     else {
-      ((unsigned char*)partialBuf)[FirstDef + i] = tempBuf[i]; 
+      ((unsigned char*)partialBuf)[FirstDef + i] = Other[i]; 
     }
   }
 
   loadFinished = true;
   // Meaning of the predicate: stop at the boundary, or bail out if there's no more setting to do
   // and there's no hope we've finished.
-  for(uint64_t i = 0; i < LoadSize && (loadFinished || i < FirstNotDef); ++i) {
+  for(uint64_t i = 0; i < partialBufBytes && (loadFinished || i < FirstNotDef); ++i) {
 
     if(i >= FirstDef && i < FirstNotDef) {
       partialValidBuf[i] = true;
@@ -334,6 +188,28 @@ bool PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t Firs
 
   }
 
+}
+
+void PartialVal::combineWith(PartialVal& Other, uint64_t FirstDef, uint64_t FirstNotDef) {
+
+  combineWith((uint8_t*)Other.partialBuf, FirstDef, FirstNotDef);
+
+}
+
+bool PartialVal::combineWith(Constant* C, uint64_t ReadOffset, uint64_t FirstDef, uint64_t FirstNotDef, std::string* error) {
+
+  uint8_t* tempBuf = (unsigned char*)alloca(FirstNotDef - FirstDef);
+  // XXXReadDataFromGlobal assumes a zero-initialised buffer!
+  memset(tempBuf, 0, FirstNotDef - FirstDef);
+
+  if(!XXXReadDataFromGlobal(C, ReadOffset, tempBuf, FirstNotDef - FirstDef, *GlobalTD)) {
+    DEBUG(dbgs() << "XXXReadDataFromGlobal failed; perhaps the source " << *(C) << " can't be bitcast?\n");
+    if(error)
+      *error = "RDFG";
+    return false;
+  }
+
+  combineWith(tempBuf, FirstDef, FirstNotDef);
   return true;
 
 }
@@ -354,48 +230,9 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
+// Try to build a Constant from filled PartialVal PV. If we can't, report the reason to RSO.
 Constant* llvm::PVToConst(PartialVal& PV, raw_string_ostream* RSO, uint64_t Size, LLVMContext& Ctx) {
 
-  // Otherwise try to use a sub-value:
-  if(PV.isTotal() || PV.isPartial()) {
-
-    // Try to salvage a total definition from a partial if this is a load clobbered by a store
-    // of a larger aggregate type. This is to permit pointers and other non-constant forwardable values
-    // to be moved about. In future our value representation needs to get richer to become a recursive type like
-    // ConstantStruct et al.
-
-    // Note that because you can't write an LLVM struct literal featuring a non-constant,
-    // the only kinds of pointers this permits to be moved around are globals, since they are constant pointers.
-    Constant* SalvageC = PV.isTotal() ? dyn_cast_or_null<Constant>(PV.TotalIV.V.getVal()) : PV.C;
-
-    if(SalvageC) {
-
-      uint64_t Offset = PV.isTotal() ? 0 : PV.ReadOffset;
-      Constant* extr = extractAggregateMemberAt(SalvageC, Offset, 0, Size, GlobalTD);
-      if(extr)
-	return extr;
-
-    }
-    else {
-
-      if(RSO)
-	*RSO << "NonConstBOps";
-      return 0;
-
-    }
-
-  }
-
-  // Finally build it from bytes.
-  std::unique_ptr<std::string> error(RSO ? new std::string() : 0);
-  if(!PV.convertToBytes(Size, GlobalTD, error.get())) {
-    if(RSO)
-      *RSO << *error;
-    return 0;
-  }
-
-  assert(PV.isByteArray());
-  
   if(Size <= 8) {
     Type* targetType = Type::getIntNTy(Ctx, Size * 8);
     return constFromBytes((unsigned char*)PV.partialBuf, targetType, GlobalTD);
@@ -897,21 +734,24 @@ LocStore* ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
 
 bool llvm::addIVToPartialVal(const ImprovedVal& IV, ValSetType SetType, uint64_t IVOffset, uint64_t PVOffset, uint64_t Size, PartialVal* PV, std::string* error) {
 
-  release_assert(PV && PV->type == PVByteArray && "Must allocate PV before calling addIVToPartialVal");
+  release_assert(PV && "Must allocate PV before calling addIVToPartialVal");
 
   // And also if the value that would be merged is not constant-typed:
   if(SetType != ValSetTypeScalar && SetType != ValSetTypeScalarSplat)
     return false;
 
-  PartialVal NewPV;
+
   Constant* DefC = getSingleConstant(IV.V);
   if(SetType == ValSetTypeScalar) {
-    NewPV = PartialVal::getPartial(DefC, IVOffset);
+
+    return PV->combineWith(DefC, IVOffset, PVOffset, PVOffset + Size, error);
+    
   }
   else {
+
     // Splat of i8:
     uint8_t SplatVal = (uint8_t)(cast<ConstantInt>(DefC)->getLimitedValue());
-    NewPV = PartialVal::getByteArray(Size);
+    PartialVal NewPV(Size);
     
     uint8_t* buffer = (uint8_t*)NewPV.partialBuf;
     bool* validBuf = (bool*)NewPV.partialValidBuf;
@@ -921,13 +761,10 @@ bool llvm::addIVToPartialVal(const ImprovedVal& IV, ValSetType SetType, uint64_t
       validBuf[i] = true;
     }
 
-    NewPV.loadFinished = true;
+    PV->combineWith(NewPV, PVOffset, PVOffset + Size);
+    return true;
+    
   }
-
-  if(!PV->combineWith(NewPV, PVOffset, PVOffset + Size, PV->partialBufBytes, GlobalTD, error))
-    return false;
-
-  return true;
 
 }
 
@@ -1264,8 +1101,8 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 
     }
 
-    PartialVal PV = PartialVal::getPartial(FromC, 0);
-    if(!PV.convertToBytes(TargetSize, GlobalTD, error))
+    PartialVal PV(TargetSize);
+    if(!PV.combineWith(FromC, 0, 0, TargetSize, error))
       return false;
 
     if(containsPointerTypes(Target)) {
@@ -3788,8 +3625,14 @@ static void scalarSplatToScalar(ImprovedValSetSingle& IVS, Type* targetType) {
 
   for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
 
-    PartialVal PV(ValSetTypeScalarSplat, IVS.Values[i]);
-    Constant* PVC = PVToConst(PV, 0, GlobalTD->getTypeStoreSize(targetType), targetType->getContext());
+    uint64_t Size = GlobalTD->getTypeStoreSize(targetType);
+    PartialVal PV(Size);
+    uint8_t SplatVal = (uint8_t)cast<ConstantInt>(IVS.Values[i].V.getVal())->getLimitedValue();
+    memset(PV.partialBuf, SplatVal, Size);
+    for(uint64_t i = 0; i != Size; ++i)
+      PV.partialValidBuf[i] = true;
+    PV.loadFinished = true;
+    Constant* PVC = PVToConst(PV, 0, Size, targetType->getContext());
     IVS.Values[i] = ImprovedVal(ShadowValue(PVC));
 
   }

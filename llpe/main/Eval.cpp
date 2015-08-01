@@ -2139,8 +2139,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 	    
 	    Type* valType = Type::getIntNTy(SI->invar->I->getContext(), it.stop() - it.start());
 	    Constant* Zero = Constant::getNullValue(valType);
-	    PartialVal NewPV = PartialVal::getPartial(Zero, 0);
-	    PV.combineWith(NewPV, it.start(), it.stop(), PV.partialBufBytes, GlobalTD, 0);
+	    PV.combineWith(Zero, 0, it.start(), it.stop(), 0);
 
 	  }
 	  else {
