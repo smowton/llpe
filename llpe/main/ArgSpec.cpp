@@ -62,6 +62,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
   // Build an array of GEPs into that string:
   std::vector<Constant*> lineStartConsts;
   Type* Int64 = Type::getInt64Ty(M.getContext());
+  Type* I8P = Type::getInt8PtrTy(M.getContext());
   Constant* Zero = ConstantInt::get(Int64, 0);
 
   for(unsigned i = 0; i < lineStarts.size(); ++i) {
@@ -69,19 +70,19 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
     size_t start = lineStarts[i];
 
     Constant* gepArgs[] = { Zero, ConstantInt::get(Int64, start) };
-    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(EnvInitG, gepArgs, 2));
+    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(I8P, EnvInitG, gepArgs));
 
   }
 
   // Conclude with 2 nulls to signal we don't supply an ELF header at spec time.
-  lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
-  lineStartConsts.push_back(Constant::getNullValue(Type::getInt8PtrTy(M.getContext())));
+  lineStartConsts.push_back(Constant::getNullValue(I8P));
+  lineStartConsts.push_back(Constant::getNullValue(I8P));
 			    
   ArrayType* PtrArrT = ArrayType::get(lineStartConsts[0]->getType(), lineStartConsts.size());
   Constant* PtrArray = ConstantArray::get(PtrArrT, lineStartConsts);
   GlobalVariable* EnvPtrsG = new GlobalVariable(M, PtrArray->getType(), true, GlobalValue::PrivateLinkage, PtrArray, "spec_env_ptrs");
   Constant* gepArgs[] = { Zero, Zero };
-  Constant* EnvPtrsPtr = ConstantExpr::getGetElementPtr(EnvPtrsG, gepArgs, 2);
+  Constant* EnvPtrsPtr = ConstantExpr::getGetElementPtr(PtrArray->getType(), EnvPtrsG, gepArgs);
 
   return EnvPtrsPtr;
 
@@ -153,11 +154,11 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
       
       // Get a pointer into the constant argv:
       Constant* gepArgs[] = { ConstantInt::get(Int64, 0), ConstantInt::get(Int64, lineStarts[i]) };
-      Constant* stringPtr = ConstantExpr::getGetElementPtr(ArgvConsts, gepArgs, 2);
+      Constant* stringPtr = ConstantExpr::getGetElementPtr(BytePtr, ArgvConsts, gepArgs);
 
       // Get a pointer into the real argv:
       Constant* gepArg = ConstantInt::get(Int64, i);
-      Instruction* argvPtr = GetElementPtrInst::Create(Arg, gepArg, "argv_ptr", InsertBefore);
+      Instruction* argvPtr = GetElementPtrInst::Create(BytePtr, Arg, gepArg, "argv_ptr", InsertBefore);
       new StoreInst(stringPtr, argvPtr, InsertBefore);
 
     }
@@ -166,7 +167,7 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
 
   // Null terminate the argv array:
   Constant* gepArg = ConstantInt::get(Int64, argc);
-  Instruction* argvEndPtr = GetElementPtrInst::Create(Arg, gepArg, "argv_end_ptr", InsertBefore);
+  Instruction* argvEndPtr = GetElementPtrInst::Create(BytePtr, Arg, gepArg, "argv_end_ptr", InsertBefore);
   Constant* nullPtr = Constant::getNullValue(BytePtr);
   new StoreInst(nullPtr, argvEndPtr, InsertBefore);
 

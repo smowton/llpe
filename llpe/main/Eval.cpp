@@ -772,7 +772,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
   if(op0Arg && op1Arg && (op0Arg == zero || op1Arg == zero)) {
     
     ImpType = ValSetTypeScalar;
-    Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, GlobalTD));
+    Improved = ShadowValue(ConstantFoldCompareInstOperands(CmpI->getPredicate(), op0Arg, op1Arg, *GlobalTD));
 
     if(comparingHeapPointer && needsRuntimeCheck && !pass->omitMallocChecks) {
 
@@ -801,7 +801,7 @@ bool IntegrationAttempt::tryFoldPointerCmp(ShadowInstruction* SI, std::pair<ValS
     op0Arg = ConstantInt::get(I64, Ops[0].second.Offset);
     op1Arg = ConstantInt::get(I64, Ops[1].second.Offset);
     ImpType = ValSetTypeScalar;
-    Improved.V = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, GlobalTD));
+    Improved.V = ShadowValue(ConstantFoldCompareInstOperands(getSignedPred(CmpI->getPredicate()), op0Arg, op1Arg, *GlobalTD));
     return true;
 
   }
@@ -1591,13 +1591,13 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
       }
     }    
 
-    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], GlobalTD);
+    newConst = ConstantFoldCompareInstOperands(CI->getPredicate(), instOperands[0], instOperands[1], *GlobalTD);
 
   }
   else if(isa<LoadInst>(I))
-    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], GlobalTD);
+    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], *GlobalTD);
   else
-    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, GlobalTD, GlobalTLI);
+    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, *GlobalTD, GlobalTLI);
 
   if(newConst) {
 
@@ -2159,7 +2159,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
 	Constant* MaskedConst = ConstantExpr::getAnd(PVConst, MaskC);
 	if(ConstantExpr* MaskedCE = dyn_cast<ConstantExpr>(MaskedConst))
-	  MaskedConst = ConstantFoldConstantExpression(MaskedCE);
+	    MaskedConst = ConstantFoldConstantExpression(MaskedCE, *GlobalTD);
 
 	ShadowValue MaskedConstV(MaskedConst);
 	addValToPB(MaskedConstV, *NewIVS);

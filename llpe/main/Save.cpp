@@ -1372,7 +1372,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
 	Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
-	Constant* CopySource = ConstantExpr::getGetElementPtr(ArrayGlobal, Idxs, 2);
+	Constant* CopySource = ConstantExpr::getGetElementPtr(VoidPtrTy, ArrayGlobal, Idxs, 2);
       
 	Constant* MemcpySize = ConstantInt::get(Int64Ty, it->second.readSize);
 
@@ -1927,7 +1927,7 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
     OffsetGV = CastGV;
   else {
     Constant* OffC = ConstantInt::get(Type::getInt64Ty(GV->getContext()), (uint64_t)Offset, true);
-    OffsetGV = ConstantExpr::getGetElementPtr(CastGV, OffC);
+    OffsetGV = ConstantExpr::getGetElementPtr(Int8Ptr, CastGV, OffC);
   }
     
   // Cast to proper type:
@@ -2046,7 +2046,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     InTy = cast<PointerType>(InTy)->getElementType();
     if(Type* ElTy = XXXFindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
 
-      Result = GetElementPtrInst::Create(BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
+      Result = GetElementPtrInst::Create(ElTy, BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
       if((!isa<PointerType>(targetType)) || ElTy != cast<PointerType>(targetType)->getElementType())
 	Result = CastInst::CreatePointerCast(Result, targetType, VerboseNames ? "synthcastback" : "", emitBB);
       return true;
@@ -2064,7 +2064,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
     // Offset:
     Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
-    Value* OffsetI = GetElementPtrInst::Create(CastI, OffsetC, VerboseNames ? "synthgep" : "", emitBB);
+    Value* OffsetI = GetElementPtrInst::Create(Int8Ptr, CastI, OffsetC, VerboseNames ? "synthgep" : "", emitBB);
 
     // Cast back:
     if(targetType == Int8Ptr) {
@@ -2572,7 +2572,7 @@ static void applyLocToBlocks(const DebugLoc& loc, const std::vector<BasicBlock*>
 
     for(std::vector<BasicBlock*>::const_iterator it = blocks.begin(), itend = blocks.end(); it != itend; ++it) {
 	for(BasicBlock::iterator IIt = (*it)->begin(), IEnd = (*it)->end(); IIt != IEnd; ++IIt) {
-	    if(IIt->getDebugLoc().isUnknown())
+	    if(!IIt->getDebugLoc())
 		IIt->setDebugLoc(loc);
 	}
     }
@@ -2651,13 +2651,14 @@ void InlineAttempt::commitArgsAndInstructions() {
 
 	DIBuilder DIB(*F.getParent());
 
-	DIFile fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
-	DISubprogram fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
+	DIFile* fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
+	DISubprogram* fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
 						       fakeFilename, fakeFile, 1,
 						       pass->fakeDebugType, false,
 						       true, 1);
-	DILexicalBlock fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
-	DebugLoc newFakeLoc = DebugLoc::getFromDILexicalBlock(fakeBlock);
+	DILexicalBlock* fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
+	MDNode *Scope = fakeBlock->getScope();
+	DebugLoc newFakeLoc = DebugLoc::get(fakeBlock->getLine(), fakeBlock->getColumn(), Scope, NULL);
 	  
 	pFakeLoc = &(pass->fakeDebugLocs[&F] = newFakeLoc);
 
@@ -2676,7 +2677,7 @@ void InlineAttempt::commitArgsAndInstructions() {
 	    it != itend; ++it) {
 
 	  for(BasicBlock::iterator IIt = it->begin(), IEnd = it->end(); IIt != IEnd; ++IIt)
-	    if(IIt->getDebugLoc().isUnknown())
+	    if(!IIt->getDebugLoc())
 	      IIt->setDebugLoc(fakeLoc);
 
 	}

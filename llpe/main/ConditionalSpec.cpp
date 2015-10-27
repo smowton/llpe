@@ -689,7 +689,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
 
       Value* offConst = ConstantInt::get(Type::getInt64Ty(LLC), Cond.offset);
 
-      testRoot = GetElementPtrInst::Create(testRoot, ArrayRef<Value*>(&offConst, 1), "", emitBlock);
+      testRoot = GetElementPtrInst::Create(Int8Ptr, testRoot, ArrayRef<Value*>(&offConst, 1), "", emitBlock);
 
     }
 
@@ -2908,7 +2908,7 @@ Value* IntegrationAttempt::emitMemcpyCheck(ShadowInstruction* SI, BasicBlock* em
     release_assert(ThisOffset >= 0);
     
     Value* OffsetCI = ConstantInt::get(I64, (uint64_t)ThisOffset);
-    Value* ElPtr = GetElementPtrInst::Create(writtenPtr, ArrayRef<Value*>(&OffsetCI, 1), "", emitBB);
+    Value* ElPtr = GetElementPtrInst::Create(CharPtr, writtenPtr, ArrayRef<Value*>(&OffsetCI, 1), "", emitBB);
 
     Type* TargetType = PointerType::getUnqual(getValueType(it->second.Values[0].V));
     if(ElPtr->getType() != TargetType)

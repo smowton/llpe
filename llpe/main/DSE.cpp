@@ -131,7 +131,7 @@ void llvm::DeleteDeadInstruction(Instruction *I) {
       }
       else if(Constant* C = dyn_cast<Constant>(Op)) {
 
-	if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(GetUnderlyingObject(C))) {
+	if(GlobalVariable* GV = dyn_cast_or_null<GlobalVariable>(GetUnderlyingObject(C, *GlobalTD))) {
 	  
 	  GV->removeDeadConstantUsers();
 	  if(GV->use_empty() && GV->isDiscardableIfUnused())
@@ -790,7 +790,7 @@ void IntegrationAttempt::DSEHandleRead(ShadowValue PtrOp, uint64_t Size, ShadowB
 
     if(Offset == LLONG_MAX) {
       Offset = 0;
-      Size = AliasAnalysis::UnknownSize;
+      Size = MemoryLocation::UnknownSize;
     }
     
     store->useWriters(Offset, Size);
@@ -861,7 +861,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 
     uint64_t MISize;
     if(!tryGetConstantInt(I->getCallArgOperand(2), MISize))
-      MISize = AliasAnalysis::UnknownSize;
+      MISize = MemoryLocation::UnknownSize;
 
     if(inst_is<MemTransferInst>(I)) {
 
@@ -878,7 +878,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
       return;
 
     // If the size is unknown we must assume zero.
-    if(MISize != AliasAnalysis::UnknownSize)
+    if(MISize != MemoryLocation::UnknownSize)
       DSEHandleWrite(I->getCallArgOperand(0), MISize, I, BB);
 
   }
@@ -998,7 +998,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 	    }
 
 	    // OK, assume the call reads any amount through the pointer.
-	    DSEHandleRead(argval, AliasAnalysis::UnknownSize, BB);
+	    DSEHandleRead(argval, MemoryLocation::UnknownSize, BB);
 
 	  }
 	    

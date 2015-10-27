@@ -392,30 +392,30 @@ static uint32_t getFD(ShadowValue V) {
 
 }
 
-static AliasAnalysis::AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD) {
+static AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD) {
 
   if(V.isVal())
-    return AliasAnalysis::NoAlias;
+    return NoAlias;
 
   ImprovedValSetSingle VPB;
   if(!getImprovedValSetSingle(V, VPB))
-    return AliasAnalysis::MayAlias;
+    return MayAlias;
 
   if(VPB.Overdef || VPB.Values.size() == 0)
-    return AliasAnalysis::MayAlias;
+    return MayAlias;
 
   if(VPB.SetType != ValSetTypeFD)
-    return AliasAnalysis::NoAlias;
+    return NoAlias;
 
   if(VPB.Values.size() == 1 && VPB.Values[0].V.getInst() == FD)
-    return AliasAnalysis::MustAlias;
+    return MustAlias;
 
   for(uint32_t i = 0; i < VPB.Values.size(); ++i) {
     if(VPB.Values[i].V.getInst() == FD)
-      return AliasAnalysis::MayAlias;
+      return MayAlias;
   }
 
-  return AliasAnalysis::NoAlias;
+  return NoAlias;
 
 }
 
@@ -710,15 +710,15 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
     ShadowValue readFD = VFSCall->getCallArgOperand(0);
     
     switch(aliasesFD(readFD, FD)) {
-    case AliasAnalysis::MayAlias:
+    case MayAlias:
       LPDEBUG("Can't resolve VFS call because FD argument of " << itcache(VFSCall) << " is unresolved\n");
       return WIRStopWholeWalk;
-    case AliasAnalysis::NoAlias:
+    case NoAlias:
       LPDEBUG("Ignoring " << itcache(VFSCall) << " which references a different file\n");
       return WIRContinue;
-    case AliasAnalysis::MustAlias:
+    case MustAlias:
       return WIRStopThisPath;
-    case AliasAnalysis::PartialAlias:
+    case PartialAlias:
       return WIRStopWholeWalk;
     }
     
@@ -737,13 +737,13 @@ WalkInstructionResult IntegrationAttempt::isVfsCallUsingFD(ShadowInstruction* VF
     ShadowValue seekFD = VFSCall->getCallArgOperand(0);
     
     switch(aliasesFD(seekFD, FD)) {
-    case AliasAnalysis::MayAlias:
+    case MayAlias:
       return WIRStopWholeWalk;
-    case AliasAnalysis::NoAlias:
+    case NoAlias:
       return WIRContinue;
-    case AliasAnalysis::MustAlias:
+    case MustAlias:
       return WIRStopThisPath;
-    case AliasAnalysis::PartialAlias:
+    case PartialAlias:
       return WIRStopWholeWalk;
     }
     

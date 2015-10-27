@@ -89,7 +89,7 @@ bool DumpTypePass::runOnModule(Module &M) {
 
   }
 
-  const DataLayout* DL = &getAnalysis<DataLayoutPass>().getDataLayout();
+  const DataLayout* DL = &M.getDataLayout();
   Layout = DL->getStructLayout(Print);
 
   return false;

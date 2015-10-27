@@ -530,7 +530,7 @@ class LLPEAnalysisPass : public ModulePass {
 
    bool emitFakeDebug;
    DenseMap<Function*, DebugLoc> fakeDebugLocs;
-   DICompositeType fakeDebugType;
+   DISubroutineType* fakeDebugType;
 
    explicit LLPEAnalysisPass() : ModulePass(ID), cacheDisabled(false) { 
 

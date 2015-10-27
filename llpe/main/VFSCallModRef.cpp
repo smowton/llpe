@@ -29,7 +29,7 @@ using namespace llvm;
 static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(!tryGetConstantInt(getValArgOperand(CS, 2), Size))
-    Size = AliasAnalysis::UnknownSize;
+    Size = MemoryLocation::UnknownSize;
   V = getValArgOperand(CS, 1);
 
 }
@@ -37,7 +37,7 @@ static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(!tryGetConstantInt(getValArgOperand(CS, 1), Size))
-    Size = AliasAnalysis::UnknownSize;
+    Size = MemoryLocation::UnknownSize;
   else
     Size *= sizeof(struct pollfd);
   V = getValArgOperand(CS, 0);
@@ -47,7 +47,7 @@ static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 static void isReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   V = CS;
-  Size = AliasAnalysis::UnknownSize;
+  Size = MemoryLocation::UnknownSize;
 
 }
 
@@ -55,7 +55,7 @@ static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ShadowValue LenArg = getValArgOperand(CS, 2);
   if(!tryGetConstantInt(LenArg, Size))
-    Size = AliasAnalysis::UnknownSize;
+    Size = MemoryLocation::UnknownSize;
   V = getValArgOperand(CS, 1);
 
 }
@@ -64,15 +64,15 @@ static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(GlobalVariable* GV = cast<CallInst>(CS.getBareVal())->getParent()->getParent()->getParent()->getGlobalVariable("errno", true)) {
     V = ShadowValue(GV);
-    Size = AliasAnalysis::UnknownSize;
+    Size = MemoryLocation::UnknownSize;
   }
 
 }
 
 // Plain parameters:
-struct IHPLocationInfo locArg0 = { 0, 0, AliasAnalysis::UnknownSize };
-struct IHPLocationInfo locArg1 = { 0, 1, AliasAnalysis::UnknownSize };
-struct IHPLocationInfo locArg2 = { 0, 2, AliasAnalysis::UnknownSize };
+struct IHPLocationInfo locArg0 = { 0, 0, MemoryLocation::UnknownSize };
+struct IHPLocationInfo locArg1 = { 0, 1, MemoryLocation::UnknownSize };
+struct IHPLocationInfo locArg2 = { 0, 2, MemoryLocation::UnknownSize };
 
 // Sized parameters:
 struct IHPLocationInfo locTermios = { 0, 2, sizeof(struct termios) };

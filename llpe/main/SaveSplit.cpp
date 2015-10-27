@@ -29,7 +29,7 @@ void llvm::patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Valu
     I->setOperand(it->second, V);
     // Note this would be unsafe if any of the patch recipients were listed more than
     // once in patch lists.
-    if(Value* V = SimplifyInstruction(I)) {
+    if(Value* V = SimplifyInstruction(I, *GlobalTD)) {
       I->replaceAllUsesWith(V);
       I->eraseFromParent();
     }

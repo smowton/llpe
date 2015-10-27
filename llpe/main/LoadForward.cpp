@@ -2890,7 +2890,7 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 	  ShadowValue ClobberV(SGV);
 	  ImprovedValSetSingle ClobberIVS;
 	  ClobberIVS.set(ImprovedVal(ClobberV, LLONG_MAX), ValSetTypePB);
-	  executeWriteInst(0, ClobberIVS, OD, AliasAnalysis::UnknownSize, SI);
+	  executeWriteInst(0, ClobberIVS, OD, MemoryLocation::UnknownSize, SI);
 
 	}
 
@@ -3047,7 +3047,7 @@ void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
     // Finally clobber all locations; this call is entirely unhandled
     //errs() << "Warning: unhandled call to " << itcache(SI) << " clobbers all locations\n";
     ImprovedValSetSingle OD(ValSetTypeUnknown, true);
-    executeWriteInst(0, OD, OD, AliasAnalysis::UnknownSize, SI);
+    executeWriteInst(0, OD, OD, MemoryLocation::UnknownSize, SI);
     // Functions that clobber FD state happen to be the same.
     FDStore* FDS = SI->parent->getWritableFDStore();
     FDS->fds.clear();
