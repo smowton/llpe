@@ -2271,8 +2271,8 @@ bool IntegrationAttempt::tryEvaluateOrdinaryInst(ShadowInstruction* SI, Improved
   else {
     ImprovedValSetSingle* NewIVS = newIVS();
     NewPB = NewIVS;
-    std::pair<ValSetType, ImprovedVal> Ops[SI->getNumOperands()];
-    return tryEvaluateOrdinaryInst(SI, *NewIVS, Ops, 0);
+    std::vector<std::pair<ValSetType, ImprovedVal> > Ops(SI->getNumOperands());
+    return tryEvaluateOrdinaryInst(SI, *NewIVS, &Ops[0], 0);
   }
 
 }
