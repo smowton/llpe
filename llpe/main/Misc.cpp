@@ -27,7 +27,7 @@
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/PHITransAddr.h"
-#include "llvm/Target/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/Support/CommandLine.h"
@@ -3585,7 +3585,7 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
   GlobalTD = TD;
   AA = &getAnalysis<AliasAnalysis>();
   GlobalAA = AA;
-  GlobalTLI = getAnalysisIfAvailable<TargetLibraryInfo>();
+  GlobalTLI = &getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>()->getTLI();
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
   GInt8 = Type::getInt8Ty(M.getContext());
