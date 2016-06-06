@@ -225,7 +225,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
   // Beware! This LoopInfo instance and whatever Loop objects come from it are only alive until
   // the next call to getAnalysis. Therefore the ShadowLoopInvar objects we make here
   // must mirror all information we're interested in from the Loops.
-  LoopInfo* LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+  LoopInfo* LI = &getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
 
   ShadowFunctionInvar* RetInfoP = new ShadowFunctionInvar();
   functionInfo[&F] = RetInfoP;
