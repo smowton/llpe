@@ -228,7 +228,7 @@ static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool c
   uint64_t Len = 0;
   switch(Ty) {
   case PathConditionTypeIntmem:
-    Len = GlobalAA->getTypeStoreSize(Cond.u.val->getType());
+    Len = GlobalTD->getTypeStoreSize(Cond.u.val->getType());
     break;
   case PathConditionTypeString:
     Len = cast<ConstantDataArray>(Cond.u.val)->getNumElements();
@@ -327,7 +327,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     if((LI->isVolatile() || SI->hasOrderingConstraint()) && !SI->parent->IA->pass->atomicOpIsSimple(LI))
       markAllObjectsTentative(SI, SI->parent);
     else
-      markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
+      markGoodBytes(SI->getOperand(0), GlobalTD->getTypeStoreSize(LI->getType()), contextEnabled, SI->parent);
 
   }
   else if(StoreInst* StoreI = dyn_cast_inst<StoreInst>(SI)) {
@@ -337,7 +337,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     //if(StoreI->isVolatile())
     //markAllObjectsTentative(SI, SI->parent);
     //else
-    markGoodBytes(SI->getOperand(1), GlobalAA->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
+    markGoodBytes(SI->getOperand(1), GlobalTD->getTypeStoreSize(StoreI->getValueOperand()->getType()), contextEnabled, SI->parent);
 
   }
   else if(SI->readsMemoryDirectly() && SI->hasOrderingConstraint()) {
@@ -346,7 +346,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     if(SI->isThreadLocal == TLS_MUSTCHECK && !SI->parent->IA->pass->atomicOpIsSimple(SI->invar->I))
       markAllObjectsTentative(SI, SI->parent);
     else
-      markGoodBytes(SI->getOperand(0), GlobalAA->getTypeStoreSize(SI->getType()), contextEnabled, SI->parent);
+      markGoodBytes(SI->getOperand(0), GlobalTD->getTypeStoreSize(SI->getType()), contextEnabled, SI->parent);
 
   }
   else if(inst_is<FenceInst>(SI)) {
@@ -580,7 +580,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
     std::pair<ValSetType, ImprovedVal> Single;
     ImprovedValSet* IV;
 
-    uint64_t LoadSize = GlobalAA->getTypeStoreSize(SI.getType());
+    uint64_t LoadSize = GlobalTD->getTypeStoreSize(SI.getType());
 
     getIVOrSingleVal(PtrOp, IV, Single);
     if(IV) {

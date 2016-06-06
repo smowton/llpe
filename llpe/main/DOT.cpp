@@ -487,7 +487,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   uint32_t i;
   for(BI = BBI->BB->begin(), BE = BBI->BB->end(), i = 0; BI != BE; ++BI, ++i) {
     if(!BB)
-      Vals.push_back(ShadowValue(BI));
+      Vals.push_back(ShadowValue(&*BI));
     else
       Vals.push_back(ShadowValue(&(BB->insts[i])));
   }

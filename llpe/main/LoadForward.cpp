@@ -142,9 +142,9 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
     
     if(GV->isConstant()) {
 
-      uint64_t LoadSize = GlobalAA->getTypeStoreSize(LoadI->getType());
+      uint64_t LoadSize = GlobalTD->getTypeStoreSize(LoadI->getType());
       Type* FromType = GV->getInitializer()->getType();
-      uint64_t FromSize = GlobalAA->getTypeStoreSize(FromType);
+      uint64_t FromSize = GlobalTD->getTypeStoreSize(FromType);
 
       if(Ptr.Offset < 0 || Ptr.Offset + LoadSize > FromSize) {
 	Result.setOverdef();
@@ -195,7 +195,7 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
 static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::string* report) {
 
-  uint64_t LoadSize = GlobalAA->getTypeStoreSize(LI->getType());
+  uint64_t LoadSize = GlobalTD->getTypeStoreSize(LI->getType());
 
   // We already know that LI's IVSet is made up entirely of nulls and definite pointers.
   ImprovedValSetSingle* NewPB = newIVS();
@@ -987,7 +987,7 @@ void llvm::executeStoreInst(ShadowInstruction* StoreSI) {
   // Get written location:
   ShadowBB* StoreBB = StoreSI->parent;
   ShadowValue Ptr = StoreSI->getOperand(1);
-  uint64_t PtrSize = GlobalAA->getTypeStoreSize(StoreSI->invar->I->getOperand(0)->getType());
+  uint64_t PtrSize = GlobalTD->getTypeStoreSize(StoreSI->invar->I->getOperand(0)->getType());
 
   ImprovedValSetSingle PtrSet;
   release_assert(getImprovedValSetSingle(Ptr, PtrSet) && "Write through uninitialised PB?");
@@ -1284,7 +1284,7 @@ uint64_t ShadowValue::getValSize() const {
     return GlobalTD->getPointerSize();
   default:
     Type* SrcTy = getNonPointerType();
-    return GlobalAA->getTypeStoreSize(SrcTy);
+    return GlobalTD->getTypeStoreSize(SrcTy);
 
   }
 
@@ -1374,7 +1374,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
 
   release_assert(FromSV.isVal() || FromSV.isConstantInt());
 
-  uint64_t FromSize = GlobalAA->getTypeStoreSize(FromSV.getNonPointerType());
+  uint64_t FromSize = GlobalTD->getTypeStoreSize(FromSV.getNonPointerType());
 
   if(Offset == 0 && TargetSize == FromSize) {
     AddIVSSV(0, TargetSize, FromSV);
@@ -1470,7 +1470,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
 
       // Read a partial on the left:
       Constant* StartC = CS->getAggregateElement(StartE);
-      uint64_t StartCSize = GlobalAA->getTypeStoreSize(StartC->getType());
+      uint64_t StartCSize = GlobalTD->getTypeStoreSize(StartC->getType());
       uint64_t ThisReadSize;
 
       if(EndE == StartE)
@@ -1495,7 +1495,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
     for(;StartE < EndE; ++StartE) {
 
       Constant* E = CS->getAggregateElement(StartE);
-      uint64_t ESize = GlobalAA->getTypeStoreSize(E->getType());
+      uint64_t ESize = GlobalTD->getTypeStoreSize(E->getType());
       uint64_t ThisOff = SL->getElementOffset(StartE);
       AddIVSConst(ThisOff, ESize, E);
 
@@ -1922,7 +1922,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValS
   }
 
   Constant* C = getSingleConstant(S.Values[0].V);
-  uint64_t CSize = GlobalAA->getTypeStoreSize(C->getType());
+  uint64_t CSize = GlobalTD->getTypeStoreSize(C->getType());
   truncateConstVal(it, CSize - n, n, firstPtr);
 
 }
@@ -2238,7 +2238,7 @@ void llvm::executeAllocaInst(ShadowInstruction* SI) {
   AllocData& AD = parentIA->localAllocas.back();
   AD.allocIdx = allocIdx;
   
-  executeAllocInst(SI, AD, allocType, allocType ? GlobalAA->getTypeStoreSize(allocType) : ULONG_MAX, parentIA->stack_depth, allocIdx);
+  executeAllocInst(SI, AD, allocType, allocType ? GlobalTD->getTypeStoreSize(allocType) : ULONG_MAX, parentIA->stack_depth, allocIdx);
 
 }
 

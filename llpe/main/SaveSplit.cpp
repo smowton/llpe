@@ -47,13 +47,13 @@ static Instruction* getInsertLocation(Value* V) {
     BasicBlock::iterator BI(I);
     ++BI;
     release_assert(BI != I->getParent()->end());
-    return BI;
+    return &*BI;
 
   }
   else if(Argument* A = dyn_cast<Argument>(V)) {
     
     release_assert(A->getParent() && A->getParent()->getEntryBlock().size());
-    return A->getParent()->getEntryBlock().begin();
+    return &*(A->getParent()->getEntryBlock().begin());
 
   }
   else {

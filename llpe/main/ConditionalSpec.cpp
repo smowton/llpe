@@ -328,7 +328,7 @@ void IntegrationAttempt::applyPathCondition(PathCondition* it, PathConditionType
       getImprovedValSetSingle(ShadowValue(it->u.val), writeVal);
 
       // Attribute the effect of the write to first instruction in block:
-      executeWriteInst(0, writePtr, writeVal, GlobalAA->getTypeStoreSize(it->u.val->getType()), &(BB->insts[0]));
+      executeWriteInst(0, writePtr, writeVal, GlobalTD->getTypeStoreSize(it->u.val->getType()), &(BB->insts[0]));
 
     }
 
@@ -1540,7 +1540,7 @@ void InlineAttempt::markBBAndPreds(ShadowBBInvar* UseBBI, uint32_t instIdx, std:
 // The specialised instance path might insert type conversions before the predecessor block's terminator.
 static PHINode* insertMergePHI(ShadowInstructionInvar& SI, SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>& specPreds, SmallVector<std::pair<BasicBlock*, Instruction*>, 4>& unspecPreds, BasicBlock* InsertBB) {
 
-  PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, VerboseNames ? "clonemerge" : "", InsertBB->begin());
+  PHINode* NewNode = PHINode::Create(SI.I->getType(), 0, VerboseNames ? "clonemerge" : "", &*(InsertBB->begin()));
   
   for(SmallVector<std::pair<BasicBlock*, IntegrationAttempt*>, 4>::iterator it = specPreds.begin(), itend = specPreds.end(); it != itend; ++it) {
 
@@ -1986,7 +1986,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
     --BE;
     if(skipTestedInst) {
       --BE;
-      testedInst = BE;
+      testedInst = &*BE;
       ++BE;
     }
     else
@@ -2002,7 +2002,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
   for(; BI != BE; ++BI, ++instIdx) {
 
     ShadowInstructionInvar& SII = BBI->insts[instIdx];
-    Instruction* I = BI;
+    Instruction* I = &*BI;
     
     ReturnInst* RI = dyn_cast<ReturnInst>(BI);
     if(RI && !isRootMainCall()) {
@@ -2091,7 +2091,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	}
 	// Insert print before the next instruction:
 	++BI;
-	emitRuntimePrint(BB, msg, 0, BI);
+	emitRuntimePrint(BB, msg, 0, &*BI);
 	// Point iterator back at the new instruction:
 	--BI;
     
@@ -2217,7 +2217,7 @@ BasicBlock* IntegrationAttempt::CloneBasicBlockFrom(const BasicBlock* BB,
     if (II->hasName())
       NewInst->setName(II->getName()+NameSuffix);
     NewBB->getInstList().push_back(NewInst);
-    VMap[II] = NewInst;
+    VMap[&*II] = NewInst;
     
   }
   

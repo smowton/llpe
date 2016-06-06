@@ -440,6 +440,5 @@ void llvm::printPB(raw_ostream& out, ImprovedValSetSingle PB, bool brief) {
 }
 
 const DataLayout* llvm::GlobalTD;
-AliasAnalysis* llvm::GlobalAA;
 TargetLibraryInfo* llvm::GlobalTLI;
 LLPEAnalysisPass* llvm::GlobalIHP;

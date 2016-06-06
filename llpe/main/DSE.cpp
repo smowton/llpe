@@ -984,7 +984,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 	  for(uint32_t arg = 0, arglim = I->getNumArgOperands(); arg != arglim; ++arg) {
 
 	    // Can't hold a pointer?
-	    if(GlobalAA->getTypeStoreSize(FType->getParamType(arg)) < 8)
+	    if(GlobalTD->getTypeStoreSize(FType->getParamType(arg)) < 8)
 	      return;
 
 	    // Known not a pointer?
@@ -1031,7 +1031,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
     // should never be deleted in any case.
 
     ShadowValue Pointer = I->getOperand(0);
-    uint64_t LoadSize = GlobalAA->getTypeStoreSize(I->getType());
+    uint64_t LoadSize = GlobalTD->getTypeStoreSize(I->getType());
 
     // If isThreadLocal == TLS_MUSTCHECK then the load will happen for real
     // despite its known value.
@@ -1061,7 +1061,7 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
   else if(inst_is<StoreInst>(I)) {
 
     ShadowValue Pointer = I->getOperand(1);
-    uint64_t StoreSize = GlobalAA->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
+    uint64_t StoreSize = GlobalTD->getTypeStoreSize(I->invar->I->getOperand(0)->getType());
     DSEHandleWrite(Pointer, StoreSize, I, BB);
 
   }

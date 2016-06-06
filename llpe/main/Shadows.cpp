@@ -160,8 +160,8 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
 
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
-    shadowGlobals[i].G = it;
-    shadowGlobalsIdx[it] = i;
+    shadowGlobals[i].G = &*it;
+    shadowGlobalsIdx[&*it] = i;
 
   }
 
@@ -169,7 +169,7 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
     if(it->isConstant()) {
-      shadowGlobals[i].storeSize = GlobalAA->getTypeStoreSize(shadowGlobals[i].G->getType());
+      shadowGlobals[i].storeSize = GlobalTD->getTypeStoreSize(shadowGlobals[i].G->getType());
       continue;
     }
 
@@ -178,7 +178,7 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
     heap.push_back(AllocData());
     AllocData& AD = heap.back();
     AD.allocIdx = heap.size() - 1;
-    AD.storeSize = GlobalAA->getTypeStoreSize(it->getType()->getElementType());
+    AD.storeSize = GlobalTD->getTypeStoreSize(it->getType()->getElementType());
     AD.isCommitted = true;
     AD.allocValue = ShadowValue(&(shadowGlobals[i]));
     AD.allocType = shadowGlobals[i].G->getType();
@@ -254,7 +254,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
     BasicBlock::iterator it, endit;
     for(j = 0, it = BB->begin(), endit = BB->end(); it != endit; ++it, ++j) {
 
-      IIndices[it] = j;
+      IIndices[&*it] = j;
 
     }
 
@@ -316,7 +316,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
     BasicBlock::iterator BI = BB->begin(), BE = BB->end();
     for(uint32_t j = 0; BI != BE; ++BI, ++j) {
 
-      Instruction* I = BI;
+      Instruction* I = &*BI;
       ShadowInstructionInvar& SI = insts[j];
 
       SI.idx = j;
@@ -409,7 +409,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
   uint32_t i = 0;
   for(; i != F.arg_size(); ++i, ++AI) {
 
-    Argument* A = AI;
+    Argument* A = &*AI;
     ShadowArgInvar& SArg = Args[i];
     SArg.A = A;
       

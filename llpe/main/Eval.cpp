@@ -1925,7 +1925,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
     return tryEvaluateMultiCmp(SI, NewIV);
 
   unsigned opcode = SI->invar->I->getOpcode();
-  int64_t resSize = (int64_t)GlobalAA->getTypeStoreSize(SI->getType());
+  int64_t resSize = (int64_t)GlobalTD->getTypeStoreSize(SI->getType());
 
   switch(opcode) {
     

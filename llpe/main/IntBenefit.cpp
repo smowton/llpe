@@ -320,13 +320,13 @@ void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
     if(BBL != L) {
 
-      if(instructionCounts(BI))
+      if(instructionCounts(&*BI))
 	improvableInstructionsIncludingLoops++;
 
     }
     else {
 
-      if(instructionCounts(BI)) { 
+      if(instructionCounts(&*BI)) { 
 
 	//if(BB == getEntryBlock() && isa<PHINode>(BI))
 	//  continue;

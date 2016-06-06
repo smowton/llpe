@@ -44,7 +44,7 @@
 
 namespace llvm {
 
-class AliasAnalysis;
+class AAResults;
 class PHINode;
 class NonLocalDepResult;
 class LoadInst;
@@ -63,7 +63,6 @@ class PeelAttempt;
 class LLPEAnalysisPass;
 class Function;
 class DataLayout;
-class AliasAnalysis;
 class Loop;
 class LoopInfo;
 class IntegrationAttempt;
@@ -100,7 +99,7 @@ inline void release_assert_fail(const char* str) {
 #define release_assert(x) if(!(x)) { release_assert_fail(#x); }
 
 extern const DataLayout* GlobalTD;
-extern AliasAnalysis* GlobalAA;
+extern AAResults* GlobalAA;
 extern TargetLibraryInfo* GlobalTLI;
 extern LLPEAnalysisPass* GlobalIHP;
 
@@ -419,7 +418,7 @@ class LLPEAnalysisPass : public ModulePass {
    DenseMap<ShadowInstruction*, std::string> optimisticForwardStatus;
 
    const DataLayout* TD;
-   AliasAnalysis* AA;
+   AAResults* AA;
 
    InlineAttempt* RootIA;
 

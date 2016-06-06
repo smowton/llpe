@@ -219,7 +219,7 @@ BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& 
   if(AddTo && getFunctionRoot()->firstFailedBlock != AddTo->end() && !isFailedBlock) {
 
     // Add block before any failed blocks
-    newBlock = BasicBlock::Create(Ctx, Name, AddTo, getFunctionRoot()->firstFailedBlock);
+    newBlock = BasicBlock::Create(Ctx, Name, AddTo, &*(getFunctionRoot()->firstFailedBlock));
 
   }
   else {
@@ -609,7 +609,7 @@ Value* InlineAttempt::getArgCommittedValue2(ShadowArg* SA, BasicBlock* emitBB, I
     for(unsigned i = 0; i < n; ++i)
       ++it;
 
-    return it;
+    return &*it;
 
   }
   else {
@@ -788,7 +788,7 @@ PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
     ++it;
   
   if(it != emitBB->end())
-    return PHINode::Create(Ty, 0, Name, it);
+    return PHINode::Create(Ty, 0, Name, &*it);
   else
     return PHINode::Create(Ty, 0, Name, emitBB);
 
@@ -2170,7 +2170,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
   // Create pointer that should be written through:
   Type* targetType;
-  if(chunkSize == 1 && GlobalAA->getTypeStoreSize(getValueType(chunkBegin->second.Values[0].V)) <= 8)
+  if(chunkSize == 1 && GlobalTD->getTypeStoreSize(getValueType(chunkBegin->second.Values[0].V)) <= 8)
     targetType = PointerType::getUnqual(getValueType(chunkBegin->second.Values[0].V));
   else
     targetType = BytePtr;
@@ -2188,7 +2188,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
     ImprovedVal& IV = chunkBegin->second.Values[0];
     ShadowValue IVal(I);
     Value* newVal = trySynthVal(&IVal, getValueType(IV.V), chunkBegin->second.SetType, IV, emitBB);
-    uint64_t elSize = GlobalAA->getTypeStoreSize(newVal->getType());
+    uint64_t elSize = GlobalTD->getTypeStoreSize(newVal->getType());
 
     if(elSize > 8) {
 
@@ -2761,7 +2761,7 @@ static void unregisterCommittedAllocations(BasicBlock* BB) {
 
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
 
-    Instruction* I = BI;
+    Instruction* I = &*BI;
     {
       DenseMap<Value*, uint32_t>::iterator findit = GlobalIHP->committedHeapAllocations.find(I);
       if(findit != GlobalIHP->committedHeapAllocations.end()) {
@@ -2789,7 +2789,7 @@ static void unregisterCommittedAllocations(BasicBlock* BB) {
 static void unregisterCommittedAllocations(Function* F) {
 
   for(Function::iterator it = F->begin(), itend = F->end(); it != itend; ++it)
-    unregisterCommittedAllocations(it);
+    unregisterCommittedAllocations(&*it);
 
 }
 

@@ -64,7 +64,7 @@ void NameBlocksPass::runOnFunction(Function* F) {
 bool NameBlocksPass::runOnModule(Module& M) {
 
   for(Module::iterator MI = M.begin(), ME = M.end(); MI != ME; ++MI)
-    runOnFunction(MI);
+    runOnFunction(&*MI);
 
   return true;
 

@@ -1961,7 +1961,7 @@ void LLPEAnalysisPass::commit() {
 
       Type* Void = Type::getVoidTy(preludeBlock->getContext());
       Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
-      CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+      CallInst::Create(WDInit, ArrayRef<Value*>(), "", &*it);
 
     }
 
@@ -2060,7 +2060,7 @@ static void parseFB(const char* paramName, const std::string& arg, Module& M, Fu
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
 
     if(FI->getName() == BB1Name) {
-      BB1 = FI;
+      BB1 = &*FI;
       break;
     }
 
@@ -2100,9 +2100,9 @@ static void parseFBB(const char* paramName, const std::string& arg, Module& M, F
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
 
     if(FI->getName() == BB1Name)
-      BB1 = FI;
+      BB1 = &*FI;
     if(FI->getName() == BB2Name)
-      BB2 = FI;
+      BB2 = &*FI;
 
   }
 
@@ -2144,7 +2144,7 @@ static void parseFBI(const char* paramName, const std::string& arg, Module& M, F
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
 
     if(FI->getName() == BBName)
-      BB = FI;
+      BB = &*FI;
 
   }
 
@@ -2237,7 +2237,7 @@ static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
     if(((BasicBlock*)FI)->getName() == name)
-      return FI;
+      return &*FI;
   }
 
   errs() << "Block " << name << " not found\n";
@@ -2583,7 +2583,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
       exit(1);
     }
 
-    simpleVolatileLoads.insert(BI);
+    simpleVolatileLoads.insert(&*BI);
 
   }
 
@@ -2857,7 +2857,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
     DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
     DIBasicType* retType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
     DITypeRefArray functionParamTypes = DIB.getOrCreateTypeArray(ArrayRef<Metadata*>((Metadata*)retType));
-    this->fakeDebugType = DIB.createSubroutineType(file, functionParamTypes);
+    this->fakeDebugType = DIB.createSubroutineType(functionParamTypes);
   }
 
 }
@@ -3068,13 +3068,13 @@ void LLPEAnalysisPass::parsePathConditions(cl::list<std::string>& L, PathConditi
 	if(bb) {
 	  BasicBlock::iterator it = bb->begin();
 	  std::advance(it, instIndex);
-	  Instruction* assumeInst = it;
+	  Instruction* assumeInst = &*it;
 	  targetType = assumeInst->getType();
 	}
 	else if(bb == (BasicBlock*)ULONG_MAX) {
 	  Function::arg_iterator it = fStack->arg_begin();
 	  std::advance(it, instIndex);
-	  Argument* A = it;
+	  Argument* A = &*it;
 	  targetType = A->getType();
 	}
 	else {
@@ -3277,7 +3277,7 @@ void LLPEAnalysisPass::createPointerArguments(InlineAttempt* IA) {
 
     argAllocSites.push_back(std::vector<Value*>());
 
-    Argument* A = AI;
+    Argument* A = &*AI;
     if(A->getType()->isPointerTy()) {
 
       ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(IA->argShadows[i].i.PB);
@@ -3583,8 +3583,6 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
 
   TD = &M.getDataLayout();
   GlobalTD = TD;
-  AA = &getAnalysis<AliasAnalysis>();
-  GlobalAA = AA;
   GlobalTLI = &getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>()->getTLI();
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
@@ -3602,7 +3600,7 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
     if(!MI->isDeclaration()) {
       DominatorTree* NewDT = new DominatorTree();
       NewDT->recalculate(*MI);
-      DTs[MI] = NewDT;
+      DTs[&*MI] = NewDT;
     }
 
   }
@@ -3702,7 +3700,6 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
 
 void LLPEAnalysisPass::getAnalysisUsage(AnalysisUsage &AU) const {
   
-  AU.addRequired<AliasAnalysis>();
   AU.addRequired<LoopInfoWrapperPass>();
   const PassInfo* BAAInfo = lookupPassInfo(StringRef("basicaa"));
   if(!BAAInfo) {

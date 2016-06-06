@@ -75,8 +75,8 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T ite
     BasicBlock* BB = it;
     for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
-      if(isInstructionTriviallyDead(II, GlobalTLI))
-	Del.push_back(II);
+      if(isInstructionTriviallyDead(&*II, GlobalTLI))
+	Del.push_back(&*II);
 
     }
 
@@ -247,7 +247,7 @@ void InlineAttempt::postCommitOptimise() {
 
       SmallSet<BasicBlock*, 8> Visited;
       for(Function::iterator it = firstFailedBlock, itend = CommitF->end(); it != itend; ++it)
-	Visited.insert(it);
+	Visited.insert(&*it);
 
       BasicBlock* firstBlock = &CommitF->getEntryBlock();
       std::vector<BasicBlock*> Ordered;

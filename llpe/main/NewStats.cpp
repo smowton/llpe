@@ -155,7 +155,7 @@ void LLPEAnalysisPass::postCommitStats() {
     Function* F = *it;
     for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
 
-      BasicBlock* BB = FI;
+      BasicBlock* BB = &*FI;
       ++GlobalIHP->stats.residualBlocks;
       GlobalIHP->stats.residualInstructions += BB->size();
 
