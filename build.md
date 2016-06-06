@@ -25,9 +25,9 @@ Build steps:
     git clone https://github.com/smowton/llpe.git
     ```
 
-2a. The current master builds against LLVM 3.6. If you're using 3.7 or 3.8, run @git checkout 3.7@ or @3.8@ to check out the appropriate branch.
+3. The current master builds against LLVM 3.6. If you're using 3.7 or 3.8, run <tt>git checkout 3.7</tt> or <tt>3.8</tt> to check out the appropriate branch.
 
-3. Make a build directory; run CMake:
+4. Make a build directory; run CMake:
 
     ```
     mkdir llpe/build
@@ -39,7 +39,7 @@ Build steps:
 
     If you're building against an LLVM build that hasn't been installed, or CMake doesn't find the installed distribution in its default search path, you might need to include a parameter like <tt>-D CMAKE\_PREFIX\_PATH=/path/to/my/llvm-3.6-build</tt>
 
-4. Build:
+5. Build:
 
     ```
     make
