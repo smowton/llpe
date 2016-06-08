@@ -532,6 +532,9 @@ class LLPEAnalysisPass : public ModulePass {
    DenseMap<Function*, DebugLoc> fakeDebugLocs;
    DICompositeType fakeDebugType;
 
+   std::string statsFile;
+   unsigned maxContexts;
+
    explicit LLPEAnalysisPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
@@ -1204,7 +1207,7 @@ protected:
   }
   virtual bool stackIncludesCallTo(Function*) = 0;
   bool shouldInlineFunction(ShadowInstruction*, Function*);
-  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool ignoreScope, bool& created, bool& needsAnalyse);
+  InlineAttempt* getOrCreateInlineAttempt(ShadowInstruction* CI, bool& created, bool& needsAnalyse);
   bool callCanExpand(ShadowInstruction* Call, InlineAttempt*& Result);
   bool analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop);
  

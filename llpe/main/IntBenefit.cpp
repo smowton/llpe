@@ -13,6 +13,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -33,6 +34,18 @@ static void intBenefitProgress() {
 
   }
 
+}
+
+unsigned IntegrationAttempt::getTotalInstructions() {
+  return improvableInstructions;
+}
+
+unsigned IntegrationAttempt::getElimdInstructions() {
+  return improvedInstructions;
+}
+
+int64_t IntegrationAttempt::getTotalInstructionsIncludingLoops() {
+  return improvableInstructionsIncludingLoops;
 }
 
 // getResidualInstructions: return a best-case residual instruction count, where we assume
@@ -78,6 +91,8 @@ int64_t IntegrationAttempt::getResidualInstructions() {
 
 }
 
+// Determine if C is a constant expression that mentions one or more functions.
+
 static void findResidualFunctionsInConst(DenseSet<Function*>& ElimFunctions, Constant* C) {
 
   if(Function* F = dyn_cast<Function>(C)) {
@@ -97,6 +112,7 @@ static void findResidualFunctionsInConst(DenseSet<Function*>& ElimFunctions, Con
 
 }
 
+// Count instructions likely to be residualised (retained in the specialised program) in this context.
 void InlineAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunctions, DenseMap<Function*, unsigned>& TotalResidualInsts) {
 
   TotalResidualInsts[&F] += getResidualInstructions();
@@ -170,6 +186,7 @@ void IntegrationAttempt::findResidualFunctions(DenseSet<Function*>& ElimFunction
 
 }
 
+// Determine (roughly) whether it will be profitable to specialise this context.
 void PeelAttempt::findProfitableIntegration() {
 
   if(integrationGoodnessValid)
@@ -303,6 +320,19 @@ void InlineAttempt::findProfitableIntegration() {
 
 }
 
+// Does this instruction count for accounting / performance measurement? Essentially: can this possibly be improved?
+bool llvm::instructionCounts(Instruction* I) {
+
+  if (isa<DbgInfoIntrinsic>(I))
+    return false;
+  if(BranchInst* BI = dyn_cast<BranchInst>(I))
+    if(BI->isUnconditional()) // Don't count unconditional branches as they're already as specified as they're getting
+      return false;
+  return true;
+
+}
+
+// Count instructions that have been improved (resolved to a constant or similar) in this block.
 void IntegrationAttempt::collectBlockStats(ShadowBBInvar* BBI, ShadowBB* BB) {
 
   uint32_t i = 0;

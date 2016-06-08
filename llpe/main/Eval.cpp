@@ -590,6 +590,30 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
 
 }
 
+// Helper: Do we know V refers to a particular object?
+bool llvm::isGlobalIdentifiedObject(ShadowValue V) {
+  
+  switch(V.t) {
+  case SHADOWVAL_PTRIDX:
+    return true;
+  case SHADOWVAL_ARG:
+    return V.u.A->IA->isRootMainCall();
+  case SHADOWVAL_GV:
+    return true;
+  case SHADOWVAL_OTHER:
+    return isIdentifiedObject(V.u.V);
+  case SHADOWVAL_CI8:
+  case SHADOWVAL_CI16:
+  case SHADOWVAL_CI32:
+  case SHADOWVAL_CI64:
+    return false;
+  default:
+    release_assert(0 && "Bad value type in isGlobalIdentifiedObject");
+    llvm_unreachable("Bad value type in isGlobalIdentifiedObject");
+  }
+
+}
+
 // Helper: do we know op points to a particular symbolic object or is a constant?
 // Similar to AliasAnalysis' isIdentifiedObject test.
 static bool isIDOrConst(ShadowValue& op) {
@@ -852,6 +876,10 @@ static bool tryGetNegatedPointer(ShadowValue checkOp, uint64_t& SubOp0, ShadowVa
 
   return true;
 
+}
+
+unsigned LLPEAnalysisPass::getMallocAlignment() {
+  return mallocAlignment;
 }
 
 // Fetch alignment if V is a known allocation, and its allocation instruction / global gives an
