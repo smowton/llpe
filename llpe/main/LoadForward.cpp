@@ -88,6 +88,7 @@ bool llvm::operator==(const ImprovedValSetMulti& PB1, const ImprovedValSetMulti&
 
 }
 
+// Check if Ty is a pointer, or a structure, tuple or similar with a pointer member.
 static bool containsPointerTypes(Type* Ty) {
 
   if(Ty->isPointerTy())
@@ -104,7 +105,7 @@ static bool containsPointerTypes(Type* Ty) {
 
 }
 
-
+// Try to resolve a load from the symbolic varargs pointer.
 bool IntegrationAttempt::tryResolveLoadFromVararg(ShadowInstruction* LoadI, ImprovedValSet*& Result) {
 
   // A special case: loading from a symbolic vararg:
@@ -132,6 +133,7 @@ bool IntegrationAttempt::tryResolveLoadFromVararg(ShadowInstruction* LoadI, Impr
 
 }
 
+// Check if the load address (Ptr) refers to a cosntant; if so populate Result.
 bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, ImprovedVal Ptr, ImprovedValSetSingle& Result) {
 
   // We already know Ptr has a known offset (i.e. Ptr.Offset != LLONG_OFFSET).
@@ -163,11 +165,13 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
   
 }
 
+// Check if PB is a set of definite pointers, potentially including nulls.
 static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
   if(PB.isWhollyUnknown() || PB.Values.size() == 0)
     return false;
 
+  // One or more non-pointers in PB?
   if(PB.SetType != ValSetTypePB)
     return false;
 
@@ -182,6 +186,7 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 	continue;
     }
 
+    // Pointer with unknown offset?
     if(PB.Values[i].Offset == LLONG_MAX)
       return false;
 
@@ -193,6 +198,7 @@ static bool shouldMultiload(ImprovedValSetSingle& PB) {
 
 }
 
+// Try to execute load LI which reads from a set of 2+ pointers.
 static bool tryMultiload(ShadowInstruction* LI, ImprovedValSet*& NewIV, std::string* report) {
 
   uint64_t LoadSize = GlobalTD->getTypeStoreSize(LI->getType());
@@ -339,6 +345,8 @@ bool IntegrationAttempt::tryForwardLoadPB(ShadowInstruction* LI, ImprovedValSet*
 
 }
 
+// Get the heap object ID for this ShadowValue. Only applies if this is a pointer or special (symbolic) object.
+// Return -1 if this is a non-pointer or unknown pointer.
 int32_t ShadowValue::getHeapKey() const {
 
   switch(t) {
@@ -405,9 +413,9 @@ uint64_t ShadowValue::getAllocSize(IntegrationAttempt* IA) const {
 
   switch(t) {
   case SHADOWVAL_PTRIDX:
-    if(u.PtrOrFd.frame == -1)
+    if(u.PtrOrFd.frame == -1) // Heap or special object?
       return getAllocSize((OrdinaryLocalStore*)0);
-    else {
+    else { // Stack object?
       uint32_t i;
       InlineAttempt* InA;
       release_assert(u.PtrOrFd.frame <= IA->stack_depth);
@@ -429,6 +437,7 @@ ShadowValue& llvm::getAllocWithIdx(int32_t idx) {
 
 }
 
+// Check this is a pointer and get the frame number it refers to (stack index, or -1 if heap allocated or special)
 int32_t ShadowValue::getFrameNo() const {
 
   release_assert((!isInst()) && "Unsafe reference to alloc instruction");
@@ -439,6 +448,7 @@ int32_t ShadowValue::getFrameNo() const {
 
 }
 
+// Get a readable / writable symbolic object for V
 LocStore* ShadowBB::getReadableStoreFor(const ShadowValue& V) {
 
   return localStore->getReadableStoreFor(V);
@@ -458,6 +468,7 @@ uint64_t ShadowBB::getAllocSize(ShadowValue V) {
 
 }
 
+// Verbose printout of how many layers of stacked ImprovedValSetMultis are involved in IVS.
 static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
 
   ImprovedValSetMulti* IVM = dyn_cast<ImprovedValSetMulti>(IVS);
@@ -476,6 +487,9 @@ static int logReadDepth(ImprovedValSet* IVS, uint32_t depth) {
   
 }
 
+// Get a writable symbolic object for V, to be written at Offset - Offset+Size.
+// willWriteSingleObject permits a shortcut in which we allocate space for a single object instead of an extent-list
+// as needed for structs etc.
 LocStore* ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t Size, bool willWriteSingleObject) {
 
   // Check if the location is not writable:
@@ -595,6 +609,102 @@ LocStore* ShadowBB::getWritableStoreFor(ShadowValue& V, int64_t Offset, uint64_t
   
 }
 
+// Try to retrieve part of maybe-composite-typed constant FromC.
+Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* Target, uint64_t TargetSize, const DataLayout* TD) {
+
+  Type* FromType = FromC->getType();
+  uint64_t FromSize = (TD->getTypeSizeInBits(FromType) + 7) / 8;
+
+  if(Offset == 0 && TargetSize == FromSize) {
+    if(!Target)
+      return FromC;
+    if(allowTotalDefnImplicitCast(FromType, Target))
+      return (FromC);
+    else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
+      return ConstantExpr::getPtrToInt(FromC, Target);
+    DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
+    return 0;
+  }
+
+  if(Offset < 0 || Offset + TargetSize > FromSize) {
+
+    DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
+    return 0;
+
+  }
+
+  if(isa<ConstantAggregateZero>(FromC) && Offset + TargetSize <= FromSize) {
+
+    // Wholly subsumed within a zeroinitialiser:
+    if(!Target) {
+      Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+    }
+    return (Constant::getNullValue(Target));
+
+  }
+
+  if(isa<UndefValue>(FromC)) {
+
+    if(!Target)
+      Target = Type::getIntNTy(FromC->getContext(), TargetSize * 8);
+    return UndefValue::get(Target);
+
+  }
+
+  uint64_t StartE, StartOff, EndE, EndOff;
+  bool mightWork = false;
+
+  if(ConstantArray* CA = dyn_cast<ConstantArray>(FromC)) {
+
+    mightWork = true;
+    
+    Type* EType = CA->getType()->getElementType();
+    uint64_t ESize = (TD->getTypeSizeInBits(EType) + 7) / 8;
+    
+    StartE = Offset / ESize;
+    StartOff = Offset % ESize;
+    EndE = (Offset + TargetSize) / ESize;
+    EndOff = (Offset + TargetSize) % ESize;
+
+  }
+  else if(ConstantStruct* CS = dyn_cast<ConstantStruct>(FromC)) {
+
+    mightWork = true;
+
+    const StructLayout* SL = TD->getStructLayout(CS->getType());
+    if(!SL) {
+      DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
+      return 0;
+    }
+
+    StartE = SL->getElementContainingOffset(Offset);
+    StartOff = Offset - SL->getElementOffset(StartE);
+    EndE = SL->getElementContainingOffset(Offset + TargetSize);
+    EndOff = (Offset + TargetSize) - SL->getElementOffset(EndE);
+
+  }
+
+  if(mightWork) {
+    if(StartE == EndE || (StartE + 1 == EndE && !EndOff)) {
+      // This is a sub-access within this element.
+      return extractAggregateMemberAt(cast<Constant>(FromC->getOperand(StartE)), StartOff, Target, TargetSize, TD);
+    }
+    DEBUG(dbgs() << "Can't use simple element extraction because load spans multiple elements\n");
+  }
+  else {
+    DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
+  }
+
+  return 0;
+
+}
+
+// Try to read V[Offset:Offset+Size], which has symbolic object 'store', in the context of ReadBB.
+// The result is written to Result, or to ResultPV if it is necessary to build the result bytewise, e.g. because the read type doesn't match the write type
+// or the read is fed by multiple stores.
+// Set shouldTryMulti if we note a case where an ImprovedValSetMulti (extent list) could accommodate the result but ImprovedValSetSingle cannot.
+// That usually happens when reading struct types, vector types and similar that contain pointers and so can't be expressed as bytes.
+// In debug builds, give a verbose reason why the read failed in 'error'.
 void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSet* store, ImprovedValSetSingle& Result, PartialVal*& ResultPV, bool& shouldTryMulti, std::string* error) {
 
   const ImprovedValSetSingle* IVS = dyn_cast<ImprovedValSetSingle>(store);
@@ -764,6 +874,8 @@ void llvm::readValRangeFrom(ShadowValue& V, uint64_t Offset, uint64_t Size, Shad
 
 }
 
+// Try to read V[Offset:Offset+Size], in the context of ReadBB, storing the result in Result or ResultMulti if an extent-list is necessary.
+// In debug builds, give a verbose error report as 'error'.
 void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB* ReadBB, ImprovedValSetSingle& Result, ImprovedValSetMulti** ResultMulti, std::string* error) {
 
   // Try to make an IVS representing the block-local value of V+Offset -> Size.
@@ -865,6 +977,27 @@ void llvm::readValRange(ShadowValue& V, int64_t Offset, uint64_t Size, ShadowBB*
 
 }
 
+// Permit implicit pointer typecasts via memory:
+bool llvm::allowTotalDefnImplicitCast(Type* From, Type* To) {
+
+  if(From == To)
+    return true;
+
+  if(From->isPointerTy() && To->isPointerTy())
+    return true;
+
+  return false;
+
+}
+
+// Permit widening ptr-to-int via memory:
+bool llvm::allowTotalDefnImplicitPtrToInt(Type* From, Type* To, const DataLayout* TD) {
+
+  return From->isPointerTy() && To->isIntegerTy() && TD->getTypeSizeInBits(To) >= TD->getTypeSizeInBits(From);
+
+}
+
+// Check if we can coerce this value to Target type.
 // TODO: Discover problems without running the whole check twice.
 bool ImprovedValSetSingle::canCoerceToType(Type* Target, uint64_t TargetSize, std::string* error, bool allowImplicitPtrToInt) {
 
@@ -947,8 +1080,13 @@ bool ImprovedValSetSingle::coerceToType(Type* Target, uint64_t TargetSize, std::
 
 }
 
+// Helper to build an IVSRange.
 #define IVSR(x, y, z) std::make_pair(std::make_pair(x, y), z)
+
+// Helper to add z[x:x+y] to IVSRange list 'Dest'.
 #define AddIVSSV(x, y, z) do { Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(ImprovedVal(z), ValSetTypeScalar))); } while(0);
+
+// As above, but turn a constant into a symbolic object first.
 #define AddIVSConst(x, y, z) do { std::pair<ValSetType, ImprovedVal> V = getValPB(z); Dest.push_back(IVSR(x + OffsetAbove, x + y + OffsetAbove, ImprovedValSetSingle(V.second, V.first))); } while(0);
 
 static bool mayContainPointers(ImprovedValSet* IV) {
@@ -973,6 +1111,7 @@ static bool mayContainPointers(ImprovedValSet* IV) {
 
 }
 
+// Differentiate the cases of "any scalar" and "any scalar or pointer".
 static ImprovedValSetSingle getOverdefFor(ImprovedValSet* IV) {
 
   if(mayContainPointers(IV))
@@ -1276,9 +1415,9 @@ uint64_t ShadowValue::getValSize() const {
 
   switch(t) {
 
-  case SHADOWVAL_FDIDX:
+  case SHADOWVAL_FDIDX: // int32
     return 4;
-  case SHADOWVAL_FDIDX64:
+  case SHADOWVAL_FDIDX64: // int64
     return 8;
   case SHADOWVAL_PTRIDX:
     return GlobalTD->getPointerSize();
@@ -1290,6 +1429,8 @@ uint64_t ShadowValue::getValSize() const {
 
 }
 
+// Read Src[Offset:Offset+Size] into Dest, a list of extents, adding OffsetAbove to all extent offsets.
+// This usually means a single extent, but might disintegrate a composite constant into multiple extents.
 void llvm::getIVSSubVals(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, int64_t OffsetAbove, SmallVector<IVSRange, 4>& Dest) {
 
   // Subvals only allowed for scalars:
@@ -1354,6 +1495,7 @@ void llvm::getIVSSubVals(const ImprovedValSetSingle& Src, uint64_t Offset, uint6
   
 }
 
+// Try to extract Src[Offset:Offset+Size] into Dest.
 void llvm::getIVSSubVal(const ImprovedValSetSingle& Src, uint64_t Offset, uint64_t Size, ImprovedValSetSingle& Dest) {
 
   SmallVector<IVSRange, 4> Subvals;
@@ -1556,6 +1698,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
   
 }
 
+// Try to cast a list of extents into a single constant of type targetType.
 Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSize, Type* targetType) {
 
   if(subVals.size() == 0)
@@ -1597,6 +1740,7 @@ Constant* llvm::valsToConst(SmallVector<IVSRange, 4>& subVals, uint64_t TargetSi
 
 }
 
+// Try to extract FromSV[Offset:Offset+TargetSize] into Result, which should have type TargetType.
 void llvm::getConstSubVal(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSize, Type* TargetType, ImprovedValSetSingle& Result) {
 
   release_assert(FromSV.isVal() || FromSV.isConstantInt());
@@ -1630,6 +1774,7 @@ void llvm::getConstSubVal(ShadowValue FromSV, uint64_t Offset, uint64_t TargetSi
 
 }
 
+// Try to extract a sub-constant at FromC[Offset:Offset+TargetSize], usually a struct member.
 Constant* llvm::getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSize, Type* targetType) {
   
   SmallVector<IVSRange, 4> subVals;
@@ -1639,6 +1784,8 @@ Constant* llvm::getSubConst(Constant* FromC, uint64_t Offset, uint64_t TargetSiz
 
 }
 
+// Overwrite Target[Offset:Offset+Size] with NewVal. Target is a symbolic memory object;
+// ensuring it is writable and resolving pointers etc has already been taken care of here.
 void llvm::replaceRangeWithPB(ImprovedValSet* Target, const ImprovedValSetSingle& NewVal, int64_t Offset, uint64_t Size) {
 
   if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
@@ -1677,6 +1824,7 @@ void llvm::replaceRangeWithPB(ImprovedValSet* Target, const ImprovedValSetSingle
 
 }
 
+// M is a symbolic memory object. Clear M[Offset:Offset+Size].
 void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
   ImprovedValSetMulti::MapIt found = M->Map.find(Offset);
@@ -1773,6 +1921,7 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
 }
 
+// Target is a symbolic memory object. Overwrite Target[Offset:Offset+Size] with extent-list NewVals.
 void llvm::replaceRangeWithPBs(ImprovedValSet* Target, const SmallVector<IVSRange, 4>& NewVals, uint64_t Offset, uint64_t Size) {
 
   if(ImprovedValSetSingle* S = dyn_cast<ImprovedValSetSingle>(Target)) {
@@ -1807,6 +1956,8 @@ void llvm::replaceRangeWithPBs(ImprovedValSet* Target, const SmallVector<IVSRang
 
 }
 
+// 'it' points to a scalar which is part of some symbolic memory object. Truncate it to leave byte range off - off+size.
+// Leave firstPtr pointing to the start and 'it' pointing to the last newly-inserted range.
 void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64_t size, ImprovedValSetMulti::MapIt& firstPtr) {
 
   const ImprovedValSetSingle& S = it.value();
@@ -1872,6 +2023,7 @@ void llvm::truncateConstVal(ImprovedValSetMulti::MapIt& it, uint64_t off, uint64
 
 }
 
+// 'it' points into a symbolic memory object. Trim it on the right-hand side to have length 'n'.
 void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
 
   // Remove bytes from the RHS, leaving a value of size n bytes.
@@ -1896,7 +2048,9 @@ void llvm::truncateRight(ImprovedValSetMulti::MapIt& it, uint64_t n) {
   
 }
 
-
+// 'it' points into a symbolic memory object. Trim it on the left-hand side to have length 'n'.
+// Leave 'it' pointing at the last and 'firstPtr' pointing at the first new entry in the IVSMulti.
+// They can differ e.g. when we break a struct value into fields.
 void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValSetMulti::MapIt& firstPtr) {
 
   // Remove bytes from the LHS, leaving a value of size n bytes.
@@ -1927,6 +2081,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValS
 
 }
 
+// Is S suitable to be truncated? For example truncating a pointer is meaningless.
 bool llvm::canTruncate(const ImprovedValSetSingle& S) {
 
   return 
@@ -1936,6 +2091,10 @@ bool llvm::canTruncate(const ImprovedValSetSingle& S) {
   
 }
 
+// 'store' is a symbolic memory object.
+// Read store[Offset:Offset+Size] into extent-list 'Results'.
+// ASize is the total size of 'store'. If 'ignoreBelowStore' is set and 'store' is an IVSMulti
+//   (which can be a stack of overlaid extent lists), treat 'ignoreBelowStore' as the bottom of the stack.
 void llvm::readValRangeMultiFrom(uint64_t Offset, uint64_t Size, ImprovedValSet* store, SmallVector<IVSRange, 4>& Results, ImprovedValSet* ignoreBelowStore, uint64_t ASize) {
 
   if(!store) {
@@ -2357,6 +2516,8 @@ void llvm::executeReallocInst(ShadowInstruction* SI, Function* F) {
 
 }
 
+// Could reintroduce this for more robust consistency-checking.
+
 /*
 static void checkStore(ImprovedValSet* IV, ShadowValue& V) {
 
@@ -2384,6 +2545,8 @@ static void checkStore(ImprovedValSet* IV, ShadowValue& V) {
 */
 
 static void checkStore(ImprovedValSet* IV, ShadowValue&) { }
+
+// Write extent-list copyValues through to (*Ptr)[Offset:Offset+Size], in the context of BB.
 
 void llvm::writeExtents(SmallVector<IVSRange, 4>& copyValues, ShadowValue& Ptr, int64_t Offset, uint64_t Size, ShadowBB* BB) {
 
@@ -2589,6 +2752,7 @@ void llvm::initSpecialFunctionsMap(Module& M) {
 
 }
 
+// Can Ptr alias objects that existed before the specialisation root was entered?
 static bool containsOldObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(Ptr.SetType != ValSetTypePB)
@@ -2605,6 +2769,7 @@ static bool containsOldObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
 }
 
+// Can Ptr alias objects visible to other threads?
 static bool containsGlobalObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
   if(Ptr.SetType != ValSetTypePB)
@@ -2621,6 +2786,7 @@ static bool containsGlobalObjects(ImprovedValSetSingle& Ptr, ShadowBB* BB) {
 
 }
 
+// A visitor that walks over objects reachable through a particular pointer, set of pointers or extent-list containing pointers.
 struct ReachableObjectVisitor {
 
   SmallSet<ShadowValue, 8> seenObjects;
@@ -2701,6 +2867,10 @@ static void visitReachableObjects(const ImprovedValSetSingle& Ptr, ShadowBB* BB,
 
 }
 
+// Visitor that determines whether Ptr could point to anything allocated since the specialisation root was entered
+// (informally, 'new' objects, cf. 'old' objects that were allocated beforehand and are reachable
+// through arguments to the root function or globals).
+// If 'ignoreOldObjects' is set, determine whether it could refer to any object new or old.
 struct ReachesAllPointersVisitor : public ReachableObjectVisitor {
 
   bool mayReachAll;
@@ -2730,6 +2900,7 @@ static bool reachesAllPointers(const ImprovedValSetSingle& Ptr, ShadowBB* BB, bo
 
 }
 
+// Visitor that notes anything reachable from Obj may alias old allocations.
 struct SetMAOVisitor : public ReachableObjectVisitor {
 
   virtual bool visitObject(const ShadowValue& Obj, ShadowBB* BB) { 
@@ -2777,6 +2948,7 @@ static void setValueMayAliasOld(ShadowValue V, ShadowBB* BB) {
 
 }
 
+// Visitor and associated functions to set objects thread-global.
 struct SetTGVisitor : public ReachableObjectVisitor {
 
   virtual bool visitObject(const ShadowValue& Obj, ShadowBB* BB) { 
@@ -2825,6 +2997,7 @@ static void setValueThreadGlobal(ShadowValue V, ShadowBB* BB) {
 
 }
 
+// Clobber syscall F's written arguments.
 bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
   if(const IHPFunctionInfo* FI = GlobalIHP->getMRInfo(F)) {
@@ -2924,6 +3097,7 @@ bool llvm::clobberSyscallModLocations(Function* F, ShadowInstruction* SI) {
 
 }
 
+// Run call instruction SI which refers to a callee not available as bitcode.
 void llvm::executeUnexpandedCall(ShadowInstruction* SI) {
 
   if(MemIntrinsic* MI = dyn_cast_inst<MemIntrinsic>(SI)) {
@@ -3090,6 +3264,10 @@ void ShadowBB::setAllObjectsThreadGlobal() {
 
 }
 
+// Clobber (overwrite with unknown) everything except the object-set Save.
+// This is used when e.g. writing through an unknown pointer, but one which is known
+// not to alias objects that predate specialistion, or not to alias unescaped
+// thread-local objects, or...
 void ShadowBB::clobberAllExcept(DenseSet<ShadowValue>& Save, bool verbose) {
 
   std::vector<std::pair<ShadowValue, ImprovedValSet*> > SaveVals;
@@ -3143,6 +3321,8 @@ void ShadowBB::clobberGlobalObjects() {
   
 }
 
+// Has V escaped? At the moment this means has it been written anywhere
+// but the initial allocation site?
 static void pointerEscaped(const ShadowValue V, ShadowBB* BB) {
 
   if(BB->localStore->es.unescapedObjects.count(V)) {
@@ -3195,6 +3375,9 @@ void llvm::valueEscaped(ShadowValue V, ShadowBB* BB) {
 
 }
 
+// Note that SI is a barrier to specialisation, usually because it
+// might clobber all of memory. This is used in the GUI to highlight
+// specialisation obstacles.
 void llvm::noteBarrierInst(ShadowInstruction* SI) {
 
   GlobalIHP->barrierInstructions.insert(SI);
@@ -3202,6 +3385,8 @@ void llvm::noteBarrierInst(ShadowInstruction* SI) {
 
 }
 
+// 'Other' is a child context of this one. Inherit problems from it
+// (potential clobbering instructions, thread yield points, exception sources)
 void IntegrationAttempt::inheritDiagnosticsFrom(IntegrationAttempt* Other) {
 
   if(Other->barrierState != BARRIER_NONE && barrierState == BARRIER_NONE)
@@ -3212,6 +3397,9 @@ void IntegrationAttempt::inheritDiagnosticsFrom(IntegrationAttempt* Other) {
 
 }
 
+// Is V a 'vague' allocation? This means might instruction instance V run more than once,
+// e.g. if it is an allocation instruction within an unexpanded loop?
+// (compare the case where the loop is unrolled and each iteration considered individually)
 static bool isVagueAllocation(ShadowValue V, ShadowBB* CtxBB) {
 
   switch(V.t) {
@@ -3233,6 +3421,8 @@ static bool isVagueAllocation(ShadowValue V, ShadowBB* CtxBB) {
 
 }
 
+// Top write-instruction entry point. ValPB is written through PtrSet by instruction WriteSI
+// (which may be null if the write does not orginate from an instruction)
 void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, uint64_t PtrSize, ShadowInstruction* WriteSI) {
 
   ShadowBB* StoreBB = WriteSI->parent;
@@ -3351,6 +3541,9 @@ void llvm::executeWriteInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impr
 
 }
 
+// If ValPB might be an unknown pointer, note that all objects might have leaked
+// as of StoreBB. If ValPB is a particular pointer and PtrSet has itself leaked / escaped,
+// propagate that status to pointers in ValPB.
 void llvm::propagateStoreFlags(ImprovedValSetSingle& PtrSet, ImprovedValSetSingle& ValPB, ShadowBB* StoreBB)  {
 
   // Propagate is-thread-local and may-alias-old-objects information
@@ -3384,6 +3577,9 @@ void llvm::propagateStoreFlags(ImprovedValSetSingle& PtrSet, ImprovedValSetSingl
 
 }
 
+// Given extent-lists LHS and RHS, find a common ancestor if one exists.
+// For IVSSingles a common base is identified by value equality; for IVSMultis it is only identified by pointer equality,
+// so Multis that describe the same values may go unnoticed.
 static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, ImprovedValSet*& LHSResult, ImprovedValSet*& RHSResult, SmallPtrSet<ImprovedValSetMulti*, 4>& Seen) {
 
   LFV3(errs() << "gca " << LHS << " " << RHS << " " << isa<ImprovedValSetSingle>(LHS) << " " << isa<ImprovedValSetSingle>(RHS) << "\n");
@@ -3436,6 +3632,7 @@ static bool getCommonAncestor(ImprovedValSet* LHS, ImprovedValSet* RHS, Improved
 
 }
 
+// Expand a scalar-splat value (e.g. i8 0 x 256) into a concrete constant.
 static void scalarSplatToScalar(ImprovedValSetSingle& IVS, Type* targetType) {
 
   for(uint32_t i = 0, ilim = IVS.Values.size(); i != ilim; ++i) {
@@ -3457,6 +3654,7 @@ static void scalarSplatToScalar(ImprovedValSetSingle& IVS, Type* targetType) {
 
 }
 
+// Merge otherVal into consumeVal, using parameters expressed through Visitor
 static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& otherVal, OrdinaryMerger* Visitor) {
 
   if(Visitor->useVarargMerge && 
@@ -3534,6 +3732,7 @@ static void mergeValues(ImprovedValSetSingle& consumeVal, ImprovedValSetSingle& 
 
 }
 
+// Merge whole block-local stores mergeFrom and mergeTo.
 void LocStore::mergeStores(LocStore* mergeFromStore, LocStore* mergeToStore, uint64_t ASize, OrdinaryMerger* Visitor) {
 
   if(mergeFromStore->store == mergeToStore->store)
@@ -3870,6 +4069,8 @@ void llvm::intersectSets(DenseSet<ShadowValue>* Target, MutableArrayRef<DenseSet
 
 }
 
+// Debug dump functions:
+
 static void dumpSets(OrdinaryLocalStore* Map) {
 
   errs() << "Not-old:\n";
@@ -3904,6 +4105,10 @@ void OrdinaryStoreExtraState::dump(OrdinaryLocalStore* Map) {
   dumpSets(Map);
 
 }
+
+// Merge the sets of objects known not to escape from this thread, not to be written
+// to global memory, and so on. In all current cases an object only has the desired
+// property if it has it in all predecessor blocks.
 
 void OrdinaryStoreExtraState::doMerge(OrdinaryLocalStore* toMap, 
 				      SmallVector<OrdinaryLocalStore*, 4>::iterator fromBegin, 
@@ -3990,6 +4195,7 @@ bool llvm::doBlockStoreMerge(ShadowBB* BB) {
 
 }
 
+// Stack-maintenance functions, adding and removing frames as needed.
 void PeelIteration::popAllocas(OrdinaryLocalStore*) { }
 
 void InlineAttempt::popAllocas(OrdinaryLocalStore* map) {
@@ -4043,6 +4249,7 @@ void llvm::doCallStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
 }
 
+// Is IA a child of this context, down to the nearest function scope (InlineAttempt)?
 bool InlineAttempt::ctxContains(IntegrationAttempt* IA) {
 
   return this == IA;

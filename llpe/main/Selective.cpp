@@ -14,6 +14,7 @@
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
 
@@ -58,6 +59,24 @@ void IntegrationAttempt::resetDeadInstructions() {
     }
 
   }
+
+}
+
+void LLPEAnalysisPass::runDSEAndDIE() {
+
+  errs() << "Killing memory instructions";
+  RootIA->tryKillStores(false, false);
+
+  DEBUG(dbgs() << "Finding dead VFS operations\n");
+  RootIA->tryKillAllVFSOps();
+
+  DEBUG(dbgs() << "Finding remaining dead instructions\n");
+  
+  errs() << "\nKilling other instructions";
+  
+  RootIA->runDIE();
+  
+  errs() << "\n";
 
 }
 

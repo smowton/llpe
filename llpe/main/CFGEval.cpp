@@ -133,6 +133,87 @@ static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
 
 }
 
+// Is BB1I -> BB2I known to be infeasible in this context?
+bool IntegrationAttempt::edgeIsDead(ShadowBBInvar* BB1I, ShadowBBInvar* BB2I) {
+
+  bool BB1InScope;
+
+  if(ShadowBB* BB1 = getBB(BB1I->idx, &BB1InScope)) {
+
+    return BB1->edgeIsDead(BB2I);
+
+  }
+  else if(BB1InScope) {
+
+    // Source block doesn't exist despite being in scope, edge must be dead.
+    return true;
+
+  }
+
+  return false;
+
+}
+
+// Is BB1I -> BB2I known to be infeasible in this context and all child loop contexts?
+bool IntegrationAttempt::edgeIsDeadRising(ShadowBBInvar& BB1I, ShadowBBInvar& BB2I, bool ignoreThisScope) {
+
+  if((!ignoreThisScope) && edgeIsDead(&BB1I, &BB2I))
+    return true;
+
+  if(BB1I.naturalScope == L)
+    return false;
+  
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BB1I.naturalScope))) {
+
+    if(LPA->isTerminated()) {
+
+      for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
+	  
+	if(!LPA->Iterations[i]->edgeIsDeadRising(BB1I, BB2I))
+	  return false;
+	
+      }
+
+      return true;
+
+    }
+
+  }
+    
+  return false;
+
+}
+
+// Is BBI known to be unreachable in this and all child loop contexts?
+bool IntegrationAttempt::blockIsDeadRising(ShadowBBInvar& BBI) {
+
+  if(getBB(BBI))
+    return false;
+
+  if(BBI.naturalScope == L)
+    return true;
+
+  if(PeelAttempt* LPA = getPeelAttempt(immediateChildLoop(L, BBI.naturalScope))) {
+
+    if(LPA->isTerminated()) {
+
+      for(unsigned i = 0; i < LPA->Iterations.size(); ++i) {
+	  
+	if(!LPA->Iterations[i]->blockIsDeadRising(BBI))
+	  return false;
+	
+      }
+
+      return true;
+
+    }
+
+  }
+
+  return true;
+
+}
+
 // Set outgoing edges alive dependent on the terminator instruction SI.
 // If the terminator is an Invoke instruction, the call has already been run.
 // Return true if anything changed.
@@ -447,3 +528,4 @@ void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
   }
 
 }
+

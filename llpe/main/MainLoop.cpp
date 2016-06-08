@@ -39,6 +39,9 @@ using namespace llvm;
 
 int nLoopsWritten = 0;
 
+// Analyse this function call instance. SI is the call instruction; inLoopAnalyser indicates that we're investigating the general
+// case of a loop body or mutually recursive function; inAnyLoop indicates we're within a loop at some level of the call graph
+// even if we're investigating a specific loop iteration; parent_stack_depth is the stack frame depth used by the parent call.
 bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
   bool anyChange = false;
@@ -67,6 +70,8 @@ bool InlineAttempt::analyseWithArgs(ShadowInstruction* SI, bool inLoopAnalyser, 
 
 }
 
+// As above, but exclude trying to pull argument values from our parent. Called directly for the entry
+// point of the specialisation root, since its arguments are given by user directives, not its caller.
 bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t parent_stack_depth) {
 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
@@ -84,6 +89,10 @@ bool InlineAttempt::analyseNoArgs(bool inLoopAnalyser, bool inAnyLoop, uint32_t 
 
 }
 
+// Set up the block-local store at the start of specialisation.
+// Essentially this just imports globals if possible and notes that things that predate
+// specialisation have a special "old" aliasing class compared to some objects allocated during
+// specialisation.
 static void initialiseStore(ShadowBB* BB) {
 
   for(uint32_t i = 0, ilim = GlobalIHP->heap.size(); i != ilim; ++i) {
@@ -138,6 +147,9 @@ static void initialiseStore(ShadowBB* BB) {
 
 }
 
+// Set up the entry block store by pulling from all call instructions that
+// target this function instance. There can only be more than one if function
+// sharing is enabled.
 void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
 
   // Take our caller's store; they will make a new one
@@ -186,6 +198,7 @@ void InlineAttempt::getInitialStore(bool inLoopAnalyser) {
 
 }
 
+// Get the initial store for this loop iteration, either from the preheader or the latch block.
 void PeelIteration::getInitialStore(bool inLoopAnalyser) {
   
   if(iterationCount == 0) {
@@ -202,6 +215,8 @@ void PeelIteration::getInitialStore(bool inLoopAnalyser) {
 
 }
 
+// Root analysis function for this context. Analyse each basic block in top-sorted order; recurse
+// into any child contexts as they are encountered. Parameter meanings are as for InlineAttempt::analyseWithArgs.
 bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t new_stack_depth) {
 
   stack_depth = new_stack_depth;
@@ -228,12 +243,18 @@ bool IntegrationAttempt::analyse(bool inLoopAnalyser, bool inAnyLoop, uint32_t n
 
 }
 
+// Root analysis entry point, called after parsing user directives such as assertions
+// about initial state when entering analysis.
 void IntegrationAttempt::analyse() {
 
   analyse(false, false, 0);
 
 }
 
+// Analyse a loop in the particular case where we consider each iteration individually.
+// parent_stack_depth is the parent function's stack frame index; readsTentativeData gets set if the loop
+// ever makes a read that needs checking for correctness (e.g. to guard against concurrent alteration by
+// another thread); containsCheckedReads gets set if any file-reading operations require a runtime check.
 bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData, bool& containsCheckedReads) {
   
   bool anyChange = false;
@@ -258,6 +279,8 @@ bool PeelAttempt::analyse(uint32_t parent_stack_depth, bool& readsTentativeData,
 
 }
 
+// Set the block-local store for BBI to S. 'kind' is used to implement half-assed polymorphism, since TLLocalStore
+// and DSELocalStore don't have a common base class at the moment.
 void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoopInvar* exitLoop, StoreKind kind) {
 
   PeelAttempt* LPA;
@@ -268,6 +291,8 @@ void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoo
      (LPA = getPeelAttempt(immediateChildLoop(L, BBI->naturalScope))) && 
      LPA->isTerminated()) {
 
+    // This gets called for every iteration since a non-final iteration may exit
+    // in the presence of user options allowing loop exploration to continue regardless.
     for(uint32_t i = 0, ilim = LPA->Iterations.size(); i != ilim; ++i)
       LPA->Iterations[i]->setExitingStore(S, BBI, exitLoop, kind);
 
@@ -319,6 +344,7 @@ void PeelIteration::setExitingStore(void* S, ShadowBBInvar* BBI, const ShadowLoo
 
 }
 
+// Push store references out from this loop iteration.
 void PeelIteration::setExitingStores(void* S, StoreKind SK) {
 
   for(std::vector<uint32_t>::const_iterator it = parentPA->L->exitingBlocks.begin(),
@@ -331,6 +357,8 @@ void PeelIteration::setExitingStores(void* S, StoreKind SK) {
   
 }
 
+// Our parent want to take NewCBs, NewFCBs and NewFs from us. These are parentless basic blocks, failed-path basic blocks and functions
+// generated by this context and its children.
 void PeelIteration::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewFCBs, std::vector<Function*>& NewFs) {
 
   parentPA->CommitBlocks.insert(parentPA->CommitBlocks.end(), NewCBs.begin(), NewCBs.end());
@@ -343,6 +371,7 @@ void PeelIteration::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& Ne
 
 }
 
+// As above.
 void InlineAttempt::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& NewCBs, std::vector<BasicBlock*>& NewFCBs, std::vector<Function*>& NewFs) {
 
   CommitBlocks.insert(CommitBlocks.end(), NewCBs.begin(), NewCBs.end());
@@ -355,6 +384,10 @@ void InlineAttempt::inheritCommitBlocksAndFunctions(std::vector<BasicBlock*>& Ne
 
 }
 
+// Analyse / interpret each instruction in block BBs[blockIdx]. inLoopAnalyser and inAnyLoop have the same meanings as for
+// InlineAttempt::analyseWithArgs above. skipStoreMerge means we shouldn't try to pull and merge
+// block-local stores from our predecessor blocks, usually because there is a special case here
+// like a function entry block that doesn't have local predecessors.
 bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, bool inAnyLoop, bool skipStoreMerge, const ShadowLoopInvar* MyL) {
 
   ShadowBB* BB = getBB(blockIdx);
@@ -556,6 +589,82 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
 
 }
 
+// Try to analyse a call/invoke instruction SI by creating or reusing a specialisation context
+// representing the call. Set 'changed' if anything about the analysis changed (e.g. arguments
+// or instructions had different values to any previous analysis). inLoopAnalyser, inAnyLoop
+// have the same meanings as for InlineAttempt::analyseWithArgs.
+// Return true if we ended up with an InlineAttempt available for this call.
+bool IntegrationAttempt::analyseExpandableCall(ShadowInstruction* SI, bool& changed, bool inLoopAnalyser, bool inAnyLoop) {
+
+  changed = false;
+
+  bool created, needsAnalyse;
+  InlineAttempt* IA = getOrCreateInlineAttempt(SI, created, needsAnalyse);
+
+  if(IA) {
+
+    IA->activeCaller = SI;
+
+    if(needsAnalyse) {
+
+      changed |= created;
+      
+      // Setting active = true prevents incomplete dependency information from being used
+      // to justify sharing the function node.
+      IA->active = true;
+
+      changed |= IA->analyseWithArgs(SI, inLoopAnalyser, inAnyLoop, stack_depth);
+      readsTentativeData |= IA->readsTentativeData;
+      containsCheckedReads |= IA->containsCheckedReads;
+      
+      inheritDiagnosticsFrom(IA);
+      mergeChildDependencies(IA);
+
+      if(created && !IA->isUnsharable())
+	pass->addSharableFunction(IA);
+      else if(IA->registeredSharable && IA->isUnsharable())
+	pass->removeSharableFunction(IA);
+     
+      IA->active = false;
+
+      if(changed && IA->hasFailedReturnPath()) {
+
+	// Must create a copy of this block for failure paths, starting at the call successor.
+	// Invoke instructions fail directly to their non-exception successors;
+	// call instructions introduce a break in their basic block.
+	if(inst_is<CallInst>(SI))
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(SI->parent->invar->idx, SI->invar->idx + 1);
+	else
+	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(SI->parent->invar->succIdxs[0], 0);
+
+      }
+
+      doCallStoreMerge(SI);
+
+      if(!inLoopAnalyser) {
+	    
+	doTLCallMerge(SI->parent, IA);
+	doDSECallMerge(SI->parent, IA);
+
+	IA->finaliseAndCommit(inLoopAnalyser);
+
+      }
+      
+    }
+    else {
+
+      IA->executeCall(stack_depth);
+
+    }
+
+  }
+
+  return !!IA;
+
+}
+
+// Analyse instruction SI in this context. inLoopAnalyser and anyLoop have the same meanings as in InlineAttempt::analyseWithArgs above.
+// loadedVarargsHere indicates this instruction read a vararg. bail indicates that this path ended in an unreachable instruction.
 bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAnalyser, bool inAnyLoop, bool& loadedVarargsHere, bool& bail) {
 
   ShadowInstructionInvar* SII = SI->invar;
@@ -633,7 +742,7 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 
 }
 
-// Returns true if there was any change
+// Analyse all instructions in block BB. Returns true if there was any change.
 bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool inLoopAnalyser, bool inAnyLoop) {
 
   bool anyChange = false;
@@ -670,12 +779,16 @@ bool IntegrationAttempt::analyseBlockInstructions(ShadowBB* BB, bool inLoopAnaly
 
 }
 
+// Loop latch edges retain a reference on their block-local stores used when finding fixed-point solutions
+// concerning general cases of loop bodies, recursive functions and their children. This releases those
+// references when we get back to top level.
 void InlineAttempt::releaseCallLatchStores() {
 
   releaseLatchStores(0);
 
 }
 
+// As above.
 void IntegrationAttempt::releaseLatchStores(const ShadowLoopInvar* L) {
 
   // Release loops belonging to sub-calls and loops:
@@ -735,6 +848,8 @@ void IntegrationAttempt::releaseLatchStores(const ShadowLoopInvar* L) {
 
 }
 
+// Analyse a loop's general case (i.e. trying to find a fixed-point solution regarding
+// the body, rather than analysing each individual iteration; for that see PeelAttempt::analyse)
 // nestedLoop indicates we're being analysed in the context of a loop further out,
 // either in our call or a parent call.
 bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) {
@@ -886,6 +1001,9 @@ bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) 
 
 }
 
+// Run this function instance through the 'interpreter' without changing findings about any of the instructions etc.
+// Used when a function instance is being shared as we have detected that all relevant state matches a previously-
+// analysed version.
 void InlineAttempt::executeCall(uint32_t parent_stack_depth) {
 
   uint32_t new_stack_depth = (invarInfo->frameSize == -1) ? parent_stack_depth : parent_stack_depth + 1;
@@ -893,6 +1011,7 @@ void InlineAttempt::executeCall(uint32_t parent_stack_depth) {
 
 }
 
+// Similarly, execute but do not re-analyse a loop.
 void IntegrationAttempt::executeLoop(const ShadowLoopInvar* ThisL) {
 
   ShadowBB* PHBB = getBB(ThisL->preheaderIdx);
@@ -953,6 +1072,7 @@ void IntegrationAttempt::executeLoop(const ShadowLoopInvar* ThisL) {
 
 }
 
+// Similar to above.
 // Like analyse(), but used from sharing pathways when we're sure none of the functions need re-evaluating.
 // We really only want to recreate its effects on the store.
 void IntegrationAttempt::execute(uint32_t new_stack_depth) {
