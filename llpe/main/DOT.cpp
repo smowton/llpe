@@ -417,6 +417,15 @@ void InlineAttempt::printPathConditions(raw_ostream& Out, ShadowBBInvar* BBI, Sh
 
 }
 
+// Helpers for below:
+BasicBlock* InlineAttempt::getEntryBlock() {
+  return &F.getEntryBlock();
+}
+
+BasicBlock* PeelIteration::getEntryBlock() {
+  return getBBInvar(L->headerIdx)->BB;
+}
+
 // Draw BB (in brief mode dead blocks are omitted). Yellow highlights indicate blocks that will be
 // reached for sure if the specialisation is entered and no implicit checks (e.g. for thread
 // interference) fail; green means the same and additionally the block is not in any loop context;

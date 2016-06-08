@@ -66,6 +66,17 @@ static void ignoreChildLoops(SmallSet<BasicBlock*, 1>& headers, const Loop* L) {
   
 }
 
+// Return the tightest enclosing loop that isn't specified ignored by a user directive.
+
+const ShadowLoopInvar* LLPEAnalysisPass::applyIgnoreLoops(const ShadowLoopInvar* L, Function* F, ShadowFunctionInvar* FInfo) {
+
+  while(L && shouldIgnoreLoop(F, FInfo->BBs[L->headerIdx].BB))
+    L = L->parent;
+
+  return L;
+
+}
+
 ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
 							DenseMap<BasicBlock*, uint32_t>& BBIndices, 
 							const Loop* L,

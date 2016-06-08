@@ -21,6 +21,7 @@
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/IR/DIBuilder.h"
 
 #include <unistd.h>
@@ -2926,3 +2927,238 @@ void IntegrationAttempt::markAllocationsAndFDsCommitted() {
   }
 
 }
+
+void InlineAttempt::releaseBackupStores() {
+
+  release_assert(backupTlStore);
+  backupTlStore->dropReference();
+  backupTlStore = 0;
+  release_assert(backupDSEStore);
+  backupDSEStore->dropReference();
+  backupDSEStore = 0;
+
+}
+
+void IntegrationAttempt::releaseMemoryPostCommit() {
+
+  if(commitState == COMMIT_FREED)
+    return;
+
+  // For the time being, retain all data if the user will inspect it.
+  if(IHPSaveDOTFiles) {
+    commitState = COMMIT_FREED;
+    return;
+  }
+
+  for(IAIterator it = child_calls_begin(this),
+	itend = child_calls_end(this); it != itend; ++it) {
+
+    it->second->releaseMemoryPostCommit();
+    // IAs may only be referenced from us at present
+    it->second->dropReferenceFrom(it->first);
+
+  }
+
+  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
+	itend = peelChildren.end(); it != itend; ++it) {
+
+    for(uint32_t i = 0, ilim = it->second->Iterations.size(); i != ilim; ++i) {
+
+      it->second->Iterations[i]->releaseMemoryPostCommit();
+
+    }
+
+    delete it->second;
+
+  }
+
+  peelChildren.clear();
+
+  for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
+
+    ShadowBB* BB = getBB(i);
+
+    if(BB) {
+
+      for(uint32_t j = 0, jlim = BB->insts.size(); j != jlim; ++j) {
+
+	ShadowInstruction* SI = &BB->insts[j];
+	if(SI->i.PB)
+	  deleteIV(SI->i.PB);
+
+	{
+	  DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(SI);
+	  if(findit != pass->trackedStores.end()) {
+	    findit->second->isCommitted = true;
+	    pass->trackedStores.erase(findit);
+	  }
+	}
+
+	{
+	  DenseMap<ShadowInstruction*, TrackedAlloc*>::iterator findit = pass->trackedAllocs.find(SI);
+	  if(findit != pass->trackedAllocs.end()) {
+	    findit->second->isCommitted = true;
+	    pass->trackedAllocs.erase(findit);
+	  }
+	}
+
+	pass->indirectDIEUsers.erase(SI);
+	pass->memcpyValues.erase(SI);
+	pass->forwardableOpenCalls.erase(SI);
+	pass->resolvedReadCalls.erase(SI);
+	pass->resolvedSeekCalls.erase(SI);
+
+      }
+
+      delete BB;
+      
+    }
+
+  }
+
+  delete[] BBs;
+  BBs = 0;
+
+  commitState = COMMIT_FREED;
+
+}
+
+void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
+
+  countTentativeInstructions();
+  collectStats();
+	
+  // This call will disable the context if it's not a good idea.
+  findProfitableIntegration();
+
+  if(isEnabled()) {
+
+    // The TL and DSE stores were backed up to deal with the possibility
+    // that the context would not be committed: we don't need those after all.
+    releaseBackupStores();
+
+    // Create residual blocks for disabled loops
+    prepareCommitCall();
+
+    if(!pass->statsFile.empty())
+      preCommitStats(true);
+
+    // Note any tests that require failed blocks.
+    addCheckpointFailedBlocks();
+
+    // Decide whether to commit in or out of line:
+    findSaveSplits();
+
+    runDIE();
+
+    // Save a DOT representation if need be, for the GUI to use.
+    saveDOT();
+
+    // Finally, do it!
+    commitCFG();
+    commitArgsAndInstructions();
+
+    postCommitOptimise();
+
+  }
+  else {
+
+    // Save a DOT representation if need be, for the GUI to use.
+    saveDOT();
+
+    // Allocations and FD creations in this scope should be marked
+    // committed without canonical value.
+    markAllocationsAndFDsCommitted();
+
+    commitState = COMMIT_DONE;
+
+    // Child contexts may have generated code that we no longer care
+    // to use. Delete it if so.
+    releaseCommittedChildren();
+
+    // Must rerun tentative load and DSE analyses accounting
+    // for the fact that the stage will not be committed.
+    rerunTentativeLoads(activeCaller, this, inLoopAnalyser);
+
+    // For now this is simply a barrier to DSE.
+    setAllNeededTop(backupDSEStore);
+    backupDSEStore->dropReference();
+    if(activeCaller->parent->dseStore) {
+      activeCaller->parent->dseStore = activeCaller->parent->dseStore->getEmptyMap();
+      activeCaller->parent->dseStore->allOthersClobbered = true;
+    }
+
+    if(!pass->statsFile.empty())
+      preCommitStats(true);
+
+  }
+
+  // Free all ShadowBBs, ShadowInstructions and similar.
+  releaseMemoryPostCommit();
+
+}
+
+// Top-level commit entry point.
+
+void LLPEAnalysisPass::commit() {
+
+  if(!(omitChecks || llioDependentFiles.empty())) {
+
+    writeLliowdConfig();
+
+    BasicBlock* preludeBlock = 0;
+
+    if(llioPreludeStackIdx == -1) {
+
+      Function* writePreludeFn = llioPreludeFn;
+      if(llioPreludeFn == &RootIA->F)
+	writePreludeFn = RootIA->CommitF;
+
+      if(writePreludeFn)
+	preludeBlock = &writePreludeFn->getEntryBlock();
+
+    }
+
+    // Add an lliowd_init() prelude to the beginning of the requested function:
+    if(preludeBlock) {
+
+      BasicBlock::iterator it = preludeBlock->begin();
+      while(it != preludeBlock->end() && isa<AllocaInst>(it))
+	++it;
+
+      Type* Void = Type::getVoidTy(preludeBlock->getContext());
+      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
+      CallInst::Create(WDInit, ArrayRef<Value*>(), "", it);
+
+    }
+
+  }
+
+  if(!statsFile.empty()) {
+
+    postCommitStats();
+    
+    std::error_code error;
+    raw_fd_ostream RFO(statsFile.c_str(), error, sys::fs::F_None);
+    if(error)
+      errs() << "Failed to open " << statsFile << ": " << error.message() << "\n";
+    else
+      stats.print(RFO);
+  }
+
+  RootIA->F.replaceAllUsesWith(RootIA->CommitF);
+
+  // Also exchange names so that external users will use this new version:
+  std::string oldFName;
+  {
+    raw_string_ostream RSO(oldFName);
+    RSO << RootIA->F.getName() << ".old";
+  }
+
+  RootIA->CommitF->takeName(&(RootIA->F));
+  RootIA->F.setName(oldFName);
+
+  errs() << "\n";
+
+}
+
