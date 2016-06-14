@@ -557,7 +557,7 @@ void LLPEAnalysisPass::parsePathConditions(cl::list<std::string>& L, PathConditi
 	  
 	  if(assumeC->getType() != GInt8Ptr)
 	    assumeC = ConstantExpr::getBitCast(assumeC, GInt8Ptr);
-	  assumeC = ConstantExpr::getGetElementPtr(GInt8Ptr, assumeC, ConstantInt::get(GInt64, Offset));
+	  assumeC = ConstantExpr::getGetElementPtr(0, assumeC, ConstantInt::get(GInt64, Offset));
 
 	}
 
@@ -692,7 +692,7 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
 	Constant* GStr = new GlobalVariable(Str->getType(), true, GlobalValue::InternalLinkage, Str, "specstr");
 	Constant* Zero = ConstantInt::get(Type::getInt64Ty(F.getContext()), 0);
 	Constant* GEPArgs[] = { Zero, Zero };
-	Constant* StrPtr = ConstantExpr::getGetElementPtr(StrTy, GStr, GEPArgs, 2);
+	Constant* StrPtr = ConstantExpr::getGetElementPtr(0, GStr, GEPArgs, 2);
 	CHECK_ARG(idx, argConstants);
 	argConstants[idx] = StrPtr;
 
