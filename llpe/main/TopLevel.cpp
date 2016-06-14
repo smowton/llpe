@@ -23,6 +23,9 @@
 
 using namespace llvm;
 
+// This file contains the pass' master runOnModule entry point, and specialisation context and pass
+// initialisation functions.
+
 // Initialised by the LLVM pass manager infrastructure.
 
 char LLPEAnalysisPass::ID = 0;
@@ -294,6 +297,7 @@ static bool getAllocSitesFrom(Value* V, std::vector<Value*>& sites, DenseSet<Val
 
 }
 
+// Find instructions that may allocate the pointer passed as argument A.
 static void getAllocSites(Argument* A, std::vector<Value*>& sites) {
 
   DenseSet<Value*> seenValues;

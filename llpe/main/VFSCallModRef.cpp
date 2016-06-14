@@ -26,7 +26,15 @@
 
 using namespace llvm;
 
-static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
+// This file describes the modified and referenced parameters of various Linux syscalls.
+// If you want to generalise to another kernel or treat the libc interface like the syscall interface (for example)
+// you'll want to factor this out.
+
+// Functions to retrieve mod-ref locations that depend on other call parameters,
+// e.g. the 'read' syscall gives the read extent as another parameter.
+
+// Get 'read' syscall buffer:
+static void getReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(!tryGetConstantInt(getValArgOperand(CS, 2), Size))
     Size = AliasAnalysis::UnknownSize;
@@ -34,7 +42,8 @@ static void isReadBuf(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
 }
 
-static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
+// Get the pollfd array read by 'poll' if possible:
+static void getPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(!tryGetConstantInt(getValArgOperand(CS, 1), Size))
     Size = AliasAnalysis::UnknownSize;
@@ -44,14 +53,16 @@ static void isPollFds(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
   
 }
 
-static void isReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
+// Get a syscall's returned pointer:
+static void getReturnVal(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   V = CS;
   Size = AliasAnalysis::UnknownSize;
 
 }
 
-static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
+// 'recvfrom' gives the buffer size like 'read':
+static void getRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   ShadowValue LenArg = getValArgOperand(CS, 2);
   if(!tryGetConstantInt(LenArg, Size))
@@ -60,7 +71,8 @@ static void isRecvfromBuffer(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
 }
 
-static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
+// Get the 'errno' global if possible:
+static void getErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
   if(GlobalVariable* GV = cast<CallInst>(CS.getBareVal())->getParent()->getParent()->getParent()->getGlobalVariable("errno", true)) {
     V = ShadowValue(GV);
@@ -69,12 +81,20 @@ static void isErrno(ShadowValue CS, ShadowValue& V, uint64_t& Size) {
 
 }
 
-// Plain parameters:
+// IHPLocationInfo's members:
+// Either:
+// { getBufferFunc, _, _ }, where getBufferFunc retrieves the buffer and size during specialisation
+// Or:
+// { NULL, argument number, buffer size }
+
+// Plain parameters. These read/modify the given argument in its entirety.
 struct IHPLocationInfo locArg0 = { 0, 0, AliasAnalysis::UnknownSize };
 struct IHPLocationInfo locArg1 = { 0, 1, AliasAnalysis::UnknownSize };
 struct IHPLocationInfo locArg2 = { 0, 2, AliasAnalysis::UnknownSize };
 
-// Sized parameters:
+// Sized parameters, These read/modify a particular argument size. This could need
+// fixing if there's a chance we're building against a different struct than the kernel
+// or alignment, pointer-size differ etc.
 struct IHPLocationInfo locTermios = { 0, 2, sizeof(struct termios) };
 struct IHPLocationInfo locTimespecArg1 = { 0, 1, sizeof(struct timespec) };
 struct IHPLocationInfo locSockaddrArg4 = { 0, 4, sizeof(struct sockaddr) };
@@ -84,15 +104,15 @@ struct IHPLocationInfo locRlimitArg1 = { 0, 1, sizeof(struct rlimit) };
 struct IHPLocationInfo locVaListArg0 = { 0, 0, 24 };
 
 // Call-dependent parameters
-struct IHPLocationInfo locReturnVal = { isReturnVal, 0, 0 };
-struct IHPLocationInfo locPollFds = { isPollFds, 0, 0 };
-struct IHPLocationInfo locReadBuf = { isReadBuf, 0, 0 };
-struct IHPLocationInfo locRecvfromBuffer = { isRecvfromBuffer, 0, 0 };
+struct IHPLocationInfo locReturnVal = { getReturnVal, 0, 0 };
+struct IHPLocationInfo locPollFds = { getPollFds, 0, 0 };
+struct IHPLocationInfo locReadBuf = { getReadBuf, 0, 0 };
+struct IHPLocationInfo locRecvfromBuffer = { getRecvfromBuffer, 0, 0 };
 
 // Globals
-struct IHPLocationInfo locErrno = { isErrno, 0, 0 };
+struct IHPLocationInfo locErrno = { getErrno, 0, 0 };
 
-// Begin function descriptions
+// Begin function descriptions. These are null-terminated lists of IHPLocationMRInfos.
 
 static IHPLocationMRInfo JustErrno[] = {
   { &locErrno },
@@ -238,6 +258,7 @@ static IHPLocationMRInfo UnameMR[] = {
 
 };
 
+// This isn't very general, since TCGETS etc can alias other ioctls with different device types.
 static const IHPLocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
   uint64_t ioctlCode;
@@ -255,6 +276,11 @@ static const IHPLocationMRInfo* getIoctlLocDetails(ShadowValue CS) {
 
 }
 
+// These relate function names to IHPLocationInfo arrays.
+// The second field, if true, specifies the function is nomodref.
+// The third gives a static array of IHPLocationInfos,
+// or alternatively the fourth gives a function that will return an array
+// that depends on the current specialisation state, currently only used for 'ioctl'.
 static IHPFunctionInfo VFSCallFunctions[] = {
 
   { "open", false, JustErrno, 0 },
@@ -332,6 +358,7 @@ static IHPFunctionInfo VFSCallFunctions[] = {
 
 };
 
+// Populate tables relating Function* to mod-ref info, instead of looking up by name every time.
 void LLPEAnalysisPass::initMRInfo(Module* M) {
 
   for(uint32_t i = 0; VFSCallFunctions[i].Name; ++i) {

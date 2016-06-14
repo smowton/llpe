@@ -9,6 +9,8 @@
 
 #include "llvm/Analysis/LLPE.h"
 
+// Debugging functions that dunp the state of the tentative-load or dead-store analysis code.
+
 namespace llvm {
 
   void TLDump(IntegrationAttempt* IA) {
