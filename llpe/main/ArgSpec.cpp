@@ -70,7 +70,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
     size_t start = lineStarts[i];
 
     Constant* gepArgs[] = { Zero, ConstantInt::get(Int64, start) };
-    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(I8P, EnvInitG, gepArgs));
+    lineStartConsts.push_back(ConstantExpr::getGetElementPtr(0, EnvInitG, gepArgs));
 
   }
 
@@ -82,7 +82,7 @@ static Constant* getStringPtrArray(std::string& bytes, std::vector<size_t>& line
   Constant* PtrArray = ConstantArray::get(PtrArrT, lineStartConsts);
   GlobalVariable* EnvPtrsG = new GlobalVariable(M, PtrArray->getType(), true, GlobalValue::PrivateLinkage, PtrArray, "spec_env_ptrs");
   Constant* gepArgs[] = { Zero, Zero };
-  Constant* EnvPtrsPtr = ConstantExpr::getGetElementPtr(PtrArray->getType(), EnvPtrsG, gepArgs);
+  Constant* EnvPtrsPtr = ConstantExpr::getGetElementPtr(0, EnvPtrsG, gepArgs);
 
   return EnvPtrsPtr;
 
@@ -154,7 +154,7 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
       
       // Get a pointer into the constant argv:
       Constant* gepArgs[] = { ConstantInt::get(Int64, 0), ConstantInt::get(Int64, lineStarts[i]) };
-      Constant* stringPtr = ConstantExpr::getGetElementPtr(BytePtr, ArgvConsts, gepArgs);
+      Constant* stringPtr = ConstantExpr::getGetElementPtr(0, ArgvConsts, gepArgs);
 
       // Get a pointer into the real argv:
       Constant* gepArg = ConstantInt::get(Int64, i);

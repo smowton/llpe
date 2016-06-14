@@ -1459,7 +1459,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	Constant* ZeroIdx = ConstantInt::get(Int64Ty, 0);
 	Constant* Idxs[2] = {ZeroIdx, ZeroIdx};
-	Constant* CopySource = ConstantExpr::getGetElementPtr(VoidPtrTy, ArrayGlobal, Idxs, 2);
+	Constant* CopySource = ConstantExpr::getGetElementPtr(0, ArrayGlobal, Idxs, 2);
       
 	Constant* MemcpySize = ConstantInt::get(Int64Ty, it->second.readSize);
 
@@ -2040,7 +2040,7 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
     OffsetGV = CastGV;
   else {
     Constant* OffC = ConstantInt::get(Type::getInt64Ty(GV->getContext()), (uint64_t)Offset, true);
-    OffsetGV = ConstantExpr::getGetElementPtr(Int8Ptr, CastGV, OffC);
+    OffsetGV = ConstantExpr::getGetElementPtr(0, CastGV, OffC);
   }
     
   // Cast to proper type:
