@@ -13,6 +13,16 @@
 
 using namespace llvm;
 
+// Code in this file determines how to split committed code into residual functions. We don't want to just
+// inline everything everywhere, since this makes a huge function that chokes the LLVM optimisation/analysis
+// passes, nor do we want to simply emit a residual function per specialised context since this leaves
+// a lot of call overhead and chokes the standard inliner.
+
+// Replace the instruction-operands listed in Refs with V. This is used when a source argument wasn't
+// available during a context's commit phase, so either an argument was left 'undef' (e.g. a phi node operand)
+// or a 'select' instruction was created as a temporary and one of its arguments queued for patching.
+// SimplifyInstruction is used to resolve cases where the target instruction is no longer necessary
+// once its argument is known.
 void llvm::patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Value* V) {
 
   for(std::vector<std::pair<WeakVH, uint32_t> >::iterator it = Refs.begin(),
@@ -40,6 +50,8 @@ void llvm::patchReferences(std::vector<std::pair<WeakVH, uint32_t> >& Refs, Valu
 
 }
 
+// If we want to introduce an instruction right after V becomes defined, return the Instruction
+// we should insert before.
 static Instruction* getInsertLocation(Value* V) {
 
   if(Instruction* I = dyn_cast<Instruction>(V)) {
@@ -86,6 +98,13 @@ static Function* getFunctionFor(Value* V) {
 
 }
 
+// Value Fwd might have users that aren't function-local. This happens because
+// e.g. a malloc instruction ended up committed in a different function than residual
+// users that refer to that allocation.
+// With some cunning trickery we could get the value forwarded by function return values
+// and arguments; here we use the simpler solution of storing Fwd to a global as it is created and then
+// loading it at each non-local user.
+// The disadvantage is this might confuse downstream alias analysis a little.
 void llvm::forwardReferences(Value* Fwd, Module* M) {
 
   GlobalVariable* NewGV = 0;
@@ -117,6 +136,7 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 	Instruction* InsertBefore;
 	if(PHINode* PN = dyn_cast<PHINode>(UserI)) {
 
+	  // The load needs to go at the end of the predecessor block, since it can't go right before a phi.
 	  // Find the particular predecessor corresponding to this use:
 	  int32_t phiOpIdx = -1;
 	  
@@ -130,6 +150,7 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 	}
 	else {
 
+	  // The load goes right before the user instruction.
 	  InsertBefore = UserI;
 
 	}
@@ -143,6 +164,7 @@ void llvm::forwardReferences(Value* Fwd, Module* M) {
 
   }
 
+  // Do the actual replacements now we don't need the user_iterator.
   for(SmallVector<std::pair<Use*, Instruction*>, 4>::iterator it = replaceUses.begin(),
 	itend = replaceUses.end(); it != itend; ++it) {
 
@@ -161,8 +183,10 @@ void InlineAttempt::fixNonLocalStackUses() {
 
   for(std::vector<AllocData>::iterator it = localAllocas.begin(),
 	itend = localAllocas.end(); it != itend; ++it) {
-    
+
+    // Replace any placeholder select instructions so that def->use relationships are all present.
     patchReferences(it->PatchRefs, it->committedVal);
+    // Forward nonlocal def->use edges via a global variable.
     forwardReferences(it->committedVal, F.getParent());
 
   }
@@ -210,6 +234,7 @@ void LLPEAnalysisPass::fixNonLocalUses() {
   
 }
 
+// Set all child functions to use the same commit function as this context.
 void IntegrationAttempt::inheritCommitFunction() {
 
   for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
@@ -235,8 +260,10 @@ void IntegrationAttempt::inheritCommitFunction() {
 
 }
 
+// Set all child functions to use the same commit function as this context. onlyAdd is always false at the moment.
 void InlineAttempt::inheritCommitFunctionCall(bool onlyAdd) {
 
+  // In this case our commit function is already set in stone.
   if(isCommitted())
     return;
 
@@ -256,8 +283,15 @@ void InlineAttempt::inheritCommitFunctionCall(bool onlyAdd) {
 // That's large enough that the inliner won't be appetised to reverse our work, and also will hopefully
 // not hinder optimisation too much.
 
+// Return a rough estimate of the number of residual instructions that will result from this context
+// and its children. Notionally this could split the residual code other than at source program
+// function boundaries, hence the name, but in practice at present splits always align with source program
+// functions, for which see InlineAttempt::findSaveSplits.
 uint64_t IntegrationAttempt::findSaveSplits() {
 
+  // Already committed here -- we already know the actual number of residual instructions.
+  // This may have been set to 1 if this context is to be the root of a residual function, so
+  // only one call instruction will materialise from our parent's point of view.
   if(isCommitted())
     return residualInstructionsHere;
   
@@ -268,6 +302,9 @@ uint64_t IntegrationAttempt::findSaveSplits() {
     ShadowBBInvar* BBI = getBBInvar(i);
     if(BBI->naturalScope != L && ((!L) || L->contains(BBI->naturalScope))) {
 
+      // Skip over this child loop if it will be peeled in the committed program;
+      // in this case we will gather its stats below.
+      
       DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator findit = 
 	peelChildren.find(immediateChildLoop(L, BBI->naturalScope));
 
@@ -282,6 +319,9 @@ uint64_t IntegrationAttempt::findSaveSplits() {
 
     }
 
+    // Count likely residual instructions from each block. Note this is a rough
+    // estimate as unspecialised code will not be included.
+    
     ShadowBB* BB = getBB(*BBI);
     if(!BB)
       continue;
@@ -294,6 +334,8 @@ uint64_t IntegrationAttempt::findSaveSplits() {
     }
     
   }
+
+  // Count residual instructions belonging to our child contexts.
 
   for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
 	itend = peelChildren.end(); it != itend; ++it) {
@@ -320,12 +362,15 @@ uint64_t IntegrationAttempt::findSaveSplits() {
 
 }
 
+// Queue PatchI's operand PatchOp to be written with the committed version of Needed when it is
+// eventually synthesised.
 void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI, uint32_t PatchOp) {
 
   std::pair<WeakVH, uint32_t> PRQ(WeakVH(PatchI), PatchOp);
 
   switch(Needed.t) {
 
+    // Forwarding a root-function argument, which can be considered a globally-unique object.
   case SHADOWVAL_ARG: {
     release_assert(Needed.u.A->IA->isRootMainCall());
     ArgStore& AS = GlobalIHP->argStores[Needed.u.A->invar->A->getArgNo()];
@@ -333,6 +378,7 @@ void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI
     break;
   }
 
+    // Forwarding an allocation that occurs during specialisation e.g. an alloca or malloc.
   case SHADOWVAL_PTRIDX: {
     AllocData& AD = *getAllocData(Needed);
     AD.PatchRefs.push_back(PRQ);
@@ -340,6 +386,7 @@ void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI
     break;
   }
 
+    // Forwarding a file descriptor allocated during specialisation.
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64: {
     FDGlobalState& FDS = pass->fds[Needed.getFd()];
@@ -355,8 +402,11 @@ void IntegrationAttempt::addPatchRequest(ShadowValue Needed, Instruction* PatchI
 
 }
 
+// Create a fresh residual function to contain residual blocks from this context and any child contexts
+// that haven't already been assigned a commit function.
 void InlineAttempt::splitCommitHere() {
 
+  // Since we're committing out-of-line, we will only add a single instruction to our parent's residual function.
   residualInstructionsHere = 1;
   
   std::string Name;
@@ -365,6 +415,7 @@ void InlineAttempt::splitCommitHere() {
     RSO << getCommittedBlockPrefix() << "clone";
   }
 
+  // Create an empty function; inherit attributes etc from the source program function.
   GlobalValue::LinkageTypes LT;
   if(isRootMainCall())
     LT = F.getLinkage();
@@ -375,7 +426,8 @@ void InlineAttempt::splitCommitHere() {
   firstFailedBlock = CommitF->end();
 
   Function::BasicBlockListType& BBL = CommitF->getBasicBlockList();
-  
+
+  // Add any already-committed blocks to the new function.
   for(std::vector<BasicBlock*>::iterator it = CommitBlocks.begin(), 
 	itend = CommitBlocks.end(); it != itend; ++it) {
 
@@ -399,14 +451,20 @@ void InlineAttempt::splitCommitHere() {
 
   residualInstructionsHere = 1;
 
+  // Assign any children that haven't committed yet
+  // to target the new residual function too.
   inheritCommitFunction();
 
 }
 
 #define SPLIT_THRESHOLD 50000
 
+// Similarly to IntegrationAttempt::findSaveSplits above, return the number of instructions this context
+// and its children will emit in our parent's commit function. If that number would be excessive,
+// split this context and its children off into a new commit function and note that we now only
+// show up as a single call instruction to our parent.
 uint64_t InlineAttempt::findSaveSplits() {
-
+  
   if(isCommitted())
     return residualInstructionsHere;
   

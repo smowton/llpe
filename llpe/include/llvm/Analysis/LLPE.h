@@ -487,8 +487,6 @@ class LLPEAnalysisPass : public ModulePass {
    void removeSharableFunction(InlineAttempt*);
    InlineAttempt* findIAMatching(ShadowInstruction*);
 
-   bool mustRecomputeDIE;
-
    ShadowGV* shadowGlobals;
 
    std::vector<AllocData> heap;
@@ -537,7 +535,6 @@ class LLPEAnalysisPass : public ModulePass {
    explicit LLPEAnalysisPass() : ModulePass(ID), cacheDisabled(false) { 
 
      mallocAlignment = 0;
-     mustRecomputeDIE = false;
 
    }
 
@@ -613,9 +610,6 @@ class LLPEAnalysisPass : public ModulePass {
      return programSingleThreaded || simpleVolatileLoads.count(LI);
 
    }
-
-   void runDSEAndDIE();
-   void rerunDSEAndDIE();
 
    unsigned getMallocAlignment();
 
@@ -1275,7 +1269,6 @@ protected:
   bool valueIsDead(ShadowValue);
   bool shouldDIE(ShadowInstruction* V);
   virtual void runDIE();
-  void resetDeadInstructions();
 
   virtual bool ctxContains(IntegrationAttempt*) = 0;
   void gatherIndirectUsersInLoop(const ShadowLoopInvar*);
@@ -1453,7 +1446,6 @@ protected:
   void findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass, bool latchToHeader = false);
   void findTentativeLoadsInUnboundedLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass);
   void TLAnalyseInstruction(ShadowInstruction&, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser);
-  void resetTentativeLoads();
   bool requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks);
   bool containsTentativeLoads();
   void addCheckpointFailedBlocks();
@@ -1813,8 +1805,6 @@ class InlineAttempt : public IntegrationAttempt {
   Value* getArgCommittedValue(ShadowArg* SA, Instruction* insertBefore);
   Value* getArgCommittedValue2(ShadowArg* SA, BasicBlock* emitBB, Instruction* insertBefore);
   void commitArgsAndInstructions();
-
-  void resetDeadArgsAndInstructions();
 
   virtual void getInitialStore(bool inLoopAnalyser);
 

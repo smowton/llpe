@@ -26,6 +26,8 @@
 
 using namespace llvm;
 
+// Simple progress bar.
+
 static uint32_t TLProgressN = 0;
 const uint32_t TLProgressLimit = 1000;
 
@@ -41,6 +43,7 @@ static void TLProgress() {
 
 }
 
+// Allocator and shared empty-store object.
 static TLMapTy::Allocator TLMapAllocator;
 static TLMapTy TLEmptyMap(TLMapAllocator);
 TLMapPointer llvm::TLEmptyMapPtr(&TLEmptyMap);
@@ -51,6 +54,7 @@ TLLocalStore* TLMapPointer::getMapForBlock(ShadowBB* BB) {
 
 }
 
+// Copy the store entries. The entries themselves may still be shared.
 TLMapPointer TLMapPointer::getReadableCopy() {
 
   TLMapTy* newMap = new TLMapTy(TLMapAllocator);
@@ -61,6 +65,7 @@ TLMapPointer TLMapPointer::getReadableCopy() {
 
 }
 
+// Maps themselves are not shared at the moment, so just delete it.
 bool TLMapPointer::dropReference() {
 
   delete M;
@@ -70,6 +75,7 @@ bool TLMapPointer::dropReference() {
 
 }
 
+// Merge two is-known-good arrays. An offset is good if it's good in both parents.
 void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, uint64_t ASize, TLMerger* Visitor) {
 
   // Intersect the sets per byte. The values are just booleans, so overwriting without erasing is fine.
@@ -82,6 +88,7 @@ void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, u
     for(TLMapTy::iterator toit = mergeTo->M->find(it.start()), toitend = mergeTo->M->end();
 	toit != toitend && toit.start() < it.stop(); ++toit) {
 
+      // Intersect ranges:
       uint64_t keepStart = std::max(toit.start(), it.start());
       uint64_t keepStop = std::min(toit.stop(), it.stop());
       keepRanges.push_back(std::make_pair(keepStart, keepStop));
@@ -100,6 +107,7 @@ void TLMapPointer::mergeStores(TLMapPointer* mergeFrom, TLMapPointer* mergeTo, u
 
 }
 
+// Get a writable array for value O, including breaking CoW data structures above it.
 TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
   tlStore = tlStore->getWritableFrameList();
@@ -113,6 +121,8 @@ TLMapPointer* ShadowBB::getWritableTLStore(ShadowValue O) {
 
 }
 
+// Clear the store to mark everything tentative (needs checking against concurrent
+// interference). Note that an instruction here forced us to repeat all checks.
 static void markAllObjectsTentative(ShadowInstruction* SI, ShadowBB* BB) {
 
   BB->tlStore = BB->tlStore->getEmptyMap();
@@ -124,9 +134,12 @@ static void markAllObjectsTentative(ShadowInstruction* SI, ShadowBB* BB) {
 
 }
 
+// Note that GoodPtr[Offset:Offset+Len] has been checked and need not be rechecked until another memory-ordered
+// instruction or yield point means we must assume possible inter-thread communication again.
+// Mark the good offsets as of block BB.
 static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled, ShadowBB* BB, uint64_t Offset = 0) {
 
-  // ignoreUntil indicates we're within a disabled context. The loads and stores here will
+  // If we're in a disabled context, the loads and stores here will
   // be committed unmodified, in particular without checks that their results are as expected,
   // and so they do not make any subsequent check redundant.
   // Stores in disabled contexts can't count either, because of the situation:
@@ -139,6 +152,7 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   
   // Here the load %y must be checked, because the load %x cannot be checked.
 
+  // Might be able to be smarter...
   if(!contextEnabled)
     return;
 
@@ -146,13 +160,17 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   if(!BB->tlStore->allOthersClobbered)
     return;
 
+  // If we're not sure what object we just read from we can't be sure we're
+  // dealing with the same thing next load, so no check elimination is allowed.
   std::pair<ValSetType, ImprovedVal> PtrTarget;
   if(!tryGetUniqueIV(GoodPtr, PtrTarget))
     return;
 
+  // Load from a non-pointer? Might be an assert.
   if(PtrTarget.first != ValSetTypePB)
     return;
 
+  // Constants are always good.
   if(PtrTarget.second.V.isGV() &&  PtrTarget.second.V.u.GV->G->isConstant())
     return;
 
@@ -169,6 +187,7 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   }
   else {
 
+    // Figure out what offsets need marking, if any.
     TLMapTy::iterator it = store->M->find(start), itend = store->M->end();
 
     if(it == itend || it.start() >= stop) {
@@ -222,15 +241,16 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
 
 }
 
+// A path condition checks that a certain value is as expected at runtime. Mark it as checked as of block BB.
 static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool contextEnabled, ShadowBB* BB) {
 
   ShadowValue CondSV = BB->IA->getFunctionRoot()->getPathConditionSV(Cond);
   uint64_t Len = 0;
   switch(Ty) {
-  case PathConditionTypeIntmem:
+  case PathConditionTypeIntmem: // Assertion about an in-memory integer.
     Len = GlobalTD->getTypeStoreSize(Cond.u.val->getType());
     break;
-  case PathConditionTypeString:
+  case PathConditionTypeString: // Assertion about a C-string.
     Len = cast<ConstantDataArray>(Cond.u.val)->getNumElements();
     break;
   default:
@@ -242,6 +262,7 @@ static void walkPathCondition(PathConditionTypes Ty, PathCondition& Cond, bool c
 
 }
 
+// Mark the targets of all path condition checks at the top of BB checked.
 static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>& Conds, bool contextEnabled, ShadowBB* BB, uint32_t stackDepth) {
 
   for(std::vector<PathCondition>::iterator it = Conds.begin(), itend = Conds.end(); it != itend; ++it) {
@@ -255,6 +276,8 @@ static void walkPathConditions(PathConditionTypes Ty, std::vector<PathCondition>
 
 }
 
+// Merge the known-good-offsets maps from all IA's return blocks.
+// Assign the result to BB.
 void llvm::doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
   TLMerger V(BB->IA, false);
@@ -265,6 +288,7 @@ void llvm::doTLCallMerge(ShadowBB* BB, InlineAttempt* IA) {
 
 }
 
+// Mark the targets of all path condition checks PC at the top of BB checked.
 static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB* BB, bool contextEnabled, bool secondPass) {
 
   walkPathConditions(PathConditionTypeIntmem, PC.IntmemPathConditions, 
@@ -277,29 +301,35 @@ static void walkPathConditionsIn(PathConditions& PC, uint32_t stackIdx, ShadowBB
 
     if(it->stackIdx != stackIdx)
       continue;
-    
+
+    // Pass the TL store into the path condition function:
     it->IA->BBs[0]->tlStore = BB->tlStore;
     // Path conditions can be treated like committed code, as the user is responsible for checking
     // their applicability.
     it->IA->findTentativeLoads(/* commitDisabledHere = */false, secondPass);
+    // Retrieve the resultant TL store:
     doTLCallMerge(BB, it->IA);
     
   }
 
 }
 
+// Mark the targets of all path condition checks PC at the top of BB checked.
 void llvm::TLWalkPathConditions(ShadowBB* BB, bool contextEnabled, bool secondPass) {
 
   InlineAttempt* IA = BB->IA->getFunctionRoot();
-  
+
+  // Consider path conditions specific to this specialisation
   if(IA->targetCallInfo)
     walkPathConditionsIn(GlobalIHP->pathConditions, IA->targetCallInfo->targetStackDepth, BB, contextEnabled, secondPass);
 
+  // Consider path conditions that apply to all calls to this function
   if(BB->IA->invarInfo->pathConditions)
     walkPathConditionsIn(*BB->IA->invarInfo->pathConditions, UINT_MAX, BB, contextEnabled, secondPass);
 
 }
 
+// Mark bytes read or written by a memcpy-like instruction as checked.
 static void walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue LenSV, bool contextEnabled, ShadowBB* BB) {
 
   uint64_t Len;
@@ -311,11 +341,12 @@ static void walkCopyInst(ShadowValue CopyFrom, ShadowValue CopyTo, ShadowValue L
 
 }
 
-
+// Update the TL store in whatever way is required by SI.
 static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
   if(inst_is<AllocaInst>(SI)) {
 
+    // Alloca: mark all good.
     ShadowValue SV(SI);
     ShadowValue Base;
     getBaseObject(SV, Base);
@@ -324,6 +355,8 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   }
   else if(LoadInst* LI = dyn_cast_inst<LoadInst>(SI)) {
 
+    // Load: mark good (our caller will have emitted a check if necessary) unless the load is itself
+    // a synchronisation point.
     if((LI->isVolatile() || SI->hasOrderingConstraint()) && !SI->parent->IA->pass->atomicOpIsSimple(LI))
       markAllObjectsTentative(SI, SI->parent);
     else
@@ -351,6 +384,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
   }
   else if(inst_is<FenceInst>(SI)) {
 
+    // Explicit thread yield:
     markAllObjectsTentative(SI, SI->parent);
 
   }
@@ -358,6 +392,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
     if(inst_is<MemSetInst>(SI)) {
 
+      // Memset: mark good.
       uint64_t MemSize;
       if(!tryGetConstantInt(SI->getCallArgOperand(2), MemSize))
 	return;
@@ -367,6 +402,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
     }
     else if(inst_is<MemTransferInst>(SI)) {
 
+      // Memcpy: mark both args good.
       walkCopyInst(SI->getCallArgOperand(0), SI->getCallArgOperand(1), SI->getCallArgOperand(2), contextEnabled, SI->parent);
 
     }
@@ -378,6 +414,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
       DenseMap<Function*, specialfunctions>::iterator findit;
       if(ReadFile* RF = SI->parent->IA->tryGetReadFile(SI)) {
 
+	// Read from file: mark buffer good.
 	markGoodBytes(SI->getCallArgOperand(1), RF->readSize, contextEnabled, SI->parent);
 
       }
@@ -387,13 +424,15 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
 	case SF_REALLOC:
 
+	  // Realloc == copy + malloc.
 	  walkCopyInst(SI, SI->getCallArgOperand(0), SI->getCallArgOperand(1), contextEnabled, SI->parent);
 	  // Fall through to:
 
 	case SF_MALLOC:
 	  
 	  {
-	  
+
+	    // Malloc: mark all good.
 	    ShadowValue SV(SI);
 	    ShadowValue Base;
 	    getBaseObject(SV, Base);
@@ -410,9 +449,12 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
       }
       else if(CallI && (((!F) && !GlobalIHP->programSingleThreaded) || GlobalIHP->yieldFunctions.count(F))) {
 
+	// Unknown function or explicitly-annotated yield function -- may overwrite anything;
+	// everything needs re-checking.
+	
 	if(GlobalIHP->pessimisticLocks.count(CallI)) {
 
-	  // Pessimistic locks clobber at specialisation time;
+	  // Pessimistic locks clobber at specialisation time, so we already assume everything was overwritten;
 	  // no runtime checking required.
 	  return;
 
@@ -423,6 +465,9 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
 	if(findit != GlobalIHP->lockDomains.end()) {
 
+	  // This a bit of a hack -- the user can annotate a particular yield function
+	  // as only clobbering some particular globals.
+	  
 	  for(std::vector<GlobalVariable*>::iterator it = findit->second.begin(),
 		itend = findit->second.end(); it != itend; ++it) {
 
@@ -450,6 +495,7 @@ static void updateTLStore(ShadowInstruction* SI, bool contextEnabled) {
 
 }
 
+// Is any of Ptr[0:Size] currently marked tentative, as of block BB?
 static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
 
   // Read from null?
@@ -489,15 +535,17 @@ static bool shouldCheckRead(ImprovedVal& Ptr, uint64_t Size, ShadowBB* BB) {
     
 }
 
+// Is any of PtrOp[0:LenSV] currently marked tentative, as of block SI.parent?
 ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, ShadowValue PtrOp, ShadowValue LenSV) {
 
   uint64_t Len;
   bool LenValid = tryGetConstantInt(LenSV, Len);
   std::pair<ValSetType, ImprovedVal> Ptr;
 
+  // Unsure what we're reading? Then there's nothing to check.
   if((!LenValid) || (!tryGetUniqueIV(PtrOp, Ptr)) || Ptr.first != ValSetTypePB)
     return TLS_NEVERCHECK;
-
+  
   if(Len == 0)
     return TLS_NEVERCHECK;
 
@@ -526,11 +574,13 @@ ThreadLocalState IntegrationAttempt::shouldCheckCopy(ShadowInstruction& SI, Shad
     
 }
 
+// Is any of Ptr[0:LoadSize] marked tentative as of SI.parent?
 ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, ImprovedVal& Ptr, uint64_t LoadSize) {
 
   if(Ptr.V.isNullOrConst())
     return TLS_NEVERCHECK;
 
+  // If this reads multiple values (e.g. an FD + integer pair) check both.
   ImprovedValSetMulti* IV = dyn_cast<ImprovedValSetMulti>(SI.i.PB);
   if(IV) {
 
@@ -555,6 +605,9 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoadFrom(ShadowInstruction& SI, 
   
 }
 
+// Does memory-reading instruction SI require a runtime check?
+// It does if we succesfully extracted some information during specialisation, but the
+// object we read from is marked tentative.
 ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
 
   if(GlobalIHP->programSingleThreaded)
@@ -587,6 +640,8 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
 
       ImprovedValSetSingle* IVS = cast<ImprovedValSetSingle>(IV);
 
+      // Didn't know what to read from? Then we can't have used any information
+      // from this load during specialisation.
       if(IVS->isWhollyUnknown() || IVS->SetType != ValSetTypePB)
 	return TLS_NEVERCHECK;
 
@@ -630,6 +685,7 @@ ThreadLocalState IntegrationAttempt::shouldCheckLoad(ShadowInstruction& SI) {
 
 }
 
+// Is this a memcpy, va_copy, realloc, etc?
 bool ShadowInstruction::isCopyInst() {
 
   if(inst_is<MemTransferInst>(this))
@@ -659,6 +715,7 @@ bool ShadowInstruction::isCopyInst() {
 
 }
 
+// Get read operand of a copy function / intrinsic.
 ShadowValue ShadowInstruction::getCopySource() {
 
   if(inst_is<MemTransferInst>(this)) {
@@ -696,6 +753,7 @@ ShadowValue ShadowInstruction::getCopySource() {
 
 }
 
+// Get target pointer for a copy instruction.
 ShadowValue ShadowInstruction::getCopyDest() {
 
   if(inst_is<MemTransferInst>(this)) {
@@ -733,6 +791,7 @@ ShadowValue ShadowInstruction::getCopyDest() {
 
 }
 
+// Merge known-good-bytes maps at the start of block BB, by visiting its predecessor blocks.
 void llvm::doTLStoreMerge(ShadowBB* BB) {
 
   TLMerger V(BB->IA, false);
@@ -743,6 +802,7 @@ void llvm::doTLStoreMerge(ShadowBB* BB) {
 
 }
 
+// Find tentative loads across this whole context.
 void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass) {
 
   if(isRootMainCall()) {
@@ -750,6 +810,8 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
     BBs[0]->tlStore->allOthersClobbered = false;
   }
 
+  // If frameSize is -1 then this function does not alloca
+  // so there's no need to add a stack frame to represent our objects.
   if(invarInfo->frameSize != -1 || !Callers.size()) {
     BBs[0]->tlStore = BBs[0]->tlStore->getWritableFrameList();
     BBs[0]->tlStore->pushStackFrame(this);
@@ -759,6 +821,8 @@ void InlineAttempt::findTentativeLoads(bool commitDisabledHere, bool secondPass)
 
 }
 
+// SI read IVS from ReadPtr[ReadOffset:ReadOffset+ReadSize]. If IVS refers to an unavailable pointer or FD,
+// clobber ReadPtr as we cannot check the read was as expected.
 bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, const ImprovedValSetSingle& IVS, bool inLoopAnalyser, ShadowValue ReadPtr, int64_t ReadOffset, uint64_t ReadSize) {
 
   bool squash = false;
@@ -827,6 +891,8 @@ bool IntegrationAttempt::squashUnavailableObject(ShadowInstruction& SI, const Im
 
 }
 
+// SI's result is PB. Check whether it mentions any unavailable pointers or file descriptors,
+// and if it does clobber the memory SI read it from.
 void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, ImprovedValSet* PB, bool inLoopAnalyser) {
 
   if(ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(PB)) {
@@ -852,11 +918,12 @@ void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, Improve
 
 }
 
+// The result of this load (or data read by this copy instruction) may contain pointers or
+// FDs which are not available because their defining context is not going to be committed,
+// but it requires a check and the check cannot be synthesised.
+// Therefore replace them with Unknown. The replacement is done using executeWriteInst to emulate
+// a clobbering write over the memory that held the unverifiable pointer.
 void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser) {
-
-  // The result of this load (or data read by this copy instruction) may contain pointers or
-  // FDs which are not available, but it requires a check and the check cannot be synthesised.
-  // Therefore replace them with Unknown.
 
   if(inst_is<LoadInst>(&SI) || inst_is<AtomicCmpXchgInst>(&SI)) {
 
@@ -905,11 +972,10 @@ void IntegrationAttempt::squashUnavailableObjects(ShadowInstruction& SI, bool in
 
 }
 
+// If this load read a pointer or FD that is currently unrealisable (i.e. has been previously committed
+// but currently has no committed value), volunteer to replace it, becoming the new definitive version,
+// if SI is always executed and thus this version must be reachable from all (future) users.
 void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool inLoopAnalyser) {
-
-  // If this load read a pointer or FD that is currently unrealisable (i.e. has been previously committed
-  // but currently has no committed value), volunteer to replace it, becoming the new definitive version,
-  // if the block is certain and thus this version must be reachable from all (future) users.
 
   if(inLoopAnalyser)
     return;
@@ -967,6 +1033,7 @@ void IntegrationAttempt::replaceUnavailableObjects(ShadowInstruction& SI, bool i
 
 }
 
+// Main entry point for updating the tentative loads map according to SI's effects.
 void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commitDisabledHere, bool secondPass, bool inLoopAnalyser) {
 
   // Note that TLS_NEVERCHECK may have been assigned already during the main analysis phase,
@@ -1016,6 +1083,13 @@ void IntegrationAttempt::TLAnalyseInstruction(ShadowInstruction& SI, bool commit
 
 }
 
+// Entry point for discovering a fixed-point solution for a general loop iteration. For example,
+// in a simple case we'll have to check a load in the loop header if it could be interfered with by
+// concurrent thread action either in the preheader or in the latch block.
+// commitDisabledHere notes that this context won't generate specialised code, so we can't
+// emit checks, only note memory that needs checking in the future.
+// secondPass indicates this is the second time walking this context so loop latch edges will already have
+// an associated TLStore.
 void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const ShadowLoopInvar* UL, bool commitDisabledHere, bool secondPass) {
 
   ShadowBB* BB = getBB(UL->headerIdx);
@@ -1031,23 +1105,31 @@ void IntegrationAttempt::findTentativeLoadsInUnboundedLoop(const ShadowLoopInvar
       findTentativeLoadsInLoop(UL, commitDisabledHere, false, true);
       BB->tlStore = getBB(UL->latchIdx)->tlStore;
     }
+    // Second pass, unifying checks implied by the latch-to-header course
+    // with those needed when entering from the header.
     findTentativeLoadsInLoop(UL, commitDisabledHere, true);
 
   }
   else {
 
+    // Latch edge has been killed, despite this being a general iteration. One pass will suffice.
     findTentativeLoadsInLoop(UL, commitDisabledHere, secondPass);
 
   }
 
 }
 
+// Find tentative loads within loop L. commitDisabledHere and secondPass have the same meaning as above;
+// latchToHeader indicates we should retain TLStores at each loop latch edge for consumption during the second pass.
+// (!secondPass) does not necessarily imply latchToHeader, e.g. in the case where a latch edge is dead.
+// This will recurse into each child context as it is encountered.
 void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool commitDisabledHere, bool secondPass, bool latchToHeader) {
 
   // Don't repeat search due to sharing:
   if(tentativeLoadsRun)
     return;
 
+  // Bump progress bar:
   TLProgress();
 
   uint32_t startIdx;
@@ -1056,26 +1138,33 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
   else
     startIdx = 0;
 
+  // For each block within loop L:
   for(uint32_t i = startIdx, ilim = nBBs + BBsOffset; i != ilim && ((!L) || L->contains(getBBInvar(i)->naturalScope)); ++i) {
 
     ShadowBB* BB = getBB(i);
+    // Skip killed block:
     if(!BB)
       continue;
-    
+
+    // Entering a child loop?
     if(BB->invar->naturalScope != L) {
 
       const ShadowLoopInvar* NewLInfo = BB->invar->naturalScope;
 
       PeelAttempt* LPA;
+      // If we have a child context and have established the loop's iteration count:
       if((LPA = getPeelAttempt(BB->invar->naturalScope)) && LPA->isTerminated()) {
 
+	// Loop header gets its TLStore from the preheader:
 	LPA->Iterations[0]->BBs[0]->tlStore = getBB(NewLInfo->preheaderIdx)->tlStore;
 	bool commitDisabled = commitDisabledHere || !LPA->isEnabled();
 	uint32_t latchIdx = NewLInfo->latchIdx;
 
+	// Pass the TLStore through each iteration in turn:
 	for(uint32_t j = 0, jlim = LPA->Iterations.size(); j != jlim; ++j) {
 
 	  LPA->Iterations[j]->findTentativeLoadsInLoop(BB->invar->naturalScope, commitDisabled, secondPass);
+	  // Pass the TLStore over the latch edge:
 	  if(j + 1 != jlim)
 	    LPA->Iterations[j + 1]->BBs[0]->tlStore = LPA->Iterations[j]->getBB(latchIdx)->tlStore;
 
@@ -1084,12 +1173,14 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
       }
       else {
 
+	// Loop is unbounded:
 	findTentativeLoadsInUnboundedLoop(BB->invar->naturalScope, 
-					  commitDisabledHere || (LPA && !LPA->isEnabled()),
+					  commitDisabledHere || (LPA && !LPA->isEnabled()), // Is commit disabled for the child?
 					  secondPass);
 
       }
 
+      // Advance 'i' past the loop:
       while(i != ilim && BB->invar->naturalScope->contains(getBBInvar(i)->naturalScope))
 	++i;
       --i;
@@ -1097,16 +1188,17 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
 
     }
 
-    if(i != startIdx) {
-
+    // Merge predecessor blocks' TLStores:
+    if(i != startIdx)
       doTLStoreMerge(BB);
 
-    }
-
+    // Pass the TL store through any path conditions at the top of this block:
     TLWalkPathConditions(BB, !commitDisabledHere, secondPass);
 
     bool brokeOnUnreachableCall = false;
 
+    // Enact each instruction w.r.t. this block's TLStore.
+    // Recurse into child function contexts on a call/invoke instruction.
     for(uint32_t j = 0, jlim = BB->invar->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction& SI = BB->insts[j];
@@ -1114,8 +1206,10 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
       
       if(InlineAttempt* IA = getInlineAttempt(&SI)) {
 
+	// Pass our TLStore in:
 	IA->BBs[0]->tlStore = BB->tlStore;
 	IA->findTentativeLoads(commitDisabledHere || !IA->isEnabled(), secondPass);
+	// Merge return block TLStores:
 	doTLCallMerge(BB, IA);
 
 	if(!BB->tlStore) {
@@ -1177,6 +1271,7 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
     }
 
     // Drop the reference belonging to this block.
+    // Return blocks need to keep their references until they're consumed by doTLCallMerge.
 
     if(!isa<ReturnInst>(BB->invar->BB->getTerminator()))
       SAFE_DROP_REF(BB->tlStore);
@@ -1185,43 +1280,8 @@ void IntegrationAttempt::findTentativeLoadsInLoop(const ShadowLoopInvar* L, bool
 
 }
 
-void IntegrationAttempt::resetTentativeLoads() {
-
-  tentativeLoadsRun = false;
-
-  for(IAIterator it = child_calls_begin(this), itend = child_calls_end(this); it != itend; ++it) {
-
-    it->second->resetTentativeLoads();
-
-  }
-
-  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(),
-	itend = peelChildren.end(); it != itend; ++it) {
-    
-    if(!it->second->isTerminated())
-      continue;
-    
-    for(uint32_t i = 0; i < it->second->Iterations.size(); ++i)
-      it->second->Iterations[i]->resetTentativeLoads();
-    
-  }
-
-}
-
-// Our main interface to other passes:
-
-bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
-
-  if(GlobalIHP->omitChecks)
-    return false;
-
-  if(!V.isInst())
-    return false;
-
-  return V.u.I->parent->IA->requiresRuntimeCheck2(V, includeSpecialChecks);
-
-}
-
+// Stats interface -- count instructions that need a runtime check. Recurse into uncommitted
+// child contexts.
 void IntegrationAttempt::countTentativeInstructions() {
 
   if(isCommitted())
@@ -1291,6 +1351,7 @@ void IntegrationAttempt::countTentativeInstructions() {
 
 }
 
+// Any runtime checks needed within this loop?
 bool PeelAttempt::containsTentativeLoads() {
 
   for(uint32_t i = 0, ilim = Iterations.size(); i != ilim; ++i)
@@ -1301,43 +1362,74 @@ bool PeelAttempt::containsTentativeLoads() {
 
 }
 
+// Any runtime checks needed within this context?
 bool IntegrationAttempt::containsTentativeLoads() {
 
   return readsTentativeData;
 
 }
 
+// The tentative loads passlet has already run at this point.
+// Check whether we found that V is an instruction requiring a runtime
+// check; if includeSpecialChecks is set include checking files for
+// concurrent modification which is not really the purview of the TL pass
+// but is convenient to include here.
+bool llvm::requiresRuntimeCheck(ShadowValue V, bool includeSpecialChecks) {
+
+  if(GlobalIHP->omitChecks)
+    return false;
+
+  if(!V.isInst())
+    return false;
+
+  return V.u.I->parent->IA->requiresRuntimeCheck2(V, includeSpecialChecks);
+
+}
+
+// As above.
 bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecialChecks) {
 
   release_assert(V.isInst());
   ShadowInstruction* SI = V.u.I;
 
+  // Nothing to check?
   if(SI->getType()->isVoidTy())
     return false;
 
-  // This indicates a member of a disabled loop that hasn't been analysed.
+  // No result calculated to check?
   if(!SI->i.PB)
     return false;
 
+  // Check introduced by a user assertion, or by checking that malloc doesn't fail at runtime?
   if(SI->needsRuntimeCheck == RUNTIME_CHECK_AS_EXPECTED)
     return true;
+
+  // Check introduced by the possibility of concurrent file alteration, or a read from a FIFO
+  // which might vary from our expectations?
   if(includeSpecialChecks && (SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP))
     return true;
 
   if(inst_is<MemTransferInst>(SI) || ((!inst_is<CallInst>(SI)) && SI->readsMemoryDirectly())) {
     
+    // Check introduced by the TL pass finding that this memory-reading instruction's result may be subject
+    // to interference by concurrent code?
     if(SI->isThreadLocal == TLS_MUSTCHECK)
       return true;
     
   }
   else if (InlineAttempt* IA = getInlineAttempt(SI)) {
 
+    // Check because we would ideally make checks within the context,
+    // but we're not emitting a specialised version and so its return value may be questionable?
     if((!IA->isEnabled()) && IA->containsTentativeLoads())
       return !SI->i.PB->isWhollyUnknown();
 
   }
   else if(inst_is<PHINode>(SI)) {
 
+    // Similarly, check that phi nodes escaping from a child loop context have their expected
+    // results when we'd like to make checks during the loop but can't because we're not
+    // emitting a specialised loop body?
     ShadowBB* BB = SI->parent;
     for(uint32_t i = 0, ilim = BB->invar->predIdxs.size(); i != ilim; ++i) {
 
@@ -1358,11 +1450,14 @@ bool IntegrationAttempt::requiresRuntimeCheck2(ShadowValue V, bool includeSpecia
 
 }
 
+// Note basic blocks which must have unspecialised versions available,
+// in case we fail a runtime check and bail to unspecialised code.
 void IntegrationAttempt::addCheckpointFailedBlocks() {
 
   if(isCommitted())
     return;
 
+  // For each block within this context:
   for(uint32_t i = BBsOffset, ilim = BBsOffset + nBBs; i != ilim; ++i) {
 
     ShadowBBInvar* BBI = getBBInvar(i);
@@ -1378,9 +1473,12 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
       if((LPA = getPeelAttempt(subL)) && LPA->isTerminated() && LPA->isEnabled()) {
 
+	// We'll emit specialised code per iteration. Check for spec-to-unspec edges
+	// in each such iteration.
 	for(uint32_t k = 0, klim = LPA->Iterations.size(); k != klim; ++k)
 	  LPA->Iterations[k]->addCheckpointFailedBlocks();	
 
+	// Skip past the loop blocks.
 	while(i != ilim && subL->contains(getBBInvar(i)->naturalScope))
 	  ++i;
 	--i;
@@ -1390,6 +1488,7 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
     }
 
+    // For each instruction in this block:
     for(uint32_t j = 0, jlim = BBI->insts.size(); j != jlim; ++j) {
 
       ShadowInstruction* SI = &BB->insts[j];
@@ -1397,11 +1496,13 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
       if(requiresRuntimeCheck2(ShadowValue(SI), false) || SI->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) {
 
-	// Treat tested exit PHIs as a block.
+	// Loop exit PHIs that need testing will be tested after the PHIs are all evaluated, rather
+	// than introduce a branch after each one.
 	if(inst_is<PHINode>(SI) && (j + 1) != jlim && inst_is<PHINode>(&BB->insts[j+1]))
 	  continue;
-	
-	// Invoke instruction?
+
+     	// Note that we need unspecialised block variants available from this instruction's successor onwards.
+	// Invoke instruction? (Only an invoke could be a terminator, and also produce a value that needs checking)
 	if(j == jlim - 1)
 	  getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(BB->invar->succIdxs[0], 0);
 	else
@@ -1410,13 +1511,17 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
       }
       else if(SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD) {
 
-	// Special checks *precede* the instruction
+	// Special checks *precede* the instruction, hence 'j' vs. 'j + 1' above.
 	getFunctionRoot()->markBlockAndSuccsReachableUnspecialised(i, j);
 
       }
       else if((IA = getInlineAttempt(SI)) && IA->isEnabled()) {
 
+	// Recurse into child call context.
 	IA->addCheckpointFailedBlocks();
+
+	// If the call may bail to unspecialised code internally we'll need to bail ourselves
+	// after it returns.
 	if(IA->hasFailedReturnPath()) {
 
 	  // If this is the block terminator then it must be an invoke instruction,
@@ -1437,9 +1542,11 @@ void IntegrationAttempt::addCheckpointFailedBlocks() {
 
 }
 
+// We've decided that context IA, called from SI, will not have a specialised variant in the final program.
+// Rerun tentative load analysis now that we know we won't be able to emit any inline checks in specialised code.
 void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA, bool inLoopAnalyser) {
 
-  // This indicates the call never returns, and so there will be no further exploration along these lines.
+  // This indicates the call never returns, so there's nobody to consume a TLStore.
   if(!SI->parent->tlStore)
     return;
 
@@ -1453,6 +1560,7 @@ void llvm::rerunTentativeLoads(ShadowInstruction* SI, InlineAttempt* IA, bool in
     SI->parent->tlStore->allOthersClobbered = true;
     IA->backupTlStore->dropReference();
 
+    // Note that if IA returns a pointer we won't be able to directly refer to its allocation site.
     if(IA->returnValue)
       SI->parent->IA->squashUnavailableObjects(*SI, IA->returnValue, inLoopAnalyser);
 

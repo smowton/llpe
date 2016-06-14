@@ -22,6 +22,10 @@
 
 using namespace llvm;
 
+// Find a topological ordering starting from BB, writing the result to Result and using Visited to keep track of visited blocks.
+// LI is the LoopInfo object for BB's parent function and MyL is the loop context we're currently exploring.
+// Child loops are handled by continuing our own top-ordering from the loop exit blocks and then independently
+// ordering the loop's blocks disregarding its latch edge.
 void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Result, SmallSet<BasicBlock*, 8>& Visited, LoopInfo* LI, const Loop* MyL) {
 
   const Loop* BBL = LI ? LI->getLoopFor(BB) : 0;
@@ -30,11 +34,14 @@ void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resul
   if(MyL != BBL && ((!BBL) || (BBL->contains(MyL))))
     return;
 
+  // Already been here?
   auto insertres = Visited.insert(BB);
   if(!insertres.second)
     return;
 
-  // Follow loop exiting edges if any
+  // Follow loop exiting edges if any.
+  // Ordering here: first the loop's successors, then the loop body (by walking to the header
+  // with succ_iterator below) and then this block, the preheader.
   if(MyL != BBL) {
 
     SmallVector<BasicBlock*, 4> ExitBlocks;
@@ -47,7 +54,8 @@ void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resul
 
   }
 
-  // Explore all successors within this loop:
+  // Explore all successors within this loop. This will enter a child loop if this BB is a preheader;
+  // note BBL may not equal MyL, but is certainly its child.
   for(succ_iterator SI = succ_begin(BB), SE = succ_end(BB); SI != SE; ++SI) {
 
     createTopOrderingFrom(*SI, Result, Visited, LI, BBL);
@@ -58,6 +66,7 @@ void llvm::createTopOrderingFrom(BasicBlock* BB, std::vector<BasicBlock*>& Resul
 
 }
 
+// Build a list of loop headers contained within L, including its own header.
 static void ignoreChildLoops(SmallSet<BasicBlock*, 1>& headers, const Loop* L) {
 
   headers.insert(L->getHeader());
@@ -67,7 +76,7 @@ static void ignoreChildLoops(SmallSet<BasicBlock*, 1>& headers, const Loop* L) {
 }
 
 // Return the tightest enclosing loop that isn't specified ignored by a user directive.
-
+// Loops that are ignored in this way are discounted for per-iteration exploration.
 const ShadowLoopInvar* LLPEAnalysisPass::applyIgnoreLoops(const ShadowLoopInvar* L, Function* F, ShadowFunctionInvar* FInfo) {
 
   while(L && shouldIgnoreLoop(F, FInfo->BBs[L->headerIdx].BB))
@@ -77,11 +86,13 @@ const ShadowLoopInvar* LLPEAnalysisPass::applyIgnoreLoops(const ShadowLoopInvar*
 
 }
 
+// Translate the information in LoopInfo descriptor L into a ShadowLoopInvar object, which uses block-indices instead
+// of BasicBlock* pointers.
 ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
-							DenseMap<BasicBlock*, uint32_t>& BBIndices, 
-							const Loop* L,
-							DominatorTree* DT,
-							ShadowLoopInvar* ParentLoop) {
+					       DenseMap<BasicBlock*, uint32_t>& BBIndices, 
+					       const Loop* L,
+					       DominatorTree* DT,
+					       ShadowLoopInvar* ParentLoop) {
   
   release_assert(L->isLoopSimplifyForm() && L->isLCSSAForm(*DT) && "Don't forget to run loopsimplify and lcssa first!");
 
@@ -102,11 +113,16 @@ ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
   if(shouldIgnoreLoopChildren(LF, HBB))
     ignoreChildLoops(ignoreLoops[LF], L);
 
+  // This is an edge which, if killed, means we may assume that the loop will iterate and continue investigating.
+  // In other words, sooner or later the loop *must* terminate using this exit edge, even if the CFG makes
+  // it appear otherwise.
   LInfo->optimisticEdge = std::make_pair(0xffffffff, 0xffffffff);
 
   for(uint32_t i = LInfo->headerIdx, ilim = LInfo->headerIdx + L->getNumBlocks(); i != ilim; ++i) {
 
-    // TODO: Fix or discard outerScope.
+    // TODO: Fix or discard outerScope. It should assign blocks to a loop scope when certain user-specified
+    // loops are ignored (so their blocks inherit the parent loop's scope). However I think the support for this
+    // edge case has rotted since it was first implemented.
     // Note these will be overwritten if the block is also within a child loop.
     FInfo->BBs[i].outerScope = applyIgnoreLoops(LInfo, LF, FInfo);
     FInfo->BBs[i].naturalScope = LInfo;
@@ -119,8 +135,11 @@ ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
 
   }
 
+  // Should we keep pursuing per-iteration specialisation until we can show
+  // for certain that it exits, rather than while we can show it doesn't, as usual?
   LInfo->alwaysIterate = shouldAlwaysIterate(LF, HBB);
 
+  // Retrieve and translate more useful loop properties.
   {
     SmallVector<BasicBlock*, 4> temp;
     L->getExitingBlocks(temp);
@@ -147,6 +166,7 @@ ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
       LInfo->exitEdges.push_back(std::make_pair(BBIndices[const_cast<BasicBlock*>(exitEdges[i].first)], BBIndices[const_cast<BasicBlock*>(exitEdges[i].second)]));
   }
 
+  // Build shadow objects for each of our child loops.
   for(Loop::iterator it = L->begin(), itend = L->end(); it != itend; ++it) {
 
     ShadowLoopInvar* child = getLoopInfo(FInfo, BBIndices, *it, DT, LInfo);
@@ -158,6 +178,7 @@ ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
 
 }
 
+// Create shadow information for all global variables.
 void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
 
   uint32_t i = 0;
@@ -179,11 +200,13 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
   i = 0;
   for(Module::global_iterator it = M.global_begin(), itend = M.global_end(); it != itend; ++it, ++i) {
 
+    // getTypeStoreSize can be expensive, so do it once here.
     if(it->isConstant()) {
       shadowGlobals[i].storeSize = GlobalTD->getTypeStoreSize(shadowGlobals[i].G->getType());
       continue;
     }
 
+    // Non-constant global -- assign it a heap slot.
     shadowGlobals[i].allocIdx = (int32_t)heap.size();
     
     heap.push_back(AllocData());
@@ -191,6 +214,7 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
     AD.allocIdx = heap.size() - 1;
     AD.storeSize = GlobalTD->getTypeStoreSize(it->getType()->getElementType());
     AD.isCommitted = true;
+    // This usually points to a malloc instruction -- here the global itself.
     AD.allocValue = ShadowValue(&(shadowGlobals[i]));
     AD.allocType = shadowGlobals[i].G->getType();
 
@@ -204,6 +228,7 @@ void LLPEAnalysisPass::initShadowGlobals(Module& M, uint32_t extraSlots) {
 
 }
 
+// Look through any global aliases if possible.
 const GlobalValue* llvm::getUnderlyingGlobal(const GlobalValue* V) {
 
   if(const GlobalAlias* GA = dyn_cast<GlobalAlias>(V)) {
@@ -217,6 +242,7 @@ const GlobalValue* llvm::getUnderlyingGlobal(const GlobalValue* V) {
 
 }
 
+// Find a GlobalVariable (indirectly) described by V if possible.
 static const GlobalVariable* getGlobalVar(const Value* V) {
 
   const GlobalValue* GV = dyn_cast<GlobalValue>(V);
@@ -227,8 +253,11 @@ static const GlobalVariable* getGlobalVar(const Value* V) {
 
 }
 
+// Create shadow information for function F, including top-sorting its blocks to give them indices and thus
+// a sensible order for specialisation.
 ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
 
+  // Already described?
   DenseMap<Function*, ShadowFunctionInvar*>::iterator findit = functionInfo.find(&F);
   if(findit != functionInfo.end())
     return findit->second;
@@ -242,11 +271,15 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
   functionInfo[&F] = RetInfoP;
   ShadowFunctionInvar& RetInfo = *RetInfoP;
 
+  // Top-sort all blocks, including child loop. Thanks to trickery in createTopOrderingFrom,
+  // instead of giving all loop blocks an equal topsort value due to the latch edge cycle,
+  // we order the header first, then the loop body in topological order ignoring the latch, then its exit blocks.
   std::vector<BasicBlock*> TopOrderedBlocks;
   SmallSet<BasicBlock*, 8> VisitedBlocks;
 
   createTopOrderingFrom(&F.getEntryBlock(), TopOrderedBlocks, VisitedBlocks, LI, /* loop = */ 0);
 
+  // Since topsort gives a bottom-up ordering.
   std::reverse(TopOrderedBlocks.begin(), TopOrderedBlocks.end());
 
   // Assign indices to each BB and instruction (IIndices is useful since otherwise we have to walk
@@ -271,6 +304,7 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
 
   }
 
+  // Create shadow block objects:
   ShadowBBInvar* FShadowBlocks = new ShadowBBInvar[TopOrderedBlocks.size()];
 
   for(uint32_t i = 0; i < TopOrderedBlocks.size(); ++i) {
@@ -492,24 +526,29 @@ ShadowFunctionInvar* LLPEAnalysisPass::getFunctionInvarInfo(Function& F) {
 }
 
 // Prepare the context-specific data structures, tying them to known invariant information.
-// For an inline attempt, create a BB array 
 
 void InlineAttempt::prepareShadows() {
 
+  // Create a shadow description of the source program function if not done yet.
   invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = F.size();
   release_assert(nBBs == invarInfo->BBs.size() && "Function contains unreachable blocks, run simplifycfg first!");
+  // Create a basic-block array, initially all marked unreachable (null).
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
     BBs[i] = 0;
+  // Indicates where this loop scope begins -- this is a function root, so its scope
+  // begins at block zero.
   BBsOffset = 0;
 
+  // Careful to allocate enough shadow-args for a vararg function.
   uint32_t shadowsSize;
   if(isPathCondition || !Callers.size())
     shadowsSize = F.arg_size();
   else
     shadowsSize = Callers[0]->getNumArgOperands();
 
+  // Create shadow argument objects for each actual argument.
   ShadowArg* argShadows = new ShadowArg[shadowsSize];
   this->argShadows = ImmutableArray<ShadowArg>(argShadows, shadowsSize);
   uint32_t i = 0;
@@ -535,6 +574,8 @@ void InlineAttempt::prepareShadows() {
 
 }
 
+// Create basic block shadows for this loop iteration.
+// Initialise them all null (unreachable) for now.
 void PeelIteration::prepareShadows() {
 
   invarInfo = pass->getFunctionInvarInfo(F);
@@ -570,11 +611,13 @@ ShadowBBInvar* IntegrationAttempt::getBBInvar(uint32_t idx) const {
 
 }
 
+// Create a shadow basic block -- called the first time we can show blockIdx is reachable.
 ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
 
   release_assert((!BBs[blockIdx - BBsOffset]) && "Creating block for the second time");
   ShadowBB* newBB = new ShadowBB();
   newBB->invar = &(invarInfo->BBs[blockIdx]);
+  // Mark all block successors unreachable as yet.
   newBB->succsAlive = new bool[newBB->invar->succIdxs.size()];
   for(unsigned i = 0, ilim = newBB->invar->succIdxs.size(); i != ilim; ++i)
     newBB->succsAlive[i] = false;
@@ -590,6 +633,8 @@ ShadowBB* IntegrationAttempt::createBB(uint32_t blockIdx) {
     insts[i].needsRuntimeCheck = RUNTIME_CHECK_NONE;
     insts[i].typeSpecificData = 0;
   }
+
+  // Create an instruction array ready for analysis.
   newBB->insts = ImmutableArray<ShadowInstruction>(insts, newBB->invar->insts.size());
   newBB->useSpecialVarargMerge = false;
   newBB->localStore = 0;
@@ -605,12 +650,14 @@ ShadowBB* IntegrationAttempt::createBB(ShadowBBInvar* BBI) {
 
 }
 
+// Get invariant information about BBs[blockidx][instidx]
 ShadowInstructionInvar* IntegrationAttempt::getInstInvar(uint32_t blockidx, uint32_t instidx) {
 
   return &(invarInfo->BBs[blockidx].insts[instidx]);
 
 }
 
+// Get invariant information about BBs[blockidx][instidx], in this or a parent loop scope.
 ShadowInstruction* InlineAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
 
   release_assert((!BB->outerScope) && "Out of scope in getInstFalling");
@@ -621,6 +668,7 @@ ShadowInstruction* InlineAttempt::getInstFalling(ShadowBBInvar* BB, uint32_t ins
 
 }
 
+// Get invariant information about BBs[blockidx][instidx], in this or a parent loop scope.
 ShadowInstruction* PeelIteration::getInstFalling(ShadowBBInvar* BB, uint32_t instIdx) {
 
   if(BB->outerScope == L) {
@@ -639,6 +687,8 @@ ShadowInstruction* PeelIteration::getInstFalling(ShadowBBInvar* BB, uint32_t ins
 
 }
 
+// Get invariant information about BBs[blockidx][instidx], in this or a parent loop scope.
+// Return zero if the instruction falls outside this loop scope.
 ShadowInstruction* IntegrationAttempt::getInst(uint32_t blockIdx, uint32_t instIdx) {
 
   bool inScope;
@@ -670,6 +720,9 @@ ShadowInstruction* IntegrationAttempt::getInst(ShadowInstructionInvar* SII) {
 
 }
 
+// Create an integer shadow value, using a cheap representation for common types.
+// This is needed because specialisation can generate many intermediate values
+// and LLVM Constants are uniqued and live forever.
 ShadowValue ShadowValue::getInt(Type* CIT, uint64_t CIVal) {
 
   if(CIT->isIntegerTy(8))
@@ -727,7 +780,7 @@ ShadowValue ShadowInstruction::getOperand(uint32_t i) {
 
 }
 
-
+// Get this instruction's i'th user.
 ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
   ShadowInstIdx& SII = invar->userIdxs[i];
@@ -735,6 +788,7 @@ ShadowInstruction* ShadowInstruction::getUser(uint32_t i) {
 
 }
 
+// Note which loop-exiting edges are alive by walking child loop context LPA.
 void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
   const std::vector<std::pair<uint32_t, uint32_t> >& EE = LPA->L->exitEdges;
@@ -757,6 +811,7 @@ void IntegrationAttempt::copyLoopExitingDeadEdges(PeelAttempt* LPA) {
 
 }
 
+// Has this allocation been committed, or will it be?
 bool AllocData::isAvailable() {
 
   if(isCommitted)
@@ -766,6 +821,7 @@ bool AllocData::isAvailable() {
 
 }
 
+// Has this FD been committed, or will it be?
 bool FDGlobalState::isAvailable() {
 
   if(isCommitted)
@@ -777,11 +833,13 @@ bool FDGlobalState::isAvailable() {
 
 }
 
+// Is this shadow-value generally available for committed code to reference?
 bool ShadowValue::objectAvailable() const {
 
   switch(t) {
   case SHADOWVAL_OTHER: 
     {
+      // Special locations (e.g. TLS) are purely symbolic; they can't be represented in a specialised program.
       if(Function* F = dyn_cast<Function>(u.V))
 	return !GlobalIHP->specialLocations.count(F);
       else
@@ -789,10 +847,13 @@ bool ShadowValue::objectAvailable() const {
     }
   case SHADOWVAL_GV:
   case SHADOWVAL_ARG:
+    // Globals: always reachable.
     return true;
   case SHADOWVAL_INST:
+    // Allocations made within a path condition assertion are symbolic.
     if(u.I->parent->IA->getFunctionRoot()->isPathCondition)
       return false;
+    // Disabled contexts won't be committed.
     if(!u.I->parent->IA->allAncestorsEnabled())
       return false;
     return true;
@@ -802,11 +863,13 @@ bool ShadowValue::objectAvailable() const {
     if(u.PtrOrFd.frame != -1)
       return true;
     else {
+      // Malloc is non-const global:
       AllocData* AD = getAllocData((OrdinaryLocalStore*)0);
       return AD->isAvailable();
     }
   case SHADOWVAL_FDIDX:
   case SHADOWVAL_FDIDX64:
+    // File descriptor:
     return GlobalIHP->fds[getFd()].isAvailable();
   default:
     release_assert(0 && "Bad SV type in objectAvailableFrom");
@@ -815,6 +878,10 @@ bool ShadowValue::objectAvailable() const {
   
 }
 
+// Find the block to which this BB's idx'th instruction should branch
+// in the event of a failed specialisation check. This might head
+// straight to unspecialised code, or perhaps to an introduced
+// intermediate block that e.g. prints a notice of specialisation failure.
 BasicBlock* ShadowBB::getCommittedBreakBlockAt(uint32_t idx) {
 
   for(uint32_t i = 0, ilim = committedBlocks.size(); i != ilim; ++i) {
@@ -834,6 +901,8 @@ BasicBlock* ShadowBB::getCommittedBreakBlockAt(uint32_t idx) {
 
 }
 
+// Find a unique exiting edge from this loop iteration if one exists. Set bail if there are multiple exiting edges;
+// return null if there are multiple or none.
 ShadowBB* PeelIteration::getUniqueExitingBlock2(ShadowBBInvar* BBI, const ShadowLoopInvar* exitLoop, bool& bail) {
 
   PeelAttempt* LPA;
@@ -878,6 +947,7 @@ ShadowBB* PeelIteration::getUniqueExitingBlock2(ShadowBBInvar* BBI, const Shadow
 
 }
 
+// Find a unique block exiting the loop in this iteration if there is one.
 ShadowBB* PeelIteration::getUniqueExitingBlock() {
 
   ShadowBB* uniqueBlock = 0;
@@ -919,6 +989,7 @@ bool ShadowInstruction::readsMemoryDirectly() {
 
 }
 
+// Does this instruction have a C++11-style memory ordering attribute?
 bool ShadowInstruction::hasOrderingConstraint() {
 
   switch(invar->I->getOpcode()) {
@@ -973,6 +1044,7 @@ IntegrationAttempt* InlineAttempt::getIAForScopeFalling(const ShadowLoopInvar* S
 
 }
 
+// Get the Type this non-pointer ShadowValue will take when (if) synthesised.
 Type* ShadowValue::getNonPointerType() const {
 
   switch(t) {
@@ -1003,6 +1075,7 @@ Type* ShadowValue::getNonPointerType() const {
 
 }
 
+// Get the Type this ShadowValue will take when (if) synthesised.
 Type* IntegrationAttempt::getValueType(ShadowValue V) {
 
   switch(V.t) {

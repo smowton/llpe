@@ -27,14 +27,25 @@
 #include <errno.h>
 #include <stdio.h>
 
-// Implement a backward walker to identify a VFS operation's predecessor, and a forward walker to identify open instructions
-// which can be shown pointless because along all paths it ends up at a close instruction.
+// This file contains functions that propagate a symbolic FD table through the program and evaluate open, read and other operations
+// with respect to it. The table is propagated from block to block, forked and joined with control flow
+// that isn't straightened at specialisation time, and so on.
 
 using namespace llvm;
 
+// Should we eliminate checks against file modification which appear to be redundant
+// as there are no intervening thread yield points?
+// This is not totally safe as e.g. ptrace or polling /proc to look at the file position
+// could enable an observer to tell the difference between a specialised program that only
+// checks for file modifications and the original unspecialised program.
 static cl::opt<bool> ElimRedundantChecks("int-elim-read-checks");
+
+// Specify a file that provides the stdin stream for specialisation.
+// Introduced checks will use memcmp rather than referring to the given file.
 static cl::opt<std::string> SpecStdIn("int-spec-stdin");
 
+// Attempt to retrieve a constant string from Ptr, using the symbolic store as of SearchFrom if necessary. Used to get the
+// filename argument for 'open' et al.
 bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* SearchFrom, std::string& Result) {
 
   StringRef RResult;
@@ -72,7 +83,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
   Result = "";
   
-  // Try to LF one character at a time until we get null or a failure.
+  // Try to read one character at a time until we get null or a failure.
 
   LPDEBUG("forwarding off " << itcache(StrBase) << "\n");
 
@@ -128,6 +139,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
 }
 
+// Break CoW FD store if necessary so we can write the store as of this BB.
 FDStore* ShadowBB::getWritableFDStore() {
 
   fdStore = fdStore->getWritable();
@@ -135,6 +147,7 @@ FDStore* ShadowBB::getWritableFDStore() {
 
 }
 
+// Merge mergeFrom into mergeTo, e.g. at top of a basic block with two predecessors.
 void FDStoreMerger::merge2(FDStore* mergeTo, FDStore* mergeFrom)  {
 
   // Simple merge rule: FDs only defined on one path or the other go away entirely,
@@ -146,6 +159,9 @@ void FDStoreMerger::merge2(FDStore* mergeTo, FDStore* mergeFrom)  {
 
     if(mergeFrom->fds[i].pos != mergeTo->fds[i].pos)
       mergeTo->fds[i].pos = (uint64_t)-1;
+    // 'clean' means we're confident that FD positions and files are as expected;
+    // there's no need to check they're as expected e.g. due to another thread using
+    // the FD in the meantime, or another thread or program altering the file.
     if(!mergeFrom->fds[i].clean)
       mergeTo->fds[i].clean = false;
 
@@ -153,6 +169,7 @@ void FDStoreMerger::merge2(FDStore* mergeTo, FDStore* mergeFrom)  {
 
 }
 
+// Merge a collection of FD tables.
 void FDStoreMerger::doMerge() {
 
   if(incomingBlocks.empty())
@@ -250,6 +267,7 @@ void llvm::doBlockFDStoreMerge(ShadowBB* BB) {
 
 }
 
+// Merge FD tables after a call instruction in CallerBB that is specialised as CallIA.
 void llvm::doCallFDStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
   FDStoreMerger V;
@@ -260,16 +278,21 @@ void llvm::doCallFDStoreMerge(ShadowBB* CallerBB, InlineAttempt* CallIA) {
 
 }
 
+// Simple hack to avoid obviously-pointless specialisation. Of course these could mount
+// elsewhere and this should be configurable.
 static bool filenameIsForbidden(std::string& s) {
 
   return s.empty() || s.find("/proc/") == 0 || s.find("/sys/") == 0 || s.find("/dev/") == 0;
 
 }
 
+// Constructors for an object describing a file or fifo which is at some point read during specialisation.
 FDGlobalState::FDGlobalState(ShadowInstruction* _SI, bool _isFifo) : SI(_SI), isCommitted(false), CommittedVal(0), isFifo(_isFifo) {}
 
 FDGlobalState::FDGlobalState(bool _isFifo) : SI(0), isCommitted(false), CommittedVal(0), isFifo(_isFifo) {}
 
+// Try to discover an 'open' call made by SI, and extract the filename, mode etc. If we do,
+// update the local FD table.
 bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
   // No currently-accepted VFS call can be invoked.
@@ -370,6 +393,7 @@ bool IntegrationAttempt::tryPromoteOpenCall(ShadowInstruction* SI) {
 
 }
 
+// Check if V is a well-known-constant FD (just stdin for now) or is known to point to a symbolic FD.
 static uint32_t getFD(ShadowValue V) {
 
   uint64_t CI;
@@ -392,6 +416,7 @@ static uint32_t getFD(ShadowValue V) {
 
 }
 
+// Check if V may/must refer to the same FD as allocation-site (open call) FD.
 static AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD) {
 
   if(V.isVal())
@@ -419,6 +444,8 @@ static AliasResult aliasesFD(ShadowValue V, ShadowInstruction* FD) {
 
 }
 
+// Add 'Filename' to the list of files we've consumed from in generating the specialised program,
+// and therefore which must be watched for concurrent alteration to ensure correctness.
 void llvm::noteLLIODependency(std::string& Filename) {
   
   std::vector<std::string>::iterator findit = 
@@ -429,6 +456,7 @@ void llvm::noteLLIODependency(std::string& Filename) {
   
 }
 
+// Try to run '[f]stat' call SI, which calls F, and investigates file 'Filename'.
 bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std::string& Filename) {
 
   struct stat file_stat;
@@ -440,13 +468,15 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
   if(!Filename.empty()) {
 
     noteLLIODependency(Filename);
+    // Use the file-watcher daemon at runtime to check the specialisation
+    // is still correct.
     SI->needsRuntimeCheck = RUNTIME_CHECK_READ_LLIOWD;
 
   }
 
   if(stat_ret == 0) {
 
-    // Populate stat structure at spec time:
+    // Populate stat structure at spec time.
     Constant* Data = 
       ConstantDataArray::get(SI->invar->I->getContext(), 
 			     ArrayRef<uint8_t>((uint8_t*)&file_stat, sizeof(struct stat)));
@@ -469,6 +499,7 @@ bool IntegrationAttempt::executeStatCall(ShadowInstruction* SI, Function* F, std
 
 }
 
+// Try to find a VFS function call made by SI, and if we find one try to execute it at specialisation time.
 // Return value: is this a VFS call (regardless of whether we resolved it successfully)
 bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
 
@@ -647,7 +678,6 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
       cBytes = bytesAvail;
     }
 
-    // OK, we know what this read operation does. Record that and queue another exploration from this point.
     LPDEBUG("Successfully resolved " << itcache(SI) << " which reads " << cBytes << " bytes\n");
     
     noteVFSOp();
@@ -661,6 +691,7 @@ bool IntegrationAttempt::tryResolveVFSCall(ShadowInstruction* SI) {
     // The number of bytes read is also the return value of read.
     setReplacement(SI, ConstantInt::get(Type::getInt64Ty(F->getContext()), cBytes));
 
+    // Write the relevant data into the symbolic store.
     executeReadInst(SI, FDS.filename, FDS.pos, cBytes);
 
     if(!isFifo)
@@ -817,8 +848,12 @@ OpenStatus& IntegrationAttempt::getOpenStatus(ShadowInstruction* CI) {
 
 }
 
-//// Implement a closely related walker that determines whether a seek call can be elim'd or a read call's
+//// Implement a CFG walker that determines whether a seek call can be elim'd or a read call's
 //// implied SEEK_CUR can be omitted when residualising.
+
+// This all ought to be implemented as part of the main walk, a la dead-store elimination, since
+// the seek calls we're removing are akin to stores that are provably overwritten. However for now
+// a separate walker does the trick most of the time.
 
 class SeekInstructionUnusedWalker : public ForwardIAWalker {
 
@@ -890,6 +925,7 @@ bool SeekInstructionUnusedWalker::blockedByUnexpandedCall(ShadowInstruction* SI,
 
 }
 
+// Does I use the FD we're interested in?
 WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(ShadowInstruction* I, void*) {
 
   CallInst* CI = dyn_cast_inst<CallInst>(I);
@@ -914,6 +950,9 @@ WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(ShadowInstruc
     }
     else {
 
+      // SuccessorInstructions is currently not used, as isResolvedVFSCall tells us enough:
+      // that the Seek's successor on this path is executed at specialisation time and will
+      // not be residualised.
       SuccessorInstructions.push_back(I);
       return WIRStopThisPath;
 
@@ -930,6 +969,8 @@ WalkInstructionResult SeekInstructionUnusedWalker::walkInstruction(ShadowInstruc
 
 }
 
+// Identify VFS operations that can be eliminated from the final program because their effects would not be used.
+// For example, if an 'lseek' call will definitely be followed by another SEEK_CUR on all paths it can be omitted.
 void IntegrationAttempt::tryKillAllVFSOps() {
 
   for(uint32_t i = 0, ilim = nBBs; i != ilim; ++i) {
@@ -944,6 +985,8 @@ void IntegrationAttempt::tryKillAllVFSOps() {
       if(inst_is<CallInst>(SI)) {
 
 	{
+	  // Even if a read call is executed during specialisation, do we need to seek the FD
+	  // so that subsequent syscalls see the file position where they expect it?
 	  DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(SI);
 	  if(it != pass->resolvedReadCalls.end()) {
 	    int32_t FD = getFD(SI->getCallArgOperand(0));
@@ -958,6 +1001,8 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 	  }
 	}
 	{
+	  // Does the seek call still need to exist in the final program when its successor 'read'
+	  // calls may have been executed already?
 	  DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(SI);
 	  if(it != pass->resolvedSeekCalls.end()) {
 	    int32_t FD = getFD(SI->getCallArgOperand(0));
@@ -992,6 +1037,8 @@ void IntegrationAttempt::tryKillAllVFSOps() {
 
 }
 
+// Read strFileName[realFilePos : realFilePos + realBytes] as an array of i8 typed Constants.
+// 'errors' will carry a verbose error report. Return true on success.
 bool llvm::getFileBytes(std::string& strFileName, uint64_t realFilePos, uint64_t realBytes, std::vector<Constant*>& arrayBytes, LLVMContext& Context, std::string& errors) {
 
   FILE* fp = fopen(strFileName.c_str(), "r");

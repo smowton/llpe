@@ -11,6 +11,10 @@
 // Otherwise the operator<< implementation completely indexes the bitcode file on every run.
 // This is also punitively expensive for the DOT output code.
 
+// Per default this is implemented simply using LLVM's basic operator<<(Instruction&). To get an efficient
+// implementation see utils/fast-printing.patch which must be applied to VMCore/AsmWriter.cpp and 
+// LLVM_EFFICIENT_PRINTING defined to disable the simple implementations below.
+
 #include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/Instruction.h"
@@ -23,6 +27,7 @@
 
 using namespace llvm;
 
+// Build a mapping from every Instruction in F to its text representation, perhaps the brief version.
 DenseMap<const Value*, std::string>& LLPEAnalysisPass::getFunctionCache(const Function* F, bool brief) {
 
   DenseMap<const Function*, DenseMap<const Value*, std::string>* >& Map = brief ? briefFunctionTextCache : functionTextCache;
@@ -40,8 +45,9 @@ DenseMap<const Value*, std::string>& LLPEAnalysisPass::getFunctionCache(const Fu
 
 }
 
+// Build a mapping for every GlobalValue to its text representation.
 void LLPEAnalysisPass::populateGVCaches(const Module* M) {
-
+  
   getGVText(persistPrinter, M, GVCache, GVCacheBrief);
 
 }
@@ -52,6 +58,7 @@ DenseMap<const GlobalVariable*, std::string>& LLPEAnalysisPass::getGVCache(bool 
 
 }
 
+// Use the text-representation cache to describe *V.
 void LLPEAnalysisPass::printValue(raw_ostream& ROS, const Value* V, bool brief) {
 
   if(!cacheDisabled) {
@@ -96,6 +103,7 @@ void LLPEAnalysisPass::printValue(raw_ostream& ROS, const Value* V, bool brief) 
 
 }
 
+// Similarly, describe a shadow-value.
 void LLPEAnalysisPass::printValue(raw_ostream& Stream, ShadowValue V, bool brief) {
 
   if(V.isInval()) {
@@ -133,12 +141,16 @@ void LLPEAnalysisPass::printValue(raw_ostream& Stream, ShadowValue V, bool brief
 
 }
 
+// This never happens at present. Might be appropriate if you wanted to print Values that do and don't
+// occur in the original program interchangably.
 void LLPEAnalysisPass::disableValueCache() {
 
   cacheDisabled = true;
   
 }
 
+// Print a dead-store-elimination map entry, which indicates whether or not a particular store instruction
+// is needed, has been committed as a concrete instruction, etc.
 void DSEMapPointer::print(raw_ostream& RSO, bool brief) {
 
   if(!M)
