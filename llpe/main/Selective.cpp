@@ -18,89 +18,19 @@
 
 using namespace llvm;
 
-void InlineAttempt::resetDeadArgsAndInstructions() {
-
-  for(uint32_t i = 0; i < F.arg_size(); ++i)
-    argShadows[i].dieStatus = INSTSTATUS_ALIVE;
-
-  resetDeadInstructions();
-
-}
-
-void IntegrationAttempt::resetDeadInstructions() {
-
-  for(uint32_t i = 0; i < nBBs; ++i) {
-
-    ShadowBB* BB = BBs[i];
-    if(!BB)
-      continue;
-
-    for(uint32_t j = 0; j < BB->insts.size(); ++j) {
-
-      ShadowInstruction* I = &(BB->insts[j]);
-      I->dieStatus = INSTSTATUS_ALIVE;
-
-    }
-
-  }
-
-  for(IAIterator it = child_calls_begin(this), it2 = child_calls_end(this); it != it2; ++it) {
-
-    it->second->resetDeadArgsAndInstructions();
-
-  }
-
-  for(DenseMap<const ShadowLoopInvar*, PeelAttempt*>::iterator it = peelChildren.begin(), it2 = peelChildren.end(); it != it2; ++it) {
-
-    for(unsigned i = 0; i < it->second->Iterations.size(); ++i) {
-
-      it->second->Iterations[i]->resetDeadInstructions();
-
-    }
-
-  }
-
-}
-
-void LLPEAnalysisPass::runDSEAndDIE() {
-
-  errs() << "Killing memory instructions";
-  RootIA->tryKillStores(false, false);
-
-  DEBUG(dbgs() << "Finding dead VFS operations\n");
-  RootIA->tryKillAllVFSOps();
-
-  DEBUG(dbgs() << "Finding remaining dead instructions\n");
-  
-  errs() << "\nKilling other instructions";
-  
-  RootIA->runDIE();
-  
-  errs() << "\n";
-
-}
-
-void LLPEAnalysisPass::rerunDSEAndDIE() {
-
-  if(mustRecomputeDIE) {
-    RootIA->resetDeadArgsAndInstructions();
-    runDSEAndDIE();
-    mustRecomputeDIE = false;
-  }
-
-}
-
+// Will this specialsiation context be committed (return true), or just used to inform others (false)?
 bool InlineAttempt::isEnabled() {
 
-  if(!Callers.size())
+  if(!Callers.size()) // Root function: always committed.
     return true;
-  else if(isPathCondition)
+  else if(isPathCondition) // Path condition functions are symbolic and don't result in runtime code.
     return false;
   else
     return isShared() || enabled;
 
 }
 
+// Loop iterations are always committed if their parent loop is.
 bool PeelIteration::isEnabled() {
 
   return true;
@@ -113,19 +43,20 @@ bool PeelAttempt::isEnabled() {
 
 }
 
+// Try to set enabled (will-commit) status to 'en'.
 void InlineAttempt::setEnabled(bool en, bool skipStats) {
 
+  // Root function can't be disabled.
   if(!Callers.size())
     return;
 
+  // Shared functions can't currently be disabled.
   if(isShared())
     return;
 
+  // Path conditions are never committed anyhow
   if(isPathCondition)
     return;
-
-  if(enabled != en)
-    pass->mustRecomputeDIE = true;    
 
   enabled = en;
 
@@ -142,15 +73,15 @@ void PeelIteration::setEnabled(bool en, bool skipStats) {
 
 void PeelAttempt::setEnabled(bool en, bool skipStats) {
 
-  if(en != enabled)
-    pass->mustRecomputeDIE = true;
-
   enabled = en;
 
 }
 
+// Will this specialisation context be committed in a different residual function
+// to its parent?
 bool InlineAttempt::commitsOutOfLine() {
 
+  // In this case we don't have a parent at all.
   if(isRootMainCall())
     return true;
 
@@ -170,28 +101,40 @@ bool InlineAttempt::commitsOutOfLine() {
 
 }
 
+// Loop iterations currently always commit in the same function as their immediate parent.
 bool PeelIteration::commitsOutOfLine() {
 
   return false;
 
 }
 
-// Return true if this function will be committed as a residual function
+// Return true if this function must be committed as a residual function
 // rather than being inlined everywhere as usual.
+// Note it might also commit out-of-line to keep committed function sizes amenable to conventional optimisation
+// even though it could potentially commit inline-- SaveSplit.cpp takes care of this decision.
 bool InlineAttempt::mustCommitOutOfLine() {
 
+  // Root function naturally needs its own residual function.
   if(isRootMainCall())
     return true;
 
+  // Vararg functions: we currently don't rewrite vararg intrinsics, and the Dragonegg vararg handling
+  // directly exposes the implementation which we can't alter, so we must make sure the va_list exists for real.
   if(F.isVarArg())
     return true;
 
+  // Shared functions need to be out-of-line so we can have multiple callers.
+  // Note this functionality is probably rotted.
   if(isShared())
     return true;
 
+  // Has the user manually nominated this as a split-point?
   if(pass->splitFunctions.count(&F))
     return true;
-  
+
+  // Unsure why this is required. Perhaps the needed logic
+  // to add the bailed-to-unspecialised-code-during-execution flag
+  // and then add a test post-invoke is missing right now?
   if(hasFailedReturnPath()) {
 
     for(uint32_t i = 0, ilim = Callers.size(); i != ilim; ++i) {

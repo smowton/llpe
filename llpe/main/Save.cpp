@@ -7,6 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+// These functions relate to committing the specialised program as concrete bitcode.
+// ConditionalSpec.cpp implements the aspects of commit which insert unspecialised function
+// fragments for the case where specialisation assumptions are found to be false at runtime.
+
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/BasicBlock.h"
@@ -29,6 +33,7 @@
 
 using namespace llvm;
 
+// Name the output basic blocks for easier debugging? Significantly increases output size.
 cl::opt<bool> VerboseNames("int-verbose-names");
 
 static uint32_t SaveProgressN = 0;
@@ -118,6 +123,8 @@ void IntegrationAttempt::prepareCommit() {
 
 }
 
+// Assign basic blocks a name like f-N, where f is the source function name and N
+// is a sequential identifier also visible in the GUI.
 std::string InlineAttempt::getCommittedBlockPrefix() {
 
   std::string ret;
@@ -140,6 +147,9 @@ std::string PeelIteration::getCommittedBlockPrefix() {
 
 }
 
+// Create an empty function which has the same attributes, linkage etc as F. If addFailedReturnFlag is set,
+// change the existing return type T into { T, i1 } (or just i1 if void), where the new boolean return
+// will be used to indicate whether this function wants to bail out to unspecialised code.
 Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, const Twine& Name, bool addFailedReturnFlag) {
 
   FunctionType* NewFType = F->getFunctionType();
@@ -168,6 +178,7 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
   Function* NewF = Function::Create(NewFType, LT, Name, F->getParent());
 
+  // Register the new function so that post-commit optimisation can find it.
   GlobalIHP->commitFunctions.push_back(NewF);
 
   Function::arg_iterator DestI = NewF->arg_begin();
@@ -200,7 +211,8 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
 }
 
-// Return true if it will be necessary to insert code on the path leading from specialised to unspecialised code.
+// Return true if it will be necessary to insert code on the path leading from specialised to unspecialised code following
+// a failed check that SI's result was as expected.
 bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
   return SI->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && 
@@ -208,6 +220,10 @@ bool IntegrationAttempt::requiresBreakCode(ShadowInstruction* SI) {
 
 }
 
+// Create a new specialised basic block. If AddF is specified, put it in that function; otherwise note it as a BB
+// that contains specialised code / is a clone of an unspecialised block in the original program (according to isFailedBlock);
+// it will get added to a function later.
+// If isEntryBlock is set, ensure it is at the front of the block list.
 BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& Name, Function* AddF, bool isEntryBlock, bool isFailedBlock) {
 
   Function* AddTo;
@@ -252,6 +268,9 @@ BasicBlock* IntegrationAttempt::createBasicBlock(LLVMContext& Ctx, const Twine& 
 
 }
 
+// Write the basic-block graph for this function specialsiation instance.
+// If this function will be committed inline, create special blocks that correspond to the return path
+// or the failed-specialisation-assumptions path to unspecialised code.
 void InlineAttempt::commitCFG() {
 
   if(isCommitted())
@@ -291,6 +310,7 @@ void InlineAttempt::commitCFG() {
 
 }
 
+// Commit the basic block graph for this specialisation context. 
 void IntegrationAttempt::commitCFG() {
 
   commitState = COMMIT_STARTED;
@@ -543,6 +563,7 @@ void IntegrationAttempt::commitCFG() {
 
 }
 
+// Convert a shadow-value to the value we should refer to in the committed program.
 Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
 
   switch(SV.t) {
@@ -586,6 +607,9 @@ Value* IntegrationAttempt::getCommittedValue(ShadowValue SV) {
   
 }
 
+// Resolve a symbolic argument to a concrete value usable during commit. If we're committing out of line
+// that just means an actual Argument; if we're committing inline it means the concrete value passed to
+// the "call", or value-forwarding trickery if our parent hasn't been concretised yet.
 Value* InlineAttempt::getArgCommittedValue(ShadowArg* SA, Instruction* insertBefore) {
 
   return getArgCommittedValue2(SA, 0, insertBefore);
@@ -646,10 +670,17 @@ BasicBlock* InlineAttempt::getCommittedEntryBlock() {
 
 }
 
+// Get the succIdx'th committed successor of BB, which is complicated when edges branch
+// out of a loop or into a region of a function that isn't considered for specialisation.
 BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
+  // Is this the latch->header edge?
   if(BB->invar->idx == parentPA->L->latchIdx && succIdx == parentPA->L->headerIdx) {
 
+    // Usually this will point to the next iteration's header. The second case tries to
+    // cater for committing several specialised iterations followed by a general
+    // iteration, but I think at the moment the specialised iterations are discarded in this case
+    // (i.e. either the loop is unrolled either totally or not at all)
     if(PeelIteration* PI = getNextIteration())
       return PI->getBB(succIdx)->committedBlocks.front().specBlock;
     else {
@@ -669,6 +700,9 @@ BasicBlock* PeelIteration::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
 
 }
 
+// The tricky case here happens when the user has specified that particular paths
+// are not interesting for specialisation and so we want to branch directly
+// to an unspecialised variant.
 BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   if(edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(succIdx))) {
@@ -687,6 +721,8 @@ BasicBlock* InlineAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& 
 
 }
 
+// Fetch a successor committed-block for BB. This is tricky when we're entering or leaving loops, which
+// means finding an appropriate block in a child or parent context.
 BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, bool& markUnreachable) {
 
   ShadowBBInvar* SuccBBI = getBBInvar(succIdx);
@@ -720,6 +756,7 @@ BasicBlock* IntegrationAttempt::getSuccessorBB(ShadowBB* BB, uint32_t succIdx, b
 
 }
 
+// Helpers for above.
 ShadowBB* InlineAttempt::getBBFalling2(ShadowBBInvar* BBI) {
 
   release_assert((!BBI->naturalScope) && "Out of scope in getBBFalling");
@@ -744,6 +781,7 @@ ShadowBB* IntegrationAttempt::getBBFalling(ShadowBBInvar* BBI) {
   
 }
 
+// Synthesise an appropriate constexpr-cast.
 Constant* llvm::getConstAsType(Constant* C, Type* Ty) {
 
   release_assert(CastInst::isCastable(C->getType(), Ty) && "Bad cast in commit stage");
@@ -752,6 +790,7 @@ Constant* llvm::getConstAsType(Constant* C, Type* Ty) {
 
 }
 
+// Synthesise an appropriate cast instruction.
 Value* llvm::getValAsType(Value* V, Type* Ty, Instruction* insertBefore) {
 
   if(Ty == V->getType())
@@ -780,6 +819,7 @@ Value* llvm::getValAsType(Value* V, Type* Ty, BasicBlock* insertAtEnd) {
 
 }
 
+// Add an empty phi node to emitBB.
 PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
   // Manually check for existing non-PHI instructions because BB->getFirstNonPHI assumes a finished block
@@ -795,6 +835,7 @@ PHINode* llvm::makePHI(Type* Ty, const Twine& Name, BasicBlock* emitBB) {
 
 }
 
+// Make a phi node corresponding to specialised instruction I, committing to emitBB, in the special loop-header case.
 void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Special case: emitting own header PHI. Emit a unary PHI drawing on either the preheader
@@ -833,6 +874,9 @@ void PeelIteration::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* 
 
 }
 
+// Gather operands for loop-exit-phi SI. Only phi nodes need to do this because
+// the source program is required in LCSSA form. ops gathers arguments,
+// and BBs if supplied gathers predecessor blocks.
 void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint32_t valOpIdx, SmallVector<ShadowValue, 1>& ops, SmallVector<ShadowBB*, 1>* BBs) {
 
   uint32_t blockIdx = SI->invar->operandBBs[valOpIdx];
@@ -863,6 +907,7 @@ void IntegrationAttempt::getCommittedExitPHIOperands(ShadowInstruction* SI, uint
 
 }
 
+// Populate phi node NewPN corresponding to I.
 void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHINode* NewPN) {
 
   // There used to be a case here handling loops with one or more specialised iterations
@@ -886,6 +931,7 @@ void IntegrationAttempt::populatePHINode(ShadowBB* BB, ShadowInstruction* I, PHI
 
 }
 
+// Make a phi node corresponding to specialised instruction I, committing to emitBB.
 void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   PHINode* NewPN;
@@ -900,6 +946,7 @@ void IntegrationAttempt::emitPHINode(ShadowBB* BB, ShadowInstruction* I, BasicBl
 
 }
 
+// After writing a loop, attach the latch->header phi operands.
 void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
   uint32_t i;
@@ -911,6 +958,9 @@ void IntegrationAttempt::fixupHeaderPHIs(ShadowBB* BB) {
 
 }
 
+// Get the committed version of I's idx'th operand. If we're returning an unspecialised basic block because I is branching
+// out of the user-directed specialisation region, and the user has requested verbose diagnostics in this case, failValue and failBlock
+// are populated with the branch target and perhaps switch value by which we left specialised code.
 Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32_t idx, ConstantInt*& failValue, BasicBlock*& failBlock) {
 
   ShadowBB* BB = I->parent;
@@ -994,6 +1044,9 @@ Value* IntegrationAttempt::getCommittedValueOrBlock(ShadowInstruction* I, uint32
 
 }
 
+// Synthesise I, a terminator instruction for BB, writing to emitBB. This is a little complicated
+// when we're committing a return instruction out-of-line or we need to deal with branches to
+// unspecialised code.
 void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   if(inst_is<UnreachableInst>(I) || inst_is<ResumeInst>(I)) {
@@ -1012,6 +1065,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       // This is an out-of-line commit, so CommitF should be decided.
       release_assert(getFunctionRoot()->CommitF);
 
+      // Return undef if we know the value won't be used.
       Value* retVal;
       if((!F.getFunctionType()->getReturnType()->isVoidTy()) && I->dieStatus != INSTSTATUS_ALIVE)
 	retVal = UndefValue::get(F.getReturnType());
@@ -1020,26 +1074,34 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       else
 	retVal = getCommittedValue(I->getOperand(0));
 
+      // If it's possible for specialisation assumptions to fail here or in a child context, we need to return
+      // an extra flag indicating whether or not this has happened. Here we always return 'true' indicating
+      // to continue on the specialised path; in ConditionalSpec.cpp we can see the opposite case being synthesised.
       if(IA->hasFailedReturnPath() && !IA->isRootMainCall()) {
 
 	Value* retFlag = ConstantInt::getTrue(emitBB->getContext());	
 	if(!retVal) {
-	  
+
+	  // Function was void before; just return true.
 	  retVal = retFlag;
 	  
 	}
 	else {
 
+	  // Function was non-void; return { retval, true }
 	  StructType* retType = cast<StructType>(getFunctionRoot()->CommitF->getFunctionType()->getReturnType());
 	  Type* normalRet = retType->getElementType(0);
 	  Constant* undefRet = UndefValue::get(normalRet);
+	  // Create { undef, true }
 	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, retFlag, NULL);
+	  // Return { retval, true }
 	  retVal = InsertValueInst::Create(aggTemplate, retVal, 0, VerboseNames ? "success_ret" : "", emitBB);
 
 	}
 
       }
 
+      // If emitting runtime debug information, report success.
       if(pass->verbosePCs && (!L) && getFunctionRoot()->isRootMainCall()) {
 
 	std::string msg;
@@ -1058,6 +1120,10 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     }
     else {
 
+      // This is a return instruction but we're committing inline. We should have a target phi node
+      // to give the 'returned' value. No need for the success flag dealt with above, as failed paths
+      // have a dedicated return block separate from this one.
+      
       // Branch to the exit block
       Instruction* BI = BranchInst::Create(IA->returnBlock, emitBB);
 
@@ -1096,6 +1162,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   }
 
+  // If we know one true successor:
   if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
@@ -1123,6 +1190,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
     // Like emitInst, but can emit BBs.
     for(uint32_t i = 0; i < I->getNumOperands(); ++i) {
 
+      // switchVal and block are only used to generate runtime debugging prints.
       ConstantInt* switchVal = 0;
       BasicBlock* switchBlock = 0;
       Value* replVal = getCommittedValueOrBlock(I, i, switchVal, switchBlock);
@@ -1138,6 +1206,8 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
     if(!breakSuccessors.empty()) {
 
+      // If we're going to report departing specialised code at a switch instruction,
+      // make a block that reports the failure and then switches again to reach unspecialised code.
       // This path should never handle invoke instructions, and so this treatment of
       // failed paths is acceptable.
 
@@ -1187,9 +1257,9 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
 }
 
+// Create a constant global containing the bytes read by this ReadFile call.
 static GlobalVariable* getFileBytesGlobal(ReadFile& RF) {
 
-  // Create a memcpy from a constant, since someone is still using the read data.
   std::vector<Constant*> constBytes;
   std::string errors;
   LLVMContext& Context = GInt8->getContext();
@@ -1209,6 +1279,7 @@ static GlobalVariable* getFileBytesGlobal(ReadFile& RF) {
 
 }
 
+// Can't just use getOrInsertFunction as it ignores functions with local/private linkage.
 static Constant* getOrInsertLocalFunction(StringRef Name, FunctionType* FT) {
 
   Module* M = getGlobalModule();
@@ -1218,6 +1289,7 @@ static Constant* getOrInsertLocalFunction(StringRef Name, FunctionType* FT) {
 
 }
 
+// Emit an lseek64 call to reposition a given FD.
 static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
 
   LLVMContext& Context = FD->getContext();
@@ -1240,6 +1312,7 @@ static void emitSeekTo(Value* FD, uint64_t Offset, BasicBlock* emitBB) {
 
 }
 
+// Emit a syscall instruction. It might be resolved down to a no-op, or might require repositioning with lseek64 before execution.
 bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBBIter) {
 
   BasicBlock* emitBB = emitBBIter->specBlock;
@@ -1252,13 +1325,16 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
   {
     DenseMap<ShadowInstruction*, ReadFile>::iterator it = pass->resolvedReadCalls.find(I);
     if(it != pass->resolvedReadCalls.end()) {
-      
+
+      // This is a read() call that was successfully executed at specialisation time.
       LLVMContext& Context = CI->getContext();
 
       if((I->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD || 
 	  I->needsRuntimeCheck == RUNTIME_CHECK_READ_MEMCMP) 
 	 && !pass->omitChecks) {
 
+	// We need to check the read result is still valid, either with straightforward memcmp
+	// or by checking with the watch daemon.
 	BasicBlock* breakBlock = emitBBIter->breakBlock;
 	Value* CheckTest;
 
@@ -1267,8 +1343,12 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  // As a fifo, we must (a) do the read as usual, then (b) use memcmp to check
 	  // that the results are the way we expect.
 
+	  // Emit the read as-is
 	  CallInst* readInst = cast<CallInst>(emitInst(BB, I, emitBB));
 
+	  // Build a memcmp check. Always tested this with images already linked
+	  // to a libc implementation, but hopefully this produces the right memcmp
+	  // signature to acquire a dynamically-linked version too.
 	  Value* readBuffer = readInst->getArgOperand(1);
 	  if(readBuffer->getType() != GInt8Ptr)
 	    readBuffer = new BitCastInst(readBuffer, GInt8Ptr, VerboseNames ? "readcast" : "", emitBB);
@@ -1298,6 +1378,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	}
 	else {
 
+	  // Read from a regular file.
 	  // Emit a check that file specialisations are still admissible:
 	  Type* Int32Ty = IntegerType::get(Context, 32);
 	  Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
@@ -1306,7 +1387,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  Constant* Zero32 = Constant::getNullValue(Int32Ty);
 	  CheckTest = new ICmpInst(*emitBB, CmpInst::ICMP_EQ, CheckResult, Zero32);
 
-	  // Seek to the right position in the break block:
+	  // Seek to the right position in the break block, so that unspecialised
+	  // code finds the file pointer where it expects to.
 	  emitSeekTo(getCommittedValue(I->getCallArgOperand(0)), 
 		     it->second.incomingOffset, breakBlock);
 
@@ -1324,10 +1406,12 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  emitRuntimePrint(breakBlock, message, 0);
 	
 	}
-      
+
+	// A checked read instruction terminates this block. Emit on-success code to the next BB:
 	++emitBBIter;
 
-	// Branch to the real read instruction on failure for lliowd checks, or the instruction after otherwise.
+	// Branch to the real read instruction on failure for lliowd checks, or the instruction after otherwise
+	// (in that case the read has already been executed)
 	uint32_t targetInst = it->second.isFifo ? I->invar->idx + 1 : I->invar->idx;
 	BasicBlock* failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, targetInst);
 	BasicBlock* successTarget = emitBBIter->specBlock;
@@ -1360,7 +1444,9 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  
       }
 
-      /* If it's a read from a fifo then the copy was emitted *before* the check. */
+      // If the read may be used, copy from the global containing the file's bytes into the given buffer
+      // (i.e. a read() becomes a memcpy from a constant global).
+      // If it's a read from a fifo then the copy was emitted *before* the check.
 
       if(it->second.readSize > 0 && 
 	 (!(it->second.isFifo && !pass->omitChecks)) && 
@@ -1411,11 +1497,15 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   }
 
+  // End of read call handling.
+  // seek calls:
+  
   {
     
     DenseMap<ShadowInstruction*, SeekFile>::iterator it = pass->resolvedSeekCalls.find(I);
     if(it != pass->resolvedSeekCalls.end()) {
 
+      // MayDelete means this seek is redundant (every instruction that will read the file pointer in the future has been folded away)
       if(!it->second.MayDelete)
 	emitInst(BB, I, emitBB);
 
@@ -1427,6 +1517,8 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
   Function* CalledF = getCalledFunction(I);
 
+  // Check whether it's valid to assume stat returns zero for the given file:
+  
   if((!pass->omitChecks) && I->needsRuntimeCheck == RUNTIME_CHECK_READ_LLIOWD && 
      (CalledF->getName() == "stat" || CalledF->getName() == "fstat")) {
 
@@ -1470,10 +1562,12 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
     
   }
 
+  // Neither read nor seek nor stat (or any of those which couldn't be specialised?)
   return false;
 
 }
 
+// Get the basic block that follows from an 'invoke' on the non-exceptional path.
 BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, bool& toCheckBlock) {
 
   toCheckBlock = false;
@@ -1483,7 +1577,8 @@ BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, b
   // An invoke's normal return path should go to special block added to the end of its parent's
   // committedBlock list to perform a test if necessary.
   // This might be because its return value should be checked, or because it has a failed return path.
-  // If not check is needed, simply branch to its ordinary successor.
+  // If no check is needed, simply branch to its ordinary successor.
+  // This is a little trickier than a normal call because invoke is also a terminator.
 
   if(requiresRuntimeCheck(ShadowValue(I), false))
     toCheckBlock = true;
@@ -1509,6 +1604,8 @@ BasicBlock* IntegrationAttempt::getInvokeNormalSuccessor(ShadowInstruction* I, b
 
 }
 
+// Synthesise call instruction I into *emitBBIter. Adjust emitBBIter to point to wherever the call's successor instruction
+// should be emitted (i.e. leave it alone if the call was inlined straightforwardly, or bump it otherwise).
 void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVector<CommittedBlock, 1>::iterator& emitBBIter) {
 
   BasicBlock* emitBB = emitBBIter->specBlock;
@@ -1527,6 +1624,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
       if(!IA->commitsOutOfLine()) {
 
+	// Commit will have written blocks in the same residual function as this context.
+	
 	// Branch from the current write BB to the call's entry block:
 	BranchInst::Create(IA->getCommittedEntryBlock(), emitBB);
 
@@ -1540,6 +1639,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
       }
       else {
 
+	// Commit will have written to a new residual function.
+	
 	FunctionType* FType = IA->F.getFunctionType();
 
 	// Build a call to IA->CommitF with some parameters stubbed out (replaced with undef)
@@ -1558,8 +1659,6 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	for(uint32_t i = 0; i != ilim; ++i) {
 	    
-	  // (Except this bit, a clone of emitInst)
-
 	  Type* needTy;
 	  if(i < FType->getNumParams()) {
 	    // Normal argument: cast to target function type.
@@ -1600,6 +1699,8 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	if(inst_is<CallInst>(I) || (inst_is<InvokeInst>(I) && !BB->succsAlive[1])) {
 
+	  // A normal call or an invoke that cannot throw.
+	  
 	  NewI = CallInst::Create(IA->CommitF, Args, "", emitBB);
 
 	  if(inst_is<InvokeInst>(I)) {
@@ -1638,6 +1739,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	if(IA->hasFailedReturnPath()) {
 
 	  // This out-of-line call might fail. If it did, branch to unspecialised code.
+	  // Retrieve the boolean (or struct-with-boolean) it returned to indicate whether we should break to unspec code now:
 
 	  Value* CallFailed;
 	  if(IA->F.getFunctionType()->getReturnType()->isVoidTy()) {
@@ -1657,13 +1759,15 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	  if(inst_is<CallInst>(I)) {
 
+	    // If the call result isn't as expected, branch to the instruction after in unspecialised code.
 	    ++emitBBIter;
-	    successTarget = emitBBIter->specBlock;
+	    successTarget = emitBBIter->specBlock; 
 	    failTarget = getFunctionRoot()->getSubBlockForInst(BB->invar->idx, I->invar->idx + 1);
 
 	  }
 	  else {
-	    
+
+	    // Invoke is already a terminator -- branch chooses between the specialised or unspecialised successors.
 	    // emititer already bumped above.
 	    bool markUnreachable = false;
 	    successTarget = getSuccessorBB(BB, BB->invar->succIdxs[0], markUnreachable);
@@ -1683,7 +1787,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	}
 
-      }
+      } // End of inline / out-of-line if/else.
    
       if(!IA->commitsOutOfLine()) {
 	
@@ -1691,6 +1795,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	  // If the residual, inline function allocates stack memory, bound its lifetime
 	  // with stacksave/restore.
+	  // Sticking its allocas at top of function would create a huge stack frame.
 
 	  Module *M = getGlobalModule();
 
@@ -1714,6 +1819,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	}
 
+	// No live return paths?
 	if(IA->returnPHI && IA->returnPHI->getNumIncomingValues() == 0) {
 	  IA->returnPHI->eraseFromParent();
 	  IA->returnPHI = 0;
@@ -1743,14 +1849,15 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
 	}
 	
-      }
+      } // End of if-commits-inline
 
       return;
     
-    }
+    } // End of if-function-context-enabled
 
-  }
-  
+  } // End of if-function-has-specialisation
+
+  // Is this a specialised VFS syscall?
   if(emitVFSCall(BB, I, emitBBIter))
     return;
 
@@ -1795,8 +1902,9 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 
   }
 
-}
+} // End of emit-call-instruction.
 
+// Debug check
 static void checkEmittedInst(Instruction* I) {
 
   bool Broken = false;
@@ -1817,6 +1925,7 @@ static void checkEmittedInst(Instruction* I) {
 
 }
 
+// Emit generic instruction I into emitBB. We already know it isn't resolved to a constant, dead etc.
 Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, BasicBlock* emitBB) {
 
   // Clone all attributes:
@@ -1846,6 +1955,7 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  // Warn if specialised code has been left via an exception (but stayed within the general domain of specialisation)
   if(pass->verbosePCs && isa<LandingPadInst>(newI)) {
 
     std::string msg;
@@ -1907,12 +2017,14 @@ Instruction* IntegrationAttempt::emitInst(ShadowBB* BB, ShadowInstruction* I, Ba
 
   }
 
+  // Debug checks for suspect instructions:
   checkEmittedInst(newI);
 
   return newI;
 
 }
 
+// Build a constexpr for (targetType)(((char*)GV) + Offset)
 Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
 
   Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
@@ -1941,6 +2053,8 @@ Constant* llvm::getGVOffset(Constant* GV, int64_t Offset, Type* targetType) {
 
 }
 
+// Create a pointer described by I (i.e. make gep and cast instructions).
+// May be impossible if I is not specific enough, or completely unknown. Return false in that case.
 bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, SmallVector<CommittedBlock, 1>::iterator emitBB) {
 
   Value* Result;
@@ -1955,6 +2069,11 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue I, SmallVector<Commit
   
 }
 
+// Can IV be synthesised (constructed from a base object and offset)
+// or do we need its literal operand around?
+// One reason it may be impossible to synthesise is if its base object can't
+// be directly referenced, e.g. because its specialisation context was not committed
+// and so there is no unique instruction that describes this particular object.
 bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
 
   ShadowValue Base = IV.V;
@@ -1985,6 +2104,7 @@ bool IntegrationAttempt::canSynthPointer(ShadowValue* I, ImprovedVal IV) {
 
 }
 
+// Get the InlineAttempt at a particular stack depth by walking our parent contexts.
 InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
 
   // frameSize == -1 means no stack frame and the allocation really belongs to our caller.
@@ -1995,6 +2115,9 @@ InlineAttempt* InlineAttempt::getStackFrameCtx(int32_t frameIdx) {
 
 }
 
+// Synthesise a pointer if we know its base object, have a unique instruction that allocates it, etc.
+// If we can't do that, return false and we'll have to keep the pointer reference verbatim, meaning we need
+// the operand alive and so on.
 bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType, ImprovedVal IV, BasicBlock* emitBB, Value*& Result) {
 
   if(!canSynthPointer(I, IV))
@@ -2081,6 +2204,8 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
 }
 
+// Check whether I can be synthesised as a constant, pointer to a known base, etc.
+// If not it must be represented literally in the output program.
 bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, const ImprovedVal& IV) {
 
   if(Ty == ValSetTypeScalar)
@@ -2097,10 +2222,16 @@ bool IntegrationAttempt::canSynthVal(ShadowValue* I, ValSetType Ty, const Improv
 
 }
 
+// Produce a Value describing I by any means other than literally cloning the instruction.
+// If that's impossible return null and we'll do the plain clone elsewhere.
+// Cast I to targetType when synthesising. I's unique ImprovedVal is already known to be IV with type Ty.
+// Write any needed cast / GEP / load instructions to emitBB.
 Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetType Ty, const ImprovedVal& IV, BasicBlock* emitBB) {
 
   if(Ty == ValSetTypeScalar) {
-   
+
+    // Constant -- synthesise if possible as a constexpr!
+    
     Constant* C = getSingleConstant(IV.V);
     if(!C)
       return 0;
@@ -2109,12 +2240,16 @@ Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetT
 
   }
   else if(Ty == ValSetTypeFD) {
+
+    // File descriptor! Refer to the original 'open' instruction if we can.
     
     if(canSynthVal(I, Ty, IV)) {
       
       FDGlobalState& FDS = pass->fds[IV.V.u.PtrOrFd.idx];
       if(!FDS.CommittedVal) {
 
+	// Open instruction not committed yet. Create a 'select' instruction that will be patched
+	// out when the open call is eventually committed.
 	Value* True = ConstantInt::getTrue(emitBB->getContext());
 	Value* UD = UndefValue::get(getValueType(IV.V));      
 	Instruction* Fwd = SelectInst::Create(True, UD, UD, "", emitBB);
@@ -2130,6 +2265,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetT
   }
   else if(Ty == ValSetTypePB) {
 
+    // Pointer -- create a direct reference to the original allocation if possible.
     Value* V;
     if(synthCommittedPointer(I, targetType, IV, emitBB, V))
       return V;
@@ -2140,6 +2276,7 @@ Value* IntegrationAttempt::trySynthVal(ShadowValue* I, Type* targetType, ValSetT
 
 }
 
+// Write a residual memcpy to emitBB.
 static Instruction* emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicBlock* emitBB) {
 
   Type* BytePtr = Type::getInt8PtrTy(emitBB->getContext());
@@ -2161,6 +2298,12 @@ static Instruction* emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicB
 
 }
 
+// Emit code to write (chunkBegin-chunkEnd] to I's first operand. This might be a simple
+// store, or might need a memcpy call from a composite-typed object.
+// newInstructions accumulates the stores, calls and casts required to do this,
+// which are also written to emitBB.
+// 'Chunks' are written in this way because ideally we'd use a big memcpy in preference to many
+// small store instructions, but pointers, FDs and other non-constants can prevent us from doing so.
 void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, SmallVector<IVSRange, 4>::iterator chunkBegin, SmallVector<IVSRange, 4>::iterator chunkEnd, SmallVector<Instruction*, 4>& newInstructions) {
 
   uint32_t chunkSize = std::distance(chunkBegin, chunkEnd);
@@ -2176,6 +2319,7 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
   else
     targetType = BytePtr;
 
+  // Synthesise a pointer corresponding to I's first operand.
   // We have already checked that the target is visible, so this must succeed:
   Value* targetPtrSynth;
   ImprovedVal targetPtr;
@@ -2241,6 +2385,8 @@ void IntegrationAttempt::emitChunk(ShadowInstruction* I, BasicBlock* emitBB, Sma
 
 }
 
+// Can a memcpy or memmove (a memory-transfer instruction, MTI) be synthesised (i.e. do we know
+// the unique objects it writes and where it writes them?)
 bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
 
   if(!GlobalIHP->memcpyValues.count(I))
@@ -2276,6 +2422,9 @@ bool IntegrationAttempt::canSynthMTI(ShadowInstruction* I) {
 
 }
 
+// Emit a sequence of stores and/or memcpy-from-constant-global instructions that
+// have the effect of memcpy/memmove call I. If this is impossible (e.g. we're not certain
+// of what is written or where it is written), return false.
 bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
 
   if(!canSynthMTI(I))
@@ -2333,6 +2482,14 @@ bool IntegrationAttempt::trySynthMTI(ShadowInstruction* I, BasicBlock* emitBB) {
 
 }
 
+// Try to synthesise instruction I, which means returning a constant if possible, or creating a pointer
+// expressed as a simple gep-and-cast from a known base object (alloca, malloc/similar, global...)
+// If we cannot do this (e.g. I doesn't have a known concrete result, or we can't synthesise an appropriate
+// pointer) then return false and our caller will have to create a literal clone of the original instruction
+// instead.
+// For memcpy instructions, try to turn them into a series of memcpy or store actions drawing from constants
+// and known pointers.
+// Emit any necessary instructions (e.g. casts) to emitBB.
 bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, Value*& Result) {
 
   if(inst_is<MemTransferInst>(I)) {
@@ -2360,6 +2517,7 @@ bool IntegrationAttempt::trySynthInst(ShadowInstruction* I, BasicBlock* emitBB, 
   
 }
 
+// Similar to above, but try to synthesise an argument value.
 bool IntegrationAttempt::trySynthArg(ShadowArg* A, BasicBlock* emitBB, Value*& Result) {
 
   ImprovedValSetSingle* IVS = dyn_cast_or_null<ImprovedValSetSingle>(A->i.PB);
@@ -2383,6 +2541,9 @@ static bool isPureCall(ShadowInstruction* SI) {
 
 }
 
+// Create a synthetic version of I, or if that's impossible clone it. Emit synthesised / cloned instructions
+// to *emitBB, and bump the emitBB iterator if subsequent instructions should target a different block because
+// we emitted an inline call or an out-of-line call that needed us to possibly branch to unspecialised code.
 void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, SmallVector<CommittedBlock, 1>::iterator& emitBB) {
 
   bool useCallPath = (inst_is<CallInst>(I) || inst_is<InvokeInst>(I)) && 
@@ -2406,6 +2567,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
      && (!pass->resolvedReadCalls.count(I)))
     return;
 
+  // If a runtime check is required we need the literal instruction available.
   // The second parameter specifies this doesn't catch instructions that requires custom checks
   // such as VFS operations.
   if(!requiresRuntimeCheck(I, false)) {
@@ -2434,6 +2596,10 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
 
 }
 
+// Write all instructions that fall within loop ScopeL. i is the index of the first basic block
+// that falls within it (i.e. the header), and as a side-effect this function should leave i pointing to the
+// first block not in ScopeL.
+// ScopeL might be null, in which case this is a function root scope.
 void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, uint32_t& i) {
 
   uint32_t thisLoopHeaderIdx = i;
@@ -2447,7 +2613,7 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
 
     if(BBI->naturalScope != ScopeL) {
 
-      // Entering a loop. First write the blocks for each iteration that's being unrolled:
+      // Entering a nested loop. First write the blocks for each iteration that's being unrolled:
       PeelAttempt* PA = getPeelAttempt(BBI->naturalScope);
       if(PA && PA->isEnabled() && PA->isTerminated()) {
 
@@ -2457,7 +2623,10 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
 	SmallVector<const ShadowLoopInvar*, 4> loopStack;
 	loopStack.push_back(ScopeL);
 
-	// If the loop has terminated, skip populating the blocks in this context.
+	// If the loop has terminated, skip populating the blocks in this context, but
+	// do allow any unspecialised ('failed') version of this loop and its children
+	// to populate their header PHI nodes by pulling from the specialised iterations
+	// we just committed.
 	const ShadowLoopInvar* skipL = BBI->naturalScope;
 	while(i < nBBs && skipL->contains(getBBInvar(i + BBsOffset)->naturalScope)) {
 
@@ -2495,17 +2664,21 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
       }
       else {
 
-	// Emit blocks for the residualised loop
-	// (also has the side effect of winding us past the loop)
+	// Emit blocks for the residualised general loop iteration.
+	// (also has the side effect of winding 'i' past the loop)
 	commitLoopInstructions(BBI->naturalScope, i);
 
       }
 
+      // 'i' will now point to the first block outside the child loop.
+      // Back it up so that after 'continue' we'll look at that block again.
       --i;
       continue;
 
     }
 
+    // If BB is dead within specialised code the problem of generating
+    // an unspecialised variant is much simplified.
     ShadowBB* BB = BBs[i];
     if(!BB) {
       commitSimpleFailedBlock(BBsOffset + i);
@@ -2514,8 +2687,10 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
 
     uint32_t j;
     SmallVector<CommittedBlock, 1>::iterator emitPHIsTo = BB->committedBlocks.begin();
-      
-    // Even if there are path conditions, emit specialised PHIs into the first block.
+
+    // Even if there are path conditions, emit specialised PHIs into the first committed block for BB.
+    // This means if we need to make a top-of-block check, like checking that a specialisation assumption
+    // still holds, the block's phi nodes precede it regardless.
     for(j = 0; j < BB->insts.size() && inst_is<PHINode>(&(BB->insts[j])); ++j) {
       
       ShadowInstruction* I = &(BB->insts[j]);
@@ -2557,9 +2732,11 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
 
     }
 
+    // All instructions in this block are now available, so any companion unspecialised block
+    // should now be able to populate phi nodes at specialised-to-unspecialised junctions.
     populateFailedBlock(i + BBsOffset);
 
-  }
+  } // End of loop over BBs in this loop scope.
 
   if(ScopeL != L) {
     populateFailedHeaderPHIs(ScopeL);
@@ -2569,6 +2746,8 @@ void IntegrationAttempt::commitLoopInstructions(const ShadowLoopInvar* ScopeL, u
 
 }
 
+// Apply the same debug tag to all of 'blocks'. Used to provide simple insight in GDB about the provenance
+// of specialised code that crashes.
 static void applyLocToBlocks(const DebugLoc& loc, const std::vector<BasicBlock*>& blocks) {
 
     for(std::vector<BasicBlock*>::const_iterator it = blocks.begin(), itend = blocks.end(); it != itend; ++it) {
@@ -2580,11 +2759,20 @@ static void applyLocToBlocks(const DebugLoc& loc, const std::vector<BasicBlock*>
 
 }
 
+// Commit all arguments and instructions in this function context, using synthetic constants / pointers
+// instead of the original instructions wherever possible. This recurses into loop contexts and child calls
+// as they are found, and calls to populate phi nodes that unify values at specialised-to-unspecialised control-flow
+// edges as their source operands become available.
+// Child calls may or may not already have been committed, depending on whether we're in straight-line specialised
+// code or not.
 void InlineAttempt::commitArgsAndInstructions() {
 
   if(isCommitted()) {
 
-    // Patch arguments up, if needed.
+    // This context has already been committed.
+    // Patch arguments up, if needed. This happens when a child got committed
+    // before us, and needed to refer to one of our arguments. In this case a dummy 'select'
+    // instruction will have been introduced which we can now replace.
     for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
       ShadowArg* SA = &(argShadows[i]);
@@ -2596,7 +2784,14 @@ void InlineAttempt::commitArgsAndInstructions() {
   }
   else {
 
+    // Commit this context now. The CFG will have already been created, including multiple residual
+    // blocks per BB ('committedBlocks') when a BB needs to have result-as-expected checks inserted,
+    // e.g. to check against clobbering by concurrent threads.
+
+    // Start emitting code to the first block:
     SmallVector<CommittedBlock, 1>::iterator emitBB = BBs[0]->committedBlocks.begin();
+
+    // Emit all arguments:
     for(uint32_t i = 0; i < F.arg_size(); ++i) {
 
       ShadowArg* SA = &(argShadows[i]);
@@ -2611,18 +2806,25 @@ void InlineAttempt::commitArgsAndInstructions() {
     bool isVoidTy = F.getFunctionType()->getReturnType()->isVoidTy();
     Type* Ret = F.getFunctionType()->getReturnType();
 
-    // Create return PHI if needed
+    // Create return PHI if needed. This is a phi node that collects return values
+    // if we're committing inline.
     if(returnBlock && !isVoidTy)
       returnPHI = makePHI(Ret, VerboseNames ? "retval" : "", returnBlock);
     else
       returnPHI = 0;
 
+    // ...and this is a phi node that collects return values if we branch to unspecialised code
+    // e.g. due to an assumption check failing.
+    // If we commit out-of-line then a separate boolean return is used instead of the two different
+    // target blocks / phi nodes like this.
     if(failedReturnBlock && !isVoidTy)
       failedReturnPHI = makePHI(Ret, VerboseNames ? "failedretval" : "", failedReturnBlock);
     else
       failedReturnPHI = 0;
 
-    // Introduce an lliowd_init call if ordered.
+    // Introduce an lliowd_init call if ordered. This sets up a connection to the file-watcher daemon
+    // which we will use to check that file-reading calls may still be assumed to yield their
+    // specialisation-time results (i.e. the file we're reading has not changed in the meantime)
     if((pass->llioPreludeStackIdx != -1 && 
 	targetCallInfo && targetCallInfo->targetStackDepth == (uint32_t)pass->llioPreludeStackIdx) ||
        (((uint32_t)pass->llioPreludeStackIdx) == pass->targetCallStack.size() && isStackTop)) {
@@ -2633,10 +2835,15 @@ void InlineAttempt::commitArgsAndInstructions() {
 
     }
 
+    // Commit all local instructions.
     commitInstructions();
 
+    // Patch any child contexts that wanted to refer to alloca instructions that take place here,
+    // but which had to introduce a temporary select instruction instead because we hadn't committed yet.
     fixNonLocalStackUses();
 
+    // Should we emit debug tags to indicate which binary code derived from which specialisation contexts?
+    // It's 'fake' in that it doesn't describe the original source code file / line.
     if(pass->emitFakeDebug) {
 
       DenseMap<Function*, DebugLoc>::iterator findit = pass->fakeDebugLocs.find(&F);
@@ -2697,7 +2904,9 @@ void InlineAttempt::commitArgsAndInstructions() {
     // Do this here rather than in CommitCFG because blocks handling unreachable branches can be
     // created during emitTerminator.
     if(uniqueParent) {
-
+     
+      // If we already know the residual function we're writing to, committed blocks should have been added to
+      // it instead of entering these arrays.
       if(CommitF)
 	release_assert(CommitBlocks.empty() && CommitFailedBlocks.empty());
 
@@ -2709,10 +2918,13 @@ void InlineAttempt::commitArgsAndInstructions() {
 
 }
 
+// Commit all instructions in this context.
 void IntegrationAttempt::commitInstructions() {
 
+  // Bump progress bar
   SaveProgress();
-  
+
+  // If the user asked for a verbose specialisation, print to indicate we entered specialised code.
   if((!L) && getFunctionRoot()->isRootMainCall()) {
 
     BasicBlock* emitBB = BBs[0]->committedBlocks[0].specBlock;
@@ -2732,6 +2944,7 @@ void IntegrationAttempt::commitInstructions() {
 
   }
 
+  // Commit instructions local to this loop (or the whole function if this is an InlineAttempt and so L is null)
   uint32_t i = 0;
   commitLoopInstructions(L, i);
 
@@ -2758,6 +2971,8 @@ void IntegrationAttempt::commitInstructions() {
 
 }
 
+// Remove any references to BB's instructions as committed versions of heap objects
+// or file descriptors.
 static void unregisterCommittedAllocations(BasicBlock* BB) {
 
   for(BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
@@ -2787,6 +3002,8 @@ static void unregisterCommittedAllocations(BasicBlock* BB) {
 
 }
 
+// Remove any references to F's instructions as committed versions of heap objects
+// or file descriptors.
 static void unregisterCommittedAllocations(Function* F) {
 
   for(Function::iterator it = F->begin(), itend = F->end(); it != itend; ++it)
@@ -2794,6 +3011,8 @@ static void unregisterCommittedAllocations(Function* F) {
 
 }
 
+// Delete all BBs and committed functions from all arguments. Used when releasing a whole tree of contexts
+// whose specialised code is no longer needed.
 static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<BasicBlock*>& CommitBlocks, std::vector<BasicBlock*>& CommitFailedBlocks) {
 
   for(std::vector<Function*>::iterator it = CommitFunctions.begin(), 
@@ -2846,6 +3065,10 @@ static void releaseCC(std::vector<Function*>& CommitFunctions, std::vector<Basic
 
 }
 
+// Delete all BBs and committed functions from all arguments. Used when releasing a whole tree of contexts
+// whose specialised code is no longer needed.
+// Note there is no need to recurse into child contexts because they pass their committed code to their parents when their commit
+// phase finishes and so they themselves can be deallocated.
 void InlineAttempt::releaseCommittedChildren() {
 
   releaseCC(CommitFunctions, CommitBlocks, CommitFailedBlocks);
@@ -2858,6 +3081,8 @@ void PeelAttempt::releaseCommittedChildren() {
 
 }
 
+// Note that any allocation instructions, open instructions etc that occur
+// in this context and its children are now available to be referenced directly.
 void IntegrationAttempt::markAllocationsAndFDsCommitted() {
 
   if(isCommitted())
@@ -2928,6 +3153,9 @@ void IntegrationAttempt::markAllocationsAndFDsCommitted() {
 
 }
 
+// Release copies of the heap state that were taken in case this
+// function needed to be re-analysed to find a general case solution
+// in the context of some enclosing loop.
 void InlineAttempt::releaseBackupStores() {
 
   release_assert(backupTlStore);
@@ -2939,6 +3167,8 @@ void InlineAttempt::releaseBackupStores() {
 
 }
 
+// Release all memory relating to this context except this object,
+// which our caller will delete.
 void IntegrationAttempt::releaseMemoryPostCommit() {
 
   if(commitState == COMMIT_FREED)
@@ -3023,6 +3253,9 @@ void IntegrationAttempt::releaseMemoryPostCommit() {
 
 }
 
+// Master commit entry point. inLoopAnalyser indicates that we're
+// committing in the context of some enclosing unbounded loop, so we have
+// a general-case analysis for this function instead of a per-iteration one.
 void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
 
   countTentativeInstructions();
@@ -3049,6 +3282,7 @@ void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
     // Decide whether to commit in or out of line:
     findSaveSplits();
 
+    // Find dead instructions.
     runDIE();
 
     // Save a DOT representation if need be, for the GUI to use.
@@ -3098,16 +3332,20 @@ void InlineAttempt::finaliseAndCommit(bool inLoopAnalyser) {
 
 }
 
-// Top-level commit entry point.
+// Root commit entry point.
 
 void LLPEAnalysisPass::commit() {
 
   if(!(omitChecks || llioDependentFiles.empty())) {
 
+    // Note files that were read by specialised code, and so which must be checked for modification
+    // during specialisation.
     writeLliowdConfig();
 
     BasicBlock* preludeBlock = 0;
 
+    // Maybe insert an init call to connect to the file-watcher daemon.
+    // Find the committed function where the init call should go:
     if(llioPreludeStackIdx == -1) {
 
       Function* writePreludeFn = llioPreludeFn;
@@ -3134,6 +3372,7 @@ void LLPEAnalysisPass::commit() {
 
   }
 
+  // If requested, write verbose stats about this specialisation attempt.
   if(!statsFile.empty()) {
 
     postCommitStats();
@@ -3146,6 +3385,7 @@ void LLPEAnalysisPass::commit() {
       stats.print(RFO);
   }
 
+  // Redirect internal callers to use the specialised fuction.
   RootIA->F.replaceAllUsesWith(RootIA->CommitF);
 
   // Also exchange names so that external users will use this new version:

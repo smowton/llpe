@@ -103,6 +103,7 @@ bool llvm::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint6
 
 }  
 
+// Flatten a bytestream (given as a uint64_t array for compatability with APInt) into a ConstantInt.
 Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigned data_bits, LLVMContext& Context) {
 
   APInt AP(data_bits, data_length, data);
@@ -110,6 +111,9 @@ Constant* llvm::intFromBytes(const uint64_t* data, unsigned data_length, unsigne
 
 }
 
+// Find out the index of the idx'th non-floating-point argument to this function.
+// This is needed because varargs calling convention splits the integer-typed and FP-typed
+// varargs.
 int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 
   // All callers must have the same operand count, so Callers[0] is ok.
@@ -143,6 +147,7 @@ int64_t InlineAttempt::NonFPArgIdxToArgIdx(int64_t idx) {
 
 }
 
+// Find the idx'th floating-point argument similar to above.
 int64_t InlineAttempt::FPArgIdxToArgIdx(int64_t idx) {
   
   for(unsigned i = F.getFunctionType()->getNumParams(); i < Callers[0]->getNumArgOperands(); ++i) {

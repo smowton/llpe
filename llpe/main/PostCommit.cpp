@@ -20,6 +20,10 @@ using namespace llvm;
 
 static cl::opt<bool> SkipPostCommit("int-skip-post-commit");
 
+// These optimisations fold a committed residual-code function into a neater form.
+// We do this as we go because in certain cases it can dramatically reduce the amount
+// of useless code emitted and thus improve the size of program we can deal with.
+
 // TODO at some point: fold this stuff into the save procedure.
 
 static BasicBlock* getUniqueSuccessor(BasicBlock* BB) {
@@ -36,6 +40,7 @@ static BasicBlock* getUniqueSuccessor(BasicBlock* BB) {
 
 }
 
+// Walk a chain of basic blocks with only one predecessor or successor.
 static BasicBlock* getChainPrev(BasicBlock* BB) {
 
   BasicBlock* pred = BB->getSinglePredecessor();
@@ -170,6 +175,9 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T ite
 
 }
 
+// Helpers that keep either a committed function or basic block list that hasn't
+// yet been inserted into a function having the right entry block.
+
 struct PCOFunctionCB {
 
   bool isEntryBlock;
@@ -231,6 +239,11 @@ struct DerefAdaptor {
   }
 
 };
+
+// Main post-commit optimisation entry point. I'm not totally certain, but I think optimising a basic-block list that
+// hasn't been inserted into a residual function yet has been disabled because some LLVM core functions fail if
+// BB->getParent() is null. Such blocks will be treated once they've been assigned a final function; trying to do them
+// ahead of time was just to limit transient memory consumption anyhow.
 
 void InlineAttempt::postCommitOptimise() {
 
