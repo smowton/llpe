@@ -35,7 +35,7 @@ Now suppose we'd like to specialise it with respect to a particular invocation -
 We need to write a file containing the arguments desired. Make a file <tt>/tmp/argv</tt> containing:
 
 ```
-/tmp/strlen_test
+/usr/bin/strlen_test
 Hello world!
 ```
 
@@ -48,7 +48,7 @@ $LLPE_OPT -spec-argv 0,1,/tmp/argv \
 	  -o strlen_test_spec.bc
 ```
 
-The <tt>0,1</tt> in 'spec-argv' says which arguments of the specialisation root (here the default, <tt>main</tt>) should be set to define the command-line arguments. <tt>0,1</tt> specifies the standard <tt>int argc, char** argv</tt> arguments, but you might need to adjust these if your entry point looks different.
+The <tt>0,1</tt> in 'spec-argv' says which arguments of the specialisation root (here the default, <tt>main</tt>) should be set to define the command-line arguments. <tt>0,1</tt> specifies the standard <tt>main(int argc, char** argv)</tt> arguments, but you might need to adjust these if your entry point looks different, so e.g. <tt>mymain(int mode, int argc, char** argv)</tt> would require <tt>-llpe-root mymain -spec-argv 1,2,/tmp/argv</tt>.
 
 The LLPE GUI will appear and show the results of specialisation. Choose File -> Exit to accept the results and write the specialised bitcode.
 
@@ -67,7 +67,7 @@ define i32 @main(i32 %argc, i8** noalias %argv) #0 {
 }
 ```
 
-The stores to <tt>argv</tt> ensure that the args are as expected (though in truth they are not needed, and a run through <tt>opt</tt> would remove them). Note there is no check that the user actually provided the argument "Hello world!" -- that would be conditional specialisation, which is documented [elsewhere](/conditionalspec/)). As we'd expect the program now always returns '12', the length of "Hello world!".
+The stores to <tt>argv</tt> ensure that the args are as expected (though in truth they are not needed, and a run through <tt>opt</tt> would remove them). Note there is no check that the user actually provided the argument "Hello world!" -- that would be conditional specialisation, which is documented [elsewhere](/conditionalspec/). As we'd expect the program now always returns '12', the length of "Hello world!".
 
 Along similar lines we can specialise with respect to the environment. Usually we would read it using libc functions like <tt>getenv</tt>, but again to avoid having to build a whole libc as bitcode for our example we'll write our own. LLPE's current implementation supplies an argument to the specialisation root function, as it was developed for use with a libc entry point that takes <tt>environ</tt> as an argument, so a suitable input program might be:
 
@@ -163,7 +163,7 @@ define i32 @env_spec_root(i32 %argc, i8** %argv, i8** %env) #0 {
 
 Aside from the stack-manipulation noise which should optimise away, it simply returns '1' according to the assumption given that 'MYKEY' is defined.
 
-These two examples have some obvious weaknesses-- they are only applicable when the <tt>argv</tt> and <tt>environ</tt> contents can be given precisely (so e.g. we can't easily accommodate a specialisation with respect to, say <tt>-a</tt> appearing somewhere in an otherwise unknown argument list), and the specialisations are unconditional (there is no runtime check that the environment or arguments match the assertion we made during specialisation. Such simple specialisation might be useful when we have total control over how the specialised binary is used, so we can be sure the arguments are as expected -- however if this is not the case, you should use [path conditions](/conditionalspec/) to make less blunt assertions with optional runtime checking. For example, if our target program used <tt>getopt</tt> and friends to populate a global structure:
+These two examples have some obvious weaknesses-- they are only applicable when the <tt>argv</tt> and <tt>environ</tt> contents can be given precisely (so e.g. we can't easily accommodate a specialisation with respect to, say <tt>-a</tt> appearing somewhere in an otherwise unknown argument list), and the specialisations are unconditional (there is no runtime check that the environment or arguments match the assertion we made during specialisation). Such simple specialisation might be useful when we have total control over how the specialised binary is used, so we can be sure the arguments are as expected -- however if this is not the case, you should use [path conditions](/conditionalspec/) to make less blunt assertions with optional runtime checking. For example, if our target program used <tt>getopt</tt> and friends to populate a global structure:
 
 ```
 struct global_args {
