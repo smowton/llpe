@@ -8,7 +8,7 @@ This example will teach how to generate a version of a program that is unconditi
 
 Here is our input program:
 
-```
+```cpp
 unsigned long strlen(const char* s) {
 
   unsigned long ret = 0;
@@ -71,7 +71,7 @@ The stores to <tt>argv</tt> ensure that the args are as expected (though in trut
 
 Along similar lines we can specialise with respect to the environment. Usually we would read it using libc functions like <tt>getenv</tt>, but again to avoid having to build a whole libc as bitcode for our example we'll write our own. LLPE's current implementation supplies an argument to the specialisation root function, as it was developed for use with a libc entry point that takes <tt>environ</tt> as an argument, so a suitable input program might be:
 
-```
+```cpp
 extern char** environ;
 
 unsigned long mystrlen(const char* s) {
@@ -165,7 +165,7 @@ Aside from the stack-manipulation noise which should optimise away, it simply re
 
 These two examples have some obvious weaknesses-- they are only applicable when the <tt>argv</tt> and <tt>environ</tt> contents can be given precisely (so e.g. we can't easily accommodate a specialisation with respect to, say <tt>-a</tt> appearing somewhere in an otherwise unknown argument list), and the specialisations are unconditional (there is no runtime check that the environment or arguments match the assertion we made during specialisation). Such simple specialisation might be useful when we have total control over how the specialised binary is used, so we can be sure the arguments are as expected -- however if this is not the case, you should use [path conditions](/conditionalspec/) to make less blunt assertions with optional runtime checking. For example, if our target program used <tt>getopt</tt> and friends to populate a global structure:
 
-```
+```cpp
 struct global_args {
 
   char* input_file;
