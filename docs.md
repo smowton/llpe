@@ -4,17 +4,17 @@ title: Documentation
 permalink: /docs/
 ---
 
-## Getting started
+#### Getting started
 
 [Build instructions](/build/)
 
-## Usage examples
+#### Usage examples
 
 * [Tutorial](/tutorial/)
 * [Conditional Specialisation](/conditionalspec/)
 * [Specialising with respect to command-line arguments or environment](/argvspec/)
 
-## Developer documentation
+#### Developer documentation
 
 A high-level technical description can be found in [my thesis](http://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-865.pdf), particularly chapter 4.
 
