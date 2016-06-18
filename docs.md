@@ -23,10 +23,10 @@ The following are essentially excerpts from it, aiming to give a more accessible
 * [Overview](/devdocs-overview/)
 * [Symbolic memory objects](/devdocs-memory/)
 * [Dead store and instruction elimination](/devdocs-dse/)
+* [Handling multithreading](/devdocs-tl/)
 * [Conditional specialisation and runtime checks](/devdocs-conditional/)
 * [Emitting specialised code](/devdocs-save/)
 * [Specialising with respect to files and input streams](/devdocs-vfs/)
-* [Measuring specialisation quality](/devdocs-stats/)
 * [LLPE's GUI](/devdocs-gui/)
 
 

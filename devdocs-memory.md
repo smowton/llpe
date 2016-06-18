@@ -4,7 +4,9 @@ title: Developer Documentation - Symbolic Memory
 permalink: /devdocs-memory/
 ---
 
-When programs under investigation execute allocation instructions, including `alloca` which allocates stack memory and `malloc` and others which allocate heap memory, symbolic memory locations are created and henceforth propagated with control flow and operated on by `load`, `store` and other memory operations.
+When programs under investigation execute allocation instructions, including `alloca` which allocates stack memory and `malloc` and others which allocate heap memory, symbolic memory locations are created and henceforth propagated with control flow and operated on by `load`, `store` and other memory operations. Symbolic memory is effectively blanked when instructions may have *any* effect, such as a call to an external unannotated function, or a store through an unknown pointer.
+
+#### Data structures
 
 The symbolic store as a whole is represented by `OrdinaryLocalStore`, which consists of a list of stack frames and a global heap (which also contains locations representing global variables, and other special locations). The store as a whole is a copy-on-write object, so sharing it during loops or other control flow divergences is cheap if they don't actually operate on memory. Stack frames are created and destroyed as calls are entered and exited; they may also be extended due to variable-length arrays on the stack, user `alloca` calls and similar. The heap is appended to whenever `malloc` or a user-annotated allocator is encountered.
 
@@ -26,7 +28,13 @@ Thus to sum up the memory objects:
 * `ImprovedValSetSingle` is a set of those, so it can describe `{ global X offset 0, parent-allocation-2 offset 16 }`
 * `ImprovedValSetMulti` is a list of Singles, so it can describe a struct with many pointer fields, for example.
 
-One important thing to note about the symbolic store: the LLVM type system is almost entirely irrelevant to its implementation. Struct members and similar are described by byte offsets, not field numbers, and operations such as casting pointers to and from `uint64` are entirely invisible, as are reinterpreting for example a byte array as a single large byte array or floating-point number. Some casts will be impossible to evaluate however, such as taking the top 32 bits of a pointer and combining it with a constant (we can't know ahead of time what the constant result would be, and it is meaningless as a pointer). Certain comparisons are also impossible, such as whether a pointer is numerically greater than an independently-allocated object. A special function `integrator_same_object` is provided to allow user-supplied models to replace the common use case `x >= base && x < base + offset` used to determine whether `x` belongs to a particular object `base`.
+#### Vague allocations
+
+In general, LLPE looks to allocate a symbolic memory location per allocation that would occur at runtime. However a complication arises when an allocation instruction is found while analysing the general case of a loop body. Depending on context, this couid refer to the allocation that was made in the first iteraton (as in a loop that allocates a particular object the first time it is needed and re-uses it thereafter), or to the allocation made *this* iteration (as in say an array-to-linked-list function that repeatedly allocates and populates nodes), or to an unknowable combination of the two. LLPE handles this conservatively; such allocation sites (internally called *vague* allocations) can only be used wtihin the loop body in question, after which they are overwritten with a no-information overdefined value.
+
+#### Implicit casts
+
+LLPE's symbolic memory supports all manner of reinterpret and other casts, explicit or implied via aliasing. Struct members and similar are described by byte offsets, not field numbers, and operations such as casting pointers to and from `uint64` are entirely invisible, as are reinterpreting for example a byte array as a single large byte array or floating-point number. Some casts will be impossible to evaluate however, such as taking the top 32 bits of a pointer and combining it with a constant (we can't know ahead of time what the constant result would be, and it is meaningless as a pointer). Certain comparisons are also impossible, such as whether a pointer is numerically greater than an independently-allocated object. A special function `integrator_same_object` is provided to allow user-supplied models to replace the common use case `x >= base && x < base + offset` used to determine whether `x` belongs to a particular object `base`.
 
 Useful files to read when investigating / improving the symbolic memory implementation:
 
