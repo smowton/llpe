@@ -8,7 +8,7 @@ This example will teach how to create a conditional specialisation: a specialise
 
 Here is our input program:
 
-```
+```cpp
 int my_strlen(const char* s) {
 
     int ret = 0;

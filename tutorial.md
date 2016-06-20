@@ -22,7 +22,7 @@ The very simplest case: we'll feed LLPE a program that has a predictable constan
 
 The source program:
 
-```
+```cpp
 int main(int argc, char** argv) {
 
     int ret = 0;
