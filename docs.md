@@ -14,6 +14,8 @@ permalink: /docs/
 * [Conditional Specialisation](/conditionalspec/)
 * [Unconditional parameter specialisation](/uncondspec/)
 * [Specialising with respect to command-line arguments or environment](/argvspec/)
+* [Specialising with respect to file contents](/filespec/)
+* [Customising specialisation paths](/specpaths/)
 
 #### Developer documentation
 
