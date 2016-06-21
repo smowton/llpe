@@ -18,7 +18,7 @@ Features
 Status
 ------
 
-LLPE is "feature complete" but unstable. It is currently (April 2015) undergoing code cleanup and documentation pending an initial release. As such it is suitable for experimental use (though pending documentation you are likely to need to consult the mailing lists to find your way around), but not for production use.
+LLPE is "feature complete" but unstable. As such it is suitable for experimental use, but not for production use.
 
 Related Software
 ----------------
