@@ -8,17 +8,19 @@ This is a full listing of LLPE's command-line arguments. Note various of these n
 
 #### Input
 
+* `-llpe-root fname`: start analysis at function `fname` entry point (default `main`).
+* `-llpe-target-stack fname,bbname,index`: construct a target stack that constitutes the region of interest for specialisation. For example, I might want to specialise function `h` specifically for the case when it is called via the path `f -> g -> h`, and could specify this using the directive `-llpe-root f -llpe-target-stack f,1,2 -llpe-target-stack g,3,4`, where function `f` block `1` instruction 2 is a call to `g` and `g` block `3` instruction 4 is a call to `h`. By contrast with simply using `-llpe-root h` we will be able to assume the calling environment implied by `f` and `g`. Any path that would miss the target call(s) will lead immediately to unspecialised code. When a target stack is in use, path condition directives (see below) may specify an integer stack index instead of a function name to provide a path condition about a specific specialisation context instead of every invocation of a particular function.
 * `-spec-env idx,envfile`: load key=value file `envfile` and pass it to the specialisation root argument `idx` as an `environ` style `char**`.
 * `-spec-argv argc_idx,argv_idx,argfile`: similarly, load line-delimited `argfile` and pass appropriate `argc` and `argv` values to the specialisation root function.
 * `-spec-param idx,value`: unconditionally set specialisation root argument `idx` to `value`, where `value` can be an integer, constant string or function name. No runtime check is produced.
-* `-llpe-root fname`: start analysis at function `fname` entry point (default `main`).
-* `-llpe-target-stack fname,bbname,index`: construct a target stack that constitutes the region of interest for specialisation. For example, I might want to specialise function `h` specifically for the case when it is called via the path `f -> g -> h`, and could specify this using the directive `-llpe-root f -llpe-target-stack f,1,2 -llpe-target-stack g,3,4`, where function `f` block `1` instruction 2 is a call to `g` and `g` block `3` instruction 4 is a call to `h`. By contrast with simply using `-llpe-root h` we will be able to assume the calling environment implied by `f` and `g`. Any path that would miss the target call(s) will lead immediately to unspecialised code. When a target stack is in use, path condition directives (see below) may specify an integer stack index instead of a function name to provide a path condition about a specific specialisation context instead of every invocation of a particular function.
+* `-int-spec-stdin filename`: specialise assuming that reads from `stdin` yield the contents of file `filename`.
 * `-llpe-use-global-initialisers`: Assume all globals have their initialiser values when the specialisation root is entered.
 * `-llpe-force-noalias-arg N`: Assume that specialisation root function argument `N` does not alias any global or other pointer argument to the root function.
 
 
 #### Output
 
+* `-integrator-accept-all`: Don't show the GUI; just accept whatever specialisation decisions would have been taken per default.
 * `-llpe-graphs-dir DIR`: Set where to output `dot` and `png` files for the GUI / for subsequent user reference.
 * `-llpe-verbose-overdef`: Report on stderr when an analysed instruction causes us to clear symbolic memory, usually because it wrote to an unknown address.
 * `-llpe-verbose-path-conditions`: Output a program that reports on stderr when specialised code is entered and exited, and for what reason.
@@ -48,7 +50,7 @@ This is a full listing of LLPE's command-line arguments. Note various of these n
 * `-llpe-allocator-fn mallocname,mallocarg,freename,freearg`: Annotate function `mallocname`, which takes an allocation size as parameter `mallocarg`, and `freename`, which takes a pointer to free as parameter `freearg`, to be treated analogous to `malloc` and `free`. For example, functions `myalloc` and `myfree` with the same prototypes as `malloc` and `free` could be specified: `-llpe-allocator-fn myalloc,0,myfree,0`
 * `-llpe-allocator-fn-const allocname,allocsize,freename,freearg,reallocname,reallocptrarg,reallocsizearg`: similar to above, but `allocname` doesn't take a size as a parameter but instead always returns objects of size `allocsize`. `reallocname` works like `realloc`, taking a pointer as `reallocptrarg` and a size argument `reallocsizearg`.
 * `-llpe-never-inline fname`: Never create a specialisation context for `fname`; just treat it as a barrier with unknown side-effects.
-
+* `-int-elim-read-checks`: Try to eliminate redundant checks against concurrent file modification, assuming it is only necessary to check again after a thread yield point. The resulting program may be incorrect if another process alters a specialised file.
 
 #### Concurrency annotations
 
@@ -85,7 +87,7 @@ The following special path condition is also possible:
 * `-skip-check-elim`: skip eliminating redundant checks against thread interference.
 * `-llpe-enable-sharing`: share function specialisation contexts when possible. Almost certainly bit-rotted beyond use at the moment.
 * `-llpe-verbose-sharing`: report when function sharing happens.
-
+* `-int-skip-post-commit`: skip the last optimisation stage, when e.g. basic blocks with a single predecessor and successor are merged. Useful if you want to know the original block name for a particular instruction.
 
 
 
