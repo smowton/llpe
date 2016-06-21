@@ -6,7 +6,7 @@ permalink: /docs/
 
 #### Getting started
 
-[Build instructions](/build/)
+* [Build instructions](/build/)
 
 #### Usage examples
 
@@ -16,6 +16,10 @@ permalink: /docs/
 * [Specialising with respect to command-line arguments or environment](/argvspec/)
 * [Specialising with respect to file contents](/filespec/)
 * [Customising specialisation paths](/specpaths/)
+
+#### Other user-oriented documentation
+
+* [List of command-line options](/commandline/)
 
 #### Developer documentation
 
