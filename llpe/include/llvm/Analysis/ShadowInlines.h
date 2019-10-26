@@ -1015,6 +1015,16 @@ struct ShadowInstruction {
   bool readsMemoryDirectly();
   bool hasOrderingConstraint();
 
+  uint32_t getNumSuccessors() {
+    return invar->I->getNumSuccessors();
+  }
+  bool isTerminator() {
+    return invar->I->isTerminator();
+  }
+
+  Instruction* getInstruction() {
+    return invar->I;
+  }
 };
 
 template<class X> inline bool inst_is(ShadowInstruction* SI) {

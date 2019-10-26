@@ -2563,7 +2563,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
   // is still perhaps used.
   
   if(willBeDeleted(ShadowValue(I)) 
-     && (!inst_is<TerminatorInst>(I)) 
+     && (!I->isTerminator()) 
      && (!pass->resolvedReadCalls.count(I)))
     return;
 
@@ -2589,7 +2589,7 @@ void IntegrationAttempt::emitOrSynthInst(ShadowInstruction* I, ShadowBB* BB, Sma
   // We'll emit an instruction. Is it special?
   if(inst_is<PHINode>(I))
     emitPHINode(BB, I, emitBB->specBlock);
-  else if(inst_is<TerminatorInst>(I))
+  else if(I->isTerminator())
     emitTerminator(BB, I, emitBB->specBlock);
   else
     emitInst(BB, I, emitBB->specBlock);
@@ -2862,8 +2862,8 @@ void InlineAttempt::commitArgsAndInstructions() {
 	DIFile* fakeFile = DIB.createFile(fakeFilename, "/nonesuch");
 	DISubprogram* fakeFunction = DIB.createFunction(fakeFile, fakeFilename,
 						       fakeFilename, fakeFile, 1,
-						       pass->fakeDebugType, false,
-						       true, 1);
+							pass->fakeDebugType, 1,
+							DINode::FlagZero, DISubprogram::SPFlagDefinition);
 	DILexicalBlock* fakeBlock = DIB.createLexicalBlock(fakeFunction, fakeFile, 1, 0);
 	MDNode *Scope = fakeBlock->getScope();
 	DebugLoc newFakeLoc = DebugLoc::get(fakeBlock->getLine(), fakeBlock->getColumn(), Scope, NULL);

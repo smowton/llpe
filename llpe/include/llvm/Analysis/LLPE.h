@@ -57,7 +57,6 @@ class StoreInst;
 class MemTransferInst;
 class MemIntrinsic;
 class CmpInst;
-class TerminatorInst;
 class InlineAttempt;
 class PeelAttempt;
 class LLPEAnalysisPass;

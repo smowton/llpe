@@ -671,7 +671,7 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
   ShadowInstructionInvar* SII = SI->invar;
   Instruction* I = SII->I;
 
-  if(inst_is<TerminatorInst>(SI) && !inst_is<InvokeInst>(SI)) {
+  if(SI->isTerminator() && !inst_is<InvokeInst>(SI)) {
     // Call tryEvalTerminator regardless of scope.
     return tryEvaluateTerminator(SI, loadedVarargsHere);
   }

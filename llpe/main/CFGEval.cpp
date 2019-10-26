@@ -108,7 +108,7 @@ bool IntegrationAttempt::createEntryBlock() {
 
 // Set edge from block-instance BB with terminator TI to Target alive. Return true
 // if the edge status changed (i.e. it was not already marked alive)
-static bool setEdgeAlive(TerminatorInst* TI, ShadowBB* BB, BasicBlock* Target) {
+static bool setEdgeAlive(Instruction* TI, ShadowBB* BB, BasicBlock* Target) {
 
   const unsigned NumSucc = TI->getNumSuccessors();
   bool changed = false;
@@ -308,8 +308,7 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
 
   }
 
-  TerminatorInst* TI = cast_inst<TerminatorInst>(SI);
-  const unsigned NumSucc = TI->getNumSuccessors();
+  const unsigned NumSucc = SI->getNumSuccessors();
 
   if(ConstCondition) {
 
@@ -331,7 +330,7 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
       // We know where the instruction is going -- remove this block as a predecessor for its other targets.
       LPDEBUG("Branch or switch instruction given known target: " << takenTarget->getName() << "\n");
 
-      return setEdgeAlive(TI, SI->parent, takenTarget);
+      return setEdgeAlive(SI->getInstruction(), SI->parent, takenTarget);
 
     }
     
@@ -355,7 +354,7 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
       
       SwitchInst::CaseIt targetit = Switch->findCaseValue(cast<ConstantInt>(getConstReplacement(IVS->Values[i].V)));
       BasicBlock* target = targetit->getCaseSuccessor();
-      changed |= setEdgeAlive(TI, SI->parent, target);
+      changed |= setEdgeAlive(SI->getInstruction(), SI->parent, target);
 
     }
 

@@ -29,7 +29,7 @@ static cl::opt<bool> SkipPostCommit("int-skip-post-commit");
 static BasicBlock* getUniqueSuccessor(BasicBlock* BB) {
 
   // We might run on blocks without a terminator when contexts are not yet committed.
-  TerminatorInst* TI = BB->getTerminator();
+  Instruction* TI = BB->getTerminator();
   if(!TI)
     return 0;
 

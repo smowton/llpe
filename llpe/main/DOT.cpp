@@ -437,7 +437,7 @@ void IntegrationAttempt::describeBlockAsDOT(ShadowBBInvar* BBI, ShadowBB* BB, co
   if(brief && !BB)
     return;
 
-  TerminatorInst* TI = BBI->BB->getTerminator();
+  Instruction* TI = BBI->BB->getTerminator();
   bool useLabels = false;
   if(!forceSuccessors) {
     if(BranchInst* BI = dyn_cast<BranchInst>(TI))
