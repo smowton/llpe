@@ -503,7 +503,7 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
 
   }
 
-  DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
+  LLVM_DEBUG(dbgs() << "Considering inlining starting at " << F.getName() << ":\n");
 
   std::vector<Constant*> argConstants(F.arg_size(), 0);
   uint32_t argvIdx = 0xffffffff;

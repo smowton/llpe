@@ -75,7 +75,7 @@ bool llvm::GetDefinedRange(ShadowValue DefinedBase, int64_t DefinedOffset, uint6
     << "Load Ptr   = " << *LoadPtr << "\n";
     abort();
 #endif
-    DEBUG(dbgs() << "*** AA Failure ***\n");
+    LLVM_DEBUG(dbgs() << "*** AA Failure ***\n");
     return false;
   }
   

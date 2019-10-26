@@ -105,7 +105,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
     if(byte.Overdef || byte.SetType != ValSetTypeScalar || byte.Values.size() != 1) {
 
-      DEBUG(dbgs() << "Open forwarding error\n");
+      LLVM_DEBUG(dbgs() << "Open forwarding error\n");
       success = false;
       
     }
@@ -113,9 +113,9 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
 
       byte.coerceToType(byteType, 1, 0);
 
-      DEBUG(dbgs() << "Open forwarding success: ");
-      DEBUG(printPB(dbgs(), byte));
-      DEBUG(dbgs() << "\n");
+      LLVM_DEBUG(dbgs() << "Open forwarding success: ");
+      LLVM_DEBUG(printPB(dbgs(), byte));
+      LLVM_DEBUG(dbgs() << "\n");
 
       uint64_t nextChar;
       tryGetConstantInt(byte.Values[0].V, nextChar); 

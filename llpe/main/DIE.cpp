@@ -112,7 +112,7 @@ public:
 
       InlineAttempt* IA = UserI->parent->IA->getInlineAttempt(UserI);
       if((!IA) || (!IA->isEnabled()) || IA->commitsOutOfLine()) {
-	DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << itcache(UserI) << "\n");
+	LLVM_DEBUG(dbgs() << "Must assume instruction alive due to use in unexpanded call " << itcache(UserI) << "\n");
 	maybeLive = true;
 	return;
       }

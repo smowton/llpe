@@ -622,13 +622,13 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
       return (FromC);
     else if(allowTotalDefnImplicitPtrToInt(FromType, Target, TD))
       return ConstantExpr::getPtrToInt(FromC, Target);
-    DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
+    LLVM_DEBUG(dbgs() << "Can't use simple element extraction because load implies cast from " << (*(FromType)) << " to " << (*Target) << "\n");
     return 0;
   }
 
   if(Offset < 0 || Offset + TargetSize > FromSize) {
 
-    DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
+    LLVM_DEBUG(dbgs() << "Can't use element extraction because offset " << Offset << " and size " << TargetSize << " are out of bounds for object with size " << FromSize << "\n");
     return 0;
 
   }
@@ -673,7 +673,7 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
 
     const StructLayout* SL = TD->getStructLayout(CS->getType());
     if(!SL) {
-      DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
+      LLVM_DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
       return 0;
     }
 
@@ -689,10 +689,10 @@ Constant* llvm::extractAggregateMemberAt(Constant* FromC, int64_t Offset, Type* 
       // This is a sub-access within this element.
       return extractAggregateMemberAt(cast<Constant>(FromC->getOperand(StartE)), StartOff, Target, TargetSize, TD);
     }
-    DEBUG(dbgs() << "Can't use simple element extraction because load spans multiple elements\n");
+    LLVM_DEBUG(dbgs() << "Can't use simple element extraction because load spans multiple elements\n");
   }
   else {
-    DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
+    LLVM_DEBUG(dbgs() << "Can't use simple element extraction because load requires sub-field access\n");
   }
 
   return 0;
@@ -1598,7 +1598,7 @@ void llvm::getConstSubVals(ShadowValue FromSV, uint64_t Offset, uint64_t TargetS
 
     const StructLayout* SL = GlobalTD->getStructLayout(CS->getType());
     if(!SL) {
-      DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
+      LLVM_DEBUG(dbgs() << "Couldn't get struct layout for type " << *(CS->getType()) << "\n");
       Dest.push_back(IVSR(Offset, TargetSize, ImprovedValSetSingle(ValSetTypeUnknown, true)));
       return;
     }

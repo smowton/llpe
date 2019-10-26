@@ -348,7 +348,7 @@ static ShadowValue getOpenCmpResult(CmpInst* CmpI, int64_t CmpVal, bool flip) {
       return ShadowValue(ConstantInt::getFalse(CmpI->getContext()));
     break;
   default:
-    DEBUG(dbgs() << "Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
+    LLVM_DEBUG(dbgs() << "Failed to fold " << itcache(*CmpI) << " because it compares a symbolic FD using an unsupported predicate\n");
     break;
   }
 

@@ -40,7 +40,7 @@
 #include <string>
 #include <vector>
 
-#define LPDEBUG(x) DEBUG(do { printDebugHeader(dbgs()); dbgs() << ": " << x; } while(0))
+#define LPDEBUG(x) LLVM_DEBUG(do { printDebugHeader(dbgs()); dbgs() << ": " << x; } while(0))
 
 namespace llvm {
 

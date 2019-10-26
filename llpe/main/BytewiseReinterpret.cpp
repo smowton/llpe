@@ -133,7 +133,7 @@ bool PartialVal::combineWith(Constant* C, uint64_t ReadOffset, uint64_t FirstDef
   memset(tempBuf, 0, FirstNotDef - FirstDef);
 
   if(!XXXReadDataFromGlobal(C, ReadOffset, tempBuf, FirstNotDef - FirstDef, *GlobalTD)) {
-    DEBUG(dbgs() << "XXXReadDataFromGlobal failed; perhaps the source " << *(C) << " can't be bitcast?\n");
+    LLVM_DEBUG(dbgs() << "XXXReadDataFromGlobal failed; perhaps the source " << *(C) << " can't be bitcast?\n");
     if(error)
       *error = "RDFG";
     return false;
