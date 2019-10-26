@@ -729,7 +729,7 @@ void IntegrationAttempt::emitPathConditionCheck(PathCondition& Cond, PathConditi
 
       Function* StrcmpFun = getGlobalModule()->getFunction("strcmp");
       if(!StrcmpFun)
-	StrcmpFun = cast<Function>(getGlobalModule()->getOrInsertFunction("strcmp", StrcmpType));
+	StrcmpFun = cast<Function>(getGlobalModule()->getOrInsertFunction("strcmp", StrcmpType).getCallee());
       
       if(testRoot->getType() != Int8Ptr) {
 	Instruction::CastOps Op = CastInst::getCastOpcode(testRoot, false, Int8Ptr, false);
@@ -3027,7 +3027,7 @@ void llvm::emitRuntimePrint(BasicBlock* emitBB, std::string& message, Value* par
       Type* Int32 = Type::getInt32Ty(emitBB->getContext());
       FunctionType* PrintfTy = FunctionType::get(Int32, ArrayRef<Type*>(CharPtr), /*vararg=*/true);
 
-      Printf = M->getOrInsertFunction("printf", PrintfTy);
+      Printf = cast<Function>(M->getOrInsertFunction("printf", PrintfTy).getCallee());
     
     }
 

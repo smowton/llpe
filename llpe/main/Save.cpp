@@ -1285,7 +1285,7 @@ static Constant* getOrInsertLocalFunction(StringRef Name, FunctionType* FT) {
   Module* M = getGlobalModule();
   if(Function* F = M->getFunction(Name))
     return F;
-  return M->getOrInsertFunction(Name, FT);
+  return cast<Constant>(M->getOrInsertFunction(Name, FT).getCallee());
 
 }
 
@@ -1359,7 +1359,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	  Constant* MemcmpSize = ConstantInt::get(GInt64, it->second.readSize);
 
-	  Value *MemCmpFn = F.getParent()->getOrInsertFunction("memcmp", GInt32, GInt8Ptr, GInt8Ptr, GInt64, (Type*)0);
+	  Value *MemCmpFn = cast<Constant>(F.getParent()->getOrInsertFunction("memcmp", GInt32, GInt8Ptr, GInt8Ptr, GInt64, (Type*)0).getCallee());
 	  
 	  Value *CallArgs[] = { readBuffer, checkBuffer, MemcmpSize };
 	  Instruction* ReadMemcmp = CallInst::Create(MemCmpFn, ArrayRef<Value*>(CallArgs, 3), "", emitBB);
@@ -1381,7 +1381,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  // Read from a regular file.
 	  // Emit a check that file specialisations are still admissible:
 	  Type* Int32Ty = IntegerType::get(Context, 32);
-	  Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty);
+	  Constant* CheckFn = cast<Constant>(F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty).getCallee());
 	  Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
       
 	  Constant* Zero32 = Constant::getNullValue(Int32Ty);
@@ -1526,7 +1526,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
     // Emit an lliowd_ok check, and if it fails branch to the real stat instruction.
     Type* Int32Ty = IntegerType::get(Context, 32);
-    Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty);
+    Constant* CheckFn = cast<Constant>(F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty).getCallee());
     Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), VerboseNames ? "readcheck" : "", emitBB);
 	
     Constant* Zero32 = Constant::getNullValue(Int32Ty);
@@ -2830,7 +2830,7 @@ void InlineAttempt::commitArgsAndInstructions() {
        (((uint32_t)pass->llioPreludeStackIdx) == pass->targetCallStack.size() && isStackTop)) {
 
       Type* Void = Type::getVoidTy(emitBB->specBlock->getContext());
-      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void);
+      Constant* WDInit = cast<Constant>(getGlobalModule()->getOrInsertFunction("lliowd_init", Void).getCallee());
       CallInst::Create(WDInit, ArrayRef<Value*>(), "", emitBB->specBlock);
 
     }
@@ -3365,7 +3365,7 @@ void LLPEAnalysisPass::commit() {
 	++it;
 
       Type* Void = Type::getVoidTy(preludeBlock->getContext());
-      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void);
+      Constant* WDInit = cast<Constant>(getGlobalModule()->getOrInsertFunction("lliowd_init", Void).getCallee());
       CallInst::Create(WDInit, ArrayRef<Value*>(), "", &*it);
 
     }

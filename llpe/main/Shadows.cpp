@@ -160,7 +160,7 @@ ShadowLoopInvar* LLPEAnalysisPass::getLoopInfo(ShadowFunctionInvar* FInfo,
   }
 
   {
-    SmallVector<std::pair<const BasicBlock*, const BasicBlock*>, 4> exitEdges;
+    SmallVector<std::pair<BasicBlock*, BasicBlock*>, 4> exitEdges;
     L->getExitEdges(exitEdges);
     LInfo->exitEdges.reserve(exitEdges.size());
     for(unsigned i = 0; i < exitEdges.size(); ++i)
