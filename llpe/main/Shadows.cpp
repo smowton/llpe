@@ -19,6 +19,7 @@
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LLPE.h"
+#include "llvm/Support/AtomicOrdering.h"
 
 using namespace llvm;
 
@@ -999,11 +1000,11 @@ bool ShadowInstruction::hasOrderingConstraint() {
   case Instruction::Store:
     return !cast_inst<StoreInst>(this)->isUnordered();
   case Instruction::AtomicRMW:
-    return cast_inst<AtomicRMWInst>(this)->getOrdering() > Unordered;
+    return isStrongerThan(cast_inst<AtomicRMWInst>(this)->getOrdering(), AtomicOrdering::Unordered);
   case Instruction::AtomicCmpXchg: 
     {
       auto cmpx = cast_inst<AtomicCmpXchgInst>(this);
-      return cmpx->getSuccessOrdering() > Unordered || cmpx->getFailureOrdering() > Unordered;
+      return isStrongerThan(cmpx->getSuccessOrdering(), AtomicOrdering::Unordered) || isStrongerThan(cmpx->getFailureOrdering(), AtomicOrdering::Unordered);
     }
   case Instruction::Fence:
     return true;

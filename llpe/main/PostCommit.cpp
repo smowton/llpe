@@ -77,7 +77,7 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T ite
 
   for(T it = itstart; it != itend; ++it) {
 
-    BasicBlock* BB = it;
+    BasicBlock* BB = &*it;
     for(BasicBlock::iterator II = BB->begin(), IE = BB->end(); II != IE; ++II) {
 
       if(isInstructionTriviallyDead(&*II, GlobalTLI))
@@ -100,7 +100,7 @@ template<class T, class Callback> void postCommitOptimiseBlocks(T itstart, T ite
 
   for(T it = itstart; it != itend; ++it) {
 
-    BasicBlock* BB = it;
+    BasicBlock* BB = &*it;
     if(!Seen.insert(BB).second)
       continue;
 

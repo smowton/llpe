@@ -171,7 +171,7 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
   Constant* nullPtr = Constant::getNullValue(BytePtr);
   new StoreInst(nullPtr, argvEndPtr, InsertBefore);
 
-  F->setDoesNotAlias(argvIdx+1);
+  F->addParamAttr(argvIdx, Attribute::NoAlias);
 
 }
 

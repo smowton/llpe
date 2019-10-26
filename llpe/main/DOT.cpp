@@ -348,7 +348,7 @@ void llvm::printPathCondition(PathCondition& PC, PathConditionTypes t, ShadowBB*
     BasicBlock::iterator BI = PC.instBB->begin();
     std::advance(BI, PC.instIdx);
 
-    Out << arrow << PC.instBB->getName() << " / " << itcache((Instruction*)BI, true);
+    Out << arrow << PC.instBB->getName() << " / " << itcache(&*BI, true);
 
   }
 

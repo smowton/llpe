@@ -499,7 +499,7 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
   // Mark realloc as an identified object if the function is defined:
   if(Function* Realloc = M.getFunction("realloc")) {
 
-    Realloc->setDoesNotAlias(0);
+    Realloc->setReturnDoesNotAlias();
 
   }
 

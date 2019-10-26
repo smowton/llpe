@@ -70,7 +70,7 @@ class PtrToIntInst;
 class IntToPtrInst;
 class BinaryOperator;
 class DominatorTree;
-template<class> class DominatorTreeBase;
+template<class, bool> class DominatorTreeBase;
 template<class> class DomTreeNodeBase;
 class IAWalker;
 class BackwardIAWalker;

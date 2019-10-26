@@ -294,7 +294,7 @@ Constant* llvm::constFromBytes(unsigned char* Bytes, Type* Ty, const DataLayout*
 
       Constant* Result = ConstantExpr::getBitCast(IntResult, Ty); // The bitcast might eval here
       if(ConstantExpr* CE = dyn_cast_or_null<ConstantExpr>(Result))
-	Result = ConstantFoldConstantExpression(CE, *TD);
+	Result = ConstantFoldConstant(CE, *TD);
       if(!Result) {
 	DEBUG(dbgs() << "Failed to fold casting " << *(IntResult) << " to " << *(Ty) << "\n");
 	return 0;

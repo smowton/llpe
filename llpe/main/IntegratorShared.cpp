@@ -94,7 +94,7 @@ std::pair<ValSetType, ImprovedVal> llvm::getValPB(Value* V) {
 	  if (OpC->isZero()) continue;
     
 	  // Handle a struct and array indices which add their offset to the pointer.
-	  if (StructType *STy = dyn_cast<StructType>(*GTI)) {
+	  if (StructType *STy = GTI.getStructTypeOrNull()) {
 	    Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC->getZExtValue());
 	  } else {
 	    uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());

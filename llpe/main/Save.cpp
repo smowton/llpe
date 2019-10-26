@@ -198,8 +198,8 @@ Function* llvm::cloneEmptyFunction(Function* F, GlobalValue::LinkageTypes LT, co
 
     auto attrs = NewF->getAttributes();
 
-    attrs = attrs.removeAttribute(F->getContext(), AttributeSet::ReturnIndex, Attribute::ZExt);
-    attrs = attrs.removeAttribute(F->getContext(), AttributeSet::ReturnIndex, Attribute::SExt);
+    attrs = attrs.removeAttribute(F->getContext(), AttributeList::ReturnIndex, Attribute::ZExt);
+    attrs = attrs.removeAttribute(F->getContext(), AttributeList::ReturnIndex, Attribute::SExt);
     if(NewFType->getNumParams() != 0)
       attrs = attrs.removeAttribute(F->getContext(), 1, Attribute::StructRet);
 
@@ -1079,7 +1079,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
       // to continue on the specialised path; in ConditionalSpec.cpp we can see the opposite case being synthesised.
       if(IA->hasFailedReturnPath() && !IA->isRootMainCall()) {
 
-	Value* retFlag = ConstantInt::getTrue(emitBB->getContext());	
+	Constant* retFlag = ConstantInt::getTrue(emitBB->getContext());	
 	if(!retVal) {
 
 	  // Function was void before; just return true.
@@ -1093,7 +1093,7 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 	  Type* normalRet = retType->getElementType(0);
 	  Constant* undefRet = UndefValue::get(normalRet);
 	  // Create { undef, true }
-	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, retFlag, NULL);
+	  Value* aggTemplate = ConstantStruct::get(retType, {undefRet, retFlag});
 	  // Return { retval, true }
 	  retVal = InsertValueInst::Create(aggTemplate, retVal, 0, VerboseNames ? "success_ret" : "", emitBB);
 
@@ -1381,7 +1381,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 	  // Read from a regular file.
 	  // Emit a check that file specialisations are still admissible:
 	  Type* Int32Ty = IntegerType::get(Context, 32);
-	  Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+	  Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty);
 	  Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), "readcheck", emitBB);
       
 	  Constant* Zero32 = Constant::getNullValue(Int32Ty);
@@ -1526,7 +1526,7 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
     // Emit an lliowd_ok check, and if it fails branch to the real stat instruction.
     Type* Int32Ty = IntegerType::get(Context, 32);
-    Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty, NULL);
+    Constant* CheckFn = F.getParent()->getOrInsertFunction("lliowd_ok", Int32Ty);
     Value* CheckResult = CallInst::Create(CheckFn, ArrayRef<Value*>(), VerboseNames ? "readcheck" : "", emitBB);
 	
     Constant* Zero32 = Constant::getNullValue(Int32Ty);
@@ -1647,7 +1647,7 @@ void IntegrationAttempt::emitCall(ShadowBB* BB, ShadowInstruction* I, SmallVecto
 	// if not required.
 
 	ImmutableCallSite OldCI(I->invar->I);
-	AttributeSet attrs = OldCI.getAttributes();
+	AttributeList attrs = OldCI.getAttributes();
 	
 	std::vector<Value*> Args;
 
@@ -2830,7 +2830,7 @@ void InlineAttempt::commitArgsAndInstructions() {
        (((uint32_t)pass->llioPreludeStackIdx) == pass->targetCallStack.size() && isStackTop)) {
 
       Type* Void = Type::getVoidTy(emitBB->specBlock->getContext());
-      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
+      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void);
       CallInst::Create(WDInit, ArrayRef<Value*>(), "", emitBB->specBlock);
 
     }
@@ -3365,7 +3365,7 @@ void LLPEAnalysisPass::commit() {
 	++it;
 
       Type* Void = Type::getVoidTy(preludeBlock->getContext());
-      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void, NULL);
+      Constant* WDInit = getGlobalModule()->getOrInsertFunction("lliowd_init", Void);
       CallInst::Create(WDInit, ArrayRef<Value*>(), "", &*it);
 
     }

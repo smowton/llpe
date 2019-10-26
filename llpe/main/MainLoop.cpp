@@ -28,6 +28,7 @@
 #include "llvm/Analysis/LLPE.h"
 
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -694,7 +695,8 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 	
       // Certain intrinsics manifest as calls but fold like ordinary instructions.
       if(Function* F = getCalledFunction(SI)) {
-	if(canConstantFoldCallTo(F))
+	ImmutableCallSite ICS(cast<CallInst>(I));
+	if(canConstantFoldCallTo(ICS, F))
 	  break;
       }
 
@@ -1157,7 +1159,8 @@ void IntegrationAttempt::executeBlock(ShadowBB* BB) {
       {
 
 	if(Function* F = getCalledFunction(SI)) {
-	  if(canConstantFoldCallTo(F))
+	  ImmutableCallSite ICS(cast<CallInst>(I));	  
+	  if(canConstantFoldCallTo(ICS, F))
 	    break;
 	}
 

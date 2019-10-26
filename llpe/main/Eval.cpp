@@ -1401,7 +1401,7 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 	  else {
 	    if (!OpC) continue;
 	    // Handle a struct and array indices which add their offset to the pointer.
-	    if (StructType *STy = dyn_cast<StructType>(*GTI)) {
+	    if (StructType *STy = GTI.getStructTypeOrNull()) {
 	      Improved.Offset += GlobalTD->getStructLayout(STy)->getElementOffset(OpC);
 	    } else {
 	      uint64_t Size = GlobalTD->getTypeAllocSize(GTI.getIndexedType());
@@ -1623,9 +1623,9 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
 
   }
   else if(isa<LoadInst>(I))
-    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], *GlobalTD);
+    newConst = ConstantFoldLoadFromConstPtr(instOperands[0], I->getType(), *GlobalTD);
   else
-    newConst = ConstantFoldInstOperands(I->getOpcode(), I->getType(), instOperands, *GlobalTD, GlobalTLI);
+    newConst = ConstantFoldInstOperands(I, instOperands, *GlobalTD, GlobalTLI);
 
   if(newConst) {
 
@@ -2187,7 +2187,7 @@ bool IntegrationAttempt::tryEvaluateMultiInst(ShadowInstruction* SI, ImprovedVal
 
 	Constant* MaskedConst = ConstantExpr::getAnd(PVConst, MaskC);
 	if(ConstantExpr* MaskedCE = dyn_cast<ConstantExpr>(MaskedConst))
-	    MaskedConst = ConstantFoldConstantExpression(MaskedCE, *GlobalTD);
+	    MaskedConst = ConstantFoldConstant(MaskedCE, *GlobalTD);
 
 	ShadowValue MaskedConstV(MaskedConst);
 	addValToPB(MaskedConstV, *NewIVS);

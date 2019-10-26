@@ -318,7 +318,7 @@ uint32_t llvm::findBlock(ShadowFunctionInvar* SFI, BasicBlock* BB) {
 static BasicBlock* findBlockRaw(Function* F, std::string& name) {
 
   for(Function::iterator FI = F->begin(), FE = F->end(); FI != FE; ++FI) {
-    if(((BasicBlock*)FI)->getName() == name)
+    if((&*FI)->getName() == name)
       return &*FI;
   }
 
@@ -1229,8 +1229,8 @@ void LLPEAnalysisPass::parseArgs(Function& F, std::vector<Constant*>& argConstan
   if(this->emitFakeDebug) {
     DIBuilder DIB(*F.getParent());
     DIFile* file = DIB.createFile("llpe.file", "/nonesuch");
-    DIB.createCompileUnit(dwarf::DW_LANG_C89, "llpe.file", "/nonesuch", "LLPE", true, "", 0);
-    DIBasicType* retType = DIB.createBasicType("fakechar", 8, 0, dwarf::DW_ATE_signed);
+    DIB.createCompileUnit(dwarf::DW_LANG_C89, file, "LLPE", true, "", 0);
+    DIBasicType* retType = DIB.createBasicType("fakechar", 8, dwarf::DW_ATE_signed);
     DITypeRefArray functionParamTypes = DIB.getOrCreateTypeArray(ArrayRef<Metadata*>((Metadata*)retType));
     this->fakeDebugType = DIB.createSubroutineType(functionParamTypes);
   }

@@ -325,7 +325,7 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
     else {
       SwitchInst* SwI = cast_inst<SwitchInst>(SI);
       SwitchInst::CaseIt targetidx = SwI->findCaseValue(ConstCondition);
-      takenTarget = targetidx.getCaseSuccessor();
+      takenTarget = targetidx->getCaseSuccessor();
     }
     if(takenTarget) {
       // We know where the instruction is going -- remove this block as a predecessor for its other targets.
@@ -354,7 +354,7 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
     for (unsigned i = 0, ilim = IVS->Values.size(); i != ilim; ++i) {
       
       SwitchInst::CaseIt targetit = Switch->findCaseValue(cast<ConstantInt>(getConstReplacement(IVS->Values[i].V)));
-      BasicBlock* target = targetit.getCaseSuccessor();
+      BasicBlock* target = targetit->getCaseSuccessor();
       changed |= setEdgeAlive(TI, SI->parent, target);
 
     }

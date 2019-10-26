@@ -1351,7 +1351,7 @@ Value* IntegrationAttempt::getSpecValue(uint32_t blockIdx, uint32_t instIdx, Val
       }
       else {
 
-	Ret = getValAsType(Ret, V->getType(), (Instruction*)BI);
+	Ret = getValAsType(Ret, V->getType(), &*BI);
 	
       }
 
@@ -2029,7 +2029,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	// Out-of-line commit
 	release_assert(CommitF);
 	Value* Ret;
-	Value* FailFlag = ConstantInt::getFalse(BB->getContext());
+	Constant* FailFlag = ConstantInt::getFalse(BB->getContext());
 	
 	if(F.getFunctionType()->getReturnType()->isVoidTy())
 	  Ret = FailFlag;
@@ -2041,7 +2041,7 @@ void InlineAttempt::remapFailedBlock(BasicBlock::iterator BI, BasicBlock* BB, ui
 	  StructType* retType = cast<StructType>(CommitF->getFunctionType()->getReturnType());
 	  Type* normalRet = Ret->getType();
 	  Constant* undefRet = UndefValue::get(normalRet);
-	  Value* aggTemplate = ConstantStruct::get(retType, undefRet, FailFlag, NULL);
+	  Value* aggTemplate = ConstantStruct::get(retType, {undefRet, FailFlag});
 	  Ret = InsertValueInst::Create(aggTemplate, Ret, 0, VerboseNames ? "fail_ret" : "", RI);
 
 	}
