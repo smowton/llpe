@@ -37,7 +37,7 @@ Build steps:
 
     You should give CMake a build type compatible with the LLVM distribution you're compiling against (e.g. a Debug LLPE build will not build against a Release LLVM). For example, pass <tt>-D CMAKE\_BUILD\_TYPE:STRING=RelWithDebInfo</tt>.
 
-    If you're building against an LLVM build that hasn't been installed, or CMake doesn't find the installed distribution in its default search path, you might need to include a parameter like <tt>-D CMAKE\_PREFIX\_PATH=/path/to/my/llvm-3.6-build</tt>
+    If you're building against an LLVM build that hasn't been installed, or CMake doesn't find the installed distribution in its default search path, you might need to include a parameter like <tt>-D CMAKE\_PREFIX\_PATH=/path/to/my/llvm-3.6-build</tt>. To build against a specific distributed version, try something like <tt>-DCMAKE\_PREFIX\_PATH=/usr/lib/llvm-9</tt>
 
 5. Build:
 
