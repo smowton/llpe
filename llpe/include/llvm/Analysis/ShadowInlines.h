@@ -759,6 +759,9 @@ struct HalfOpenNoMerge {
     return false;
   }
 
+  static inline bool nonEmpty(const uint64_t &a, const uint64_t &b) {
+    return a <= b;
+  }
 };
 
 struct HalfOpenWithMerge {
