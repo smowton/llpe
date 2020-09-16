@@ -516,6 +516,7 @@ bool IntegrationAttempt::tryFoldNonConstCmp(ShadowInstruction* SI, std::pair<Val
     std::swap(Op0Null, Op1Null);
     std::swap(Op0CI, Op1CI);
     std::swap(Op0CIValid, Op1CIValid);
+    std::swap(Op0AP, Op1AP);
     Pred = getReversePred(Pred);
   }
 
