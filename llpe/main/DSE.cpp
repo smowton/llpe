@@ -237,9 +237,10 @@ bool TrackedAlloc::dropReference() {
 
 // The DSEMaps used to track killable stores might contain stores that clearly cannot
 // be eliminated because they have been proven maybe-used in the meantime. Remove
-// useless records like this. Return true if the particular record *argit can go away.
+// useless records like this. Return true if the record has been removed and the iterator
+// argit incremented.
 
-static bool GCStores(DSEMapTy::iterator argit) {
+static bool GCStores(DSEMapTy::iterator &argit) {
 
   uint64_t entrySize = (argit.stop() - argit.start());
   const DSEMapEntry& entry = argit.value();
@@ -257,8 +258,15 @@ static bool GCStores(DSEMapTy::iterator argit) {
 
   // I think if this was empty it shouldn't be here at all?
   // So most likely this always returns false here.
-  if(!willChange)
-    return entry.size() == 0;
+  if(!willChange) {
+    if(entry.size() == 0) {
+      argit.erase();
+      return true;
+    }
+    else {
+      return false;
+    }
+  }
 
   DSEMapEntry newEntry;
 
@@ -275,9 +283,14 @@ static bool GCStores(DSEMapTy::iterator argit) {
   // Replace like this due to IntervalMap's immutable values.
   uint64_t oldStart = argit.start(), oldStop = argit.stop();
   argit.erase();
-  argit.insert(oldStart, oldStop, newEntry);
+  bool replaceEntry = newEntry.size() != 0;
 
-  return entry.size() == 0;
+  if(replaceEntry) {
+  argit.insert(oldStart, oldStop, newEntry);
+    --argit;
+  }
+
+  return !replaceEntry;
 
 }
 
@@ -297,12 +310,7 @@ DSEMapPointer DSEMapPointer::getReadableCopy() {
 
     uint64_t entrySize = (it.stop() - it.start());
 
-    if(GCStores(it)) {
-
-      it.erase();
-
-    }
-    else {
+    if(!GCStores(it)) {
 
       DSEMapEntry newEntry;
 	
@@ -477,18 +485,14 @@ void DSEMapPointer::mergeStores(DSEMapPointer* mergeFrom, DSEMapPointer* mergeTo
 
   for(DSEMapTy::iterator fromit = mergeFrom->M->begin(); fromit != mergeFrom->M->end();) {
 
-    if(GCStores(fromit))
-      fromit.erase();
-    else
+    if(!GCStores(fromit))
       ++fromit;
       
   }
 
   for(DSEMapTy::iterator toit = mergeTo->M->begin(); toit != mergeTo->M->end();) {
 
-    if(GCStores(toit))
-      toit.erase();
-    else
+    if(!GCStores(toit))
       ++toit;
       
   }

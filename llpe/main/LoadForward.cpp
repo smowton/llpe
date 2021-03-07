@@ -1867,20 +1867,25 @@ void llvm::clearRange(ImprovedValSetMulti* M, uint64_t Offset, uint64_t Size) {
 
     if(RHS.isInitialised()) {
 
-      ImprovedValSetMulti::MapIt replacementStart;      
-
       ++found;
 
-      // Insert the original value with its original value. This will temporarily produce an invalid
-      // interval map (e.g. 0-16: [i32 1, i32 2, i32 3, i32 4] where we're replacing 4-8 will have
-      // become 0-4: i32 1, (4-8 blanked), 0-16: [i32 1, i32 2, i32 3, i32 4]; therefore truncateLeft
-      // -> truncateConstVal must not do any imap searches.
-      // The setStartUnchecked command below will make the map well-formed again.
+      // Use a temporary scratch map to truncate the original value from the left, then add it back
+      // to this map:
+      ImprovedValSetMulti::MapTy scratchMap{GlobalIHP->IMapAllocator};
+      ImprovedValSetMulti::MapIt startIt;
+      ImprovedValSetMulti::MapIt ignored;
+      scratchMap.insert(oldStart, oldStop, RHS);
+      startIt = scratchMap.begin();
+      truncateLeft(startIt, oldStop - LastByte, ignored);
+      // Some truncate paths don't update the value's stop index (e.g. the setOverdef just above)
+      // so ensure it is correct here:
+      scratchMap.begin().setStartUnchecked(LastByte);
 
-      found.insert(LastByte, oldStop, RHS);
-      found.setStartUnchecked(oldStart);      
-      truncateLeft(found, oldStop - LastByte, replacementStart);
-      replacementStart.setStartUnchecked(LastByte);
+      // Now insert the trimmed values back in: they should go after the found value:
+      for(auto scratchIt = scratchMap.begin(), scratchEnd = scratchMap.end(); scratchIt != scratchEnd; ++scratchIt) {
+        found.insert(scratchIt.start(), scratchIt.stop(), scratchIt.value());
+      }
+
       M->CoveredBytes += (oldStop - LastByte);
       return;
 
@@ -2072,6 +2077,7 @@ void llvm::truncateLeft(ImprovedValSetMulti::MapIt& it, uint64_t n, ImprovedValS
     uint64_t oldStart = it.start(), oldStop = it.stop();
     it.erase(); // Moves iterator to the right
     it.insert(oldStart, oldStop, newVal); // Moves iterator to point at new entry    
+    firstPtr = it;
     return;
   }
 
