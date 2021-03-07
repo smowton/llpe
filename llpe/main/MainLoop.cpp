@@ -584,7 +584,7 @@ bool IntegrationAttempt::analyseBlock(uint32_t& blockIdx, bool inLoopAnalyser, b
   // Else we should just analyse this block here.
   anyChange |= analyseBlockInstructions(BB, inLoopAnalyser, inAnyLoop);
 
-  LFV3(errs() << nestingIndent() << "End block " << BB->invar->BB->getName() << " store " << BB->localStore << " refcount " << BB->localStore->refCount << "\n");
+  LFV3(errs() << nestingIndent() << "End block " << BB->invar->BB->getName() << " store " << BB->localStore; if(BB->localStore) errs() << " refcount " << BB->localStore->refCount; errs() << "\n");
 
   return anyChange;
 
@@ -865,7 +865,7 @@ bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) 
   ShadowBB* HBB = getBB(L->headerIdx);
   ShadowBB* LBB = getBB(L->latchIdx);
 
-  LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at entry: " << PHBB->localStore->refCount << "\n");
+  LFV3(errs() << "Loop " << L->headerIdx << " refcount at entry: " << PHBB->localStore->refCount << "\n");
 
   // Stop iterating if we show that the latch edge died!
   while(anyChange && (firstIter || !edgeIsDead(getBBInvar(L->latchIdx), HBB->invar))) {
@@ -938,7 +938,7 @@ bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) 
 
     }
 
-    LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount after old exit elim: " << PHBB->localStore->refCount << "\n");
+    LFV3(errs() << "Loop " << L->headerIdx << " refcount after old exit elim: " << PHBB->localStore->refCount << "\n");
 
     anyChange = false;
 
@@ -966,7 +966,7 @@ bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) 
 
     firstIter = false;
 
-    LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount after block analysis: " << PHBB->localStore->refCount << "\n");
+    LFV3(errs() << "Loop " << L->headerIdx << " refcount after block analysis: " << PHBB->localStore->refCount << "\n");
 
   }
 
@@ -997,7 +997,7 @@ bool IntegrationAttempt::analyseLoop(const ShadowLoopInvar* L, bool nestedLoop) 
   if(thisLatchAlive)
     --pendingEdges;
 
-  LFV3(errs() << "Loop " << L->getHeader()->getName() << " refcount at exit: " << PHBB->localStore->refCount << "\n");
+  LFV3(errs() << "Loop " << L->headerIdx << " refcount at exit: "; if(PHBB->localStore) errs() << PHBB->localStore->refCount; else errs() << "(null)"; errs() << "\n");
   
   return everChanged;
 
