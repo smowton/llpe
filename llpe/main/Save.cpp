@@ -1480,11 +1480,10 @@ bool IntegrationAttempt::emitVFSCall(ShadowBB* BB, ShadowInstruction* I, SmallVe
 
 	Value *CallArgs[] = {
 	  DestCast, CopySource, MemcpySize,
-	  ConstantInt::get(Type::getInt32Ty(Context), 1),
 	  ConstantInt::get(Type::getInt1Ty(Context), 0)
 	};
 	
-	Instruction* ReadMemcpy = CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+	Instruction* ReadMemcpy = CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 4), "", emitBB);
 
 	DenseMap<ShadowInstruction*, TrackedStore*>::iterator findit = pass->trackedStores.find(I);
 	if(findit != pass->trackedStores.end()) {
@@ -2297,11 +2296,10 @@ static Instruction* emitMemcpyInst(Value* To, Value* From, uint64_t Size, BasicB
 
   Value *CallArgs[] = {
     To, From, MemcpySize,
-    ConstantInt::get(Type::getInt32Ty(emitBB->getContext()), 1),
     ConstantInt::get(Type::getInt1Ty(emitBB->getContext()), 0)
   };
 	
-  return CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 5), "", emitBB);
+  return CallInst::Create(MemCpyFn, ArrayRef<Value*>(CallArgs, 4), "", emitBB);
 
 }
 
