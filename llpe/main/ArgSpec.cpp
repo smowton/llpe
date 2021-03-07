@@ -158,7 +158,7 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
 
       // Get a pointer into the real argv:
       Constant* gepArg = ConstantInt::get(Int64, i);
-      Instruction* argvPtr = GetElementPtrInst::Create(BytePtr, &*Arg, gepArg, "argv_ptr", InsertBefore);
+      Instruction* argvPtr = GetElementPtrInst::Create(nullptr, &*Arg, gepArg, "argv_ptr", InsertBefore);
       new StoreInst(stringPtr, argvPtr, InsertBefore);
 
     }
@@ -167,7 +167,7 @@ void LLPEAnalysisPass::loadArgv(Function* F, std::string& path, unsigned argvIdx
 
   // Null terminate the argv array:
   Constant* gepArg = ConstantInt::get(Int64, argc);
-  Instruction* argvEndPtr = GetElementPtrInst::Create(BytePtr, &*Arg, gepArg, "argv_end_ptr", InsertBefore);
+  Instruction* argvEndPtr = GetElementPtrInst::Create(nullptr, &*Arg, gepArg, "argv_end_ptr", InsertBefore);
   Constant* nullPtr = Constant::getNullValue(BytePtr);
   new StoreInst(nullPtr, argvEndPtr, InsertBefore);
 

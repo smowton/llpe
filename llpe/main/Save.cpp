@@ -2170,7 +2170,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
     InTy = cast<PointerType>(InTy)->getElementType();
     if(Type* ElTy = XXXFindElementAtOffset(InTy, Offset, GEPIdxs, GlobalTD)) {
 
-      Result = GetElementPtrInst::Create(ElTy, BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
+      Result = GetElementPtrInst::Create(nullptr, BaseI, GEPIdxs, VerboseNames ? "synthgep" : "", emitBB);
       if((!isa<PointerType>(targetType)) || ElTy != cast<PointerType>(targetType)->getElementType())
 	Result = CastInst::CreatePointerCast(Result, targetType, VerboseNames ? "synthcastback" : "", emitBB);
       return true;
@@ -2188,7 +2188,7 @@ bool IntegrationAttempt::synthCommittedPointer(ShadowValue* I, Type* targetType,
 
     // Offset:
     Constant* OffsetC = ConstantInt::get(Type::getInt64Ty(emitBB->getContext()), (uint64_t)Offset, true);
-    Value* OffsetI = GetElementPtrInst::Create(Int8Ptr, CastI, OffsetC, VerboseNames ? "synthgep" : "", emitBB);
+    Value* OffsetI = GetElementPtrInst::Create(nullptr, CastI, OffsetC, VerboseNames ? "synthgep" : "", emitBB);
 
     // Cast back:
     if(targetType == Int8Ptr) {
