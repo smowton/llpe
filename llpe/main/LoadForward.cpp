@@ -142,7 +142,7 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
 
     GlobalVariable* GV = SGV->G;
     
-    if(GV->isConstant()) {
+    if(GV->isConstant() && GV->hasInitializer()) {
 
       uint64_t LoadSize = GlobalTD->getTypeStoreSize(LoadI->getType());
       Type* FromType = GV->getInitializer()->getType();
@@ -2249,7 +2249,7 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
   // Special case: read from constant global. Read the initialiser.
   if(ShadowGV* G = V.getGV()) {
     
-    if(G->G->isConstant()) {
+    if(G->G->isConstant() && G->G->hasInitializer()) {
 
       getConstSubVals(ShadowValue(G->G->getInitializer()), Offset, Size, 0, Results);
       return;
@@ -2595,7 +2595,7 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
 
 	ShadowValue Obj = SrcPtrSet.Values[i].V;
 	ShadowGV* G = Obj.getGV();
-	if(G && G->G->isConstant()) {
+	if(G && G->G->isConstant() && G->G->hasInitializer()) {
 
 	  // Pointer to a constant. See if the pointed object itself has pointers:
 	  if(containsPointerTypes(G->G->getInitializer()->getType()))

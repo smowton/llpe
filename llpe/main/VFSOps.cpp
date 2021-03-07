@@ -64,7 +64,7 @@ bool IntegrationAttempt::getConstantString(ShadowValue Ptr, ShadowInstruction* S
   if(ShadowGV* G = StrBase.getGV()) {
       
     GlobalVariable* GV = G->G;
-    if(GV->isConstant()) {
+    if(GV->isConstant() && GV->hasInitializer()) {
 
       Type* Int8Ptr = Type::getInt8PtrTy(GV->getContext());
       Constant* QueryCE = getGVOffset(GV, StrOffset, Int8Ptr);
