@@ -1531,19 +1531,19 @@ void IntegrationAttempt::tryEvaluateResult(ShadowInstruction* SI,
   // so this path handles the common case of integer unary and binary operations.
 
   SmallVector<uint64_t, 4> intOperands;
-  bool allOpsInts = true;
+  bool isIntegerOp = isa<IntegerType>(I->getType());
 
-  for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim && allOpsInts; i++) {
+  for(unsigned i = 0, ilim = I->getNumOperands(); i != ilim && isIntegerOp; i++) {
 
     uint64_t opInt;
     if(Ops[i].first != ValSetTypeScalar || !tryGetConstantInt(Ops[i].second.V, opInt))
-      allOpsInts = false;
+      isIntegerOp = false;
     else
       intOperands.push_back(opInt);
 
   }
 
-  if(allOpsInts) {
+  if(isIntegerOp) {
 
     if(IHPFoldIntOp(SI, Ops, intOperands, ImpType, Improved))
       return;
