@@ -2508,6 +2508,12 @@ void llvm::executeReallocInst(ShadowInstruction* SI, Function* F) {
     SrcPtrSet.setOverdef();
 
   }
+  else if(SrcPtrSet.Values[0].V.isNullPointer()) {
+
+    // Nothing to copy; this is a malloc.
+    return;
+
+  }
   else {
 
     CopySize = SI->parent->getAllocSize(SrcPtrSet.Values[0].V);
