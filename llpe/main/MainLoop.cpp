@@ -695,7 +695,7 @@ bool IntegrationAttempt::analyseInstruction(ShadowInstruction* SI, bool inLoopAn
 	
       // Certain intrinsics manifest as calls but fold like ordinary instructions.
       if(Function* F = getCalledFunction(SI)) {
-	ImmutableCallSite ICS(cast<CallInst>(I));
+	ImmutableCallSite ICS(I);
 	if(canConstantFoldCallTo(ICS, F))
 	  break;
       }
