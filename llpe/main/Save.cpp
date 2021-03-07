@@ -1140,12 +1140,16 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   // Do we know where this terminator will go?
   uint32_t knownSucc = 0xffffffff;
+  bool anySuccAlive = false;
+
   for(uint32_t i = 0; i < BB->invar->succIdxs.size(); ++i) {
 
     if(BB->succsAlive[i]) {
 
       if(pass->omitChecks && edgeBranchesToUnspecialisedCode(BB->invar, getBBInvar(BB->invar->succIdxs[i])))
 	continue;
+
+      anySuccAlive = true;
 
       if(knownSucc == 0xffffffff)
 	knownSucc = BB->invar->succIdxs[i];
@@ -1162,8 +1166,11 @@ void IntegrationAttempt::emitTerminator(ShadowBB* BB, ShadowInstruction* I, Basi
 
   }
 
+  if(!anySuccAlive) {
+    new UnreachableInst(emitBB->getContext(), emitBB);
+  }
   // If we know one true successor:
-  if(knownSucc != 0xffffffff) {
+  else if(knownSucc != 0xffffffff) {
 
     // Emit uncond branch
     bool markUnreachable = false;
