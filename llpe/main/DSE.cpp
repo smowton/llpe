@@ -988,7 +988,8 @@ void IntegrationAttempt::DSEAnalyseInstruction(ShadowInstruction* I, bool commit
 	  for(uint32_t arg = 0, arglim = I->getNumArgOperands(); arg != arglim; ++arg) {
 
 	    // Can't hold a pointer?
-	    if(GlobalTD->getTypeStoreSize(FType->getParamType(arg)) < 8)
+	    const Type* paramType = FType->getParamType(arg);
+	    if(paramType->isSized() && GlobalTD->getTypeStoreSize(FType->getParamType(arg)) < 8)
 	      return;
 
 	    // Known not a pointer?
