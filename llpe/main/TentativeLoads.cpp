@@ -180,8 +180,12 @@ static void markGoodBytes(ShadowValue GoodPtr, uint64_t Len, bool contextEnabled
   SmallVector<std::pair<uint64_t, uint64_t>, 1> addRanges;
 
   TLMapPointer* store = BB->tlStore->getReadableStoreFor(PtrTarget.second.V);
-  uint64_t start = PtrTarget.second.Offset + Offset;
-  uint64_t stop = PtrTarget.second.Offset + Offset + Len;
+  int64_t startSigned = PtrTarget.second.Offset + int64_t(Offset);
+  uint64_t start = uint64_t(std::max(startSigned, int64_t(0)));
+  uint64_t stop = uint64_t(startSigned + Len);
+
+  if(start == stop)
+    return;
 
   if(!store) {
    
