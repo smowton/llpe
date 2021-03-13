@@ -533,7 +533,7 @@ void InlineAttempt::prepareShadows() {
   // Create a shadow description of the source program function if not done yet.
   invarInfo = pass->getFunctionInvarInfo(F);
   nBBs = F.size();
-  release_assert(nBBs == invarInfo->BBs.size() && "Function contains unreachable blocks, run simplifycfg first!");
+  release_assert(nBBs == invarInfo->BBs.size() && "Function contains unreachable blocks, run simplifycfg and/or unreachableblockelim passes first!");
   // Create a basic-block array, initially all marked unreachable (null).
   BBs = new ShadowBB*[nBBs];
   for(uint32_t i = 0; i < nBBs; ++i)
