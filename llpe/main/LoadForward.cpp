@@ -2464,6 +2464,9 @@ void llvm::executeFreeInst(ShadowInstruction* SI, Function* FreeF) {
   if(FreedIVS->Values.size() != 1)
     return;
 
+  if(FreedIVS->Values[0].V.isNullPointer())
+    return;
+
   ImprovedValSetSingle TagIVS;
   TagIVS.SetType = ValSetTypeDeallocated;
 
