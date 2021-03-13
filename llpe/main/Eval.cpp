@@ -635,6 +635,10 @@ static bool isIDOrConst(ShadowValue& op) {
 
 }
 
+static bool isZeroOrNull(const ShadowValue& V) {
+  return (V.isConstantInt() && !V.u.CI) || val_is<ConstantPointerNull>(V);
+}
+
 // Helper: can we find a null-test for the given allocation instruction? We will try to keep
 // only one null test along any particular path.
 // Ideally one day we will support generic driven conditionals (i.e. noting that b is true or
@@ -661,8 +665,8 @@ class FindTestWalker : public ForwardIAWalker {
       ShadowValue Op0 = ThisI->getOperand(0);
       ShadowValue Op1 = ThisI->getOperand(1);
 
-      if((val_is<ConstantPointerNull>(Op0) && Op1.isInst() && isAllocI(Op1)) ||
-	 (val_is<ConstantPointerNull>(Op1) && Op0.isInst() && isAllocI(Op0))) {
+      if((isZeroOrNull(Op0) && Op1.isInst() && isAllocI(Op1)) ||
+	 (isZeroOrNull(Op1) && Op0.isInst() && isAllocI(Op0))) {
 
 	Result = AllocTested;
 	return WIRStopWholeWalk;
