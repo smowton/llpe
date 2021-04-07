@@ -62,22 +62,26 @@ bool llvm::IHPFoldIntOp(ShadowInstruction* SI, std::pair<ValSetType, ImprovedVal
       Improved = ImprovedVal(ShadowValue::getInt(SI->getType(), (C1V * C2V).getLimitedValue()));
       break;
     case Instruction::UDiv:
-      assert(C2V != 0 && "Div by zero not handled yet");
+      if(C2V == 0)
+        return false;
       Improved = ImprovedVal(ShadowValue::getInt(SI->getType(), C1V.udiv(C2V).getLimitedValue()));
       break;
     case Instruction::SDiv:
-      assert(C2V != 0 && "Div by zero not handled yet");
+      if(C2V == 0)
+        return false;
       if (C2V.isAllOnesValue() && C1V.isMinSignedValue())
 	Improved = ImprovedVal(ShadowValue(UndefValue::get(SI->getType())));   // MIN_INT / -1 -> undef
       else
 	Improved = ImprovedVal(ShadowValue::getInt(SI->getType(), C1V.sdiv(C2V).getLimitedValue()));
       break;
     case Instruction::URem:
-      assert(C2V != 0 && "Div by zero not handled yet");
+      if(C2V == 0)
+        return false;
       Improved = ImprovedVal(ShadowValue::getInt(SI->getType(), C1V.urem(C2V).getLimitedValue()));
       break;
     case Instruction::SRem:
-      assert(C2V != 0 && "Div by zero not handled yet");
+      if(C2V == 0)
+        return false;
       if (C2V.isAllOnesValue() && C1V.isMinSignedValue())
 	Improved = ImprovedVal(ShadowValue(UndefValue::get(SI->getType())));   // MIN_INT % -1 -> undef
       else
