@@ -1693,6 +1693,8 @@ inline Constant* getSingleConstant(const ShadowValue V) {
 
   if(V.t == SHADOWVAL_OTHER)
     return cast<Constant>(V.u.V);  
+  else if(V.t == SHADOWVAL_GV)
+    return V.u.GV->G;
   else if(V.isConstantInt())
     return CIToConst(V);
   else {
@@ -2266,4 +2268,3 @@ inline ShadowValue getValOperand(ShadowValue V, uint32_t i) {
   }
 
 }
-
