@@ -158,6 +158,11 @@ bool IntegrationAttempt::tryResolveLoadFromConstant(ShadowInstruction* LoadI, Im
       return true;
 
     }
+    else if(GV->isConstant()) {
+      // We don't know the initializer -- this must not be a self-contained binary; we can't know the answer.
+      Result.setOverdef();
+      return true;
+    }
 
   }
 

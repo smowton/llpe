@@ -214,6 +214,14 @@ bool IntegrationAttempt::blockIsDeadRising(ShadowBBInvar& BBI) {
 
 }
 
+static bool allValuesConstant(const SmallVector<ImprovedVal, 1> &Values) {
+  for(const auto &Value : Values) {
+    if(!isa<ConstantInt>(getConstReplacement(Value.V)))
+      return false;
+  }
+  return true;
+}
+
 // Set outgoing edges alive dependent on the terminator instruction SI.
 // If the terminator is an Invoke instruction, the call has already been run.
 // Return true if anything changed.
@@ -345,7 +353,8 @@ bool IntegrationAttempt::checkBlockOutgoingEdges(ShadowInstruction* SI) {
   if((Switch = dyn_cast_inst<SwitchInst>(SI)) && 
      (IVS = dyn_cast<ImprovedValSetSingle>(getIVSRef(Condition))) && 
      IVS->SetType == ValSetTypeScalar && 
-     !IVS->Values.empty()) {
+     !IVS->Values.empty() &&
+     allValuesConstant(IVS->Values)) {
 
     // A set of values feeding a switch. Set each corresponding edge alive.
 
@@ -528,4 +537,3 @@ void IntegrationAttempt::checkBlockStatus(ShadowBB* BB, bool inLoopAnalyser) {
   }
 
 }
-
