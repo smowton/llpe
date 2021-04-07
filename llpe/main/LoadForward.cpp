@@ -2260,6 +2260,10 @@ void llvm::readValRangeMulti(ShadowValue& V, uint64_t Offset, uint64_t Size, Sha
       return;
 
     }
+    else if(G->G->isConstant()) {
+      Results.push_back(IVSR(Offset, Offset+Size, ImprovedValSetSingle(ValSetTypeUnknown, true)));
+      return;
+    }
 
   }
 
@@ -2615,6 +2619,9 @@ void llvm::executeCopyInst(ShadowValue* Ptr, ImprovedValSetSingle& PtrSet, Impro
 	  if(containsPointerTypes(G->G->getInitializer()->getType()))
 	    foundPointers = true;
 	  
+	}
+  else if(G && G->G->isConstant()) {
+    foundPointers = true;
 	}
 	else {
 
