@@ -39,7 +39,7 @@ static void readWholeFile(std::string& path, std::string& out, bool addnewline) 
 
   }
 
-  out = (*MB)->getBuffer();
+  out = (*MB)->getBuffer().str();
   if(addnewline && (out.size() == 0 || out[out.size() - 1] != '\n')) {
     out += '\n';
   }  
