@@ -4,7 +4,7 @@ find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-add_definitions("-std=c++11")
+add_definitions("-std=c++14")
 
 # RTTI-ness must match the LLVM we're building against.
 if(NOT ${LLVM_ENABLE_RTTI})

@@ -464,7 +464,7 @@ bool LLPEAnalysisPass::runOnModule(Module& M) {
 
   TD = &M.getDataLayout();
   GlobalTD = TD;
-  GlobalTLI = &getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>()->getTLI();
+//  GlobalTLI = &getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>()->getTLI();
   GlobalIHP = this;
   GInt8Ptr = Type::getInt8PtrTy(M.getContext());
   GInt8 = Type::getInt8Ty(M.getContext());
